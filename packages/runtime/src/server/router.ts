@@ -1,28 +1,20 @@
 import { initTRPC, TRPCError } from "@trpc/server";
-import { timingSafeEqual } from "node:crypto";
-import type { FunctionKind } from "../functions";
+import type { AdminInfo, AdminRole } from "./admin-ops";
 import type { CallHeaders, LogEntry } from "./executor";
 import type { Manifest } from "./project";
-import { RuntimeCallError, type FunctionRuntime } from "./runtime";
+import { toPublicError } from "./public-error";
+import type { FunctionRuntime } from "./runtime";
 import type { QueryRunner, SubscriptionManager } from "./subscriptions";
 
-export type Context = { headers: CallHeaders };
-
-const t = initTRPC.context<Context>().create();
+export type Context = {
+  headers: CallHeaders;
+  requestId: string;
+  /** Per WebSocket connection, for the subscription cap. */
+  conn?: { subscriptions: number };
+};
 
 /** "admin/users:get" → ["admin", "users", "get"]; the client uses the same mapping. */
 export const procedurePath = (name: string) => name.replace(":", "/").split("/");
-
-const toTRPCError = (e: unknown) =>
-  e instanceof RuntimeCallError ? new TRPCError({ code: e.code, message: e.message }) : new TRPCError({ code: "INTERNAL_SERVER_ERROR", message: String((e as Error)?.message ?? e) });
-
-const guard = async <T>(fn: () => Promise<T>) => {
-  try {
-    return await fn();
-  } catch (e) {
-    throw toTRPCError(e);
-  }
-};
 
 function setPath(tree: Record<string, any>, path: string[], value: unknown) {
   let node = tree;
@@ -30,56 +22,103 @@ function setPath(tree: Record<string, any>, path: string[], value: unknown) {
   node[path.at(-1)!] = value;
 }
 
-/** One tRPC procedure per function; queries also get a subscription under `_sub`. Args are validated in the runtime. */
-export function buildRouter(manifest: Manifest, runtime: FunctionRuntime, queries: QueryRunner, subs: SubscriptionManager) {
+type ErrorCause = { forge: { data?: unknown; requestId: string } };
+
+const formatter = ({ shape, error }: { shape: any; error: TRPCError }) => {
+  const forge = (error.cause as unknown as ErrorCause | undefined)?.forge;
+  const { stack: _stack, ...data } = shape.data ?? {};
+  return { ...shape, data: { ...data, ...(forge && { forge }) } };
+};
+
+export interface RouterOptions {
+  dev: boolean;
+  maxSubscriptionsPerConnection: number;
+}
+
+/** One tRPC procedure per public function; queries also get a subscription under `_sub`. Args are validated in the runtime. */
+export function buildRouter(manifest: Manifest, runtime: FunctionRuntime, queries: QueryRunner, subs: SubscriptionManager, opts: RouterOptions) {
+  const t = initTRPC.context<Context>().create({ isDev: opts.dev, errorFormatter: formatter });
+  const guard = async <T>(ctx: Context, name: string, fn: () => Promise<T>) => {
+    try {
+      return await fn();
+    } catch (e) {
+      const err = toPublicError(e, ctx.requestId, opts.dev, { function: name });
+      throw new TRPCError({ code: err.code, message: err.message, cause: { forge: { data: err.data, requestId: err.requestId } } as any });
+    }
+  };
   const tree: Record<string, any> = {};
   const subTree: Record<string, any> = {};
   const input = t.procedure.input((raw: unknown) => raw ?? {});
-  for (const { name, kind } of manifest.functions) {
+  for (const { name, kind, visibility } of manifest.functions) {
+    if (visibility === "internal") continue;
     const path = procedurePath(name);
     if (kind === "query") {
-      setPath(tree, path, input.query(({ input, ctx }) => guard(async () => (await queries.run(name, input, ctx.headers)).value)));
+      setPath(tree, path, input.query(({ input, ctx }) => guard(ctx, name, async () => (await queries.run(name, input, ctx.headers, ctx.requestId)).value)));
       setPath(
         subTree,
         path,
-        input.subscription(({ input, ctx, signal }) => subs.subscribe(name, input, ctx.headers, signal)),
+        input.subscription(async function* ({ input, ctx, signal }) {
+          const conn = ctx.conn ?? { subscriptions: 0 };
+          if (conn.subscriptions >= opts.maxSubscriptionsPerConnection)
+            throw new TRPCError({ code: "TOO_MANY_REQUESTS", message: `At most ${opts.maxSubscriptionsPerConnection} subscriptions per connection` });
+          conn.subscriptions++;
+          try {
+            yield* subs.subscribe(name, input, ctx.headers, signal, ctx.requestId);
+          } finally {
+            conn.subscriptions--;
+          }
+        }),
       );
     } else {
-      setPath(tree, path, input.mutation(({ input, ctx }) => guard(async () => (await runtime.call(name, kind, input, ctx.headers)).value)));
+      setPath(
+        tree,
+        path,
+        input.mutation(({ input, ctx }) => guard(ctx, name, async () => (await runtime.call(name, kind, input, ctx.headers, { requestId: ctx.requestId })).value)),
+      );
     }
   }
   return t.router({ ...tree, _sub: subTree });
 }
 
-export type AdminContext = { adminKey: string | null };
+// ---- admin API ----
 
-const a = initTRPC.context<AdminContext>().create();
+export type AdminContext = { admin: AdminInfo | null; requestId: string };
 
-export function buildAdminRouter(opts: {
-  adminKey?: string;
-  runtime: FunctionRuntime;
-  subs: SubscriptionManager;
-  logs: LogEntry[];
-}) {
-  const expected = opts.adminKey ? Buffer.from(opts.adminKey) : undefined;
-  const authed = a.procedure.use(({ ctx, next }) => {
-    const given = Buffer.from(ctx.adminKey ?? "");
-    if (!expected) throw new TRPCError({ code: "FORBIDDEN", message: "Dashboard disabled: set ADMIN_KEY" });
-    if (given.length !== expected.length || !timingSafeEqual(given, expected)) throw new TRPCError({ code: "UNAUTHORIZED", message: "Invalid admin key" });
-    return next();
-  });
-  const { runtime } = opts;
+const RANK: Record<AdminRole, number> = { viewer: 0, admin: 1, owner: 2 };
+
+/** Read operations (viewer) and write operations (admin), all served by the function runtime. */
+const READ_OPS = ["docs", "counts", "scheduled", "crons", "files", "users", "sessions", "audit", "env", "logs", "metrics"] as const;
+const WRITE_OPS = ["insertDoc", "patchDoc", "replaceDoc", "deleteDoc", "cancelJob", "retryJob", "deleteFile", "revokeSession", "banUser", "run"] as const;
+
+export function buildAdminRouter(opts: { runtime: FunctionRuntime; subs: SubscriptionManager; recentLogs: LogEntry[]; dev: boolean; serverInfo: () => object }) {
+  const a = initTRPC.context<AdminContext>().create({ isDev: opts.dev, errorFormatter: formatter });
+  const as = (role: AdminRole) =>
+    a.procedure.use(({ ctx, next }) => {
+      if (!ctx.admin) throw new TRPCError({ code: "UNAUTHORIZED", message: "Sign in to the dashboard" });
+      if (RANK[ctx.admin.role] < RANK[role]) throw new TRPCError({ code: "FORBIDDEN", message: `Requires the ${role} role` });
+      return next({ ctx: { ...ctx, admin: ctx.admin } });
+    });
+  const forward = (op: string, role: AdminRole) =>
+    as(role)
+      .input((raw) => (raw ?? {}) as Record<string, unknown>)
+      [role === "viewer" ? "query" : "mutation"](async ({ input, ctx }) => {
+        try {
+          return await opts.runtime.admin(op, { ...input, requestId: ctx.requestId }, ctx.admin.email);
+        } catch (e) {
+          const err = toPublicError(e, ctx.requestId, true, { admin: op }); // admins see real messages
+          throw new TRPCError({ code: err.code, message: err.message });
+        }
+      });
+  const ops: Record<string, any> = {};
+  for (const op of READ_OPS) ops[op] = forward(op, "viewer");
+  for (const op of WRITE_OPS) ops[op] = forward(op, "admin");
   return a.router({
-    manifest: authed.query(() => runtime.manifest ?? { functions: [], tables: {}, crons: [], storage: false, error: runtime.loadError }),
-    docs: authed
-      .input((raw) => raw as { table: string; limit?: number })
-      .query(({ input }) => guard(() => runtime.request({ t: "docs", table: input.table, limit: Math.min(input.limit ?? 100, 1000) }))),
-    scheduled: authed.query(() => guard(() => runtime.request({ t: "scheduled", limit: 200 }))),
-    run: authed
-      .input((raw) => raw as { name: string; kind: FunctionKind; args: unknown })
-      .mutation(({ input }) => guard(async () => (await runtime.call(input.name, input.kind, input.args, {})).value)),
-    logs: authed.query(() => opts.logs),
-    subscriptions: authed.query(() => opts.subs.list()),
+    ...ops,
+    me: a.procedure.query(({ ctx }) => ctx.admin),
+    manifest: as("viewer").query(() => opts.runtime.manifest ?? { functions: [], tables: {}, crons: [], storage: false, error: opts.runtime.loadError }),
+    subscriptions: as("viewer").query(() => opts.subs.list()),
+    recentLogs: as("viewer").query(() => opts.recentLogs),
+    server: as("viewer").query(() => opts.serverInfo()),
   });
 }
 

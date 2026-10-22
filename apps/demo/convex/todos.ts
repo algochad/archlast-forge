@@ -1,6 +1,6 @@
-import { action, mutation, query, v, type MutationCtx } from "@archlast-forge/runtime";
+import { action, internalMutation, mutation, query, v, type MutationCtx } from "@archlast-forge/runtime";
 import { formatDistanceToNow } from "date-fns"; // a server-only dependency from convex/package.json
-import { api } from "./_generated/api";
+import { api, internal } from "./_generated/api";
 
 async function requireUser(ctx: Pick<MutationCtx, "auth">) {
   const identity = await ctx.auth.getUserIdentity();
@@ -69,7 +69,8 @@ export const attach = mutation({
   },
 });
 
-export const markReminded = mutation({
+/** Internal: only sendReminder calls it, so clients can't mark todos reminded. */
+export const markReminded = internalMutation({
   args: { todoId: v.id("todos") },
   handler: (ctx, { todoId }) => ctx.db.patch(todoId, { remindedAt: Date.now() }),
 });
@@ -86,13 +87,13 @@ export const sendReminder = action({
     const webhook = process.env.REMINDER_WEBHOOK_URL;
     if (webhook) await fetch(webhook, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
     else console.log(text);
-    await ctx.runMutation(api.todos.markReminded, { todoId });
+    await ctx.runMutation(internal.todos.markReminded, { todoId });
     return text;
   },
 });
 
-/** Run hourly by crons.ts. */
-export const purgeDone = mutation({
+/** Run hourly by crons.ts; internal, so clients can't trigger it. */
+export const purgeDone = internalMutation({
   handler: async (ctx) => {
     const dayAgo = Date.now() - 24 * 3600_000;
     for (const t of await ctx.db.query("todos").collect()) if (t.done && t._creationTime < dayAgo) await ctx.db.delete(t._id);

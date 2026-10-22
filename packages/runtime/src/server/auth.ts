@@ -1,8 +1,10 @@
+import { RedisClient } from "bun";
 import { betterAuth } from "better-auth";
 import { createAdapterFactory, type CleanedWhere } from "better-auth/adapters";
 import type { AuthOptions, UserIdentity } from "../functions";
 import { tableOf } from "../values";
 import type { Config } from "./config";
+import { RedisRateLimiter } from "./ratelimit";
 import type { DocStore, TablesSpec } from "./docstore";
 import type { CallHeaders, Executor } from "./executor";
 
@@ -131,12 +133,35 @@ function documentAdapter(exec: Executor, tables: TablesSpec) {
 
 export function createAuth(exec: Executor, tables: TablesSpec, options: AuthOptions, config: Config) {
   const userOrigins = Array.isArray(options.trustedOrigins) ? options.trustedOrigins : [];
+  const sessionCreate = options.databaseHooks?.session?.create;
+  // Shared across servers when Redis is configured; Better Auth's default memory store counts per process.
+  const redis = config.redisUrl ? new RedisClient(config.redisUrl) : undefined;
   const auth = betterAuth({
     ...options,
     secret: config.authSecret,
     baseURL: config.authUrl,
     trustedOrigins: [...userOrigins, ...config.trustedOrigins],
     database: documentAdapter(exec, tables),
+    rateLimit: {
+      enabled: !config.dev,
+      ...options.rateLimit,
+      ...(redis && { customStorage: new RedisRateLimiter(redis, "archlast-forge:auth-rl:") }),
+    },
+    databaseHooks: {
+      ...options.databaseHooks,
+      session: {
+        ...options.databaseHooks?.session,
+        create: {
+          ...sessionCreate,
+          // Banned users (set from the dashboard) can't start sessions.
+          before: async (session, ctx) => {
+            const user = (await exec.read((s) => s.get(session.userId))).value;
+            if (user?.banned) return false;
+            return sessionCreate?.before ? sessionCreate.before(session, ctx) : undefined;
+          },
+        },
+      },
+    },
   });
   exec.resolveIdentity = async (headers: CallHeaders): Promise<UserIdentity | null> => {
     const s = await auth.api.getSession({ headers: new Headers(headers) });

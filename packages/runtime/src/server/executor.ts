@@ -1,6 +1,8 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { isForgeError, TimeoutError } from "../errors";
 import { getFunctionName, type FunctionKind, type RegisteredFunction, type UserIdentity } from "../functions";
 import { validate, validateFields, ValidationError } from "../values";
+import type { Limits } from "./config";
 import { isRetryableConflict, type Db, type DbTx } from "./db/types";
 import { DocStore, type TablesSpec } from "./docstore";
 import { cancelScheduled, schedule } from "./scheduler";
@@ -23,22 +25,44 @@ export interface LogEntry {
   message: string;
   durationMs?: number;
   ok?: boolean;
+  requestId?: string;
 }
 
-export const logContext = new AsyncLocalStorage<{ name: string }>();
+export const logContext = new AsyncLocalStorage<{ name: string; requestId?: string }>();
+
+export type ErrorKind = "user" | "validation" | "timeout" | "internal";
+
+export interface SerializedError {
+  kind: ErrorKind;
+  message: string;
+  /** ForgeError data. */
+  data?: unknown;
+  stack?: string;
+}
+
+/** How an error crosses the process boundary; only "user" and "validation" messages are meant for callers. */
+export function serializeError(e: unknown): SerializedError {
+  const err = e as Error;
+  const message = err?.message ?? String(e);
+  if (isForgeError(err)) return { kind: "user", message, data: err.data };
+  if (err?.name === "ValidationError") return { kind: "validation", message };
+  if (err?.name === "TimeoutError") return { kind: "timeout", message };
+  return { kind: "internal", message, stack: err?.stack };
+}
 
 export interface ExecutorOptions {
   db: Db;
   tables: TablesSpec;
   functions: Map<string, RegisteredFunction>;
   storage?: Storage;
+  limits?: Pick<Limits, "functionTimeoutMs" | "actionTimeoutMs" | "maxResultBytes" | "maxDocumentBytes">;
   publish(topics: string[]): void;
   log(entry: LogEntry): void;
 }
 
 type AfterCommit = (() => unknown)[];
 
-/** A wrong return value is a server bug, so it's not reported as a ValidationError (BAD_REQUEST). */
+/** A wrong return value is a server bug, so it's reported as internal, not as a ValidationError. */
 function checkReturn<T>(fn: RegisteredFunction, value: T): T {
   if (!fn.returns) return value;
   try {
@@ -49,15 +73,40 @@ function checkReturn<T>(fn: RegisteredFunction, value: T): T {
   return value;
 }
 
+/** Rejects after `ms`. The handler may keep running; its transaction handle refuses further use once the call ends. */
+function withTimeout<T>(promise: Promise<T>, ms: number, name: string): Promise<T> {
+  let timer: Timer;
+  return Promise.race([
+    promise,
+    new Promise<never>((_, reject) => {
+      timer = setTimeout(() => reject(new TimeoutError(`${name} timed out after ${ms} ms`)), ms);
+    }),
+  ]).finally(() => clearTimeout(timer));
+}
+
+export interface RunOptions {
+  /** Clients can't call internal functions; the dashboard and other functions can. */
+  allowInternal?: boolean;
+  requestId?: string;
+}
+
 export class Executor {
   /** Set once Better Auth is created; resolves the caller from cookie/authorization headers. */
   resolveIdentity: (headers: CallHeaders) => Promise<UserIdentity | null> = async () => null;
 
-  constructor(private o: ExecutorOptions) {}
+  private limits: NonNullable<ExecutorOptions["limits"]>;
+
+  constructor(private o: ExecutorOptions) {
+    this.limits = o.limits ?? { functionTimeoutMs: 10_000, actionTimeoutMs: 600_000, maxResultBytes: 8 << 20, maxDocumentBytes: 1 << 20 };
+  }
+
+  private store(tx: DbTx, writes?: Set<string>) {
+    return new DocStore(tx, this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes);
+  }
 
   read<T>(fn: (store: DocStore, tx: DbTx) => Promise<T>) {
     return this.o.db.transaction("read", async (tx) => {
-      const store = new DocStore(tx, this.o.db.dialect, this.o.tables);
+      const store = this.store(tx);
       return { value: await fn(store, tx), reads: store.reads };
     });
   }
@@ -68,7 +117,7 @@ export class Executor {
       const writes = new Set<string>();
       const after: AfterCommit = [];
       try {
-        const value = await this.o.db.transaction("write", (tx) => fn(new DocStore(tx, this.o.db.dialect, this.o.tables, new Set(), writes), tx, after));
+        const value = await this.o.db.transaction("write", (tx) => fn(this.store(tx, writes), tx, after));
         if (writes.size) this.o.publish([...writes]);
         for (const f of after) Promise.resolve().then(f).catch((e) => console.error("after-commit task failed:", e));
         return value;
@@ -79,13 +128,16 @@ export class Executor {
     }
   }
 
-  /** Entry point for clients: resolves identity once for the whole request. */
-  async run(name: string, kind: FunctionKind, args: unknown, headers: CallHeaders): Promise<CallResult> {
+  /** Entry point for requests: resolves identity once for the whole request. */
+  async run(name: string, kind: FunctionKind, args: unknown, headers: CallHeaders, opts: RunOptions = {}): Promise<CallResult> {
+    const fn = this.o.functions.get(name);
+    // Same message as a missing function, so internal names don't leak.
+    if (fn?.visibility === "internal" && !opts.allowInternal) throw new ValidationError(`Unknown function "${name}"`);
     const identity = headers.cookie || headers.authorization ? await this.resolveIdentity(headers) : null;
-    return this.call(name, kind, args, identity);
+    return this.call(name, kind, args, identity, opts.requestId);
   }
 
-  async call(name: string, kind: FunctionKind, args: unknown, identity: UserIdentity | null): Promise<CallResult> {
+  async call(name: string, kind: FunctionKind, args: unknown, identity: UserIdentity | null, requestId?: string): Promise<CallResult> {
     const fn = this.o.functions.get(name);
     if (!fn) throw new ValidationError(`Unknown function "${name}"`);
     if (fn.kind !== kind) throw new ValidationError(`"${name}" is a ${fn.kind}, not a ${kind}`);
@@ -98,16 +150,27 @@ export class Executor {
         return identity;
       },
     };
-    return this.logged(name, async () => {
+    const { functionTimeoutMs, actionTimeoutMs } = this.limits;
+    const result = await this.logged(name, requestId, async () => {
       if (kind === "query") {
-        const { value, reads } = await this.read(async (store) =>
-          checkReturn(fn, await fn.handler({ db: store.reader(), auth, storage: this.storage(store) }, args)),
+        const { value, reads } = await this.read((store) =>
+          withTimeout(
+            (async () => checkReturn(fn, await fn.handler({ db: store.reader(), auth, storage: this.storage(store) }, args)))(),
+            functionTimeoutMs,
+            name,
+          ),
         );
         return { value: value ?? null, topics: [...reads], usedAuth };
       }
-      if (kind === "mutation") return { value: (await this.mutate((store, tx, after) => this.invokeMutation(fn, args, store, tx, after, identity))) ?? null };
-      return { value: checkReturn(fn, await fn.handler(this.actionCtx(auth, identity), args)) ?? null };
+      if (kind === "mutation")
+        return {
+          value: (await this.mutate((store, tx, after) => withTimeout(this.invokeMutation(fn, args, store, tx, after, identity), functionTimeoutMs, name))) ?? null,
+        };
+      return { value: checkReturn(fn, await withTimeout(Promise.resolve(fn.handler(this.actionCtx(auth, identity, requestId), args)), actionTimeoutMs, name)) ?? null };
     });
+    const size = JSON.stringify(result.value)?.length ?? 0;
+    if (size > this.limits.maxResultBytes) throw new Error(`${name} returned ${size} bytes; the limit is ${this.limits.maxResultBytes} (MAX_RESULT_BYTES)`);
+    return result;
   }
 
   async invokeMutation(fn: RegisteredFunction, args: unknown, store: DocStore, tx: DbTx, after: AfterCommit, identity: UserIdentity | null) {
@@ -124,12 +187,12 @@ export class Executor {
     return checkReturn(fn, await fn.handler(ctx, args)); // inside the transaction, so a bad value rolls back
   }
 
-  async logged<T>(name: string, fn: () => Promise<T>): Promise<T> {
+  async logged<T>(name: string, requestId: string | undefined, fn: () => Promise<T>): Promise<T> {
     const start = performance.now();
     const entry = (ok: boolean, message: string) =>
-      this.o.log({ time: Date.now(), name, level: "call", message, ok, durationMs: Math.round((performance.now() - start) * 10) / 10 });
+      this.o.log({ time: Date.now(), name, level: "call", message, ok, requestId, durationMs: Math.round((performance.now() - start) * 10) / 10 });
     try {
-      const out = await logContext.run({ name }, fn);
+      const out = await logContext.run({ name, requestId }, fn);
       entry(true, "ok");
       return out;
     } catch (e) {
@@ -143,7 +206,7 @@ export class Executor {
     return this.o.storage;
   }
 
-  private storage(store: DocStore, after?: AfterCommit) {
+  storage(store: DocStore, after?: AfterCommit) {
     return {
       getUrl: async (id: string) => {
         const doc = await store.get(id);
@@ -165,8 +228,8 @@ export class Executor {
     };
   }
 
-  private actionCtx(auth: { getUserIdentity(): Promise<UserIdentity | null> }, identity: UserIdentity | null) {
-    const runAs = (kind: FunctionKind) => async (ref: any, args?: object) => (await this.call(getFunctionName(ref), kind, args, identity)).value;
+  private actionCtx(auth: { getUserIdentity(): Promise<UserIdentity | null> }, identity: UserIdentity | null, requestId?: string) {
+    const runAs = (kind: FunctionKind) => async (ref: any, args?: object) => (await this.call(getFunctionName(ref), kind, args, identity, requestId)).value;
     return {
       auth,
       storage: {

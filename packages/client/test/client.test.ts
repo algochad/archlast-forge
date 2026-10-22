@@ -83,7 +83,7 @@ test("after the server restarts, the client reconnects and refetches", async () 
 const pg = process.env.TEST_POSTGRES_URL;
 const redis = process.env.TEST_REDIS_URL;
 test.skipIf(!pg || !redis)("two servers: a mutation on one reaches subscribers on the other, and caches invalidate", async () => {
-  const env = { ...process.env, PORT: "0", DATABASE_URL: pg, REDIS_URL: redis, REPLICAS: "2", BETTER_AUTH_SECRET: "x".repeat(32), CACHE_TTL_MS: "60000" };
+  const env = { ...process.env, PORT: "0", DATABASE_URL: pg, REDIS_URL: redis, REPLICAS: "2", BETTER_AUTH_SECRET: "x".repeat(32), CACHE_TTL_MS: "60000", ALLOW_INSECURE_HTTP: "1" };
   const [s1, s2] = [await startServer({ convexDir: fixture, env }), await startServer({ convexDir: fixture, env })];
   const [c1, c2] = [new ArchlastForgeClient({ url: s1.url }), new ArchlastForgeClient({ url: s2.url })];
   try {

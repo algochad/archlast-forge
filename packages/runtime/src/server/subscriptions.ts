@@ -3,12 +3,16 @@ import type { Cache } from "./cache";
 import type { CallHeaders } from "./executor";
 import type { FunctionRuntime } from "./runtime";
 
-export type QueryUpdate = { value: unknown } | { error: string };
+export type QueryUpdate = { value: unknown } | { error: string; data?: unknown; requestId?: string };
 
 /** Runs queries through the shared result cache. */
 export class QueryRunner {
-  /** Bumped on every invalidation, so a result computed across one isn't cached. */
-  private generation = 0;
+  /** Sequence number of the latest invalidation, and of the latest per topic. */
+  private seq = 0;
+  private invalidatedAt = new Map<string, number>();
+  private history: [number, string][] = [];
+  /** Invalidations at or before this were forgotten; a run older than it can't be proven clean. */
+  private horizon = 0;
   private invalidating: Promise<unknown> = Promise.resolve();
 
   constructor(
@@ -18,21 +22,28 @@ export class QueryRunner {
   ) {}
 
   invalidated(topic: string) {
-    this.generation++;
+    const seq = ++this.seq;
+    this.invalidatedAt.set(topic, seq);
+    this.history.push([seq, topic]);
+    if (this.history.length > 50_000) {
+      for (const [s, t] of this.history.splice(0, 10_000)) if (this.invalidatedAt.get(t) === s) this.invalidatedAt.delete(t);
+      this.horizon = this.history[0]![0] - 1;
+    }
     if (this.cache) this.invalidating = Promise.all([this.invalidating, this.cache.invalidate([topic])]).then(() => {});
   }
 
-  async run(name: string, args: unknown, headers: CallHeaders) {
+  async run(name: string, args: unknown, headers: CallHeaders, requestId?: string) {
     const key = `${name}:${JSON.stringify(args ?? {})}`;
     await this.invalidating; // a pending eviction must land before we read the cache
     const hit = await this.cache?.get<{ value: unknown; topics: string[] }>(key);
     if (hit) return hit;
-    const gen = this.generation;
-    const r = await this.runtime.call(name, "query", args, headers);
-    // shortcut: any invalidation during the run skips caching, not only overlapping topics; track per topic if write-heavy apps need more hits.
-    if (this.cache && !r.usedAuth && gen === this.generation)
-      await this.cache.set(key, { value: r.value, topics: r.topics }, { ttlMs: this.ttlMs, topics: r.topics });
-    return { value: r.value, topics: r.topics ?? [] };
+    const start = this.seq;
+    const r = await this.runtime.call(name, "query", args, headers, { requestId });
+    const topics = r.topics ?? [];
+    // Cache only if none of the topics this result read was written while it ran.
+    const clean = start >= this.horizon && !topics.some((t) => (this.invalidatedAt.get(t) ?? 0) > start);
+    if (this.cache && !r.usedAuth && clean) await this.cache.set(key, { value: r.value, topics }, { ttlMs: this.ttlMs, topics });
+    return { value: r.value, topics };
   }
 }
 
@@ -52,10 +63,11 @@ export class SubscriptionManager {
   constructor(
     private bus: Bus,
     private queries: QueryRunner,
+    private describeError: (e: unknown, requestId?: string) => QueryUpdate = (e) => ({ error: (e as Error).message }),
   ) {}
 
   /** Yields the result, then a new result after each relevant write. Unchanged results aren't re-sent. */
-  async *subscribe(name: string, args: unknown, headers: CallHeaders, signal?: AbortSignal): AsyncGenerator<QueryUpdate> {
+  async *subscribe(name: string, args: unknown, headers: CallHeaders, signal?: AbortSignal, requestId?: string): AsyncGenerator<QueryUpdate> {
     let dirty = true;
     let wake: (() => void) | undefined;
     let timer: Timer | undefined;
@@ -89,14 +101,20 @@ export class SubscriptionManager {
         dirty = false;
         let update: QueryUpdate;
         try {
-          const r = await this.queries.run(name, args, headers);
+          const r = await this.queries.run(name, args, headers, requestId);
           // The read set can change with the data, so re-record topics on every run.
           for (const [t, off] of unsubs) if (!r.topics.includes(t)) (off(), unsubs.delete(t));
-          for (const t of r.topics) if (!unsubs.has(t)) unsubs.set(t, this.bus.subscribe(t, onEvent));
+          const added = r.topics.filter((t) => !unsubs.has(t));
+          for (const t of added) unsubs.set(t, this.bus.subscribe(t, onEvent));
+          // A write between the read and a remote subscription going live would be missed: read again once it's live.
+          if (added.length && this.bus.ready) {
+            await this.bus.ready();
+            dirty = true;
+          }
           sub.topics = r.topics;
           update = { value: r.value };
         } catch (e) {
-          update = { error: (e as Error).message };
+          update = this.describeError(e, requestId);
         }
         const hash = String(Bun.hash(JSON.stringify(update)));
         if (hash !== last && !signal?.aborted) {
@@ -118,5 +136,9 @@ export class SubscriptionManager {
 
   list() {
     return [...this.subs].map(({ name, args, topics, since }) => ({ name, args, topics, since }));
+  }
+
+  get size() {
+    return this.subs.size;
   }
 }

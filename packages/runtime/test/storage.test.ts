@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createSqliteDb } from "../src/server/db/sqlite";
 import { DocStore } from "../src/server/docstore";
 import { Executor } from "../src/server/executor";
-import { loadProject } from "../src/server/project";
+import { loadProject, tableSpecs } from "../src/server/project";
 import { S3Storage } from "../src/server/storage";
 import { tempDir } from "./helpers";
 
@@ -43,7 +43,7 @@ test.skipIf(!endpoint)("browsers may upload cross-origin (CORS preflight)", asyn
 test.skipIf(!endpoint)("ctx.storage: metadata row commits first, the object is deleted after commit", async () => {
   const project = await loadProject(join(import.meta.dir, "fixture"));
   const db = createSqliteDb(join(tempDir(), "app.db"));
-  await db.migrate(Object.entries(project.tables).map(([name, t]) => ({ name, indexes: t.indexes })));
+  await db.migrate(tableSpecs(project.tables));
   const published: string[][] = [];
   const exec = new Executor({ db, tables: project.tables, functions: project.functions, storage: s3(), publish: (t) => published.push(t), log: () => {} });
   type Ctx = { getUrl(id: string): Promise<string>; generateUploadUrl(o: object): Promise<{ uploadUrl: string; storageId: string }>; delete(id: string): Promise<void> };

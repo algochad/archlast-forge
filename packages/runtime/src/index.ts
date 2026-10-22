@@ -1,5 +1,6 @@
 // Browser-safe entry: used by convex/ code and by generated client types. No Bun APIs here.
-export { v, ValidationError, type Id, type Infer, type ObjectType, type PropertyValidators, type Validator } from "./values";
+export { ForgeError, isForgeError } from "./errors";
+export { paginationOptsValidator, v, ValidationError, type Id, type Infer, type ObjectType, type PropertyValidators, type Validator } from "./values";
 export {
   defineSchema,
   defineTable,
@@ -16,6 +17,9 @@ export {
   cronJobs,
   defineAuth,
   getFunctionName,
+  internalAction,
+  internalMutation,
+  internalQuery,
   mutation,
   query,
   type ActionCtx,
@@ -29,7 +33,10 @@ export {
   type ModuleRefs,
   type MutationCtx,
   type OptionalArgs,
+  type PaginationOptions,
+  type PaginationResult,
   type QueryCtx,
   type RegisteredFunction,
   type UserIdentity,
+  type Visibility,
 } from "./functions";

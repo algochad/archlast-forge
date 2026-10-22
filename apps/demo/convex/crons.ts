@@ -1,6 +1,6 @@
 import { cronJobs } from "@archlast-forge/runtime";
-import { api } from "./_generated/api";
+import { internal } from "./_generated/api";
 
 const crons = cronJobs();
-crons.interval("purge done todos", { hours: 1 }, api.todos.purgeDone);
+crons.interval("purge done todos", { hours: 1 }, internal.todos.purgeDone);
 export default crons;

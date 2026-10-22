@@ -2,25 +2,35 @@ import { v, type Expand, type Id, type ObjectType, type PropertyValidators } fro
 
 export type Indexes = Record<string, readonly string[]>;
 
-export interface TableDefinition<F extends PropertyValidators = PropertyValidators, I extends Indexes = Indexes> {
+export type SearchIndexes = Record<string, { searchField: string; filterFields: readonly string[] }>;
+
+export interface TableDefinition<F extends PropertyValidators = PropertyValidators, I extends Indexes = Indexes, S extends SearchIndexes = SearchIndexes> {
   readonly fields: F;
   readonly indexes: I;
+  readonly searchIndexes: S;
   /** false for tables owned by Better Auth, whose plugins may add fields. */
   readonly strict: boolean;
   index<const N extends string, const Fs extends readonly [keyof F & string, ...(keyof F & string)[]]>(
     name: N,
     fields: Fs,
-  ): TableDefinition<F, Expand<I & Record<N, Fs>>>;
+  ): TableDefinition<F, Expand<I & Record<N, Fs>>, S>;
+  /** Full-text search over one string field, optionally narrowed by equality on `filterFields`. */
+  searchIndex<const N extends string, const SF extends keyof F & string, const FF extends readonly (keyof F & string)[] = []>(
+    name: N,
+    config: { searchField: SF; filterFields?: FF },
+  ): TableDefinition<F, I, Expand<S & Record<N, { searchField: SF; filterFields: FF }>>>;
 }
 
-export function defineTable<F extends PropertyValidators>(fields: F): TableDefinition<F, {}> {
-  const table = (indexes: Indexes, strict: boolean): TableDefinition<any, any> => ({
+export function defineTable<F extends PropertyValidators>(fields: F): TableDefinition<F, {}, {}> {
+  const table = (indexes: Indexes, searchIndexes: SearchIndexes, strict: boolean): TableDefinition<any, any, any> => ({
     fields,
     indexes,
+    searchIndexes,
     strict,
-    index: (name, idxFields) => table({ ...indexes, [name]: idxFields }, strict),
+    index: (name, idxFields) => table({ ...indexes, [name]: idxFields }, searchIndexes, strict),
+    searchIndex: (name, c) => table(indexes, { ...searchIndexes, [name]: { searchField: c.searchField, filterFields: c.filterFields ?? [] } }, strict),
   });
-  return table({}, true);
+  return table({}, {}, true);
 }
 
 const loose = <T extends TableDefinition<any, any>>(t: T): T => ({ ...t, strict: false });
@@ -104,6 +114,11 @@ export function defineSchema<T extends Record<string, TableDefinition<any, any>>
       if (!IDENT.test(index) || index === "by_id") throw new Error(`Index name "${name}.${index}" is invalid or reserved`);
       for (const f of fields) if (!(f in table.fields)) throw new Error(`Index "${name}.${index}" uses unknown field "${f}"`);
     }
+    for (const [index, { searchField, filterFields }] of Object.entries(table.searchIndexes as SearchIndexes)) {
+      if (!IDENT.test(index) || index in table.indexes) throw new Error(`Search index name "${name}.${index}" is invalid or already used`);
+      for (const f of [searchField, ...filterFields]) if (!(f in table.fields)) throw new Error(`Search index "${name}.${index}" uses unknown field "${f}"`);
+      if (table.fields[searchField].kind !== "string") throw new Error(`Search index "${name}.${index}": "${searchField}" must be a v.string() field`);
+    }
   }
   return { tables: { ...tables, ...authTables, ...systemTables } as T & BuiltinTables };
 }
@@ -129,3 +144,12 @@ export type IndexNames<T extends TableNames> = keyof RegisteredTables[T]["indexe
 
 export type IndexFields<T extends TableNames, I extends IndexNames<T>> =
   RegisteredTables[T]["indexes"][I] extends infer F extends readonly string[] ? F : never;
+
+export type SearchIndexNames<T extends TableNames> = keyof RegisteredTables[T]["searchIndexes"] & string;
+
+export type SearchIndexConfig<T extends TableNames, I extends SearchIndexNames<T>> = RegisteredTables[T]["searchIndexes"][I] extends infer C extends {
+  searchField: string;
+  filterFields: readonly string[];
+}
+  ? C
+  : never;

@@ -51,7 +51,10 @@ export async function loadProject(convexDir: string): Promise<Project> {
   const schema: SchemaDefinition<any> = (await importUserModule(schemaPath, convexDir)).default;
   if (!schema?.tables) throw new Error("convex/schema.ts must default-export defineSchema({...})");
   const tables: TablesSpec = Object.fromEntries(
-    Object.entries(schema.tables).map(([name, t]: [string, any]) => [name, { fields: t.fields, indexes: t.indexes, strict: t.strict }]),
+    Object.entries(schema.tables).map(([name, t]: [string, any]) => [
+      name,
+      { fields: t.fields, indexes: t.indexes, searchIndexes: t.searchIndexes ?? {}, strict: t.strict },
+    ]),
   );
 
   const functions = new Map<string, RegisteredFunction>();
@@ -71,8 +74,11 @@ export async function loadProject(convexDir: string): Promise<Project> {
   return { tables, functions, authOptions, crons };
 }
 
+export const tableSpecs = (tables: TablesSpec) =>
+  Object.entries(tables).map(([name, t]) => ({ name, indexes: t.indexes, searchIndexes: t.searchIndexes }));
+
 export interface Manifest {
-  functions: { name: string; kind: FunctionKind; args: Record<string, unknown>; returns?: unknown }[];
+  functions: { name: string; kind: FunctionKind; visibility: "public" | "internal"; args: Record<string, unknown>; returns?: unknown }[];
   tables: TablesSpec;
   crons: CronJob[];
   storage: boolean;

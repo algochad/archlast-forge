@@ -7,6 +7,8 @@ export interface Bus {
   publish(topics: string[]): Promise<void>;
   /** "*" receives every topic. Returns an unsubscribe function. */
   subscribe(topic: string, listener: TopicListener): () => void;
+  /** Resolves once subscriptions made so far are live (remote buses subscribe asynchronously). */
+  ready?(): Promise<unknown>;
   close(): Promise<void>;
 }
 
@@ -29,11 +31,18 @@ export class MemoryBus implements Bus {
   }
 
   protected dispatch(topics: string[]) {
-    const all = this.listeners.get("*");
     for (const t of topics) {
-      for (const l of this.listeners.get(t) ?? []) l(t);
-      for (const l of all ?? []) l(t);
+      this.deliver(t, t);
+      this.deliver("*", t);
     }
+  }
+
+  protected deliver(key: string, topic: string) {
+    for (const l of this.listeners.get(key) ?? []) l(topic);
+  }
+
+  protected hasListeners(key: string) {
+    return this.listeners.has(key);
   }
 
   async close() {}
@@ -54,30 +63,61 @@ export async function connectRedis(url: string) {
   return client;
 }
 
-const CHANNEL = "archlast-forge:topics";
+const TOPIC = "archlast-forge:t:";
+const ALL = "archlast-forge:all";
 
 /**
- * Redis pub/sub across servers. Fire-and-forget: clients refetch on reconnect.
- * shortcut: one channel carries every topic and each server filters locally; switch to per-topic channels if fan-out traffic gets heavy.
+ * Redis pub/sub across servers, one channel per topic: a server receives only topics it has subscribers for.
+ * Wildcard listeners (the query cache) use a separate all-topics channel, published only when `broadcastAll` is on.
+ * Fire-and-forget: clients refetch on reconnect.
  */
 export class RedisBus extends MemoryBus {
+  private pending = new Map<string, Promise<unknown>>();
+
   private constructor(
     private pub: RedisClient,
     private sub: RedisClient,
+    private broadcastAll: boolean,
   ) {
     super();
   }
 
-  static async connect(url: string) {
+  static async connect(url: string, opts: { broadcastAll?: boolean } = {}) {
     const pub = await connectRedis(url);
-    const sub = await pub.duplicate();
-    const bus = new RedisBus(pub, sub);
-    await sub.subscribe(CHANNEL, (message) => bus.dispatch(JSON.parse(message)));
-    return bus;
+    return new RedisBus(pub, await pub.duplicate(), opts.broadcastAll ?? false);
+  }
+
+  override subscribe(topic: string, listener: TopicListener) {
+    const first = !this.hasListeners(topic);
+    const off = super.subscribe(topic, listener);
+    if (first) {
+      const channel = topic === "*" ? ALL : TOPIC + topic;
+      const p = this.sub.subscribe(channel, (message) => {
+        if (topic === "*") for (const t of JSON.parse(message) as string[]) this.deliver("*", t);
+        else this.deliver(topic, topic);
+      });
+      this.pending.set(topic, p.catch((e) => console.error(`redis subscribe ${channel} failed:`, e)));
+    }
+    return () => {
+      off();
+      if (!this.hasListeners(topic)) {
+        const channel = topic === "*" ? ALL : TOPIC + topic;
+        void (this.pending.get(topic) ?? Promise.resolve()).then(() => (this.hasListeners(topic) ? undefined : this.sub.unsubscribe(channel)));
+        this.pending.delete(topic);
+      }
+    };
+  }
+
+  /** Resolves once Redis has confirmed every subscription made so far. */
+  ready() {
+    return Promise.all(this.pending.values());
   }
 
   override async publish(topics: string[]) {
-    if (topics.length) await this.pub.publish(CHANNEL, JSON.stringify(topics));
+    await Promise.all([
+      ...topics.map((t) => this.pub.publish(TOPIC + t, "1")),
+      ...(this.broadcastAll && topics.length ? [this.pub.publish(ALL, JSON.stringify(topics))] : []),
+    ]);
   }
 
   override async close() {

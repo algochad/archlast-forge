@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { createSqliteDb } from "../src/server/db/sqlite";
 import type { Db } from "../src/server/db/types";
 import { Executor, type LogEntry } from "../src/server/executor";
-import { loadProject, type Project } from "../src/server/project";
+import { loadProject, tableSpecs, type Project } from "../src/server/project";
 import { migrateScheduler, nextRun, SchedulerLoop } from "../src/server/scheduler";
 import { dbAdapters, tempDir } from "./helpers";
 
@@ -17,7 +17,7 @@ let logs: LogEntry[];
 async function setup(makeDb: () => Promise<Db> = async () => createSqliteDb(join(tempDir(), "app.db"))) {
   project ??= await loadProject(fixture);
   db = await makeDb();
-  await db.migrate(Object.entries(project.tables).map(([name, t]) => ({ name, indexes: t.indexes })));
+  await db.migrate(tableSpecs(project.tables));
   await migrateScheduler(db);
   published = [];
   logs = [];

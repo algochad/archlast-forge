@@ -4,6 +4,7 @@ export interface Storage {
   putPresignedUrl(key: string, opts?: { contentType?: string; expiresIn?: number }): string;
   getPresignedUrl(key: string, opts?: { expiresIn?: number }): string;
   delete(key: string): Promise<void>;
+  stat(key: string): Promise<{ size: number; type?: string; lastModified?: Date }>;
 }
 
 /** S3-compatible storage (AWS, RustFS, MinIO). Presigning is local, so it's safe inside queries. */
@@ -24,5 +25,9 @@ export class S3Storage implements Storage {
 
   async delete(key: string) {
     await this.s3.delete(key);
+  }
+
+  stat(key: string) {
+    return this.s3.file(key).stat();
   }
 }

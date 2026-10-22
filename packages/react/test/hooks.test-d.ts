@@ -1,30 +1,54 @@
 // Compile-time only (checked by `bun check`): hook signatures come from function references.
-import type { FunctionReference, Id } from "@archlast-forge/runtime";
+import type { FunctionReference, Id, PaginationOptions, PaginationResult } from "@archlast-forge/runtime";
 import { expectTypeOf } from "expect-type";
-import { useAction, useMutation, useQuery } from "../src/index";
+import { useAction, useMutation, usePaginatedQuery, useQuery, useUploadFile } from "../src/index";
 
 type Todo = { _id: Id<"todos">; title: string };
 declare const api: {
   todos: {
-    listByList: FunctionReference<"query", { listId: Id<"lists"> }, Todo[]>;
-    all: FunctionReference<"query", {}, Todo[]>;
-    add: FunctionReference<"mutation", { listId: Id<"lists">; title: string }, Id<"todos">>;
-    remind: FunctionReference<"action", { todoId: Id<"todos"> }, string>;
+    listByList: FunctionReference<"query", { listId: Id<"lists"> }, Todo[], "public">;
+    all: FunctionReference<"query", {}, Todo[], "public">;
+    page: FunctionReference<"query", { listId: Id<"lists">; paginationOpts: PaginationOptions }, PaginationResult<Todo>, "public">;
+    add: FunctionReference<"mutation", { listId: Id<"lists">; title: string }, Id<"todos">, "public">;
+    remind: FunctionReference<"action", { todoId: Id<"todos"> }, string, "public">;
+    uploadUrl: FunctionReference<"mutation", { contentType?: string }, { uploadUrl: string; storageId: Id<"_storage"> }, "public">;
   };
 };
+declare const internal: { todos: { purge: FunctionReference<"mutation", {}, null, "internal">; secret: FunctionReference<"query", {}, string, "internal"> } };
 declare const listId: Id<"lists">;
 
 export function Component() {
   expectTypeOf(useQuery(api.todos.listByList, { listId })).toEqualTypeOf<Todo[] | undefined>();
   expectTypeOf(useQuery(api.todos.all)).toEqualTypeOf<Todo[] | undefined>();
+  expectTypeOf(useQuery(api.todos.listByList, "skip")).toEqualTypeOf<Todo[] | undefined>();
   // @ts-expect-error args are required when the function takes some
   useQuery(api.todos.listByList);
   // @ts-expect-error wrong arg type
   useQuery(api.todos.listByList, { listId: 1 });
   // @ts-expect-error a mutation is not a query
   useQuery(api.todos.add, { listId, title: "x" });
+  // @ts-expect-error internal functions can't be called from clients
+  useQuery(internal.todos.secret);
+  // @ts-expect-error internal functions can't be called from clients
+  useMutation(internal.todos.purge);
+
   const add = useMutation(api.todos.add);
   expectTypeOf(add({ listId, title: "milk" })).toEqualTypeOf<Promise<Id<"todos">>>();
+  const addOptimistic = add.withOptimisticUpdate((store, args) => {
+    const current = store.getQuery(api.todos.listByList, { listId: args.listId });
+    expectTypeOf(current).toEqualTypeOf<Todo[] | undefined>();
+    store.setQuery(api.todos.listByList, { listId: args.listId }, [...(current ?? []), { _id: "todos:tmp" as Id<"todos">, title: args.title }]);
+  });
+  expectTypeOf(addOptimistic).returns.toEqualTypeOf<Promise<Id<"todos">>>();
+
   const remind = useAction(api.todos.remind);
   expectTypeOf(remind).parameters.toEqualTypeOf<[args: { todoId: Id<"todos"> }]>();
+
+  const { results, loadMore, status } = usePaginatedQuery(api.todos.page, { listId }, { initialNumItems: 10 });
+  expectTypeOf(results).toEqualTypeOf<Todo[]>();
+  expectTypeOf(loadMore).parameters.toEqualTypeOf<[n: number]>();
+  expectTypeOf(status).toEqualTypeOf<"LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted">();
+
+  const upload = useUploadFile(api.todos.uploadUrl);
+  expectTypeOf(upload).returns.toEqualTypeOf<Promise<Id<"_storage">>>();
 }

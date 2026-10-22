@@ -24,5 +24,6 @@ export class WsShim extends EventEmitter {
 
 export interface WsData {
   req: { url: string; headers: Record<string, string> };
+  ip?: string;
   shim?: WsShim;
 }

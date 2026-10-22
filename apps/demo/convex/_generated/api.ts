@@ -4,7 +4,14 @@ import type {} from "./dataModel";
 import type * as m0_lists from "../lists";
 import type * as m1_todos from "../todos";
 
+/** Public functions, callable from clients. */
 export const api: {
-  "lists": ModuleRefs<typeof m0_lists>;
-  "todos": ModuleRefs<typeof m1_todos>;
+  "lists": ModuleRefs<typeof m0_lists, "public">;
+  "todos": ModuleRefs<typeof m1_todos, "public">;
+} = anyApi;
+
+/** Internal functions: callable only from other functions, the scheduler and crons. */
+export const internal: {
+  "lists": ModuleRefs<typeof m0_lists, "internal">;
+  "todos": ModuleRefs<typeof m1_todos, "internal">;
 } = anyApi;

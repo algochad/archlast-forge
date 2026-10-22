@@ -32,7 +32,8 @@ test("codegen maps nested modules and skips special files", async () => {
   expect(await codegen(convex)).toEqual(["admin/users", "notes"]);
   const api = await Bun.file(join(convex, "_generated/api.ts")).text();
   expect(api).toContain(`import type * as m0_admin_users from "../admin/users";`);
-  expect(api).toContain(`"admin": {\n    "users": ModuleRefs<typeof m0_admin_users>;\n  };`);
+  expect(api).toContain(`"admin": {\n    "users": ModuleRefs<typeof m0_admin_users, "public">;\n  };`);
+  expect(api).toContain(`export const internal`);
   expect(await Bun.file(join(convex, "_generated/dataModel.ts")).text()).toContain("schema: typeof schema");
 });
 

@@ -4,7 +4,7 @@ import { loadConfig, sqlitePath } from "./config";
 import { createPostgresDb } from "./db/postgres";
 import { createSqliteDb } from "./db/sqlite";
 import { DocStore } from "./docstore";
-import { loadProject } from "./project";
+import { loadProject, tableSpecs } from "./project";
 import { migrateScheduler } from "./scheduler";
 
 /** Applies table/index migrations, then reports stored documents that no longer match the schema. */
@@ -14,7 +14,7 @@ export async function migrate(convexDir: string, env = process.env, dev = true) 
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
   const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : createSqliteDb(sqlitePath(config));
   try {
-    await db.migrate(Object.entries(project.tables).map(([name, t]) => ({ name, indexes: t.indexes })));
+    await db.migrate(tableSpecs(project.tables));
     await migrateScheduler(db);
     const invalid: { id: string; error: string }[] = [];
     await db.transaction("read", async (tx) => {

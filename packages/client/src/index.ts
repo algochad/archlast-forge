@@ -1,15 +1,27 @@
 import {
+  ForgeError,
   getFunctionName,
   type FunctionArgs,
   type FunctionReference,
   type FunctionReturn,
+  type Id,
   type OptionalArgs,
+  type PaginationOptions,
+  type PaginationResult,
 } from "@archlast-forge/runtime";
 import type { QueryClient } from "@tanstack/query-core";
 import { createTRPCUntypedClient, createWSClient, httpBatchLink, splitLink, wsLink, type TRPCUntypedClient } from "@trpc/client";
 import { createAuthClient } from "better-auth/client";
 
-export type QueryUpdate<T = unknown> = { value: T } | { error: string };
+export { ForgeError };
+
+/** A live query's latest state. Errors carry the server's request id, to look up in its logs. */
+export type QueryUpdate<T = unknown> = { value: T } | { error: string; data?: unknown; requestId?: string };
+
+/** References a client may call: internal functions aren't exposed. */
+export type PublicQuery = FunctionReference<"query", any, any, "public">;
+export type PublicMutation = FunctionReference<"mutation", any, any, "public">;
+export type PublicAction = FunctionReference<"action", any, any, "public">;
 
 /** Same mapping as the server's router builder: "admin/users:get" → "admin.users.get". */
 export const procedurePath = (name: string) => name.replace(":", "/").split("/").join(".");
@@ -28,6 +40,25 @@ interface Watch {
   start(): void;
   stop(): void;
 }
+
+/** Turns a server error into a ForgeError when the function threw one, keeping the request id either way. */
+export function toClientError(e: unknown): unknown {
+  const forge = (e as any)?.data?.forge ?? (e as any)?.shape?.data?.forge;
+  if (forge && forge.data !== undefined) return Object.assign(new ForgeError(forge.data), { requestId: forge.requestId });
+  if (forge?.requestId && e && typeof e === "object") Object.assign(e, { requestId: forge.requestId });
+  return e;
+}
+
+export const updateError = (u: Extract<QueryUpdate, { error: string }>) =>
+  Object.assign(u.data !== undefined ? new ForgeError(u.data) : new Error(u.error), { requestId: u.requestId });
+
+const rethrow = async <T>(p: Promise<T>): Promise<T> => {
+  try {
+    return await p;
+  } catch (e) {
+    throw toClientError(e);
+  }
+};
 
 export class ArchlastForgeClient {
   readonly url: string;
@@ -86,25 +117,36 @@ export class ArchlastForgeClient {
     return this.authClient;
   }
 
-  query<R extends FunctionReference<"query">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>> {
-    return this.trpc.query(procedurePath(getFunctionName(ref)), args[0] ?? {}) as Promise<FunctionReturn<R>>;
+  query<R extends PublicQuery>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>> {
+    return rethrow(this.trpc.query(procedurePath(getFunctionName(ref)), args[0] ?? {}) as Promise<FunctionReturn<R>>);
   }
 
-  mutation<R extends FunctionReference<"mutation">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>> {
-    return this.trpc.mutation(procedurePath(getFunctionName(ref)), args[0] ?? {}) as Promise<FunctionReturn<R>>;
+  mutation<R extends PublicMutation>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>> {
+    return rethrow(this.trpc.mutation(procedurePath(getFunctionName(ref)), args[0] ?? {}) as Promise<FunctionReturn<R>>);
   }
 
   /** Actions are served as tRPC mutations. */
-  action<R extends FunctionReference<"action">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>> {
-    return this.trpc.mutation(procedurePath(getFunctionName(ref)), args[0] ?? {}) as Promise<FunctionReturn<R>>;
+  action<R extends PublicAction>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>> {
+    return rethrow(this.trpc.mutation(procedurePath(getFunctionName(ref)), args[0] ?? {}) as Promise<FunctionReturn<R>>);
+  }
+
+  /**
+   * Uploads a file through a mutation that returns `ctx.storage.generateUploadUrl()`, straight to storage.
+   * Resolves to the new `_storage` id, to save with another mutation.
+   */
+  async uploadFile<R extends FunctionReference<"mutation", { contentType?: string }, { uploadUrl: string; storageId: Id<"_storage"> }, "public">>(
+    generateUploadUrl: R,
+    file: Blob,
+  ): Promise<Id<"_storage">> {
+    const contentType = file.type || undefined;
+    const { uploadUrl, storageId } = await this.mutation(generateUploadUrl, ...([{ contentType }] as OptionalArgs<R>));
+    const res = await fetch(uploadUrl, { method: "PUT", body: file, headers: contentType ? { "content-type": contentType } : {} });
+    if (!res.ok) throw new Error(`Upload failed (${res.status})`);
+    return storageId;
   }
 
   /** Live query. Identical (function, args) pairs share one server subscription. */
-  watch<R extends FunctionReference<"query">>(
-    ref: R,
-    args: FunctionArgs<R>,
-    listener: (update: QueryUpdate<FunctionReturn<R>>) => void,
-  ): () => void {
+  watch<R extends PublicQuery>(ref: R, args: FunctionArgs<R>, listener: (update: QueryUpdate<FunctionReturn<R>>) => void): () => void {
     const name = getFunctionName(ref);
     const key = `${name}:${JSON.stringify(args ?? {})}`;
     let w = this.watches.get(key);
@@ -119,7 +161,10 @@ export class ArchlastForgeClient {
           };
           sub = this.trpc.subscription(`_sub.${procedurePath(name)}`, args ?? {}, {
             onData: (u) => emit(u as QueryUpdate),
-            onError: (e) => emit({ error: e.message }),
+            onError: (e) => {
+              const err = toClientError(e) as Error & { data?: unknown; requestId?: string };
+              emit({ error: err.message, data: err instanceof ForgeError ? err.data : undefined, requestId: err.requestId });
+            },
           });
         },
         stop: () => sub?.unsubscribe(),
@@ -144,10 +189,23 @@ export class ArchlastForgeClient {
 export const queryKey = (ref: FunctionReference<"query">, args: unknown) => ["archlast-forge", getFunctionName(ref), args ?? {}] as const;
 
 /** Pushes live results of a query into a TanStack QueryClient under `queryKey(ref, args)`. */
-export function syncQuery<R extends FunctionReference<"query">>(queryClient: QueryClient, client: ArchlastForgeClient, ref: R, args: FunctionArgs<R>) {
+export function syncQuery<R extends PublicQuery>(queryClient: QueryClient, client: ArchlastForgeClient, ref: R, args: FunctionArgs<R>) {
   const key = queryKey(ref, args);
   return client.watch(ref, args, (u) => {
     if ("value" in u) queryClient.setQueryData(key, u.value);
-    else queryClient.getQueryCache().find({ queryKey: key })?.setState({ status: "error", error: new Error(u.error), fetchStatus: "idle" });
+    else queryClient.getQueryCache().find({ queryKey: key })?.setState({ status: "error", error: updateError(u), fetchStatus: "idle" });
   });
 }
+
+// ---- pagination ----
+
+/** A query taking `paginationOpts` and returning `ctx.db.query(...).paginate(paginationOpts)`. */
+export type PaginatedQuery = FunctionReference<"query", { paginationOpts: PaginationOptions }, PaginationResult<any>, "public">;
+export type PaginatedArgs<R extends PaginatedQuery> = Omit<FunctionArgs<R>, "paginationOpts">;
+export type PaginatedItem<R extends PaginatedQuery> = FunctionReturn<R> extends PaginationResult<infer T> ? T : never;
+
+/**
+ * Args for a growing window: one live query for the first `numItems` items. Loading more widens the window,
+ * so every loaded item stays live and nothing is duplicated or skipped when items are inserted or removed.
+ */
+export const windowArgs = (args: object, numItems: number) => ({ ...args, paginationOpts: { numItems, cursor: null } });

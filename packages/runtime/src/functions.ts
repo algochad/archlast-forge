@@ -3,6 +3,8 @@ import type {
   Doc,
   IndexFields,
   IndexNames,
+  SearchIndexConfig,
+  SearchIndexNames,
   TableNames,
   WithoutSystemFields,
 } from "./schema";
@@ -18,22 +20,71 @@ export interface IndexRange {
 
 type Tail<T extends readonly unknown[]> = T extends readonly [any, ...infer R] ? R : T;
 
+/** After equality on a prefix of the index's fields, the next field may take a lower and/or upper bound. */
 export interface IndexRangeBuilder<D, Fields extends readonly string[]> extends IndexRange {
   /** Only the index's fields, in order, can be compared. */
   eq<F extends Fields[0] & keyof D>(field: F, value: D[F]): IndexRangeBuilder<D, Tail<Fields>>;
+  gt<F extends Fields[0] & keyof D>(field: F, value: D[F]): UpperBoundBuilder<D, F>;
+  gte<F extends Fields[0] & keyof D>(field: F, value: D[F]): UpperBoundBuilder<D, F>;
+  lt<F extends Fields[0] & keyof D>(field: F, value: D[F]): IndexRange;
+  lte<F extends Fields[0] & keyof D>(field: F, value: D[F]): IndexRange;
+}
+
+export interface UpperBoundBuilder<D, F extends keyof D> extends IndexRange {
+  lt(field: F, value: D[F]): IndexRange;
+  lte(field: F, value: D[F]): IndexRange;
+}
+
+export interface PaginationOptions {
+  numItems: number;
+  /** null for the first page, then the previous page's `continueCursor`. */
+  cursor: string | null;
+}
+
+export interface PaginationResult<D> {
+  page: D[];
+  isDone: boolean;
+  continueCursor: string;
 }
 
 export interface Query<D> {
+  /** Ascending (the default) or descending, by the index's fields then `_creationTime`. */
+  order(order: "asc" | "desc"): Query<D>;
   collect(): Promise<D[]>;
   first(): Promise<D | null>;
   take(n: number): Promise<D[]>;
+  paginate(opts: PaginationOptions): Promise<PaginationResult<D>>;
 }
 
+export interface SearchFilter {
+  readonly __searchFilter: true;
+}
+
+export interface SearchFilterBuilder<D, C extends { searchField: string; filterFields: readonly string[] }> {
+  search(field: C["searchField"], query: string): SearchFilterFinalizer<D, C>;
+}
+
+export interface SearchFilterFinalizer<D, C extends { searchField: string; filterFields: readonly string[] }> extends SearchFilter {
+  eq<F extends C["filterFields"][number] & keyof D>(field: F, value: D[F]): SearchFilterFinalizer<D, C>;
+}
+
+/** Results come back by relevance; every query term must match (the last one as a prefix). */
+export interface SearchQuery<D> {
+  take(n: number): Promise<D[]>;
+  first(): Promise<D | null>;
+  /** Up to 1024 results. */
+  collect(): Promise<D[]>;
+}
+
+type IndexNamesWithBuiltins<T extends TableNames> = IndexNames<T> | "by_creation_time";
+type FieldsOf<T extends TableNames, I extends IndexNamesWithBuiltins<T>> = I extends IndexNames<T> ? IndexFields<T, I> : ["_creationTime"];
+
 export interface QueryInitializer<T extends TableNames> extends Query<Doc<T>> {
-  withIndex<I extends IndexNames<T>>(
+  withIndex<I extends IndexNamesWithBuiltins<T>>(index: I, range?: (q: IndexRangeBuilder<Doc<T>, FieldsOf<T, I>>) => IndexRange): Query<Doc<T>>;
+  withSearchIndex<I extends SearchIndexNames<T>>(
     index: I,
-    range?: (q: IndexRangeBuilder<Doc<T>, IndexFields<T, I>>) => IndexRange,
-  ): Query<Doc<T>>;
+    filter: (q: SearchFilterBuilder<Doc<T>, SearchIndexConfig<T, I>>) => SearchFilter,
+  ): SearchQuery<Doc<T>>;
 }
 
 export interface DatabaseReader {
@@ -108,8 +159,12 @@ type CtxFor<K extends FunctionKind> = K extends "query" ? QueryCtx : K extends "
 
 declare const fnTypes: unique symbol;
 
-export interface RegisteredFunction<K extends FunctionKind = FunctionKind, Args = any, Return = any> {
+export type Visibility = "public" | "internal";
+
+export interface RegisteredFunction<K extends FunctionKind = FunctionKind, Args = any, Return = any, V extends Visibility = Visibility> {
   readonly kind: K;
+  /** Internal functions can only be called by other functions, the scheduler and crons. */
+  readonly visibility: V;
   readonly args: PropertyValidators;
   readonly returns?: Validator;
   readonly handler: (ctx: any, args: any) => unknown;
@@ -119,38 +174,42 @@ export interface RegisteredFunction<K extends FunctionKind = FunctionKind, Args 
 /** What a handler may return for a `returns` validator; returning nothing counts as null. */
 type HandlerReturn<V extends Validator<any, false>> = Infer<V> | (null extends Infer<V> ? void : never);
 
-interface FunctionBuilder<K extends FunctionKind> {
+interface FunctionBuilder<K extends FunctionKind, Vis extends Visibility> {
   <A extends PropertyValidators = {}, R = unknown>(def: {
     args?: A;
     handler: (ctx: CtxFor<K>, args: ObjectType<A>) => R;
-  }): RegisteredFunction<K, ObjectType<A>, Awaited<R>>;
+  }): RegisteredFunction<K, ObjectType<A>, Awaited<R>, Vis>;
   // Last, so a mismatch reports this overload's error rather than "unknown property returns".
   /** With `returns`, the validator is the function's return type and is checked at runtime (a mismatch rolls back a mutation). */
   <A extends PropertyValidators = {}, V extends Validator<any, false> = Validator<any, false>>(def: {
     args?: A;
     returns: V;
     handler: (ctx: CtxFor<K>, args: ObjectType<A>) => HandlerReturn<V> | Promise<HandlerReturn<V>>;
-  }): RegisteredFunction<K, ObjectType<A>, Infer<V>>;
+  }): RegisteredFunction<K, ObjectType<A>, Infer<V>, Vis>;
 }
 
-const define = <K extends FunctionKind>(kind: K): FunctionBuilder<K> =>
+const define = <K extends FunctionKind, Vis extends Visibility>(kind: K, visibility: Vis): FunctionBuilder<K, Vis> =>
   ((def: { args?: PropertyValidators; returns?: Validator; handler: RegisteredFunction["handler"] }) => ({
     kind,
+    visibility,
     args: def.args ?? {},
     returns: def.returns,
     handler: def.handler,
-  })) as FunctionBuilder<K>;
+  })) as FunctionBuilder<K, Vis>;
 
-export const query = define("query");
-export const mutation = define("mutation");
-export const action = define("action");
+export const query = define("query", "public");
+export const mutation = define("mutation", "public");
+export const action = define("action", "public");
+export const internalQuery = define("query", "internal");
+export const internalMutation = define("mutation", "internal");
+export const internalAction = define("action", "internal");
 
 // ---- references, as produced by codegen ----
 
 declare const refTypes: unique symbol;
 
-export interface FunctionReference<K extends FunctionKind = FunctionKind, Args = any, Return = any> {
-  readonly [refTypes]?: { kind: K; args: Args; return: Return };
+export interface FunctionReference<K extends FunctionKind = FunctionKind, Args = any, Return = any, V extends Visibility = Visibility> {
+  readonly [refTypes]?: { kind: K; args: Args; return: Return; visibility: V };
 }
 
 export type FunctionArgs<R> = R extends FunctionReference<any, infer A, any> ? A : never;
@@ -158,9 +217,10 @@ export type FunctionReturn<R> = R extends FunctionReference<any, any, infer T> ?
 /** Args may be omitted when the function takes none. */
 export type OptionalArgs<R> = keyof FunctionArgs<R> extends never ? [args?: FunctionArgs<R>] : [args: FunctionArgs<R>];
 
-export type ModuleRefs<M> = {
-  [K in keyof M as M[K] extends RegisteredFunction ? K : never]: M[K] extends RegisteredFunction<infer Kind, infer A, infer R>
-    ? FunctionReference<Kind, A, R>
+/** Codegen builds `api` from public functions and `internal` from internal ones. */
+export type ModuleRefs<M, Vis extends Visibility = "public"> = {
+  [K in keyof M as M[K] extends RegisteredFunction<any, any, any, Vis> ? K : never]: M[K] extends RegisteredFunction<infer Kind, infer A, infer R, Vis>
+    ? FunctionReference<Kind, A, R, Vis>
     : never;
 };
 
