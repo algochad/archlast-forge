@@ -39,6 +39,9 @@
         "@types/node": "24",
       },
     },
+    "apps/docs": {
+      "name": "@archlast-forge/docs",
+    },
     "packages/cli": {
       "name": "@archlast-forge/cli",
       "version": "0.1.0",
@@ -156,6 +159,8 @@
     "@archlast-forge/demo": ["@archlast-forge/demo@workspace:apps/demo"],
 
     "@archlast-forge/demo-convex": ["@archlast-forge/demo-convex@workspace:apps/demo/convex"],
+
+    "@archlast-forge/docs": ["@archlast-forge/docs@workspace:apps/docs"],
 
     "@archlast-forge/react": ["@archlast-forge/react@workspace:packages/react"],
 
