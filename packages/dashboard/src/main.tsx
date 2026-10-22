@@ -1,314 +1,179 @@
-import { StrictMode, useCallback, useEffect, useState, type FormEvent } from "react";
+import { Component, StrictMode, useEffect, useState, type FormEvent, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
+import { get, login, logout, type Admin, type Manifest } from "./api";
+import { Audit } from "./pages/Audit";
+import { Data } from "./pages/Data";
+import { Files } from "./pages/Files";
+import { Functions } from "./pages/Functions";
+import { Logs } from "./pages/Logs";
+import { Metrics } from "./pages/Metrics";
+import { Scheduled } from "./pages/Scheduled";
+import { Settings } from "./pages/Settings";
+import { Users } from "./pages/Users";
+import { Badge, Button, ErrorNote, Field, Spinner, ToastProvider, useAsync } from "./ui";
 
-type Kind = "query" | "mutation" | "action";
-type Validator = { kind: string; optional: boolean; table?: string; element?: Validator; fields?: Record<string, Validator>; members?: Validator[] };
-type Manifest = {
-  functions: { name: string; kind: Kind; args: Record<string, Validator>; returns?: Validator }[];
-  tables: Record<string, { fields: Record<string, Validator>; indexes: Record<string, string[]>; strict: boolean }>;
-  crons: { name: string; fn: string; schedule: { kind: string; ms?: number; expression?: string } }[];
-  storage: boolean;
-  error?: string;
-};
-type Log = { time: number; name: string; level: string; message: string; durationMs?: number; ok?: boolean };
+const PAGES = ["Data", "Functions", "Logs", "Metrics", "Scheduled", "Files", "Users", "Audit", "Settings"] as const;
+type PageName = (typeof PAGES)[number];
 
-const KEY = "archlast-forge:admin-key";
-
-/** Calls the admin tRPC router over plain HTTP. */
-async function admin<T>(key: string, path: string, input?: unknown, mutation = false): Promise<T> {
-  const url = `/_admin/${path}${!mutation && input !== undefined ? `?input=${encodeURIComponent(JSON.stringify(input))}` : ""}`;
-  const res = await fetch(url, {
-    method: mutation ? "POST" : "GET",
-    headers: { "x-admin-key": key, "content-type": "application/json" },
-    body: mutation ? JSON.stringify(input) : undefined,
-  });
-  const body = await res.json();
-  if (body.error) throw new Error(body.error.message);
-  return body.result.data as T;
-}
-
-function usePoll<T>(fn: () => Promise<T>, ms: number | null, deps: unknown[]) {
-  const [state, setState] = useState<{ data?: T; error?: string }>({});
-  const load = useCallback(() => fn().then((data) => setState({ data }), (e: Error) => setState({ error: e.message })), deps);
+type Theme = "system" | "light" | "dark";
+function useTheme() {
+  const [theme, setTheme] = useState<Theme>(() => (localStorage.getItem("afx:theme") as Theme) ?? "system");
   useEffect(() => {
-    load();
-    if (ms === null) return;
-    const t = setInterval(load, ms);
-    return () => clearInterval(t);
-  }, [load, ms]);
-  return { ...state, reload: load };
+    if (theme === "system") document.documentElement.removeAttribute("data-theme");
+    else document.documentElement.setAttribute("data-theme", theme);
+    localStorage.setItem("afx:theme", theme);
+  }, [theme]);
+  return [theme, setTheme] as const;
 }
-
-const typeOf = (v: Validator): string =>
-  v.kind === "id"
-    ? `Id<"${v.table}">`
-    : v.kind === "array"
-      ? `${typeOf(v.element!)}[]`
-      : v.kind === "object"
-        ? `{ ${fieldsOf(v.fields!)} }`
-        : v.kind === "union"
-          ? v.members!.map(typeOf).join(" | ")
-          : v.kind;
-const fieldsOf = (fields: Record<string, Validator>) =>
-  Object.entries(fields).map(([k, v]) => `${k}${v.optional ? "?" : ""}: ${typeOf(v)}`).join("; ");
-
-const TABS = ["Data", "Functions", "Logs", "Schema", "Subscriptions", "Scheduled"] as const;
 
 function App() {
-  const [key, setKey] = useState(() => sessionStorage.getItem(KEY) ?? "");
-  const [tab, setTab] = useState<(typeof TABS)[number]>("Data");
-  const manifest = usePoll(() => (key ? admin<Manifest>(key, "manifest") : Promise.reject(new Error("Enter the admin key"))), key ? 5000 : null, [key]);
-
-  if (!key || manifest.error?.match(/admin key|ADMIN_KEY/)) return <Login error={key ? manifest.error : undefined} onKey={(k) => (sessionStorage.setItem(KEY, k), setKey(k))} />;
-  const m = manifest.data;
-  return (
-    <>
-      <header>
-        <strong>archlast-forge</strong>
-        <nav>
-          {TABS.map((t) => (
-            <button key={t} aria-current={t === tab ? "page" : undefined} onClick={() => setTab(t)}>
-              {t}
-            </button>
-          ))}
-        </nav>
-        <button style={{ marginLeft: "auto", background: "none", color: "var(--muted)" }} onClick={() => (sessionStorage.removeItem(KEY), setKey(""))}>
-          Lock
-        </button>
-      </header>
-      <main>
-        {m?.error && <p className="panel bad">Function runtime failed to load: {m.error}</p>}
-        {!m ? (
-          <p className="muted">{manifest.error ?? "Loading…"}</p>
-        ) : tab === "Data" ? (
-          <Data adminKey={key} manifest={m} />
-        ) : tab === "Functions" ? (
-          <Functions adminKey={key} manifest={m} />
-        ) : tab === "Logs" ? (
-          <Logs adminKey={key} />
-        ) : tab === "Schema" ? (
-          <Schema manifest={m} />
-        ) : tab === "Subscriptions" ? (
-          <Subscriptions adminKey={key} />
-        ) : (
-          <Scheduled adminKey={key} manifest={m} />
-        )}
-      </main>
-    </>
-  );
+  const me = useAsync(() => get<Admin | null>("me"), []);
+  if (me.loading && me.data === undefined) return <Spinner label="Loading dashboard" />;
+  if (!me.data) return <Login onSignedIn={me.reload} />;
+  return <Shell admin={me.data} onSignOut={() => logout().then(me.reload)} />;
 }
 
-function Login({ onKey, error }: { onKey(k: string): void; error?: string }) {
-  const submit = (e: FormEvent<HTMLFormElement>) => {
+function Login({ onSignedIn }: { onSignedIn: () => void }) {
+  const [mode, setMode] = useState<"account" | "key">("account");
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+  async function submit(e: FormEvent<HTMLFormElement>) {
     e.preventDefault();
-    onKey(String(new FormData(e.currentTarget).get("key")));
-  };
-  return (
-    <form className="login panel" onSubmit={submit}>
-      <strong>archlast-forge dashboard</strong>
-      <input name="key" type="password" placeholder="ADMIN_KEY" aria-label="Admin key" required autoFocus />
-      <button>Open</button>
-      {error && <p className="bad">{error}</p>}
-      <p className="muted">`archlast-forge dev` prints the key on startup.</p>
-    </form>
-  );
-}
-
-function Data({ adminKey, manifest }: { adminKey: string; manifest: Manifest }) {
-  const tables = Object.keys(manifest.tables);
-  const [table, setTable] = useState(tables[0] ?? "");
-  const docs = usePoll(() => admin<Record<string, unknown>[]>(adminKey, "docs", { table, limit: 100 }), 2000, [adminKey, table]);
-  const columns = [...new Set((docs.data ?? []).flatMap((d) => Object.keys(d)))];
-  return (
-    <div className="split">
-      <ul className="list panel">
-        {tables.map((t) => (
-          <li key={t}>
-            <button aria-current={t === table} onClick={() => setTable(t)}>{t}</button>
-          </li>
-        ))}
-      </ul>
-      <div className="panel">
-        <p className="muted">{table}: newest 100 documents, refreshed every 2 s</p>
-        {docs.error && <p className="bad">{docs.error}</p>}
-        <table>
-          <thead><tr>{columns.map((c) => <th key={c}>{c}</th>)}</tr></thead>
-          <tbody>
-            {docs.data?.map((d) => (
-              <tr key={String(d._id)}>
-                {columns.map((c) => <td key={c}><code>{c === "_creationTime" ? new Date(d[c] as number).toLocaleString() : JSON.stringify(d[c])}</code></td>)}
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {docs.data?.length === 0 && <p className="muted">No documents.</p>}
-      </div>
-    </div>
-  );
-}
-
-function Functions({ adminKey, manifest }: { adminKey: string; manifest: Manifest }) {
-  const [name, setName] = useState(manifest.functions[0]?.name ?? "");
-  const [args, setArgs] = useState("{}");
-  const [result, setResult] = useState<{ ok: boolean; text: string }>();
-  const fn = manifest.functions.find((f) => f.name === name);
-  async function run() {
+    const f = new FormData(e.currentTarget);
+    setBusy(true);
     try {
-      const value = await admin(adminKey, "run", { name, kind: fn!.kind, args: JSON.parse(args) }, true);
-      setResult({ ok: true, text: JSON.stringify(value, null, 2) });
-    } catch (e) {
-      setResult({ ok: false, text: (e as Error).message });
+      await login(mode === "key" ? { key: String(f.get("key")) } : { email: String(f.get("email")), password: String(f.get("password")) });
+      onSignedIn();
+    } catch (err) {
+      setError((err as Error).message);
+    } finally {
+      setBusy(false);
     }
   }
   return (
-    <div className="split">
-      <ul className="list panel">
-        {manifest.functions.map((f) => (
-          <li key={f.name}>
-            <button aria-current={f.name === name} onClick={() => (setName(f.name), setResult(undefined))}>
-              <span className="muted">{f.kind[0]!.toUpperCase()}</span> {f.name}
-            </button>
-          </li>
-        ))}
-      </ul>
-      {fn && (
-        <div className="panel" style={{ display: "grid", gap: "0.6rem", alignContent: "start" }}>
-          <div><strong>{fn.name}</strong> <span className="muted">({fn.kind}, runs without a user identity)</span></div>
-          <code>args: {`{ ${fieldsOf(fn.args)} }`}</code>
-          {fn.returns && <code>returns: {typeOf(fn.returns)}</code>}
-          <textarea value={args} onChange={(e) => setArgs(e.target.value)} aria-label="Arguments as JSON" />
-          <div><button onClick={run}>Run</button></div>
-          {result && <pre className={result.ok ? "" : "bad"}>{result.text}</pre>}
+    <main className="login">
+      <form className="panel stack" onSubmit={submit} aria-labelledby="login-title">
+        <h1 id="login-title">archlast-forge</h1>
+        <div className="toolbar" role="radiogroup" aria-label="Sign in with">
+          <Button variant={mode === "account" ? "primary" : "ghost"} aria-pressed={mode === "account"} onClick={() => setMode("account")}>
+            Admin account
+          </Button>
+          <Button variant={mode === "key" ? "primary" : "ghost"} aria-pressed={mode === "key"} onClick={() => setMode("key")}>
+            Admin key
+          </Button>
         </div>
-      )}
+        {mode === "account" ? (
+          <>
+            <Field label="Email">{(id) => <input id={id} name="email" type="email" autoComplete="username" required autoFocus />}</Field>
+            <Field label="Password">{(id) => <input id={id} name="password" type="password" autoComplete="current-password" required />}</Field>
+          </>
+        ) : (
+          <Field label="ADMIN_KEY" hint="`archlast-forge dev` prints it on startup.">
+            {(id) => <input id={id} name="key" type="password" required autoFocus />}
+          </Field>
+        )}
+        <ErrorNote error={error} />
+        <Button type="submit" disabled={busy}>
+          {busy ? "Signing in…" : "Sign in"}
+        </Button>
+        <p className="muted small">
+          Create accounts with <code>archlast-forge admin add you@example.com</code>.
+        </p>
+      </form>
+    </main>
+  );
+}
+
+function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
+  const [page, setPage] = useState<PageName>(() => (PAGES.includes(location.hash.slice(1) as PageName) ? (location.hash.slice(1) as PageName) : "Data"));
+  const [theme, setTheme] = useTheme();
+  const manifest = useAsync(() => get<Manifest>("manifest"), [], { interval: 5000 });
+  useEffect(() => {
+    history.replaceState(null, "", `#${page}`);
+    document.title = `${page} · archlast-forge`;
+  }, [page]);
+  useEffect(() => {
+    // Alt+1…9 jumps between pages.
+    const onKey = (e: KeyboardEvent) => {
+      const n = Number(e.key);
+      if (e.altKey && n >= 1 && n <= PAGES.length) {
+        e.preventDefault();
+        setPage(PAGES[n - 1]!);
+      }
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
+  const m = manifest.data;
+  useEffect(() => {
+    if (manifest.error?.startsWith("Sign in")) onSignOut(); // session expired or revoked
+  }, [manifest.error]);
+  return (
+    <div className="shell">
+      <a className="skip" href="#main">
+        Skip to content
+      </a>
+      <header className="topbar">
+        <strong className="brand">archlast-forge</strong>
+        <span className="push" />
+        <label className="theme">
+          <span className="sr-only">Theme</span>
+          <select value={theme} onChange={(e) => setTheme(e.target.value as Theme)} aria-label="Theme">
+            <option value="system">System theme</option>
+            <option value="light">Light</option>
+            <option value="dark">Dark</option>
+          </select>
+        </label>
+        <span className="muted small">{admin.email}</span>
+        <Badge tone="accent">{admin.role}</Badge>
+        <Button variant="ghost" onClick={onSignOut}>
+          Sign out
+        </Button>
+      </header>
+      <nav className="sidebar" aria-label="Dashboard">
+        {PAGES.map((p, i) => (
+          <button key={p} aria-current={p === page ? "page" : undefined} onClick={() => setPage(p)} title={`Alt+${i + 1}`}>
+            {p}
+          </button>
+        ))}
+      </nav>
+      <main id="main" tabIndex={-1}>
+        {m?.error && <p className="note error">The function runtime failed to load: {m.error}</p>}
+        <ErrorNote error={manifest.error} />
+        {!m ? (
+          <Spinner />
+        ) : (
+          <Boundary key={page}>
+            {page === "Data" && <Data manifest={m} admin={admin} />}
+            {page === "Functions" && <Functions manifest={m} admin={admin} />}
+            {page === "Logs" && <Logs manifest={m} />}
+            {page === "Metrics" && <Metrics />}
+            {page === "Scheduled" && <Scheduled admin={admin} />}
+            {page === "Files" && <Files manifest={m} admin={admin} />}
+            {page === "Users" && <Users admin={admin} />}
+            {page === "Audit" && <Audit />}
+            {page === "Settings" && <Settings manifest={m} admin={admin} />}
+          </Boundary>
+        )}
+      </main>
     </div>
   );
 }
 
-function Logs({ adminKey }: { adminKey: string }) {
-  const logs = usePoll(() => admin<Log[]>(adminKey, "logs"), 2000, [adminKey]);
-  const calls = (logs.data ?? []).filter((l) => l.level === "call");
-  const stats = Object.entries(
-    calls.reduce<Record<string, { n: number; errors: number; ms: number }>>((acc, l) => {
-      const s = (acc[l.name] ??= { n: 0, errors: 0, ms: 0 });
-      s.n++;
-      if (!l.ok) s.errors++;
-      s.ms += l.durationMs ?? 0;
-      return acc;
-    }, {}),
-  ).sort((a, b) => b[1].n - a[1].n);
-  return (
-    <>
-      <div className="panel">
-        <p className="muted">Metrics over the last {calls.length} calls on this server</p>
-        <table>
-          <thead><tr><th>function</th><th className="num">calls</th><th className="num">errors</th><th className="num">avg ms</th></tr></thead>
-          <tbody>
-            {stats.map(([name, s]) => (
-              <tr key={name}><td>{name}</td><td className="num">{s.n}</td><td className={`num ${s.errors ? "bad" : ""}`}>{s.errors}</td><td className="num">{(s.ms / s.n).toFixed(1)}</td></tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="panel">
-        <table>
-          <thead><tr><th>time</th><th>function</th><th>level</th><th>message</th></tr></thead>
-          <tbody>
-            {[...(logs.data ?? [])].reverse().slice(0, 300).map((l, i) => (
-              <tr key={i}>
-                <td className="muted">{new Date(l.time).toLocaleTimeString()}</td>
-                <td>{l.name}</td>
-                <td className={l.level === "call" ? (l.ok ? "ok" : "bad") : l.level === "error" ? "bad" : ""}>{l.level === "call" ? `${l.ok ? "ok" : "failed"} ${l.durationMs}ms` : l.level}</td>
-                <td><code>{l.message}</code></td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
-  );
-}
-
-function Schema({ manifest }: { manifest: Manifest }) {
-  return (
-    <div className="panel">
-      <table>
-        <thead><tr><th>table</th><th>fields</th><th>indexes</th></tr></thead>
-        <tbody>
-          {Object.entries(manifest.tables).map(([name, t]) => (
-            <tr key={name}>
-              <td>{name}{!t.strict && <span className="muted"> (Better Auth)</span>}</td>
-              <td><code>{fieldsOf(t.fields)}</code></td>
-              <td>{Object.entries(t.indexes).map(([i, f]) => <div key={i}><code>{i}: [{f.join(", ")}]</code></div>)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      <p className="muted">Storage: {manifest.storage ? "configured" : "not configured"}</p>
-    </div>
-  );
-}
-
-function Subscriptions({ adminKey }: { adminKey: string }) {
-  const subs = usePoll(() => admin<{ name: string; args: unknown; topics: string[]; since: number }[]>(adminKey, "subscriptions"), 2000, [adminKey]);
-  return (
-    <div className="panel">
-      <p className="muted">{subs.data?.length ?? 0} active subscriptions on this server</p>
-      <table>
-        <thead><tr><th>query</th><th>args</th><th>topics</th><th>since</th></tr></thead>
-        <tbody>
-          {subs.data?.map((s, i) => (
-            <tr key={i}>
-              <td>{s.name}</td>
-              <td><code>{JSON.stringify(s.args)}</code></td>
-              <td>{s.topics.map((t) => <div key={t}><code>{t}</code></div>)}</td>
-              <td className="muted">{new Date(s.since).toLocaleTimeString()}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-    </div>
-  );
-}
-
-function Scheduled({ adminKey, manifest }: { adminKey: string; manifest: Manifest }) {
-  type Job = { _id: string; name: string; args: string; scheduledTime: number; state: string; error: string | null };
-  const jobs = usePoll(() => admin<Job[]>(adminKey, "scheduled"), 2000, [adminKey]);
-  return (
-    <>
-      <div className="panel">
-        <strong>Crons</strong>
-        <table>
-          <tbody>
-            {manifest.crons.map((c) => (
-              <tr key={c.name}><td>{c.name}</td><td><code>{c.fn}</code></td><td className="muted">{c.schedule.kind === "interval" ? `every ${c.schedule.ms! / 1000}s` : `${c.schedule.expression} (UTC)`}</td></tr>
-            ))}
-          </tbody>
-        </table>
-        {manifest.crons.length === 0 && <p className="muted">No crons.ts.</p>}
-      </div>
-      <div className="panel">
-        <table>
-          <thead><tr><th>scheduled for</th><th>function</th><th>args</th><th>state</th></tr></thead>
-          <tbody>
-            {jobs.data?.map((j) => (
-              <tr key={j._id}>
-                <td className="muted">{new Date(j.scheduledTime).toLocaleString()}</td>
-                <td>{j.name}</td>
-                <td><code>{j.args}</code></td>
-                <td className={j.state === "failed" ? "bad" : j.state === "success" ? "ok" : ""}>{j.state}{j.error && `: ${j.error}`}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-        {jobs.data?.length === 0 && <p className="muted">No scheduled jobs yet.</p>}
-      </div>
-    </>
-  );
+class Boundary extends Component<{ children: ReactNode }, { error?: Error }> {
+  override state: { error?: Error } = {};
+  static getDerivedStateFromError(error: Error) {
+    return { error };
+  }
+  override render() {
+    return this.state.error ? <p className="note error">This page crashed: {this.state.error.message}</p> : this.props.children;
+  }
 }
 
 createRoot(document.getElementById("root")!).render(
   <StrictMode>
-    <App />
+    <ToastProvider>
+      <App />
+    </ToastProvider>
   </StrictMode>,
 );

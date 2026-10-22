@@ -204,6 +204,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       let close = () => {};
       const stream = new ReadableStream({
         start(controller) {
+          controller.enqueue(`: connected\n\n`); // flushes headers, so the browser sees the stream open
           const send = (e: LogEntry) => controller.enqueue(`data: ${JSON.stringify(e)}\n\n`);
           const ping = setInterval(() => controller.enqueue(`: ping\n\n`), 15_000);
           logStreams.add(send);
@@ -322,7 +323,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     },
   });
 
-  const url = server.url.href.replace(/\/$/, "");
+  // Bound to every interface, the local URL is the useful one (Better Auth's default origin, logs).
+  const url = ["0.0.0.0", "::"].includes(config.hostname) ? `http://localhost:${server.port}` : server.url.href.replace(/\/$/, "");
   runtimeEnv.BETTER_AUTH_URL ??= url;
   // Started right after binding, so early requests wait for the runtime instead of failing.
   if (dev) await load().catch((e) => log("error", e.message));

@@ -1,10 +1,10 @@
-import { action, internalMutation, mutation, query, v, type MutationCtx } from "@archlast-forge/runtime";
+import { action, ForgeError, internalMutation, mutation, query, v, type MutationCtx } from "@archlast-forge/runtime";
 import { formatDistanceToNow } from "date-fns"; // a server-only dependency from convex/package.json
 import { api, internal } from "./_generated/api";
 
 async function requireUser(ctx: Pick<MutationCtx, "auth">) {
   const identity = await ctx.auth.getUserIdentity();
-  if (!identity) throw new Error("unauthenticated");
+  if (!identity) throw new ForgeError("unauthenticated");
   return identity;
 }
 
@@ -36,7 +36,7 @@ export const toggle = mutation({
   handler: async (ctx, { todoId }) => {
     await requireUser(ctx);
     const todo = await ctx.db.get(todoId);
-    if (!todo) throw new Error("todo not found");
+    if (!todo) throw new ForgeError("todo not found");
     await ctx.db.patch(todoId, { done: !todo.done });
   },
 });
@@ -82,7 +82,7 @@ export const sendReminder = action({
   // Annotated because it calls api.todos.* from this same module, which TypeScript can't infer in a cycle.
   handler: async (ctx, { todoId }): Promise<string> => {
     const todo = await ctx.runQuery(api.todos.get, { todoId });
-    if (!todo) throw new Error("todo not found");
+    if (!todo) throw new ForgeError("todo not found");
     const text = `Reminder: "${todo.title}", added ${formatDistanceToNow(todo._creationTime, { addSuffix: true })}`;
     const webhook = process.env.REMINDER_WEBHOOK_URL;
     if (webhook) await fetch(webhook, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text }) });
