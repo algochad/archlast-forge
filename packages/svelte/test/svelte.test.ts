@@ -15,11 +15,11 @@ test("query() is a live store that closes with its last subscriber", async () =>
   const seen: any[] = [];
   const unsubscribe = store.subscribe((s) => seen.push(s));
   expect(seen[0]).toEqual({ data: undefined, error: undefined, isLoading: true });
-  for (let i = 0; i < 300 && !Array.isArray(seen.at(-1).data); i++) await Bun.sleep(10);
+  for (let i = 0; i < 1000 && !Array.isArray(seen.at(-1).data); i++) await Bun.sleep(10);
   await client.mutation(api.todos.logEvent, { kind: "svelte" });
-  for (let i = 0; i < 300 && seen.at(-1).data?.length !== 1; i++) await Bun.sleep(10);
+  for (let i = 0; i < 1000 && seen.at(-1).data?.length !== 1; i++) await Bun.sleep(10);
   expect(seen.at(-1).data).toMatchObject([{ kind: "svelte" }]);
   unsubscribe();
   client.close();
   await srv.stop();
-});
+}, 30_000); // starts a real server

@@ -9,7 +9,7 @@ import { ArchlastForgeClient, archlastForge, useMutation, useQuery } from "../sr
 
 const api = anyApi;
 const until = async (cond: () => boolean) => {
-  for (let i = 0; i < 300 && !cond(); i++) await Bun.sleep(10);
+  for (let i = 0; i < 1000 && !cond(); i++) await Bun.sleep(10);
   expect(cond()).toBe(true);
 };
 
@@ -27,4 +27,4 @@ test("useQuery is live and stops with its scope", async () => {
   await nextTick();
   client.close();
   await srv.stop();
-});
+}, 30_000); // starts a real server
