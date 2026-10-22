@@ -1,7 +1,7 @@
 // Server entry: Bun-only. User code in convex/ should import from "@archlast-forge/runtime" instead.
 export { startServer, type RunningServer, type ServerOptions } from "./server";
 export { loadConfig, ConfigError, type Config } from "./config";
-export { migrate } from "./migrate-cli";
+export * as ops from "./cli-ops";
 export { listModules } from "./project";
 export { createSqliteDb } from "./db/sqlite";
 export { createPostgresDb } from "./db/postgres";

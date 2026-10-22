@@ -204,6 +204,43 @@ export const internalQuery = define("query", "internal");
 export const internalMutation = define("mutation", "internal");
 export const internalAction = define("action", "internal");
 
+// ---- data migrations ----
+
+export interface MigrationResult {
+  cursor: string;
+  isDone: boolean;
+  processed: number;
+}
+
+/**
+ * A resumable data migration over one table: `archlast-forge migrate --run` calls `migrateOne` for every
+ * document, in batches (one transaction each). Return a patch to apply, or nothing; use ctx.db for anything else.
+ * Registered as an internal mutation, so clients can't run it.
+ */
+export function migration<T extends TableNames>(def: {
+  table: T;
+  migrateOne: (ctx: MutationCtx, doc: Doc<T>) => Promise<Partial<WithoutSystemFields<Doc<T>>> | void> | Partial<WithoutSystemFields<Doc<T>>> | void;
+  batchSize?: number;
+}): RegisteredFunction<"mutation", { cursor: string | null; batchSize?: number }, MigrationResult, "internal"> & { migration: { table: string } } {
+  return {
+    kind: "mutation",
+    visibility: "internal",
+    migration: { table: def.table },
+    args: {
+      cursor: { kind: "union", optional: false, members: [{ kind: "string", optional: false }, { kind: "null", optional: false }] },
+      batchSize: { kind: "number", optional: true },
+    } as PropertyValidators,
+    handler: async (ctx: MutationCtx, args: { cursor: string | null; batchSize?: number }): Promise<MigrationResult> => {
+      const page = await (ctx.db.query(def.table) as any).paginate({ numItems: args.batchSize ?? def.batchSize ?? 100, cursor: args.cursor });
+      for (const doc of page.page) {
+        const patch = await def.migrateOne(ctx, doc);
+        if (patch && Object.keys(patch).length) await ctx.db.patch(doc._id, patch as never);
+      }
+      return { cursor: page.continueCursor, isDone: page.isDone, processed: page.page.length };
+    },
+  };
+}
+
 // ---- references, as produced by codegen ----
 
 declare const refTypes: unique symbol;

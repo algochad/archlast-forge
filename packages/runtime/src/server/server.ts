@@ -115,6 +115,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     return p;
   };
 
+  const reload = () => runtime.stop().then(load);
   let connections = 0;
   let shuttingDown = false;
   const sockets = new Set<WsShim>();
@@ -125,6 +126,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     recentLogs,
     dev,
     serverInfo: () => ({ serverId, connections, subscriptions: subs.size, workers: config.runtimeWorkers, uptimeMs: Math.round(process.uptime() * 1000) }),
+    reload: () => reload(),
   });
   const adminSessions = new Map<string, { admin: AdminInfo | null; at: number }>();
   async function adminOf(req: Request): Promise<AdminInfo | null> {
@@ -341,7 +343,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     url,
     config,
     runtime,
-    reload: () => runtime.stop().then(load),
+    reload,
     async stop({ graceful = true } = {}) {
       shuttingDown = true;
       clearInterval(sampler);

@@ -90,7 +90,14 @@ const RANK: Record<AdminRole, number> = { viewer: 0, admin: 1, owner: 2 };
 const READ_OPS = ["docs", "counts", "scheduled", "crons", "files", "users", "sessions", "audit", "env", "logs", "metrics"] as const;
 const WRITE_OPS = ["insertDoc", "patchDoc", "replaceDoc", "deleteDoc", "cancelJob", "retryJob", "deleteFile", "revokeSession", "banUser", "run"] as const;
 
-export function buildAdminRouter(opts: { runtime: FunctionRuntime; subs: SubscriptionManager; recentLogs: LogEntry[]; dev: boolean; serverInfo: () => object }) {
+export function buildAdminRouter(opts: {
+  runtime: FunctionRuntime;
+  subs: SubscriptionManager;
+  recentLogs: LogEntry[];
+  dev: boolean;
+  serverInfo: () => object;
+  reload: () => Promise<unknown>;
+}) {
   const a = initTRPC.context<AdminContext>().create({ isDev: opts.dev, errorFormatter: formatter });
   const as = (role: AdminRole) =>
     a.procedure.use(({ ctx, next }) => {
@@ -119,6 +126,11 @@ export function buildAdminRouter(opts: { runtime: FunctionRuntime; subs: Subscri
     subscriptions: as("viewer").query(() => opts.subs.list()),
     recentLogs: as("viewer").query(() => opts.recentLogs),
     server: as("viewer").query(() => opts.serverInfo()),
+    /** Restarts this server's function runtime, e.g. to pick up `archlast-forge env` changes. */
+    reload: as("admin").mutation(async () => {
+      await opts.reload();
+      return true;
+    }),
   });
 }
 

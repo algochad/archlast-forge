@@ -5,7 +5,8 @@
   "type": "module",
   "exports": {
     ".": "./src/index.ts",
-    "./server": "./src/server/index.ts"
+    "./server": "./src/server/index.ts",
+    "./testing": "./src/testing.ts"
   },
   "scripts": {
     "typecheck": "bun check && bun check -p test-types",
