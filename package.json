@@ -1,0 +1,27 @@
+{
+  "name": "archlast-forge",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "turbo run build",
+    "dev": "turbo run dev",
+    "codegen": "turbo run codegen",
+    "typecheck": "turbo run typecheck",
+    "test": "turbo run test",
+    "format": "prettier --write \"**/*.{ts,tsx,md}\""
+  },
+  "devDependencies": {
+    "prettier": "3.9.6",
+    "turbo": "^2.11.10",
+    "typescript": "7.0.2"
+  },
+  "engines": {
+    "bun": ">=1.4.3"
+  },
+  "packageManager": "bun@1.4.3",
+  "workspaces": [
+    "apps/*",
+    "apps/*/convex",
+    "packages/*"
+  ]
+}
