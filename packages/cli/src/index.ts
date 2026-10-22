@@ -111,7 +111,8 @@ async function dev() {
       await generate(dir);
     });
     await dockerEngine.attach(name, true);
-    return;
+    console.log(`${name} stopped`);
+    process.exit(0); // the container is gone; don't linger on the file watcher
   }
 
   const server = await serve({
