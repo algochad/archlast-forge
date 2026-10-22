@@ -8,7 +8,8 @@ const DOCKER = process.env.DOCKER ?? "docker";
 const REPO_ROOT = new URL("../../..", import.meta.url).pathname.replace(/\/$/, "");
 export const ENGINE_DOCKERFILE = join(REPO_ROOT, "docker", "engine.Dockerfile");
 
-export const engineImage = () => process.env.ARCHLAST_ENGINE_IMAGE ?? `archlast-forge/engine:${VERSION}`;
+/** Released to GHCR by the release workflow; `engine build` tags local builds the same way. */
+export const engineImage = () => process.env.ARCHLAST_ENGINE_IMAGE ?? `ghcr.io/algochad/archlast-forge-engine:${VERSION}`;
 
 export function docker(args: string[], opts: { inherit?: boolean; input?: string } = {}) {
   const proc = Bun.spawnSync([DOCKER, ...args], {
@@ -48,7 +49,9 @@ export function ensureEngineImage() {
   const image = engineImage();
   if (docker(["image", "inspect", image]).ok) return image;
   if (existsSync(ENGINE_DOCKERFILE)) return buildEngine(image);
-  fail(`Engine image ${image} not found. Pull it, or set ARCHLAST_ENGINE_IMAGE.`);
+  console.log(`→ pulling ${image}`);
+  if (docker(["pull", image], { inherit: true }).ok) return image;
+  fail(`Engine image ${image} isn't available. Set ARCHLAST_ENGINE_IMAGE to one you can pull or build.`);
 }
 
 const SERVICES = {

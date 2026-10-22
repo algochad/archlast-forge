@@ -4,7 +4,8 @@ import type { CallHeaders, CallResult, ErrorKind, LogEntry } from "./executor";
 import type { Manifest } from "./project";
 import type { HostMessage, RuntimeMessage, SerializedRequest, SerializedResponse } from "./protocol";
 
-const CHILD = new URL("./child.ts", import.meta.url).pathname;
+// Next to this module: child.ts in the repo, child.js in the published build.
+const CHILD = new URL(import.meta.url.endsWith(".ts") ? "./child.ts" : "./child.js", import.meta.url).pathname;
 /** Past a call's own timeout, how long to wait before presuming the process is stuck (e.g. a synchronous loop). */
 const HARD_TIMEOUT_GRACE_MS = 5000;
 

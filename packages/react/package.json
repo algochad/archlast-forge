@@ -7,7 +7,8 @@
     ".": "./src/index.ts"
   },
   "scripts": {
-    "typecheck": "bun check"
+    "typecheck": "bun check",
+    "build": "rm -rf dist && bun build ./src/index.ts --outdir ./dist --target browser --packages external && tsc -p tsconfig.build.json"
   },
   "devDependencies": {
     "@types/bun": "1.4.3",

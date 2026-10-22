@@ -15,6 +15,7 @@ Development
   dev                     codegen, then run the engine in Docker and watch convex/
       --no-docker         run in this process instead
       --with <list>       also start service containers: postgres, redis, s3
+      --run "<cmd>"       also run a command alongside, e.g. --run vite
   codegen                 write convex/_generated/ and check that src/ imports only convex/_generated
 
 Production
@@ -24,7 +25,7 @@ Production
 
 Data
   migrate                 sync tables and indexes; report documents that don't match the schema
-      --run [name…]       run data migrations (resumable)       --status   list them
+      --run-migrations [name…]  run data migrations (resumable)   --status   list them
   export <file>           all documents as JSON Lines
   import <file>           restore an export (--replace clears the tables first)
   backup <file>           SQLite database copy (use pg_dump for Postgres)
@@ -50,12 +51,13 @@ const { positionals, values } = parseArgs({
     with: { type: "string" },
     tag: { type: "string" },
     image: { type: "string" },
-    run: { type: "boolean" },
+    "run-migrations": { type: "boolean" },
     status: { type: "boolean" },
     replace: { type: "boolean" },
     role: { type: "string" },
     password: { type: "string" },
     "env-file": { type: "string" },
+    run: { type: "string" },
     dev: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   },
@@ -80,9 +82,17 @@ function devEnv(dir: string) {
   return env;
 }
 
+/** `--run "vite"`: a companion process for the frontend, stopped with the CLI. */
+function companion() {
+  if (!values.run) return;
+  const proc = Bun.spawn(["sh", "-c", values.run], { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
+  process.on("exit", () => proc.kill());
+}
+
 async function dev() {
   const dir = findConvexDir(values.dir);
   const env = devEnv(dir);
+  companion();
   await ensureDeps(dir); // host install: editor types; the engine installs its own copy
   console.log(`✓ codegen: ${(await generate(dir)).length} modules`);
 
@@ -235,20 +245,20 @@ const commands: Record<string, () => Promise<unknown>> = {
 
   async migrate() {
     const dir = findConvexDir(values.dir);
-    if (forwarded(dir, ["migrate", ...rest, ...(values.run ? ["--run"] : []), ...(values.status ? ["--status"] : [])])) return;
+    if (forwarded(dir, ["migrate", ...rest, ...(values["run-migrations"] ? ["--run-migrations"] : []), ...(values.status ? ["--status"] : [])])) return;
     await withProject(async (p) => {
       if (values.status) {
         for (const m of await ops.migrationStatus(p)) console.log(`${m.state.padEnd(8)} ${m.name}  (${m.table}, ${m.processed} processed)${m.error ? `  ✗ ${m.error}` : ""}`);
         return;
       }
-      if (values.run) {
+      if (values["run-migrations"]) {
         const ran = await ops.runMigrations(p, rest, (name, n) => process.stdout.write(`\r  ${name}: ${n} documents`)).catch((e) => fail(e.message));
         return console.log(ran.length ? `\n✓ ran ${ran.join(", ")}` : "✓ no pending migrations");
       }
       console.log(`✓ migrated ${Object.keys(p.project.tables).length} tables`);
       const invalid = await ops.invalidDocuments(p);
       for (const { id, error } of invalid.slice(0, 50)) console.error(`  ✗ ${id}: ${error}`);
-      if (invalid.length) fail(`${invalid.length} documents don't match the schema; write a migration and run \`archlast-forge migrate --run\``);
+      if (invalid.length) fail(`${invalid.length} documents don't match the schema; write a migration and run \`archlast-forge migrate --run-migrations\``);
     });
   },
   async export() {

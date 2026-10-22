@@ -1,0 +1,43 @@
+name: Release
+
+# Push a tag like v0.2.0 after `bun scripts/version.ts 0.2.0` and a commit.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.3
+      - run: bun install --frozen-lockfile
+      - name: Pack and smoke-test
+        run: bun scripts/pack.ts --smoke
+      - name: Publish to npm
+        env:
+          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+        run: for f in .pack/*.tgz; do bun publish "$f" --access public; done
+
+  engine-image:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the engine image
+        run: |
+          VERSION=${GITHUB_REF_NAME#v}
+          IMAGE=ghcr.io/${{ github.repository_owner }}/archlast-forge-engine
+          docker build -f docker/engine.Dockerfile -t $IMAGE:$VERSION -t $IMAGE:latest .
+          docker push $IMAGE:$VERSION
+          docker push $IMAGE:latest

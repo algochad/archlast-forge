@@ -8,7 +8,8 @@
   },
   "scripts": {
     "typecheck": "bun check",
-    "test": "bun test"
+    "test": "bun test",
+    "build": "rm -rf dist && bun build ./src/index.ts --outdir ./dist --target browser --packages external && tsc -p tsconfig.build.json"
   },
   "devDependencies": {
     "@types/bun": "1.4.3"

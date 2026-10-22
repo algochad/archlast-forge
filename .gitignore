@@ -43,3 +43,4 @@ data/
 *.db-shm
 *.db-wal
 **/_generated/.depshash
+.pack

@@ -1,0 +1,21 @@
+{
+  "name": "@archlast-forge/svelte",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "typecheck": "bun check",
+    "build": "rm -rf dist && bun build ./src/index.ts --outdir ./dist --target browser --packages external && tsc -p tsconfig.build.json",
+    "test": "bun test"
+  },
+  "dependencies": {
+    "@archlast-forge/client": "workspace:*",
+    "@archlast-forge/runtime": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3"
+  }
+}
