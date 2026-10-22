@@ -10,6 +10,16 @@
     "typecheck": "bun check"
   },
   "devDependencies": {
-    "@types/bun": "1.4.3"
+    "@types/bun": "1.4.3",
+    "@types/react": "19",
+    "expect-type": "1"
+  },
+  "dependencies": {
+    "@archlast-forge/client": "workspace:*",
+    "@archlast-forge/runtime": "workspace:*",
+    "@tanstack/react-query": "5.104.5"
+  },
+  "peerDependencies": {
+    "react": "19.3.1"
   }
 }

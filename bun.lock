@@ -55,6 +55,13 @@
     "packages/client": {
       "name": "@archlast-forge/client",
       "version": "0.1.0",
+      "dependencies": {
+        "@archlast-forge/runtime": "workspace:*",
+        "@tanstack/query-core": "5.104.5",
+        "@trpc/client": "11.19.0",
+        "@trpc/server": "11.19.0",
+        "better-auth": "1.7.12",
+      },
       "devDependencies": {
         "@types/bun": "1.4.3",
       },
@@ -69,8 +76,18 @@
     "packages/react": {
       "name": "@archlast-forge/react",
       "version": "0.1.0",
+      "dependencies": {
+        "@archlast-forge/client": "workspace:*",
+        "@archlast-forge/runtime": "workspace:*",
+        "@tanstack/react-query": "5.104.5",
+      },
       "devDependencies": {
         "@types/bun": "1.4.3",
+        "@types/react": "19",
+        "expect-type": "1",
+      },
+      "peerDependencies": {
+        "react": "19.3.1",
       },
     },
     "packages/runtime": {
@@ -196,6 +213,12 @@
     "@rolldown/pluginutils": ["@rolldown/pluginutils@1.0.1", "", {}, "sha512-2j9bGt5Jh8hj+vPtgzPtl72j0yRxHAyumoo6TNfAjsLB04UtpSvPbPcDcBMxz7n+9CYB0c1GxQFxYRg2jimqGw=="],
 
     "@standard-schema/spec": ["@standard-schema/spec@1.1.0", "", {}, "sha512-l2aFy5jALhniG5HgqrD6jXLi/rUWrKvqN/qJx6yoJsgKhblVd+iqqU4RCXavm/jPityDo5TCvKMnpjKnOriy0w=="],
+
+    "@tanstack/query-core": ["@tanstack/query-core@5.104.5", "", {}, "sha512-Q94gI8Opd+CbdVNOdj8ZCyV8WqLYitrDq1t96Xc8WZT6lY0r5iRnJLXYDxMex7EEf2v+mXvn4FcjaBKSxXZQ9A=="],
+
+    "@tanstack/react-query": ["@tanstack/react-query@5.104.5", "", { "dependencies": { "@tanstack/query-core": "5.104.5" }, "peerDependencies": { "@types/react": "^18 || ^19", "react": "^18 || ^19" }, "optionalPeers": ["@types/react"] }, "sha512-RORgFe052U+93weaNuqg7qHq7vNVNzXN/VrXqD4bbAuQCWUqOl2lV5Ui9flWk5CVvMyL/Bh27QWhzwH0aaOx9g=="],
+
+    "@trpc/client": ["@trpc/client@11.19.0", "", { "peerDependencies": { "@trpc/server": "11.19.0", "typescript": ">=5.7.2" }, "bin": { "intent": "bin/intent.js" } }, "sha512-0MKkPq6MejsKB5Opca1Rl22KVIaqo2+A1EiXyZ8EGUsl9TLrPdpGn+Usux20TZKFwnSC2+wI/WilqNJaP4ODfw=="],
 
     "@trpc/server": ["@trpc/server@11.19.0", "", { "peerDependencies": { "typescript": ">=5.7.2" }, "bin": { "intent": "bin/intent.js" } }, "sha512-7C1goiDurz82yFKtZUbEzjXd0Rg/jyisaIZQhdvus+1l7E6mwcEYZXjZ1US/HF8kOyz1LERL8UN3bcboJtjcyQ=="],
 
