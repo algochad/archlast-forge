@@ -54,9 +54,19 @@ async function generate(dir: string) {
 
 const dashboard = async () => (await import("@archlast-forge/dashboard")).default;
 
+/** Behind code-server's port proxy (VSCODE_PROXY_URI=https://{{port}}.host/), browsers use the proxy origin, so trust it too. */
+function trustProxyOrigins(env: Record<string, string | undefined>) {
+  const uri = env.VSCODE_PROXY_URI;
+  if (!uri?.includes("{{port}}.")) return;
+  const ports = (env.TRUSTED_ORIGINS ?? "").split(",").map((o) => /^http:\/\/localhost:(\d+)$/.exec(o.trim())?.[1]);
+  const extra = ports.filter(Boolean).map((p) => new URL(uri.replace("{{port}}", p!)).origin);
+  env.TRUSTED_ORIGINS = [env.TRUSTED_ORIGINS, ...extra].filter(Boolean).join(",");
+}
+
 async function dev() {
   const dir = convexDir();
   const env = devSecrets({ ...process.env });
+  trustProxyOrigins(env);
   await ensureDeps(dir);
   const modules = await generate(dir);
   console.log(`✓ codegen: ${modules.length} modules`);
