@@ -1,111 +1,52 @@
 :root {
-  --text: #6b6375;
-  --text-h: #08060d;
-  --bg: #fff;
-  --border: #e5e4e7;
-  --code-bg: #f4f3ec;
-  --accent: #aa3bff;
-  --accent-bg: rgba(170, 59, 255, 0.1);
-  --accent-border: rgba(170, 59, 255, 0.5);
-  --social-bg: rgba(244, 243, 236, 0.5);
-  --shadow:
-    rgba(0, 0, 0, 0.1) 0 10px 15px -3px, rgba(0, 0, 0, 0.05) 0 4px 6px -2px;
-
-  --sans: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --heading: system-ui, 'Segoe UI', Roboto, sans-serif;
-  --mono: ui-monospace, Consolas, monospace;
-
-  font: 18px/145% var(--sans);
-  letter-spacing: 0.18px;
-  color-scheme: light dark;
+  --bg: #f6f7f9;
+  --card: #fff;
+  --text: #1c1f24;
+  --muted: #6b7280;
+  --accent: #4f46e5;
+  --danger: #b91c1c;
+  --border: #e5e7eb;
+  font-family: system-ui, sans-serif;
   color: var(--text);
   background: var(--bg);
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-
-  @media (max-width: 1024px) {
-    font-size: 16px;
-  }
 }
-
 @media (prefers-color-scheme: dark) {
   :root {
-    --text: #9ca3af;
-    --text-h: #f3f4f6;
-    --bg: #16171d;
-    --border: #2e303a;
-    --code-bg: #1f2028;
-    --accent: #c084fc;
-    --accent-bg: rgba(192, 132, 252, 0.15);
-    --accent-border: rgba(192, 132, 252, 0.5);
-    --social-bg: rgba(47, 48, 58, 0.5);
-    --shadow:
-      rgba(0, 0, 0, 0.4) 0 10px 15px -3px, rgba(0, 0, 0, 0.25) 0 4px 6px -2px;
-  }
-
-  #social .button-icon {
-    filter: invert(1) brightness(2);
+    --bg: #111317;
+    --card: #1a1d23;
+    --text: #e8eaed;
+    --muted: #9aa0a6;
+    --accent: #8b87ff;
+    --danger: #f87171;
+    --border: #2c3038;
   }
 }
-
-#root {
-  width: 1126px;
-  max-width: 100%;
-  margin: 0 auto;
-  text-align: center;
-  border-inline: 1px solid var(--border);
-  min-height: 100svh;
-  display: flex;
-  flex-direction: column;
-  box-sizing: border-box;
+* { box-sizing: border-box; }
+body { margin: 0; }
+h1 { font-size: 1.4rem; margin: 0 0 1rem; }
+h2 { font-size: 1rem; margin: 0 0 0.5rem; }
+input:not([type]), input[type='email'], input[type='password'] {
+  flex: 1; padding: 0.5rem 0.6rem; border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); font: inherit;
 }
-
-body {
-  margin: 0;
-}
-
-h1,
-h2 {
-  font-family: var(--heading);
-  font-weight: 500;
-  color: var(--text-h);
-}
-
-h1 {
-  font-size: 56px;
-  letter-spacing: -1.68px;
-  margin: 32px 0;
-  @media (max-width: 1024px) {
-    font-size: 36px;
-    margin: 20px 0;
-  }
-}
-h2 {
-  font-size: 24px;
-  line-height: 118%;
-  letter-spacing: -0.24px;
-  margin: 0 0 8px;
-  @media (max-width: 1024px) {
-    font-size: 20px;
-  }
-}
-p {
-  margin: 0;
-}
-
-code,
-.counter {
-  font-family: var(--mono);
-  display: inline-flex;
-  border-radius: 4px;
-  color: var(--text-h);
-}
-
-code {
-  font-size: 15px;
-  line-height: 135%;
-  padding: 4px 8px;
-  background: var(--code-bg);
-}
+button { font: inherit; padding: 0.5rem 0.9rem; border: 0; border-radius: 6px; background: var(--accent); color: #fff; cursor: pointer; }
+button.link, label.link { background: none; color: var(--accent); padding: 0.25rem 0.4rem; cursor: pointer; }
+button.selected { background: var(--accent); color: #fff; width: 100%; text-align: left; }
+button.link.danger { color: var(--danger); }
+ul { list-style: none; margin: 0 0 1rem; padding: 0; }
+nav li button { width: 100%; text-align: left; }
+.card { background: var(--card); border: 1px solid var(--border); border-radius: 10px; padding: 1rem; }
+.narrow { max-width: 360px; margin: 10vh auto; }
+.stack { display: grid; gap: 0.6rem; margin-bottom: 0.5rem; }
+.row { display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+.layout { display: grid; grid-template-columns: 220px 1fr; gap: 1rem; max-width: 900px; margin: 1.5rem auto; padding: 0 1rem; }
+.layout header { grid-column: 1 / -1; display: flex; gap: 1rem; align-items: center; }
+.layout header .muted { margin-left: auto; }
+.todos li { display: flex; align-items: center; gap: 0.5rem; padding: 0.45rem 0; border-bottom: 1px solid var(--border); }
+.todos li label:first-child { display: flex; gap: 0.5rem; align-items: center; flex: 1; }
+.todos li.done span { text-decoration: line-through; color: var(--muted); }
+.actions { display: flex; }
+.muted { color: var(--muted); }
+.small { font-size: 0.8rem; }
+.error { color: var(--danger); margin: 0; }
+.center { text-align: center; margin-top: 20vh; }
+@media (max-width: 640px) { .layout { grid-template-columns: 1fr; } }

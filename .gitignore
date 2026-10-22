@@ -42,4 +42,4 @@ data/
 *.db
 *.db-shm
 *.db-wal
-convex/_generated/.depshash
+**/_generated/.depshash

@@ -35,8 +35,10 @@ export class ArchlastForgeClient {
   private ws?: ReturnType<typeof createWSClient>;
   private watches = new Map<string, Watch>();
   private authClient?: ReturnType<typeof createAuthClient>;
+  private opts: ClientOptions;
 
-  constructor(private opts: ClientOptions = {}) {
+  constructor(opts: ClientOptions = {}) {
+    this.opts = opts;
     this.url = (opts.url ?? globalThis.location?.origin ?? "").replace(/\/$/, "");
     this.connect();
   }
