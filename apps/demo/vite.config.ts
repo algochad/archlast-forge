@@ -14,7 +14,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     ...(proxied && {
-      host: '127.0.0.1', // the proxy dials IPv4 loopback; Vite's default "localhost" may bind only ::1
+      host: '0.0.0.0', // the proxy in front dials the container's address, not loopback
       allowedHosts: [proxied.hostname],
       hmr: { clientPort: Number(proxied.port) || (proxied.protocol === 'https:' ? 443 : 80) },
     }),
