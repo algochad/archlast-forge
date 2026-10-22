@@ -1,1 +1,35 @@
-export {};
+// Browser-safe entry: used by convex/ code and by generated client types. No Bun APIs here.
+export { v, ValidationError, type Id, type Infer, type ObjectType, type PropertyValidators, type Validator } from "./values";
+export {
+  defineSchema,
+  defineTable,
+  type Doc,
+  type Register,
+  type SchemaDefinition,
+  type TableDefinition,
+  type TableNames,
+  type WithoutSystemFields,
+} from "./schema";
+export {
+  action,
+  anyApi,
+  cronJobs,
+  defineAuth,
+  getFunctionName,
+  mutation,
+  query,
+  type ActionCtx,
+  type AuthOptions,
+  type DatabaseReader,
+  type DatabaseWriter,
+  type FunctionArgs,
+  type FunctionKind,
+  type FunctionReference,
+  type FunctionReturn,
+  type ModuleRefs,
+  type MutationCtx,
+  type OptionalArgs,
+  type QueryCtx,
+  type RegisteredFunction,
+  type UserIdentity,
+} from "./functions";
