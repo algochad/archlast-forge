@@ -77,6 +77,8 @@ export const markReminded = mutation({
 /** External I/O lives in actions: POSTs to REMINDER_WEBHOOK_URL when set, otherwise logs. */
 export const sendReminder = action({
   args: { todoId: v.id("todos") },
+  returns: v.string(),
+  // Annotated because it calls api.todos.* from this same module, which TypeScript can't infer in a cycle.
   handler: async (ctx, { todoId }): Promise<string> => {
     const todo = await ctx.runQuery(api.todos.get, { todoId });
     if (!todo) throw new Error("todo not found");

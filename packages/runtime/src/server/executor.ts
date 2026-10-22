@@ -1,6 +1,6 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { getFunctionName, type FunctionKind, type RegisteredFunction, type UserIdentity } from "../functions";
-import { validateFields, ValidationError } from "../values";
+import { validate, validateFields, ValidationError } from "../values";
 import { isRetryableConflict, type Db, type DbTx } from "./db/types";
 import { DocStore, type TablesSpec } from "./docstore";
 import { cancelScheduled, schedule } from "./scheduler";
@@ -37,6 +37,17 @@ export interface ExecutorOptions {
 }
 
 type AfterCommit = (() => unknown)[];
+
+/** A wrong return value is a server bug, so it's not reported as a ValidationError (BAD_REQUEST). */
+function checkReturn<T>(fn: RegisteredFunction, value: T): T {
+  if (!fn.returns) return value;
+  try {
+    validate(fn.returns, value ?? null, "returns");
+  } catch (e) {
+    throw new Error(`Invalid return value: ${(e as Error).message}`);
+  }
+  return value;
+}
 
 export class Executor {
   /** Set once Better Auth is created; resolves the caller from cookie/authorization headers. */
@@ -89,17 +100,17 @@ export class Executor {
     };
     return this.logged(name, async () => {
       if (kind === "query") {
-        const { value, reads } = await this.read((store) =>
-          Promise.resolve(fn.handler({ db: store.reader(), auth, storage: this.storage(store) }, args)),
+        const { value, reads } = await this.read(async (store) =>
+          checkReturn(fn, await fn.handler({ db: store.reader(), auth, storage: this.storage(store) }, args)),
         );
         return { value: value ?? null, topics: [...reads], usedAuth };
       }
       if (kind === "mutation") return { value: (await this.mutate((store, tx, after) => this.invokeMutation(fn, args, store, tx, after, identity))) ?? null };
-      return { value: (await fn.handler(this.actionCtx(auth, identity), args)) ?? null };
+      return { value: checkReturn(fn, await fn.handler(this.actionCtx(auth, identity), args)) ?? null };
     });
   }
 
-  invokeMutation(fn: RegisteredFunction, args: unknown, store: DocStore, tx: DbTx, after: AfterCommit, identity: UserIdentity | null) {
+  async invokeMutation(fn: RegisteredFunction, args: unknown, store: DocStore, tx: DbTx, after: AfterCommit, identity: UserIdentity | null) {
     const ctx = {
       db: store.writer(),
       auth: { getUserIdentity: async () => identity },
@@ -110,7 +121,7 @@ export class Executor {
         cancel: (id: string) => cancelScheduled(tx, id),
       },
     };
-    return Promise.resolve(fn.handler(ctx, args));
+    return checkReturn(fn, await fn.handler(ctx, args)); // inside the transaction, so a bad value rolls back
   }
 
   async logged<T>(name: string, fn: () => Promise<T>): Promise<T> {

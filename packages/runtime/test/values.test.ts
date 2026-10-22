@@ -11,6 +11,16 @@ test("validators accept matching values and reject others with a path", () => {
   expect(() => validate(todo, { done: true, tags: [], list: "lists:abc" })).toThrow("value.title is required");
   expect(() => validate(todo, { title: "a", done: true, tags: [], list: "lists:abc", x: 1 })).toThrow("value.x is not in the validator");
   expect(() => validate(v.number(), Number.NaN)).toThrow("finite number");
+  expect(() => validate(v.number(), Infinity)).toThrow("finite number");
+});
+
+test("null and union validators", () => {
+  const maybeId = v.union(v.id("lists"), v.null());
+  validate(maybeId, null);
+  validate(maybeId, "lists:abc");
+  expect(() => validate(maybeId, "todos:abc")).toThrow('value must be an Id<"lists">'); // Zod reports the closest member
+  expect(() => validate(v.object({ a: v.union(v.string(), v.number()) }), { a: true })).toThrow("value.a must be one of string | number");
+  expect(() => validate(v.array(v.object({ n: v.null() })), [{ n: null }, { n: 1 }])).toThrow("value[1].n must be null, got 1");
 });
 
 test("defineSchema adds auth and system tables and rejects bad definitions", () => {

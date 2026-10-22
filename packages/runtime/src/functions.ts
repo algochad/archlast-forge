@@ -6,7 +6,7 @@ import type {
   TableNames,
   WithoutSystemFields,
 } from "./schema";
-import type { Id, ObjectType, PropertyValidators } from "./values";
+import type { Id, Infer, ObjectType, PropertyValidators, Validator } from "./values";
 
 export type FunctionKind = "query" | "mutation" | "action";
 
@@ -111,22 +111,35 @@ declare const fnTypes: unique symbol;
 export interface RegisteredFunction<K extends FunctionKind = FunctionKind, Args = any, Return = any> {
   readonly kind: K;
   readonly args: PropertyValidators;
+  readonly returns?: Validator;
   readonly handler: (ctx: any, args: any) => unknown;
   readonly [fnTypes]?: { args: Args; return: Return };
 }
 
-type Definition<K extends FunctionKind, A extends PropertyValidators, R> = {
-  args?: A;
-  handler: (ctx: CtxFor<K>, args: ObjectType<A>) => R;
-};
+/** What a handler may return for a `returns` validator; returning nothing counts as null. */
+type HandlerReturn<V extends Validator<any, false>> = Infer<V> | (null extends Infer<V> ? void : never);
 
-const define =
-  <K extends FunctionKind>(kind: K) =>
-  <A extends PropertyValidators = {}, R = unknown>(def: Definition<K, A, R>): RegisteredFunction<K, ObjectType<A>, Awaited<R>> => ({
+interface FunctionBuilder<K extends FunctionKind> {
+  <A extends PropertyValidators = {}, R = unknown>(def: {
+    args?: A;
+    handler: (ctx: CtxFor<K>, args: ObjectType<A>) => R;
+  }): RegisteredFunction<K, ObjectType<A>, Awaited<R>>;
+  // Last, so a mismatch reports this overload's error rather than "unknown property returns".
+  /** With `returns`, the validator is the function's return type and is checked at runtime (a mismatch rolls back a mutation). */
+  <A extends PropertyValidators = {}, V extends Validator<any, false> = Validator<any, false>>(def: {
+    args?: A;
+    returns: V;
+    handler: (ctx: CtxFor<K>, args: ObjectType<A>) => HandlerReturn<V> | Promise<HandlerReturn<V>>;
+  }): RegisteredFunction<K, ObjectType<A>, Infer<V>>;
+}
+
+const define = <K extends FunctionKind>(kind: K): FunctionBuilder<K> =>
+  ((def: { args?: PropertyValidators; returns?: Validator; handler: RegisteredFunction["handler"] }) => ({
     kind,
     args: def.args ?? {},
+    returns: def.returns,
     handler: def.handler,
-  });
+  })) as FunctionBuilder<K>;
 
 export const query = define("query");
 export const mutation = define("mutation");

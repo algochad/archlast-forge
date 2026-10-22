@@ -129,3 +129,20 @@ if (pg)
     await Promise.all(Array.from({ length: 6 }, () => run("todos:toggle", "mutation", { id })));
     expect(((await run("todos:get", "query", { id })) as { done: boolean }).done).toBe(false); // 6 toggles
   });
+
+test("returns validators: valid values pass, invalid ones fail the call", async () => {
+  const listId = (await run("todos:createList", "mutation", { name: "r" })) as string;
+  const id = (await run("todos:add", "mutation", { listId, title: "t" })) as string;
+  expect(await run("todos:getChecked", "query", { id })).toMatchObject({ _id: id, title: "t" });
+  expect(await run("todos:getChecked", "query", { id: "todos:0" })).toBeNull();
+  expect(await run("todos:voidAction", "action")).toBeNull();
+  await expect(run("todos:wrongQueryReturn", "query")).rejects.toThrow("Invalid return value: returns must be a string, got 5");
+});
+
+test("a mutation whose return value fails validation rolls back", async () => {
+  const listId = (await run("todos:createList", "mutation", { name: "rollback" })) as string;
+  published = [];
+  await expect(run("todos:wrongMutationReturn", "mutation", { listId })).rejects.toThrow('Invalid return value: returns must be an Id<"lists">');
+  expect(await run("todos:listByList", "query", { listId })).toEqual([]);
+  expect(published).toEqual([]);
+});

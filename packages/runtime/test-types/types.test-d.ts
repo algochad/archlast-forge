@@ -60,3 +60,32 @@ action({
     await ctx.runQuery(api.functions.add, { listId, title: "x" });
   },
 });
+
+// Output validators must match what the handler returns.
+query({ returns: v.array(v.string()), handler: async () => ["a"] });
+query({ returns: v.union(v.string(), v.null()), handler: async () => (Math.random() ? "a" : null) });
+mutation({ returns: v.null(), handler: async () => {} });
+// @ts-expect-error returns validator disagrees with the handler
+query({ returns: v.string(), handler: async () => 1 });
+// @ts-expect-error handler may return null but the validator doesn't allow it
+query({ returns: v.string(), handler: async () => (Math.random() ? "a" : null) });
+
+// With `returns`, the validator is the function's return type.
+const typedQuery = query({ returns: v.union(v.string(), v.null()), handler: async () => (Math.random() ? "a" : null) });
+expectTypeOf<FunctionReturn<import("../src/index").ModuleRefs<{ q: typeof typedQuery }>["q"]>>().toEqualTypeOf<string | null>();
+
+// A document validator matches the registered schema's Doc.
+query({
+  args: { id: v.id("todos") },
+  returns: v.union(
+    v.object({ _id: v.id("todos"), _creationTime: v.number(), listId: v.id("lists"), title: v.string(), done: v.boolean(), note: v.optional(v.string()) }),
+    v.null(),
+  ),
+  handler: (ctx, { id }) => ctx.db.get(id),
+});
+query({
+  args: { id: v.id("todos") },
+  returns: v.object({ _id: v.id("todos") }),
+  // @ts-expect-error the handler can return null, which this validator doesn't allow
+  handler: (ctx, { id }) => ctx.db.get(id),
+});

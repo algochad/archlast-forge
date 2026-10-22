@@ -2,9 +2,9 @@ import { StrictMode, useCallback, useEffect, useState, type FormEvent } from "re
 import { createRoot } from "react-dom/client";
 
 type Kind = "query" | "mutation" | "action";
-type Validator = { kind: string; optional: boolean; table?: string; element?: Validator; fields?: Record<string, Validator> };
+type Validator = { kind: string; optional: boolean; table?: string; element?: Validator; fields?: Record<string, Validator>; members?: Validator[] };
 type Manifest = {
-  functions: { name: string; kind: Kind; args: Record<string, Validator> }[];
+  functions: { name: string; kind: Kind; args: Record<string, Validator>; returns?: Validator }[];
   tables: Record<string, { fields: Record<string, Validator>; indexes: Record<string, string[]>; strict: boolean }>;
   crons: { name: string; fn: string; schedule: { kind: string; ms?: number; expression?: string } }[];
   storage: boolean;
@@ -40,7 +40,15 @@ function usePoll<T>(fn: () => Promise<T>, ms: number | null, deps: unknown[]) {
 }
 
 const typeOf = (v: Validator): string =>
-  v.kind === "id" ? `Id<"${v.table}">` : v.kind === "array" ? `${typeOf(v.element!)}[]` : v.kind === "object" ? `{ ${fieldsOf(v.fields!)} }` : v.kind;
+  v.kind === "id"
+    ? `Id<"${v.table}">`
+    : v.kind === "array"
+      ? `${typeOf(v.element!)}[]`
+      : v.kind === "object"
+        ? `{ ${fieldsOf(v.fields!)} }`
+        : v.kind === "union"
+          ? v.members!.map(typeOf).join(" | ")
+          : v.kind;
 const fieldsOf = (fields: Record<string, Validator>) =>
   Object.entries(fields).map(([k, v]) => `${k}${v.optional ? "?" : ""}: ${typeOf(v)}`).join("; ");
 
@@ -167,6 +175,7 @@ function Functions({ adminKey, manifest }: { adminKey: string; manifest: Manifes
         <div className="panel" style={{ display: "grid", gap: "0.6rem", alignContent: "start" }}>
           <div><strong>{fn.name}</strong> <span className="muted">({fn.kind}, runs without a user identity)</span></div>
           <code>args: {`{ ${fieldsOf(fn.args)} }`}</code>
+          {fn.returns && <code>returns: {typeOf(fn.returns)}</code>}
           <textarea value={args} onChange={(e) => setArgs(e.target.value)} aria-label="Arguments as JSON" />
           <div><button onClick={run}>Run</button></div>
           {result && <pre className={result.ok ? "" : "bad"}>{result.text}</pre>}
