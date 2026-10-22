@@ -1,0 +1,9 @@
+{
+  "name": "@archlast-forge/docs",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "bun build.ts",
+    "dev": "bun build.ts --serve"
+  }
+}

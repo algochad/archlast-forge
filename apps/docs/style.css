@@ -1,0 +1,25 @@
+:root { --bg: #fff; --text: #16181d; --muted: #5f6675; --border: #e3e5e9; --accent: #4f46e5; --code: #f3f4f7; color-scheme: light; font: 16px/1.6 ui-sans-serif, system-ui, sans-serif; color: var(--text); background: var(--bg); }
+@media (prefers-color-scheme: dark) { :root { --bg: #0f1114; --text: #e6e8ec; --muted: #9aa1ae; --border: #262a31; --accent: #8b87ff; --code: #1a1d23; color-scheme: dark; } }
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); }
+a { color: var(--accent); }
+header { padding: 0.8rem 1.25rem; border-bottom: 1px solid var(--border); }
+.brand { font-weight: 700; color: var(--text); text-decoration: none; }
+.layout { display: grid; grid-template-columns: 230px minmax(0, 1fr); max-width: 1100px; margin: 0 auto; }
+nav { display: flex; flex-direction: column; padding: 1.25rem 0.75rem; gap: 2px; position: sticky; top: 0; align-self: start; }
+nav a { color: var(--muted); text-decoration: none; padding: 0.3rem 0.6rem; border-radius: 6px; font-size: 0.93rem; }
+nav a:hover, nav a[aria-current="page"] { color: var(--text); background: var(--code); }
+main { padding: 1.25rem 2rem 4rem; min-width: 0; }
+h1 { font-size: 2rem; line-height: 1.2; }
+h2 { margin-top: 2.2rem; border-bottom: 1px solid var(--border); padding-bottom: 0.3rem; }
+code { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 0.88em; background: var(--code); padding: 0.1em 0.35em; border-radius: 4px; }
+pre { background: var(--code); padding: 1rem; border-radius: 8px; overflow-x: auto; }
+pre code { background: none; padding: 0; }
+table { border-collapse: collapse; width: 100%; display: block; overflow-x: auto; }
+th, td { border: 1px solid var(--border); padding: 0.4rem 0.6rem; text-align: left; vertical-align: top; }
+th { background: var(--code); }
+blockquote { margin: 1rem 0; padding: 0.5rem 1rem; border-left: 3px solid var(--accent); background: var(--code); }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.skip { position: absolute; left: -999px; } .skip:focus { left: 1rem; top: 0.5rem; background: var(--bg); padding: 0.4rem; }
+@media (max-width: 760px) { .layout { grid-template-columns: 1fr; } nav { position: static; flex-direction: row; flex-wrap: wrap; border-bottom: 1px solid var(--border); } main { padding: 1rem; } }
+h1 a, h2 a, h3 a { color: inherit; text-decoration: none; } pre { line-height: 1.45; }
