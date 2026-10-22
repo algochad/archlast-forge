@@ -27,3 +27,11 @@ services:
       RUSTFS_CORS_ALLOWED_ORIGINS: "*"
     ports: ["59000:9000"]
     command: ["/data"]
+  rustfs-init:
+    image: amazon/aws-cli
+    depends_on: [rustfs]
+    environment:
+      AWS_ACCESS_KEY_ID: forgeadmin
+      AWS_SECRET_ACCESS_KEY: forgeadmin
+      AWS_DEFAULT_REGION: us-east-1
+    entrypoint: ["sh", "-c", "for i in $$(seq 1 30); do aws --endpoint-url http://rustfs:9000 s3 mb s3://forge 2>&1 | grep -qE 'make_bucket|BucketAlready' && exit 0; sleep 1; done; exit 1"]
