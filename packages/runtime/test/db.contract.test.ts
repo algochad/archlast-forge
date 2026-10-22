@@ -11,8 +11,14 @@ const tables: TablesSpec = {
     indexes: { by_list: ["listId"], by_list_done: ["listId", "done"] },
     strict: true,
   },
+  notes: {
+    fields: { body: v.string(), tag: v.string(), n: v.number() },
+    indexes: { by_n: ["n"], by_tag_n: ["tag", "n"] },
+    searchIndexes: { search_body: { searchField: "body", filterFields: ["tag"] } },
+    strict: true,
+  },
 };
-const specs = Object.entries(tables).map(([name, t]) => ({ name, indexes: t.indexes }));
+const specs = Object.entries(tables).map(([name, t]) => ({ name, indexes: t.indexes, searchIndexes: t.searchIndexes }));
 
 for (const [label, make] of dbAdapters) {
   describe(`Db contract: ${label}`, () => {
@@ -133,6 +139,76 @@ for (const [label, make] of dbAdapters) {
       });
       expect(counts).toEqual([1, 1]);
       expect((await read((s) => s.query("lists").collect())).length).toBe(2);
+    });
+  
+    test("range bounds, order and pagination", async () => {
+      db = await make();
+      await db.migrate(specs);
+      for (let n = 1; n <= 10; n++) await write((s) => s.insert("notes", { body: `note ${n}`, tag: n % 2 ? "odd" : "even", n }));
+      const ns = (docs: any[]) => docs.map((d) => d.n);
+      expect(ns(await read((s) => s.query("notes").withIndex("by_n", (q: any) => q.gt("n", 3).lte("n", 6)).collect()))).toEqual([4, 5, 6]);
+      expect(ns(await read((s) => s.query("notes").withIndex("by_n", (q: any) => q.gte("n", 8)).order("desc").collect()))).toEqual([10, 9, 8]);
+      expect(ns(await read((s) => s.query("notes").withIndex("by_tag_n", (q: any) => q.eq("tag", "even").lt("n", 7)).collect()))).toEqual([2, 4, 6]);
+      expect(ns(await read((s) => s.query("notes").order("desc").take(2)))).toEqual([10, 9]);
+      await expect(read((s) => s.query("notes").withIndex("by_tag_n", (q: any) => q.gt("n", 1)).collect())).rejects.toThrow("must be on");
+
+      // Pages cover everything exactly once, ascending and descending.
+      for (const order of ["asc", "desc"] as const) {
+        const seen: number[] = [];
+        let cursor: string | null = null;
+        for (;;) {
+          const page: any = await read((s) => s.query("notes").withIndex("by_n").order(order).paginate({ numItems: 3, cursor }));
+          seen.push(...ns(page.page));
+          if (page.isDone) break;
+          cursor = page.continueCursor;
+        }
+        expect(seen).toEqual(order === "asc" ? [1, 2, 3, 4, 5, 6, 7, 8, 9, 10] : [10, 9, 8, 7, 6, 5, 4, 3, 2, 1]);
+      }
+      const first: any = await read((s) => s.query("notes").withIndex("by_tag_n", (q: any) => q.eq("tag", "odd")).paginate({ numItems: 2, cursor: null }));
+      expect(ns(first.page)).toEqual([1, 3]);
+      // Inserting before the cursor doesn't shift the next page.
+      await write((s) => s.insert("notes", { body: "zero", tag: "odd", n: 0 }));
+      const second: any = await read((s) => s.query("notes").withIndex("by_tag_n", (q: any) => q.eq("tag", "odd")).paginate({ numItems: 2, cursor: first.continueCursor }));
+      expect(ns(second.page)).toEqual([5, 7]);
+      await expect(read((s) => s.query("notes").paginate({ numItems: 2, cursor: "garbage" }))).rejects.toThrow("Invalid pagination cursor");
+    });
+
+    test("full-text search with filters stays in sync with writes", async () => {
+      db = await make();
+      await db.migrate(specs);
+      const a = await write((s) => s.insert("notes", { body: "Buy oat milk today", tag: "home", n: 1 }));
+      await write((s) => s.insert("notes", { body: "Milkshake recipe", tag: "food", n: 2 }));
+      await write((s) => s.insert("notes", { body: "Call the bank", tag: "home", n: 3 }));
+      const search = (text: string, tag?: string) =>
+        read((s) => s.query("notes").withSearchIndex("search_body", (q: any) => (tag ? q.search("body", text).eq("tag", tag) : q.search("body", text))).take(10)).then((d) => d.map((x: any) => x.n).sort());
+      expect(await search("milk")).toEqual([1, 2]); // last term matches as a prefix
+      expect(await search("milk", "home")).toEqual([1]);
+      expect(await search("oat milk")).toEqual([1]); // every term must match
+      expect(await search("  ")).toEqual([]);
+      await write((s) => s.patch(a, { body: "Buy bread" }));
+      expect(await search("milk")).toEqual([2]);
+      await write((s) => s.delete(a));
+      expect(await search("bread")).toEqual([]);
+      // Re-running migrations keeps the index and backfills nothing twice.
+      await db.migrate(specs);
+      expect(await search("bank")).toEqual([3]);
+    });
+
+    test("documents over the size limit are rejected", async () => {
+      db = await make();
+      await db.migrate(specs);
+      const store = (tx: any) => new DocStore(tx, db.dialect, tables, new Set(), new Set(), 100);
+      await expect(db.transaction("write", (tx) => store(tx).insert("notes", { body: "x".repeat(200), tag: "t", n: 1 }))).rejects.toThrow("MAX_DOCUMENT_BYTES");
+    });
+
+    test("a transaction handle refuses use after the transaction ends", async () => {
+      db = await make();
+      await db.migrate(specs);
+      let leaked: any;
+      await db.transaction("write", async (tx) => {
+        leaked = tx;
+      });
+      await expect(Promise.resolve().then(() => leaked.query(`SELECT 1`))).rejects.toThrow("Transaction already finished");
     });
   });
 }

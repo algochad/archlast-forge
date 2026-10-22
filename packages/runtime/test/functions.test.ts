@@ -2,7 +2,7 @@ import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
 import { createSqliteDb } from "../src/server/db/sqlite";
 import type { Db } from "../src/server/db/types";
-import { Executor, type LogEntry } from "../src/server/executor";
+import { Executor, serializeError, type LogEntry } from "../src/server/executor";
 import { loadProject, tableSpecs, type Project } from "../src/server/project";
 import { migrateScheduler, nextRun, SchedulerLoop } from "../src/server/scheduler";
 import { dbAdapters, tempDir } from "./helpers";
@@ -25,6 +25,7 @@ async function setup(makeDb: () => Promise<Db> = async () => createSqliteDb(join
     db,
     tables: project.tables,
     functions: project.functions,
+    limits: { functionTimeoutMs: 300, actionTimeoutMs: 1000, maxResultBytes: 1000, maxDocumentBytes: 1 << 20 },
     publish: (t) => published.push(t),
     log: (e) => logs.push(e),
   });
@@ -145,4 +146,42 @@ test("a mutation whose return value fails validation rolls back", async () => {
   await expect(run("todos:wrongMutationReturn", "mutation", { listId })).rejects.toThrow('Invalid return value: returns must be an Id<"lists">');
   expect(await run("todos:listByList", "query", { listId })).toEqual([]);
   expect(published).toEqual([]);
+});
+
+test("internal functions: hidden from requests, callable from functions", async () => {
+  await run("todos:createList", "mutation", { name: "a" });
+  await expect(exec.run("todos:secretCount", "query", {}, {})).rejects.toThrow('Unknown function "todos:secretCount"');
+  expect((await exec.run("todos:secretCount", "query", {}, {}, { allowInternal: true })).value).toBe(1);
+  expect(await run("todos:callsInternal", "action")).toBe(1);
+});
+
+test("calls time out; a timed-out mutation writes nothing, even if its handler keeps going", async () => {
+  await expect(run("todos:slowQuery", "query", { ms: 1000 })).rejects.toThrow("todos:slowQuery timed out after 300 ms");
+  const listId = (await run("todos:createList", "mutation", { name: "t" })) as string;
+  await expect(run("todos:slowWrite", "mutation", { listId, ms: 600 })).rejects.toThrow("timed out");
+  await Bun.sleep(500); // the handler wakes up and tries to insert
+  expect(await run("todos:listByList", "query", { listId })).toEqual([]);
+});
+
+test("results over the size limit fail", async () => {
+  expect(await run("todos:bigResult", "query", { bytes: 100 })).toHaveLength(100);
+  await expect(run("todos:bigResult", "query", { bytes: 5000 })).rejects.toThrow("MAX_RESULT_BYTES");
+});
+
+test("errors are classified for the caller", async () => {
+  const kind = async (p: Promise<unknown>) => serializeError(await p.then(() => undefined, (e) => e));
+  expect(await kind(run("todos:forgeFail", "mutation"))).toMatchObject({ kind: "user", data: { code: "LIMIT", max: 3 } });
+  expect(await kind(run("todos:add", "mutation", { title: 1 }))).toMatchObject({ kind: "validation" });
+  expect(await kind(run("todos:slowQuery", "query", { ms: 1000 }))).toMatchObject({ kind: "timeout" });
+  expect(await kind(run("todos:crash", "query"))).toMatchObject({ kind: "internal", message: "secret internal detail" });
+});
+
+test("an action whose server died is failed once its lease expires", async () => {
+  const loop = new SchedulerLoop(exec, db, project.functions, [], 1000);
+  await db.execute(`INSERT INTO "_scheduled_functions" ("_id", "_creationTime", "name", "args", "scheduledTime", "state", "completedTime") VALUES (?, ?, ?, ?, ?, 'running', ?)`, [
+    "_scheduled_functions:dead", Date.now(), "todos:addViaAction", "{}", Date.now() - 5000, Date.now() - 5000,
+  ]);
+  await loop.sweep();
+  const [job] = await db.query<{ state: string; error: string }>(`SELECT "state", "error" FROM "_scheduled_functions" WHERE "_id" = ?`, ["_scheduled_functions:dead"]);
+  expect(job).toEqual({ state: "failed", error: "Interrupted: the server running this action stopped" });
 });

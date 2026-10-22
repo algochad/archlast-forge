@@ -11,4 +11,8 @@ export default defineSchema({
     .index("by_list", ["listId"])
     .index("by_list_done", ["listId", "done"]),
   events: defineTable({ kind: v.string(), at: v.number() }),
+  notes: defineTable({ body: v.string(), tag: v.string(), n: v.number() })
+    .index("by_n", ["n"])
+    .index("by_tag_n", ["tag", "n"])
+    .searchIndex("search_body", { searchField: "body", filterFields: ["tag"] }),
 });

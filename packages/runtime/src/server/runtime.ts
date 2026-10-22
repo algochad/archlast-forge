@@ -34,6 +34,9 @@ interface Options {
 /** One function runtime process. */
 class RuntimeProcess {
   proc?: Subprocess;
+  /** Messages sent before the process reports ready would be lost, so it only gets work after that. */
+  ready = false;
+  started?: Promise<Manifest>;
   private pending = new Map<number, Pending>();
   private seq = 0;
 
@@ -58,7 +61,10 @@ class RuntimeProcess {
       stdio: ["ignore", "inherit", "inherit"],
       serialization: "advanced",
       ipc: (msg: RuntimeMessage) => {
-        if (msg.t === "ready") return ready.resolve(msg.manifest);
+        if (msg.t === "ready") {
+          this.ready = true;
+          return ready.resolve(msg.manifest);
+        }
         if (msg.t === "fatal") return ready.reject(new Error((fatal = msg.error)));
         if (msg.t === "result") {
           const p = this.pending.get(msg.id);
@@ -79,12 +85,15 @@ class RuntimeProcess {
       },
     });
     this.proc = proc;
+    this.ready = false;
+    this.started = ready.promise;
     return ready.promise;
   }
 
   async stop() {
     const proc = this.proc;
     this.proc = undefined;
+    this.ready = false;
     this.failPending("Function runtime restarted");
     if (!proc) return;
     proc.send({ t: "shutdown" });
@@ -96,6 +105,7 @@ class RuntimeProcess {
   kill() {
     const proc = this.proc;
     this.proc = undefined;
+    this.ready = false;
     proc?.kill(9);
     this.failPending("Function runtime was restarted because a call didn't finish in time");
   }
@@ -192,9 +202,15 @@ export class FunctionRuntime {
   private async pick(index?: number) {
     if (this.starting) await this.starting.catch(() => {});
     if (!this.manifest || this.loadError) throw new RuntimeCallError(this.loadError ?? "Function runtime is not running", "internal");
-    const live = this.workers.filter((w) => w.proc);
-    if (!live.length) throw new RuntimeCallError("Function runtime is restarting", "internal");
-    return index === undefined ? live[this.next++ % live.length]! : (this.workers[index] ?? live[0]!);
+    let live = this.workers.filter((w) => w.proc && w.ready);
+    if (!live.length) {
+      // Every process is restarting (e.g. after a hung call was killed): wait for the first to come back.
+      await Promise.race([Promise.any(this.workers.map((w) => w.started ?? Promise.reject())).catch(() => {}), Bun.sleep(30_000)]);
+      live = this.workers.filter((w) => w.proc && w.ready);
+      if (!live.length) throw new RuntimeCallError("Function runtime is restarting", "internal");
+    }
+    const wanted = index === undefined ? undefined : this.workers[index];
+    return wanted?.ready ? wanted : live[this.next++ % live.length]!;
   }
 
   private async send(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, index?: number) {

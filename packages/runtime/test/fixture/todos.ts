@@ -87,3 +87,54 @@ export const wrongMutationReturn = mutation({
 });
 
 export const voidAction = action({ returns: v.null(), handler: async () => {} });
+
+// ---- for safety and query-feature tests ----
+import { ForgeError, internalQuery, paginationOptsValidator } from "../../src/index";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
+
+export const secretCount = internalQuery({ handler: async (ctx) => (await ctx.db.query("lists").collect()).length });
+
+export const callsInternal = action({ handler: async (ctx) => (await ctx.runQuery((anyApi as any).todos.secretCount)) as number });
+
+export const slowQuery = query({ args: { ms: v.number() }, handler: async (_ctx, { ms }) => (await sleep(ms), 1) });
+
+/** Blocks the event loop: only killing the process stops it. */
+export const spin = query({
+  args: { ms: v.number() },
+  handler: (_ctx, { ms }) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end);
+    return 1;
+  },
+});
+
+export const slowWrite = mutation({
+  args: { listId: v.id("lists"), ms: v.number() },
+  handler: async (ctx, { listId, ms }) => {
+    await sleep(ms);
+    await ctx.db.insert("todos", { listId, title: "late write", done: false });
+  },
+});
+
+export const bigResult = query({ args: { bytes: v.number() }, handler: async (_ctx, { bytes }) => "x".repeat(bytes) });
+
+export const forgeFail = mutation({ handler: () => { throw new ForgeError({ code: "LIMIT", max: 3 }); } });
+
+export const crash = query({ handler: () => { throw new Error("secret internal detail"); } });
+
+export const todosPage = query({
+  args: { listId: v.id("lists"), paginationOpts: paginationOptsValidator },
+  handler: (ctx, { listId, paginationOpts }) => ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).paginate(paginationOpts),
+});
+
+export const addNote = mutation({
+  args: { body: v.string(), tag: v.string(), n: v.number() },
+  handler: (ctx, note) => ctx.db.insert("notes", note),
+});
+
+export const searchNotes = query({
+  args: { text: v.string(), tag: v.optional(v.string()) },
+  handler: (ctx, { text, tag }) =>
+    ctx.db.query("notes").withSearchIndex("search_body", (q) => (tag === undefined ? q.search("body", text) : q.search("body", text).eq("tag", tag))).take(10),
+});
