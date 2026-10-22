@@ -13,6 +13,7 @@ import { migrateScheduler, SchedulerLoop } from "./scheduler";
 import { S3Storage } from "./storage";
 
 const send = (msg: RuntimeMessage) => process.send!(msg);
+process.on("disconnect", () => process.exit(0)); // the server is gone
 
 for (const level of ["log", "info", "warn", "error", "debug"] as const) {
   const original = console[level].bind(console);
