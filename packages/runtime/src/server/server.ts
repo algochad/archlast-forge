@@ -93,6 +93,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   const server = Bun.serve<WsData>({
     port: config.port,
+    // Bun's HMR dev server rejects unknown Host headers, which breaks the dashboard behind proxies.
+    development: { hmr: false },
     routes: opts.dashboard ? { "/_dashboard": opts.dashboard } : {},
     async fetch(req, srv) {
       const url = new URL(req.url);
