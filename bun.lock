@@ -76,6 +76,8 @@
       },
       "devDependencies": {
         "@types/bun": "1.4.3",
+        "@types/react": "19",
+        "@types/react-dom": "19",
       },
     },
     "packages/react": {
@@ -101,6 +103,7 @@
       "dependencies": {
         "@trpc/server": "11.19.0",
         "better-auth": "1.7.12",
+        "zod": "4.6.7",
       },
       "devDependencies": {
         "@types/bun": "1.4.3",

@@ -81,7 +81,7 @@ async function main() {
 
   scheduler.start();
   const manifest: Manifest = {
-    functions: [...project.functions].map(([name, fn]) => ({ name, kind: fn.kind, args: fn.args })),
+    functions: [...project.functions].map(([name, fn]) => ({ name, kind: fn.kind, args: fn.args, returns: fn.returns })),
     tables: project.tables,
     crons: project.crons,
     storage: Boolean(config.s3),

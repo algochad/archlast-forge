@@ -72,7 +72,7 @@ export async function loadProject(convexDir: string): Promise<Project> {
 }
 
 export interface Manifest {
-  functions: { name: string; kind: FunctionKind; args: Record<string, unknown> }[];
+  functions: { name: string; kind: FunctionKind; args: Record<string, unknown>; returns?: unknown }[];
   tables: TablesSpec;
   crons: CronJob[];
   storage: boolean;

@@ -54,6 +54,7 @@ const add = useMutation(api.todos.add);
 ```
 
 - **query** reads from one snapshot and is reactive. **mutation** is one transaction, and its topics publish after commit. **action** does external I/O and reaches the database only through `ctx.runQuery` and `ctx.runMutation`.
+- Validators (`v.*`) compile to Zod schemas, and every call's args are validated with them. Add `returns: v.…` to also validate the return value. The validator then becomes the function's return type, and in a mutation a mismatch rolls the write back.
 - `ctx.storage` creates presigned upload and download URLs. `ctx.scheduler.runAfter/runAt` schedules mutations and actions. `convex/crons.ts` defines `cronJobs()` (UTC).
 - `users`, `sessions`, `accounts` and `verifications` are built in, managed by Better Auth. To customize sign-in, add `convex/auth.ts` with `export default defineAuth({...})`.
 - `archlast-forge codegen` writes `convex/_generated/`. Types come from your validators and handlers, so changing a validator breaks its call sites at compile time.

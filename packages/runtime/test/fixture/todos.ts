@@ -68,3 +68,22 @@ export const addViaAction = action({
 export const actionTouchesDb = action({
   handler: async (ctx) => (ctx as any).db === undefined,
 });
+
+export const getChecked = query({
+  args: { id: v.id("todos") },
+  returns: v.union(v.object({ _id: v.id("todos"), _creationTime: v.number(), listId: v.id("lists"), title: v.string(), done: v.boolean(), tags: v.optional(v.array(v.string())) }), v.null()),
+  handler: (ctx, { id }) => ctx.db.get(id) as any, // fixture has no registered schema
+});
+
+export const wrongQueryReturn = query({
+  returns: v.string(),
+  handler: async () => 5 as unknown as string,
+});
+
+export const wrongMutationReturn = mutation({
+  args: { listId: v.id("lists") },
+  returns: v.id("lists"),
+  handler: (ctx, { listId }) => ctx.db.insert("todos", { listId, title: "should roll back", done: false }) as any,
+});
+
+export const voidAction = action({ returns: v.null(), handler: async () => {} });

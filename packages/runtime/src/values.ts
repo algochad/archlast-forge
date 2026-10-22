@@ -1,16 +1,19 @@
+import { z } from "zod";
+
 declare const phantom: unique symbol;
 
 export type Id<TableName extends string> = string & { readonly __tableName: TableName };
 
-export type ValidatorKind = "string" | "number" | "boolean" | "id" | "array" | "object";
+export type ValidatorKind = "string" | "number" | "boolean" | "null" | "id" | "array" | "object" | "union";
 
-/** Plain data so schemas can cross process boundaries (dashboard, function runtime). */
+/** Plain data so schemas can cross process boundaries (dashboard, function runtime); compiled to Zod for validation. */
 export interface Validator<T = unknown, IsOptional extends boolean = boolean> {
   readonly kind: ValidatorKind;
   readonly optional: IsOptional;
   readonly table?: string;
   readonly element?: Validator;
   readonly fields?: Record<string, Validator>;
+  readonly members?: Validator[];
   readonly [phantom]?: T;
 }
 
@@ -34,9 +37,12 @@ export const v = {
   string: () => make<string>("string"),
   number: () => make<number>("number"),
   boolean: () => make<boolean>("boolean"),
+  null: () => make<null>("null"),
   id: <TableName extends string>(table: TableName) => make<Id<TableName>>("id", { table }),
   array: <E extends Validator<any, false>>(element: E) => make<Infer<E>[]>("array", { element }),
   object: <F extends PropertyValidators>(fields: F) => make<ObjectType<F>>("object", { fields }),
+  union: <M extends [Validator<any, false>, ...Validator<any, false>[]]>(...members: M) =>
+    make<Infer<M[number]>>("union", { members }),
   optional: <I extends Validator<any, false>>(inner: I) =>
     ({ ...inner, optional: true }) as Validator<Infer<I> | undefined, true>,
 };
@@ -50,45 +56,83 @@ export function tableOf(id: string): string {
   return id.slice(0, id.indexOf(":"));
 }
 
-const isPlainObject = (x: unknown): x is Record<string, unknown> =>
-  typeof x === "object" && x !== null && Object.getPrototypeOf(x) === Object.prototype;
+// ---- Zod compilation ----
 
-export function validate(validator: Validator, value: unknown, path = "value"): void {
-  if (value === undefined) {
-    if (validator.optional) return;
-    throw new ValidationError(`${path} is required`);
-  }
-  const fail = (expected: string) => {
-    throw new ValidationError(`${path} must be ${expected}, got ${JSON.stringify(value) ?? typeof value}`);
-  };
+const expected = (what: string) => (iss: { input?: unknown }) =>
+  iss.input === undefined ? "is required" : `must be ${what}, got ${JSON.stringify(iss.input) ?? typeof iss.input}`;
+
+const compiled = new WeakMap<Validator, z.ZodType>();
+
+/** The Zod schema for a validator, cached per validator object. */
+export function toZod(validator: Validator): z.ZodType {
+  let schema = compiled.get(validator);
+  if (schema) return schema;
   switch (validator.kind) {
     case "string":
-      if (typeof value !== "string") fail("a string");
-      return;
+      schema = z.string({ error: expected("a string") });
+      break;
     case "number":
-      if (typeof value !== "number" || !Number.isFinite(value)) fail("a finite number");
-      return;
+      schema = z.number({ error: expected("a finite number") });
+      break;
     case "boolean":
-      if (typeof value !== "boolean") fail("a boolean");
-      return;
-    case "id":
-      if (typeof value !== "string" || tableOf(value) !== validator.table) fail(`an Id<"${validator.table}">`);
-      return;
+      schema = z.boolean({ error: expected("a boolean") });
+      break;
+    case "null":
+      schema = z.null({ error: expected("null") });
+      break;
+    case "id": {
+      const what = `an Id<"${validator.table}">`;
+      schema = z.string({ error: expected(what) }).refine((s) => tableOf(s) === validator.table, { error: expected(what) });
+      break;
+    }
     case "array":
-      if (!Array.isArray(value)) fail("an array");
-      (value as unknown[]).forEach((el, i) => validate(validator.element!, el, `${path}[${i}]`));
-      return;
+      schema = z.array(toZod(validator.element!), { error: expected("an array") });
+      break;
     case "object":
-      if (!isPlainObject(value)) fail("an object");
-      validateFields(validator.fields!, value as Record<string, unknown>, path);
-      return;
+      schema = objectSchema(validator.fields!);
+      break;
+    case "union":
+      schema = z.union(validator.members!.map(toZod) as [z.ZodType, ...z.ZodType[]], {
+        error: expected(`one of ${validator.members!.map((m) => m.kind).join(" | ")}`),
+      });
+      break;
   }
+  if (validator.optional) schema = schema!.optional();
+  compiled.set(validator, schema!);
+  return schema!;
 }
 
-export function validateFields(fields: Record<string, Validator>, value: Record<string, unknown>, path = "value") {
-  if (!isPlainObject(value)) throw new ValidationError(`${path} must be an object`);
-  for (const key of Object.keys(value)) {
-    if (!(key in fields) && value[key] !== undefined) throw new ValidationError(`${path}.${key} is not in the validator`);
+const objectSchemas = new WeakMap<Record<string, Validator>, z.ZodType>();
+
+function objectSchema(fields: Record<string, Validator>) {
+  let schema = objectSchemas.get(fields);
+  if (!schema) {
+    schema = z.strictObject(Object.fromEntries(Object.entries(fields).map(([k, f]) => [k, toZod(f)])), { error: expected("an object") });
+    objectSchemas.set(fields, schema);
   }
-  for (const [key, field] of Object.entries(fields)) validate(field, value[key], `${path}.${key}`);
+  return schema;
+}
+
+const formatPath = (base: string, path: PropertyKey[]) =>
+  base + path.map((p) => (typeof p === "number" ? `[${p}]` : `.${String(p)}`)).join("");
+
+function check(schema: z.ZodType, value: unknown, path: string) {
+  const result = schema.safeParse(value);
+  if (result.success) return;
+  const issue = result.error.issues[0]!;
+  if (issue.code === "unrecognized_keys")
+    throw new ValidationError(`${formatPath(path, [...issue.path, issue.keys[0]!])} is not in the validator`);
+  throw new ValidationError(`${formatPath(path, issue.path)} ${issue.message}`);
+}
+
+export function validate(validator: Validator, value: unknown, path = "value"): void {
+  check(toZod(validator), value, path);
+}
+
+/** Validates a document or an args object. Keys set to undefined count as absent. */
+export function validateFields(fields: Record<string, Validator>, value: Record<string, unknown>, path = "value") {
+  const defined = value && typeof value === "object" && !Array.isArray(value)
+    ? Object.fromEntries(Object.entries(value).filter(([, x]) => x !== undefined))
+    : value;
+  check(objectSchema(fields), defined, path);
 }

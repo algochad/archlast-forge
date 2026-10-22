@@ -51,3 +51,11 @@ Answers to questions the build prompt and architecture doc left open, and the ch
 ## Config
 
 - Startup fails fast on: a non-postgres `DATABASE_URL`, `REPLICAS > 1` without `REDIS_URL` or Postgres, an unreachable Redis, only one of `S3_ENDPOINT`/`S3_BUCKET` set, and a missing `BETTER_AUTH_SECRET` outside dev.
+
+## Validation
+
+- **Zod runs validation; `v` stays the public API.** Validators remain plain data, so they can still cross into the dashboard and the function runtime. Each one compiles once to a Zod schema, cached per validator object. Args, documents and return values are all checked by Zod. Error messages keep the `args.title must be a string` form.
+- **`returns` validators** (`query({ returns: v.string(), ... })`): when given, the validator is the function's return type, and the handler is type-checked against it. At runtime a mismatch fails the call. A mutation checks its return value inside its own transaction, so a mismatch rolls the mutation back. A handler that returns nothing counts as `null`, so it pairs with `v.null()`. A mismatch is reported as an internal error, not a bad request, because it's a server bug.
+- Added `v.null()` and `v.union(...)` so that common return types such as `Doc | null` can be expressed.
+- Known gap: TypeScript allows extra properties on a returned object, but the runtime object check is strict, so the extra fields fail at runtime.
+- Like Convex, a handler that calls `api.<same module>.*` needs an explicit return type annotation to break the inference cycle.
