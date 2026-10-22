@@ -100,6 +100,7 @@ packages/react/       ArchlastForgeProvider, useQuery, useMutation, useAction, u
 packages/cli/         archlast-forge dev | codegen | migrate | start | dashboard
 packages/dashboard/   admin UI served at /_dashboard
 docs/decisions.md     design decisions and known shortcuts
+docs/roadmap.md       what remains before production, and the planned Docker engine
 ```
 
 ## Testing

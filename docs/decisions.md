@@ -59,3 +59,8 @@ Answers to questions the build prompt and architecture doc left open, and the ch
 - Added `v.null()` and `v.union(...)` so that common return types such as `Doc | null` can be expressed.
 - Known gap: TypeScript allows extra properties on a returned object, but the runtime object check is strict, so the extra fields fail at runtime.
 - Like Convex, a handler that calls `api.<same module>.*` needs an explicit return type annotation to break the inference cycle.
+
+## Scope
+
+- **Self-hosted framework, not a multi-tenant platform** (user decision). One deployment per app. Hosting many customers' projects (tenant isolation, metering, a control plane) is out of scope for now.
+- **Planned: the engine runs as a Docker container, started and controlled by the CLI** (user direction). The design and its open questions are in [roadmap.md](roadmap.md#target-architecture-the-engine-as-a-docker-container-controlled-by-the-cli). Until it's built, the CLI runs the engine in its own process.
