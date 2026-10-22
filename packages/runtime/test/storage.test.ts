@@ -46,7 +46,8 @@ test.skipIf(!endpoint)("ctx.storage: metadata row commits first, the object is d
   await db.migrate(Object.entries(project.tables).map(([name, t]) => ({ name, indexes: t.indexes })));
   const published: string[][] = [];
   const exec = new Executor({ db, tables: project.tables, functions: project.functions, storage: s3(), publish: (t) => published.push(t), log: () => {} });
-  const storageOf = (s: DocStore, after?: (() => unknown)[]) => (exec as any).storage(s, after);
+  type Ctx = { getUrl(id: string): Promise<string>; generateUploadUrl(o: object): Promise<{ uploadUrl: string; storageId: string }>; delete(id: string): Promise<void> };
+  const storageOf = (s: DocStore, after?: (() => unknown)[]): Ctx => (exec as any).storage(s, after);
 
   const { uploadUrl, storageId } = await exec.mutate((s, _tx, after) => storageOf(s, after).generateUploadUrl({ contentType: "text/plain" }));
   expect(storageId).toMatch(/^_storage:/);

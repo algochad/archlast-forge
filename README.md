@@ -1,159 +1,111 @@
-# Turborepo starter
+# archlast-forge
 
-This Turborepo starter is maintained by the Turborepo core team.
+A Convex-style reactive backend on tRPC and Bun. You declare a schema and typed functions in `convex/`, and clients subscribe to queries that push new results when the data they read changes. It runs on bun:sqlite or Postgres, with an in-memory or Redis bus and cache, Better Auth for sign-in, and optional S3-compatible storage (RustFS, AWS S3).
 
-## Using this example
+## Quick start
 
-Run the following command:
+Requires Bun 1.4.3 (`mise install` picks it up from `mise.toml`).
 
-```sh
-npx create-turbo@latest
+```bash
+bun install
+bun run dev        # demo backend on :3000 (+ dashboard at /_dashboard) and Vite on :5173
 ```
 
-## What's inside?
+Open http://localhost:5173 in two tabs, create an account, and add todos. Changes in one tab appear in the other. The backend prints the dashboard's admin key on startup.
 
-This Turborepo includes the following packages/apps:
+File attachments need storage. Run `bun run services:up`, then `cp apps/demo/convex/.env.example apps/demo/convex/.env`.
 
-### Apps and Packages
+## Writing a backend
 
-- `docs`: a [Next.js](https://nextjs.org/) app
-- `web`: another [Next.js](https://nextjs.org/) app
-- `@repo/ui`: a stub React component library shared by both `web` and `docs` applications
-- `@repo/eslint-config`: `eslint` configurations (includes `@next/eslint-plugin-next` and `eslint-config-prettier`)
-- `@repo/typescript-config`: `tsconfig.json`s used throughout the monorepo
+```ts
+// convex/schema.ts
+import { defineSchema, defineTable, v } from "@archlast-forge/runtime";
 
-Each package/app is 100% [TypeScript](https://www.typescriptlang.org/).
-
-### Utilities
-
-This Turborepo has some additional tools already setup for you:
-
-- [TypeScript](https://www.typescriptlang.org/) for static type checking
-- [ESLint](https://eslint.org/) for code linting
-- [Prettier](https://prettier.io) for code formatting
-
-### Build
-
-To build all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo build
+export default defineSchema({
+  lists: defineTable({ name: v.string() }),
+  todos: defineTable({ listId: v.id("lists"), title: v.string(), done: v.boolean(), ownerId: v.id("users") })
+    .index("by_list", ["listId"]),
+});
 ```
 
-Without global `turbo`, use your package manager:
+```ts
+// convex/todos.ts
+import { mutation, query, v } from "@archlast-forge/runtime";
 
-```sh
-cd my-turborepo
-npx turbo build
-bun exec turbo build
-bun exec turbo build
+export const listByList = query({
+  args: { listId: v.id("lists") },
+  handler: (ctx, { listId }) => ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).collect(),
+});
+
+export const add = mutation({
+  args: { listId: v.id("lists"), title: v.string() },
+  handler: async (ctx, args) => {
+    const identity = await ctx.auth.getUserIdentity();
+    if (!identity) throw new Error("unauthenticated");
+    return ctx.db.insert("todos", { ...args, done: false, ownerId: identity.userId });
+  },
+});
 ```
 
-You can build a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo build --filter=docs
+```tsx
+// src/App.tsx: import only @archlast-forge/react and convex/_generated
+const todos = useQuery(api.todos.listByList, { listId }); // Todo[] | undefined, live
+const add = useMutation(api.todos.add);
 ```
 
-Without global `turbo`:
+- **query** reads from one snapshot and is reactive. **mutation** is one transaction, and its topics publish after commit. **action** does external I/O and reaches the database only through `ctx.runQuery` and `ctx.runMutation`.
+- `ctx.storage` creates presigned upload and download URLs. `ctx.scheduler.runAfter/runAt` schedules mutations and actions. `convex/crons.ts` defines `cronJobs()` (UTC).
+- `users`, `sessions`, `accounts` and `verifications` are built in, managed by Better Auth. To customize sign-in, add `convex/auth.ts` with `export default defineAuth({...})`.
+- `archlast-forge codegen` writes `convex/_generated/`. Types come from your validators and handlers, so changing a validator breaks its call sites at compile time.
 
-```sh
-npx turbo build --filter=docs
-bun exec turbo build --filter=docs
-bun exec turbo build --filter=docs
+### Server dependencies
+
+Add packages to `convex/package.json` (`bun add --cwd convex zod`). The browser bundle never sees them. `dev` and `codegen` reinstall when the manifest or lockfile changes, and `dev` restarts only the function runtime. Installs pass `--ignore-scripts`. If a package needs its install script, list it in `"trustedDependencies"` in `convex/package.json`, and Bun runs scripts for those packages only.
+
+## CLI
+
+| Command | What it does |
+|---|---|
+| `archlast-forge dev` | Codegen, install server deps, serve, and watch `convex/`. Restarts only the function runtime on changes. |
+| `archlast-forge codegen` | Writes `convex/_generated/` and checks that `src/` imports only `convex/_generated`. |
+| `archlast-forge migrate` | Syncs tables and indexes, and reports documents that don't match the schema. |
+| `archlast-forge start` | Production server. Requires `BETTER_AUTH_SECRET`. |
+| `archlast-forge dashboard` | Prints the dashboard URL. |
+
+## Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `DATABASE_URL` | bun:sqlite at `DATA_DIR/app.db` | `postgres://…` for Postgres |
+| `DATA_DIR` | `./data` | SQLite and dev secrets |
+| `REDIS_URL` | in-memory bus and cache | Required when `REPLICAS > 1` |
+| `REPLICAS` | `1` | Declares a multi-server deployment, checked at startup |
+| `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION` | storage off | RustFS or any S3-compatible service |
+| `BETTER_AUTH_SECRET` | generated in dev | Required in production |
+| `BETTER_AUTH_URL` | the server's URL | |
+| `TRUSTED_ORIGINS` | none | Comma-separated browser origins, for CORS and Better Auth |
+| `ADMIN_KEY` | generated in dev | Dashboard access. Without it, the dashboard is disabled. |
+| `CACHE_TTL_MS` | `60000` (`0` in dev) | Query result cache |
+| `PORT` | `3000` | |
+
+## Repository
+
+```
+apps/demo/            React todo app (Vite), set up like a user project
+apps/demo/convex/     its backend: schema, functions, crons, auth; own package.json
+packages/runtime/     engine: validators, schema, functions, Db/Bus/Cache/Storage + adapters, server
+packages/client/      framework-agnostic client: tRPC over HTTP + WebSocket, live queries, TanStack sync
+packages/react/       ArchlastForgeProvider, useQuery, useMutation, useAction, useSession
+packages/cli/         archlast-forge dev | codegen | migrate | start | dashboard
+packages/dashboard/   admin UI served at /_dashboard
+docs/decisions.md     design decisions and known shortcuts
 ```
 
-### Develop
+## Testing
 
-To develop all apps and packages, run the following command:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo dev
+```bash
+bun run test              # SQLite and in-memory adapters only
+bun run services:up       # Postgres, Redis and RustFS in Docker
+bun run test:all          # adds the Postgres, Redis, S3 and two-server tests
+bun run typecheck         # includes the compile-time type tests
 ```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo dev
-bun exec turbo dev
-bun exec turbo dev
-```
-
-You can develop a specific package by using a [filter](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters):
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo dev --filter=web
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo dev --filter=web
-bun exec turbo dev --filter=web
-bun exec turbo dev --filter=web
-```
-
-### Remote Caching
-
-> [!TIP]
-> Vercel Remote Cache is free for all plans. Get started today at [vercel.com](https://vercel.com/signup?utm_source=remote-cache-sdk&utm_campaign=free_remote_cache).
-
-Turborepo can use a technique known as [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching) to share cache artifacts across machines, enabling you to share build caches with your team and CI/CD pipelines.
-
-By default, Turborepo will cache locally. To enable Remote Caching you will need an account with Vercel. If you don't have an account you can [create one](https://vercel.com/signup?utm_source=turborepo-examples), then enter the following commands:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed (recommended):
-
-```sh
-cd my-turborepo
-turbo login
-```
-
-Without global `turbo`, use your package manager:
-
-```sh
-cd my-turborepo
-npx turbo login
-bun exec turbo login
-bun exec turbo login
-```
-
-This will authenticate the Turborepo CLI with your [Vercel account](https://vercel.com/docs/concepts/personal-accounts/overview).
-
-Next, you can link your Turborepo to your Remote Cache by running the following command from the root of your Turborepo:
-
-With [global `turbo`](https://turborepo.dev/docs/getting-started/installation#global-installation) installed:
-
-```sh
-turbo link
-```
-
-Without global `turbo`:
-
-```sh
-npx turbo link
-bun exec turbo link
-bun exec turbo link
-```
-
-## Useful Links
-
-Learn more about the power of Turborepo:
-
-- [Tasks](https://turborepo.dev/docs/crafting-your-repository/running-tasks)
-- [Caching](https://turborepo.dev/docs/crafting-your-repository/caching)
-- [Remote Caching](https://turborepo.dev/docs/core-concepts/remote-caching)
-- [Filtering](https://turborepo.dev/docs/crafting-your-repository/running-tasks#using-filters)
-- [Configuration Options](https://turborepo.dev/docs/reference/configuration)
-- [CLI Usage](https://turborepo.dev/docs/reference/command-line-reference)

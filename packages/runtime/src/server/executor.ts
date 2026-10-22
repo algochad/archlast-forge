@@ -62,8 +62,8 @@ export class Executor {
         for (const f of after) Promise.resolve().then(f).catch((e) => console.error("after-commit task failed:", e));
         return value;
       } catch (e) {
-        if (attempt < 5 && isRetryableConflict(e)) continue;
-        throw e;
+        if (attempt >= 10 || !isRetryableConflict(e)) throw e;
+        await Bun.sleep(Math.random() * 2 ** attempt * 5); // jittered backoff under contention
       }
     }
   }
