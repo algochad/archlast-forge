@@ -97,7 +97,7 @@ Decided without asking, as directed, while implementing [roadmap.md](roadmap.md)
 - **Observability.**
   - *Logs:* JSON server logs in production. Function logs are batched into `_logs`, with `LOG_RETENTION_DAYS` retention.
   - *Metrics:* Prometheus `/metrics` behind `METRICS_TOKEN` or `ADMIN_KEY`; subscription and connection samples go into `_metrics` every 30 s for the dashboard.
-  - *Tracing:* `x-request-id` is accepted, generated and echoed. Distributed tracing (OpenTelemetry) isn't included.
+  - *Tracing:* `x-request-id` is accepted, generated and echoed. With `OTEL_EXPORTER_OTLP_ENDPOINT` set, each function call is a span exported over OTLP/HTTP JSON (no SDK dependency), continuing an incoming W3C `traceparent`. Spans cover the server side of a call; there are no child spans inside the function runtime.
 - **Health and shutdown.** `/health` reports liveness and `/ready` readiness. SIGTERM marks the server not ready, closes WebSockets with 1012, drains HTTP for up to 10 s, then stops the runtime.
 
 ## Docker engine (the open questions from the roadmap)

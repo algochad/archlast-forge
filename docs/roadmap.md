@@ -2,7 +2,7 @@
 
 What remained before archlast-forge was ready for production use, assessed against the code as of the Zod validation merge (PR #1). Items are in priority order within each tier.
 
-> **Status: implemented**, all P0, P1 and P2 items and the dashboard, on the `production-readiness` branch. The open questions below were settled as recorded in [decisions.md](decisions.md#docker-engine-the-open-questions-from-the-roadmap). Two parts are partial: tracing stops at request IDs (no OpenTelemetry), and npm publishing is automated but needs an `NPM_TOKEN` secret and a license choice.
+> **Status: implemented**, all P0, P1 and P2 items and the dashboard, on the `production-readiness` branch. The open questions below were settled as recorded in [decisions.md](decisions.md#docker-engine-the-open-questions-from-the-roadmap). One part needs you: npm publishing is automated, but it needs an `NPM_TOKEN` secret and a license choice.
 
 ## Scope: a self-hosted framework
 

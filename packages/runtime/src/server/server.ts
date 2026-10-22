@@ -18,6 +18,7 @@ import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./ratelim
 import { buildAdminRouter, buildRouter, type Context } from "./router";
 import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager } from "./subscriptions";
+import { Tracer } from "./tracing";
 import { WsShim, type WsData } from "./ws";
 
 export interface ServerOptions {
@@ -100,7 +101,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   });
   if (cache) bus.subscribe("*", (topic) => queries.invalidated(topic));
 
-  const routerOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection };
+  const tracer = Tracer.fromEnv(env);
+  const routerOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, tracer };
   let router: AnyRouter = buildRouter({ functions: [], tables: {}, crons: [], storage: false }, runtime, queries, subs, routerOpts);
   // tRPC only reads `_def`, so this stable handle lets open sockets see procedures added by a reload.
   const routerRef = { get _def() { return router._def; } } as AnyRouter;
@@ -151,6 +153,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       headers: pickAuthHeaders((n) => req.headers[n] as string | undefined),
       requestId: requestIdOf(req.headers["x-request-id"] as string | undefined),
       conn: { subscriptions: 0 },
+      traceparent: req.headers.traceparent as string | undefined,
     }),
   });
 
@@ -270,7 +273,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
               endpoint: "/trpc",
               req,
               router: routerRef,
-              createContext: ({ req }): Context => ({ headers: pickAuthHeaders((n) => req.headers.get(n)), requestId }),
+              createContext: ({ req }): Context => ({
+                headers: pickAuthHeaders((n) => req.headers.get(n)),
+                requestId,
+                traceparent: req.headers.get("traceparent") ?? undefined,
+              }),
             }),
           ),
         );
@@ -356,6 +363,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       await runtime.stop();
       await bus.close();
       await cache?.close();
+      await tracer?.close();
     },
   };
 }

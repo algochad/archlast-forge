@@ -26,5 +26,6 @@ Environment variables, read at startup. Invalid or contradictory values fail fas
 | `LOG_RETENTION_DAYS` | `7` | function logs kept in the database |
 | `SCHEMA_CHECK` | on in production | refuse to start when stored documents don't match the schema |
 | `METRICS_TOKEN` | `ADMIN_KEY` | bearer token for `/metrics` |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` (or `…_TRACES_ENDPOINT`), `OTEL_SERVICE_NAME` | tracing off | export a span per function call over OTLP/HTTP JSON; incoming `traceparent` headers are continued |
 
 Variables set with `archlast-forge env set` are stored in the database and loaded into the function runtime. The process environment wins over them.

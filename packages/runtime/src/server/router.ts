@@ -4,6 +4,7 @@ import type { CallHeaders, LogEntry } from "./executor";
 import type { Manifest } from "./project";
 import { toPublicError } from "./public-error";
 import type { FunctionRuntime } from "./runtime";
+import type { Tracer } from "./tracing";
 import type { QueryRunner, SubscriptionManager } from "./subscriptions";
 
 export type Context = {
@@ -11,6 +12,7 @@ export type Context = {
   requestId: string;
   /** Per WebSocket connection, for the subscription cap. */
   conn?: { subscriptions: number };
+  traceparent?: string;
 };
 
 /** "admin/users:get" → ["admin", "users", "get"]; the client uses the same mapping. */
@@ -33,6 +35,7 @@ const formatter = ({ shape, error }: { shape: any; error: TRPCError }) => {
 export interface RouterOptions {
   dev: boolean;
   maxSubscriptionsPerConnection: number;
+  tracer?: Tracer;
 }
 
 /** One tRPC procedure per public function; queries also get a subscription under `_sub`. Args are validated in the runtime. */
@@ -40,7 +43,7 @@ export function buildRouter(manifest: Manifest, runtime: FunctionRuntime, querie
   const t = initTRPC.context<Context>().create({ isDev: opts.dev, errorFormatter: formatter });
   const guard = async <T>(ctx: Context, name: string, fn: () => Promise<T>) => {
     try {
-      return await fn();
+      return await (opts.tracer ? opts.tracer.span(name, ctx.traceparent, { "forge.function": name, "forge.request_id": ctx.requestId }, fn) : fn());
     } catch (e) {
       const err = toPublicError(e, ctx.requestId, opts.dev, { function: name });
       throw new TRPCError({ code: err.code, message: err.message, cause: { forge: { data: err.data, requestId: err.requestId } } as any });
