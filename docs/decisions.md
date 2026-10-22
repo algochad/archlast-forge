@@ -64,3 +64,55 @@ Answers to questions the build prompt and architecture doc left open, and the ch
 
 - **Self-hosted framework, not a multi-tenant platform** (user decision). One deployment per app. Hosting many customers' projects (tenant isolation, metering, a control plane) is out of scope for now.
 - **Planned: the engine runs as a Docker container, started and controlled by the CLI** (user direction). The design and its open questions are in [roadmap.md](roadmap.md#target-architecture-the-engine-as-a-docker-container-controlled-by-the-cli). Until it's built, the CLI runs the engine in its own process.
+
+## Production readiness (self-hosted)
+
+Decided without asking, as directed, while implementing [roadmap.md](roadmap.md).
+
+- **Internal functions.** `internalQuery`/`internalMutation`/`internalAction` are left out of the client router and `api`, and codegen puts them in `internal`. Calling one returns "Unknown function", so their names don't leak. The dashboard, the scheduler, crons, migrations and `ctx.run*` may call them.
+- **Timeouts.**
+  - *Soft timeout, in the function runtime:* queries and mutations get `FUNCTION_TIMEOUT_MS` (10 s), actions `ACTION_TIMEOUT_MS` (10 min). Transaction handles refuse use after the call ends, so a timed-out handler can't write afterwards.
+  - *Hard deadline, in the server:* the timeout plus 5 s. A process that misses it is presumed stuck in synchronous code, so it's killed and respawned. Requests go only to processes that have reported ready.
+- **Runtime pool.** `RUNTIME_WORKERS` processes per server, round-robin. Only the first runs the scheduler, migrations and the schema check.
+- **Request limits.** Fixed-window rate limiting per client IP (memory, or Redis when configured) on HTTP calls, auth and WebSocket messages. There are also caps on body and message size and on subscriptions per connection. Bun's WebSocket backpressure limit (4 MiB) drops slow clients, which then reconnect and refetch. Better Auth's limiter uses the same Redis counter through `customStorage.consume`.
+- **Errors.** `ForgeError` (message and data) and argument validation errors reach callers. Everything else is "Server error (request id)" outside dev, logged with that request id. Return-value mismatches count as internal.
+- **Admin.** Accounts live in `_admins` (Argon2 hashes from `Bun.password`), with 12-hour sessions in `_admin_sessions` (stored as token hashes) and roles owner, admin and viewer. Access uses an HttpOnly SameSite=Strict cookie plus an `x-forge-admin` header on writes (CSRF). `ADMIN_KEY` acts as an owner. Every write is recorded in `_audit`. The dashboard is off outside dev unless `DASHBOARD=on`.
+- **TLS.** Outside dev, startup fails unless `BETTER_AUTH_URL` is https (`ALLOW_INSECURE_HTTP=1` overrides).
+- **Queries.**
+  - *Ranges:* bounds on the next index field after the equality prefix.
+  - *Order and pagination:* `order()`, plus keyset `paginate()` with base64url cursors over (remaining index fields, `_creationTime`, `_id`). Documents with a missing optional field in the index can be skipped by range and paging comparisons.
+  - *Reactivity:* ranges and pages are tracked at the equality prefix.
+  - *Built-in index:* `by_creation_time` is available on every table.
+- **Search.** `searchIndex(name, { searchField, filterFields })`. SQLite uses an FTS5 table kept in sync by the document store and tracked in `_search_indexes`. Postgres uses a GIN index over `to_tsvector('simple', …)`. Every term must match, the last as a prefix, and search reads depend on the whole table.
+- **Migrations.**
+  - *Postgres indexes:* built `CONCURRENTLY` outside transactions, under a session advisory lock; invalid leftovers are rebuilt.
+  - *Data migrations:* `migration({ table, migrateOne })` registers an internal mutation that processes one page per transaction. Progress lives in `_migrations`, and runs resume.
+  - *Schema check:* outside dev, startup refuses when stored documents don't match the schema (`SCHEMA_CHECK=off` skips it).
+- **Data portability.** Export and import use JSON Lines, preserving ids and validating on import. Import refuses non-empty tables unless `--replace`. Backups use SQLite `VACUUM INTO`; for Postgres, use `pg_dump`.
+- **Environment variables.** Stored in `_env` and loaded into the function runtime before user code; the process environment wins. `env set` reloads a running engine (SIGHUP for a container, the admin reload endpoint otherwise).
+- **Shortcuts closed.**
+  - *Lease sweep:* actions stuck in `running` fail after the action timeout plus 60 s.
+  - *Redis bus:* now one channel per topic, plus an all-topics channel published only when the query cache is on.
+  - *Cache invalidation:* tracked per topic, with a bounded history.
+- **Observability.**
+  - *Logs:* JSON server logs in production. Function logs are batched into `_logs`, with `LOG_RETENTION_DAYS` retention.
+  - *Metrics:* Prometheus `/metrics` behind `METRICS_TOKEN` or `ADMIN_KEY`; subscription and connection samples go into `_metrics` every 30 s for the dashboard.
+  - *Tracing:* `x-request-id` is accepted, generated and echoed. Distributed tracing (OpenTelemetry) isn't included.
+- **Health and shutdown.** `/health` reports liveness and `/ready` readiness. SIGTERM marks the server not ready, closes WebSockets with 1012, drains HTTP for up to 10 s, then stops the runtime.
+
+## Docker engine (the open questions from the roadmap)
+
+1. **Code delivery.** In dev, `convex/` is mounted read-only at `/src/convex` and the engine syncs it into its own filesystem (`/app/convex`), so the host's `node_modules` never shadows the container's. In production, `archlast-forge build` creates an app image `FROM` the engine with the code and dependencies baked in (`engine prepare`).
+2. **Server dependencies.** Installed inside the container, from `convex/package.json` minus `@archlast-forge/*` and `workspace:` entries; `@archlast-forge/runtime` is linked to the engine's copy. `node_modules` sits on a named volume. The host also installs, but only for editor types.
+3. **Docker access.** The CLI shells out to `docker`; `DOCKER=podman` switches binaries.
+4. **Services.** The engine only, by default. `--with postgres,redis,s3` starts sibling containers on a per-project network and wires their URLs in.
+5. **Versioning.** The engine image is `ghcr.io/algochad/archlast-forge-engine:<cli version>` (`ARCHLAST_ENGINE_IMAGE` overrides). Inside this repo the CLI builds it if it's missing; a published CLI pulls it.
+6. **Without Docker.** `--no-docker` (or `ARCHLAST_NO_DOCKER=1`) keeps the in-process mode, and the CLI falls back to it with a notice when Docker is unavailable. Tests use it.
+7. **Networking.** The container's port 3000 is published on `--port`, and `host.docker.internal` reaches host services. Dev and production containers have different names, so one never replaces the other.
+8. **CLI surface.** `dev`, `build`, `start`, `stop`, `logs`, `status`, `engine build`. Data and config commands run inside a running engine through `docker exec`.
+
+## Packaging
+
+- Libraries (runtime, client, react, vue, svelte) publish `dist/`: bundled ESM (each entry separately, because the runtime spawns `child.js` next to its own module) plus `.d.ts` from `tsc --emitDeclarationOnly`. Bun-run packages (cli, dashboard, create-archlast-forge) publish source.
+- Releases are lockstep (`scripts/version.ts`). `scripts/pack.ts` stages the packages, pins `workspace:` dependencies and packs tarballs; `--smoke` proves them in a fresh project. A tag runs the release workflow, which publishes to npm (needs `NPM_TOKEN`) and pushes the engine image to GHCR.
+- No license is declared yet: that's the owner's choice to make before publishing.

@@ -1,7 +1,9 @@
-import { ForgeError, mutation, query, v } from "@archlast-forge/runtime";
+import { ForgeError, mutation, paginationOptsValidator, query, v } from "@archlast-forge/runtime";
 
-export const all = query({
-  handler: (ctx) => ctx.db.query("lists").collect(),
+/** Newest first; the sidebar loads more as needed. */
+export const page = query({
+  args: { paginationOpts: paginationOptsValidator },
+  handler: (ctx, { paginationOpts }) => ctx.db.query("lists").order("desc").paginate(paginationOpts),
 });
 
 export const create = mutation({

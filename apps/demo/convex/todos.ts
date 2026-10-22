@@ -18,6 +18,12 @@ export const listByList = query({
   },
 });
 
+export const search = query({
+  args: { listId: v.id("lists"), text: v.string() },
+  handler: (ctx, { listId, text }) =>
+    ctx.db.query("todos").withSearchIndex("search_title", (q) => q.search("title", text).eq("listId", listId)).take(20),
+});
+
 export const get = query({
   args: { todoId: v.id("todos") },
   handler: (ctx, { todoId }) => ctx.db.get(todoId),

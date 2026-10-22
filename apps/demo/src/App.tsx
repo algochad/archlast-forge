@@ -1,4 +1,4 @@
-import { useAction, useAuth, useMutation, useQuery, useSession } from '@archlast-forge/react'
+import { useAction, useAuth, useMutation, usePaginatedQuery, useQuery, useSession, useUploadFile } from '@archlast-forge/react'
 import { Component, useState, type FormEvent, type ReactNode } from 'react'
 import { api } from '../convex/_generated/api'
 import type { Id } from '../convex/_generated/dataModel'
@@ -46,7 +46,7 @@ function SignIn() {
 
 function Todos({ email }: { email: string }) {
   const auth = useAuth()
-  const lists = useQuery(api.lists.all)
+  const { results: lists, status, loadMore } = usePaginatedQuery(api.lists.page, {}, { initialNumItems: 15 })
   const createList = useMutation(api.lists.create)
   const [selected, setSelected] = useState<Id<'lists'>>()
   const listId = selected ?? lists?.[0]?._id
@@ -61,12 +61,13 @@ function Todos({ email }: { email: string }) {
       <nav className="card">
         <h2>Lists</h2>
         <ul>
-          {lists?.map((l) => (
+          {lists.map((l) => (
             <li key={l._id}>
               <button className={l._id === listId ? 'selected' : 'link'} onClick={() => setSelected(l._id)}>{l.name}</button>
             </li>
           ))}
         </ul>
+        {status === 'CanLoadMore' && <button className="link" onClick={() => loadMore(15)}>Load more lists</button>}
         <AddForm placeholder="New list" onAdd={async (name) => setSelected(await createList({ name }))} />
       </nav>
       <section className="card">
@@ -83,22 +84,27 @@ function Todos({ email }: { email: string }) {
 }
 
 function TodoList({ listId }: { listId: Id<'lists'> }) {
-  const todos = useQuery(api.todos.listByList, { listId })
+  const [search, setSearch] = useState('')
+  const all = useQuery(api.todos.listByList, { listId })
+  const found = useQuery(api.todos.search, search.trim() ? { listId, text: search } : 'skip')
+  // Until search results arrive, keep showing the list (the search box stays mounted and focused).
+  const todos = search.trim() && found ? found.map((t) => ({ ...t, attachmentUrl: all?.find((a) => a._id === t._id)?.attachmentUrl ?? null })) : all
   const add = useMutation(api.todos.add)
-  const toggle = useMutation(api.todos.toggle)
+  // Optimistic: the checkbox flips at once; the live result replaces it (or it's undone on error).
+  const toggle = useMutation(api.todos.toggle).withOptimisticUpdate((store, { todoId }) => {
+    const current = store.getQuery(api.todos.listByList, { listId })
+    if (current) store.setQuery(api.todos.listByList, { listId }, current.map((t) => (t._id === todoId ? { ...t, done: !t.done } : t)))
+  })
   const remove = useMutation(api.todos.remove)
   const remind = useAction(api.todos.sendReminder)
-  const generateUploadUrl = useMutation(api.todos.generateUploadUrl)
+  const uploadFile = useUploadFile(api.todos.generateUploadUrl)
   const attach = useMutation(api.todos.attach)
   const [notice, setNotice] = useState<string>()
 
   async function upload(todoId: Id<'todos'>, file: File) {
     try {
-      const { uploadUrl, storageId } = await generateUploadUrl({ contentType: file.type || undefined })
-      // Bytes go straight to S3 via the presigned URL, not through the server.
-      const res = await fetch(uploadUrl, { method: 'PUT', body: file, headers: file.type ? { 'content-type': file.type } : {} })
-      if (!res.ok) throw new Error(`Upload failed (${res.status})`)
-      await attach({ todoId, storageId })
+      // Bytes go straight to storage through a presigned URL, not through the server.
+      await attach({ todoId, storageId: await uploadFile(file) })
     } catch (e) {
       setNotice((e as Error).message)
     }
@@ -108,6 +114,7 @@ function TodoList({ listId }: { listId: Id<'lists'> }) {
   return (
     <>
       <AddForm placeholder="What needs doing?" onAdd={(title) => add({ listId, title })} />
+      <input type="search" className="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search this list" aria-label="Search this list" />
       {notice && <p role="status" className="muted">{notice}</p>}
       <ul className="todos">
         {todos.map((t) => (
@@ -129,7 +136,7 @@ function TodoList({ listId }: { listId: Id<'lists'> }) {
           </li>
         ))}
       </ul>
-      {todos.length === 0 && <p className="muted">Nothing here yet.</p>}
+      {todos.length === 0 && <p className="muted">{search.trim() ? 'No matches.' : 'Nothing here yet.'}</p>}
     </>
   )
 }

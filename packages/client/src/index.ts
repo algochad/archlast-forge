@@ -92,14 +92,14 @@ export class ArchlastForgeClient {
   /** Opens a new socket, e.g. after sign-in: cookies are only sent on the WebSocket handshake. */
   reconnect() {
     for (const w of this.watches.values()) w.stop();
-    void this.ws?.close();
+    void this.ws?.close().catch(() => {}); // closing a socket that never opened rejects; nothing to clean up
     this.connect();
   }
 
   close() {
     for (const w of this.watches.values()) w.stop();
     this.watches.clear();
-    void this.ws?.close();
+    void this.ws?.close().catch(() => {}); // closing a socket that never opened rejects; nothing to clean up
   }
 
   /** Better Auth client for this server; a change of session reconnects the socket. */

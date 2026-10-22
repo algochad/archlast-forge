@@ -1,113 +1,51 @@
 # archlast-forge
 
-A Convex-style reactive backend on tRPC and Bun. You declare a schema and typed functions in `convex/`, and clients subscribe to queries that push new results when the data they read changes. It runs on bun:sqlite or Postgres, with an in-memory or Redis bus and cache, Better Auth for sign-in, and optional S3-compatible storage (RustFS, AWS S3).
+A self-hosted reactive backend for TypeScript apps, in the style of Convex, on tRPC and Bun. You declare a schema and functions in `convex/`. Clients call them with end-to-end types, and live queries push new results whenever the data they read changes. The engine runs as a Docker container that the CLI starts and controls.
+
+- **Data:** SQLite or Postgres. Index and range queries, keyset pagination, full-text search, data migrations, export, import and backup.
+- **Functions:** queries, mutations and actions; internal functions; `returns` validators; timeouts and size limits; `ForgeError` for caller-facing errors.
+- **Batteries:** Better Auth sign-in, file storage on S3 or RustFS through presigned URLs, scheduled functions and crons.
+- **Scale:** Redis for cross-server reactivity, caching and rate limits; a pool of function-runtime processes.
+- **Operations:** admin dashboard with accounts, roles and an audit log; Prometheus metrics; structured logs; `/health` and `/ready`; graceful shutdown.
+- **Clients:** React (with TanStack Query), Vue and Svelte. A testing library for your functions.
 
 ## Quick start
 
-Requires Bun 1.4.3 (`mise install` picks it up from `mise.toml`).
-
 ```bash
+bun create archlast-forge my-app && cd my-app
 bun install
-bun run dev        # demo backend on :3000 (+ dashboard at /_dashboard) and Vite on :5173
+bun run dev                   # engine in Docker + Vite on :5173 (add -- --no-docker to skip Docker)
 ```
 
-Open http://localhost:5173 in two tabs, create an account, and add todos. Changes in one tab appear in the other. The backend prints the dashboard's admin key on startup.
+Full documentation is in [`apps/docs`](apps/docs/content). Build it with `bun run --cwd apps/docs build`, or preview it with `bun run --cwd apps/docs dev` on http://localhost:4000. Start with [Getting started](apps/docs/content/getting-started.md).
 
-File attachments need storage. Run `bun run services:up`, then `cp apps/demo/convex/.env.example apps/demo/convex/.env`.
-
-## Writing a backend
-
-```ts
-// convex/schema.ts
-import { defineSchema, defineTable, v } from "@archlast-forge/runtime";
-
-export default defineSchema({
-  lists: defineTable({ name: v.string() }),
-  todos: defineTable({ listId: v.id("lists"), title: v.string(), done: v.boolean(), ownerId: v.id("users") })
-    .index("by_list", ["listId"]),
-});
-```
-
-```ts
-// convex/todos.ts
-import { mutation, query, v } from "@archlast-forge/runtime";
-
-export const listByList = query({
-  args: { listId: v.id("lists") },
-  handler: (ctx, { listId }) => ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).collect(),
-});
-
-export const add = mutation({
-  args: { listId: v.id("lists"), title: v.string() },
-  handler: async (ctx, args) => {
-    const identity = await ctx.auth.getUserIdentity();
-    if (!identity) throw new Error("unauthenticated");
-    return ctx.db.insert("todos", { ...args, done: false, ownerId: identity.userId });
-  },
-});
-```
-
-```tsx
-// src/App.tsx: import only @archlast-forge/react and convex/_generated
-const todos = useQuery(api.todos.listByList, { listId }); // Todo[] | undefined, live
-const add = useMutation(api.todos.add);
-```
-
-- **query** reads from one snapshot and is reactive. **mutation** is one transaction, and its topics publish after commit. **action** does external I/O and reaches the database only through `ctx.runQuery` and `ctx.runMutation`.
-- Validators (`v.*`) compile to Zod schemas, and every call's args are validated with them. Add `returns: v.…` to also validate the return value. The validator then becomes the function's return type, and in a mutation a mismatch rolls the write back.
-- `ctx.storage` creates presigned upload and download URLs. `ctx.scheduler.runAfter/runAt` schedules mutations and actions. `convex/crons.ts` defines `cronJobs()` (UTC).
-- `users`, `sessions`, `accounts` and `verifications` are built in, managed by Better Auth. To customize sign-in, add `convex/auth.ts` with `export default defineAuth({...})`.
-- `archlast-forge codegen` writes `convex/_generated/`. Types come from your validators and handlers, so changing a validator breaks its call sites at compile time.
-
-### Server dependencies
-
-Add packages to `convex/package.json` (`bun add --cwd convex zod`). The browser bundle never sees them. `dev` and `codegen` reinstall when the manifest or lockfile changes, and `dev` restarts only the function runtime. Installs pass `--ignore-scripts`. If a package needs its install script, list it in `"trustedDependencies"` in `convex/package.json`, and Bun runs scripts for those packages only.
-
-## CLI
-
-| Command | What it does |
-|---|---|
-| `archlast-forge dev` | Codegen, install server deps, serve, and watch `convex/`. Restarts only the function runtime on changes. |
-| `archlast-forge codegen` | Writes `convex/_generated/` and checks that `src/` imports only `convex/_generated`. |
-| `archlast-forge migrate` | Syncs tables and indexes, and reports documents that don't match the schema. |
-| `archlast-forge start` | Production server. Requires `BETTER_AUTH_SECRET`. |
-| `archlast-forge dashboard` | Prints the dashboard URL. |
-
-## Configuration
-
-| Variable | Default | |
-|---|---|---|
-| `DATABASE_URL` | bun:sqlite at `DATA_DIR/app.db` | `postgres://…` for Postgres |
-| `DATA_DIR` | `./data` | SQLite and dev secrets |
-| `REDIS_URL` | in-memory bus and cache | Required when `REPLICAS > 1` |
-| `REPLICAS` | `1` | Declares a multi-server deployment, checked at startup |
-| `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION` | storage off | RustFS or any S3-compatible service |
-| `BETTER_AUTH_SECRET` | generated in dev | Required in production |
-| `BETTER_AUTH_URL` | the server's URL | |
-| `TRUSTED_ORIGINS` | none | Comma-separated browser origins, for CORS and Better Auth |
-| `ADMIN_KEY` | generated in dev | Dashboard access. Without it, the dashboard is disabled. |
-| `CACHE_TTL_MS` | `60000` (`0` in dev) | Query result cache |
-| `PORT` | `3000` | |
-
-## Repository
+## This repository
 
 ```
-apps/demo/            React todo app (Vite), set up like a user project
-apps/demo/convex/     its backend: schema, functions, crons, auth; own package.json
-packages/runtime/     engine: validators, schema, functions, Db/Bus/Cache/Storage + adapters, server
-packages/client/      framework-agnostic client: tRPC over HTTP + WebSocket, live queries, TanStack sync
-packages/react/       ArchlastForgeProvider, useQuery, useMutation, useAction, useSession
-packages/cli/         archlast-forge dev | codegen | migrate | start | dashboard
-packages/dashboard/   admin UI served at /_dashboard
-docs/decisions.md     design decisions and known shortcuts
-docs/roadmap.md       what remains before production, and the planned Docker engine
+apps/demo/                       todo app built the way a user project is (Vite + React)
+apps/demo/convex/                its backend: schema, functions, crons, auth; own package.json
+apps/docs/                       documentation site (Markdown → HTML with Bun)
+packages/runtime/                engine: validators, schema, functions, document store, adapters, server, testing
+packages/client/                 framework-agnostic client: tRPC over HTTP + WebSocket, live queries
+packages/react|vue|svelte/       framework bindings
+packages/cli/                    archlast-forge: dev, build, start, migrate, export, env, admin, engine
+packages/dashboard/              admin UI served at /_dashboard
+packages/create-archlast-forge/  project starter
+docker/engine.Dockerfile         the engine image
+docs/                            decisions.md (design decisions), roadmap.md (production readiness)
+scripts/                         pack.ts (tarballs + smoke test), version.ts (lockstep versions)
 ```
+
+Work on the demo with `bun run dev` from the root. It runs the demo's backend with `archlast-forge dev` and Vite through Turborepo.
 
 ## Testing
 
 ```bash
-bun run test              # SQLite and in-memory adapters only
+bun run test              # SQLite and in-memory adapters
 bun run services:up       # Postgres, Redis and RustFS in Docker
-bun run test:all          # adds the Postgres, Redis, S3 and two-server tests
-bun run typecheck         # includes the compile-time type tests
+bun run test:all          # adds Postgres, Redis, S3 and two-server tests
+bun run typecheck         # includes compile-time type tests
+bun run pack:smoke        # pack every package and run them in a fresh project
 ```
+
+CI runs all of these on every push and pull request (`.github/workflows/ci.yml`). Releases are tag-driven (`release.yml`): they publish to npm, which needs an `NPM_TOKEN` secret, and push the engine image to GHCR.

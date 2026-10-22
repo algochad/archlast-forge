@@ -13,5 +13,6 @@ export default defineSchema({
     remindedAt: v.optional(v.number()),
   })
     .index("by_list", ["listId"])
-    .index("by_owner", ["ownerId"]),
+    .index("by_owner", ["ownerId"])
+    .searchIndex("search_title", { searchField: "title", filterFields: ["listId"] }),
 });
