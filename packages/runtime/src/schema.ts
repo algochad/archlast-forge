@@ -127,4 +127,5 @@ export type WithoutSystemFields<D> = Expand<Omit<D, "_id" | "_creationTime">>;
 
 export type IndexNames<T extends TableNames> = keyof RegisteredTables[T]["indexes"] & string;
 
-export type IndexFields<T extends TableNames, I extends IndexNames<T>> = RegisteredTables[T]["indexes"][I];
+export type IndexFields<T extends TableNames, I extends IndexNames<T>> =
+  RegisteredTables[T]["indexes"][I] extends infer F extends readonly string[] ? F : never;

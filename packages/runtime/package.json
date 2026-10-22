@@ -8,11 +8,12 @@
     "./server": "./src/server/index.ts"
   },
   "scripts": {
-    "typecheck": "bun check",
+    "typecheck": "bun check && bun check -p test-types",
     "test": "bun test"
   },
   "devDependencies": {
-    "@types/bun": "1.4.3"
+    "@types/bun": "1.4.3",
+    "expect-type": "^1.4.0"
   },
   "dependencies": {
     "@trpc/server": "11.19.0",
