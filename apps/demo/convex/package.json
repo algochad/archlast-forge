@@ -1,0 +1,17 @@
+{
+  "name": "@archlast-forge/demo-convex",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "TRUSTED_ORIGINS=http://localhost:5173 archlast-forge dev",
+    "typecheck": "bun check"
+  },
+  "dependencies": {
+    "@archlast-forge/runtime": "workspace:*",
+    "date-fns": "4"
+  },
+  "devDependencies": {
+    "@archlast-forge/cli": "workspace:*",
+    "@types/node": "24"
+  }
+}

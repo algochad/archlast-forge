@@ -18,6 +18,7 @@
         "react-dom": "^19.3.1",
       },
       "devDependencies": {
+        "@archlast-forge/cli": "workspace:*",
         "@types/node": "^24.19.2",
         "@types/react": "^19.3.0",
         "@types/react-dom": "^19.3.0",
@@ -26,9 +27,27 @@
         "vite": "^8.3.4",
       },
     },
+    "apps/demo/convex": {
+      "name": "@archlast-forge/demo-convex",
+      "dependencies": {
+        "@archlast-forge/runtime": "workspace:*",
+        "date-fns": "4",
+      },
+      "devDependencies": {
+        "@archlast-forge/cli": "workspace:*",
+        "@types/node": "24",
+      },
+    },
     "packages/cli": {
       "name": "@archlast-forge/cli",
       "version": "0.1.0",
+      "bin": {
+        "archlast-forge": "./src/index.ts",
+      },
+      "dependencies": {
+        "@archlast-forge/dashboard": "workspace:*",
+        "@archlast-forge/runtime": "workspace:*",
+      },
       "devDependencies": {
         "@types/bun": "1.4.3",
       },
@@ -75,6 +94,8 @@
     "@archlast-forge/dashboard": ["@archlast-forge/dashboard@workspace:packages/dashboard"],
 
     "@archlast-forge/demo": ["@archlast-forge/demo@workspace:apps/demo"],
+
+    "@archlast-forge/demo-convex": ["@archlast-forge/demo-convex@workspace:apps/demo/convex"],
 
     "@archlast-forge/react": ["@archlast-forge/react@workspace:packages/react"],
 
@@ -247,6 +268,8 @@
     "bun-types": ["bun-types@1.4.3", "", { "dependencies": { "@types/node": "*", "undici-types": "*" } }, "sha512-tinRJNGOmUN+tEAsn2y2e942n9JHRHR42iUYzDH75NmhJqVBokGSQkkfSFdNWwsANIdrK6ACH9t01M452YyTwg=="],
 
     "csstype": ["csstype@3.2.3", "", {}, "sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ=="],
+
+    "date-fns": ["date-fns@4.4.0", "", {}, "sha512-+1UMbeh68lH1SegH83CGWwpb6OHHbpSgr3+s5Eww5M4CAgswBpoWS0AjTOfEJ33HiYKz1hdj/KTFprzXHmq/6w=="],
 
     "defu": ["defu@6.1.7", "", {}, "sha512-7z22QmUWiQ/2d0KkdYmANbRUVABpZ9SNYyH5vx6PZ+nE5bcC0l7uFvEfHlyld/HcGBFTL536ClDt3DEcSlEJAQ=="],
 
