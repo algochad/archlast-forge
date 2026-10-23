@@ -3,7 +3,7 @@
 //   const id = await t.withIdentity({ email: "a@b.c" }).mutation(api.todos.add, { listId, title: "milk" });
 import { resolve } from "node:path";
 import { getFunctionName, type FunctionArgs, type FunctionReference, type FunctionReturn, type MutationCtx, type OptionalArgs, type UserIdentity } from "./functions";
-import { createLocalDb } from "./server/db/factory";
+import { createSqliteDb } from "./server/db/sqlite";
 import { Executor } from "./server/executor";
 import { loadProject, tableSpecs } from "./server/project";
 import { SchedulerLoop } from "./server/scheduler";
@@ -16,7 +16,7 @@ type Caller = {
 };
 
 export async function createTestBackend(forgeDir = "forge") {
-  const db = await createLocalDb(":memory:");
+  const db = createSqliteDb(":memory:");
   await migrateSystem(db);
   const project = await loadProject(resolve(forgeDir));
   await db.migrate(tableSpecs(project.tables));

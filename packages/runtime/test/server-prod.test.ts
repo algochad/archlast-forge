@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
 import { addAdmin } from "../src/server/admin-ops";
-import { createLocalDb } from "../src/server/db/factory";
+import { createSqliteDb } from "../src/server/db/sqlite";
 import { startServer, type RunningServer } from "../src/server/server";
 import { migrateSystem } from "../src/server/system";
 import { tempDir } from "./helpers";
@@ -25,7 +25,7 @@ const prodEnv = (extra: Record<string, string> = {}) => ({
 let srv: RunningServer;
 
 beforeAll(async () => {
-  const db = await createLocalDb(join(dataDir, "app.db"));
+  const db = createSqliteDb(join(dataDir, "app.db"));
   await migrateSystem(db);
   await addAdmin(db, "viewer@example.com", "viewer-password-123", "viewer");
   await addAdmin(db, "admin@example.com", "admin-password-123", "admin");

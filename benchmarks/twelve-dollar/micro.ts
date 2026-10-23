@@ -4,7 +4,7 @@
 import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import { parseArgs } from "node:util";
-import { createTursoDb } from "../../packages/runtime/src/server/db/turso";
+import { createSqliteDb } from "../../packages/runtime/src/server/db/sqlite";
 import { loadConfig } from "../../packages/runtime/src/server/config";
 import { createAuth } from "../../packages/runtime/src/server/auth";
 import { Executor } from "../../packages/runtime/src/server/executor";
@@ -17,7 +17,7 @@ const tokens: { cookie: string; username: string }[] = JSON.parse(readFileSync(v
 const dbPath = join(values.data!, "app.db");
 const config = loadConfig({ ...process.env, DATA_DIR: values.data!, BETTER_AUTH_URL: "http://127.0.0.1:3100", ALLOW_INSECURE_HTTP: "1", NODE_ENV: "production" }, false);
 
-const db = await createTursoDb(dbPath);
+const db = createSqliteDb(dbPath);
 await migrateSystem(db);
 const project = await loadProject(join(import.meta.dir, "forge"));
 await db.migrate(tableSpecs(project.tables));
@@ -43,7 +43,7 @@ async function time(label: string, fn: (i: number) => Promise<unknown>, n = N) {
 }
 
 // ---- the same statements, straight at the database ----
-console.log("== the database alone (Turso, prepared statements, no executor)");
+console.log("== the database alone (bun:sqlite through the adapter, prepared statements, no executor)");
 const postSql = `SELECT "_id", "_creationTime", "doc" FROM "posts" ORDER BY "_creationTime" DESC, "_id" DESC LIMIT 20`;
 const countSql = `SELECT COUNT(*) AS n FROM "likes" WHERE json_extract("doc", '$.postId') = ?`;
 const ids = (await db.query<{ _id: string }>(postSql)).map((r) => r._id);

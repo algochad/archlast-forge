@@ -157,7 +157,7 @@ function engineTarget(dir: string) {
 }
 
 /**
- * Runs a data command in the running server, which holds the database (Turso allows one process per file), or here when no server answers.
+ * Runs a data command in the running server (imports reach its subscribers), or here when no server answers.
  * Reaching the server needs ADMIN_KEY (the environment, or the dev secrets).
  */
 async function data(cmd: string, args: Record<string, unknown> = {}): Promise<any> {

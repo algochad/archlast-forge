@@ -29,8 +29,6 @@ export interface Config {
   replicas: number;
   /** TTL for cached query results. 0 disables the cache. */
   cacheTtlMs: number;
-  /** The embedded database engine: Turso (default) or bun:sqlite. Ignored when DATABASE_URL points at Postgres. */
-  sqliteDriver: "turso" | "bun";
   /** Lets owners run code written in the dashboard. That is arbitrary code with the function runtime's privileges, so it is off in production unless asked for. */
   customFunctions: boolean;
   /** How long an idle keep-alive connection stays open. Proxies and load balancers reuse upstream connections for 60-75 s, so closing sooner makes them hit a socket just closed. */
@@ -70,10 +68,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const databaseUrl = env.DATABASE_URL || undefined;
   if (databaseUrl && !/^postgres(ql)?:\/\//.test(databaseUrl))
     fail(`DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite), got "${databaseUrl.split(":")[0]}:"`);
-  const sqliteDriver = (env.SQLITE_DRIVER || "turso") as Config["sqliteDriver"];
-  if (sqliteDriver !== "turso" && sqliteDriver !== "bun") fail(`SQLITE_DRIVER must be "turso" or "bun", got "${env.SQLITE_DRIVER}"`);
-  if (!databaseUrl && sqliteDriver === "turso" && int("RUNTIME_WORKERS", 1, 1) > 1)
-    fail("RUNTIME_WORKERS > 1 needs SQLITE_DRIVER=bun or Postgres: Turso locks its database file to one process, and its writers are concurrent inside that process already");
   if (replicas > 1 && !env.REDIS_URL) fail("REPLICAS > 1 requires REDIS_URL, or mutations won't reach subscribers on other servers");
   if (replicas > 1 && !databaseUrl) fail("REPLICAS > 1 requires a Postgres DATABASE_URL; bun:sqlite is single-server");
   if (Boolean(env.S3_ENDPOINT) !== Boolean(env.S3_BUCKET)) fail("Set both S3_ENDPOINT and S3_BUCKET, or neither");
@@ -90,7 +84,6 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     hostname: env.HOST ?? "0.0.0.0",
     dataDir: env.DATA_DIR ?? "./data",
     databaseUrl,
-    sqliteDriver,
     redisUrl: env.REDIS_URL || undefined,
     s3: env.S3_ENDPOINT
       ? {

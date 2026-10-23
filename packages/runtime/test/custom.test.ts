@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { addAdmin } from "../src/server/admin-ops";
 import { compileCustom, CustomCodeError } from "../src/server/custom";
-import { createLocalDb } from "../src/server/db/factory";
+import { createSqliteDb } from "../src/server/db/sqlite";
 import { startServer, type RunningServer } from "../src/server/server";
 import { migrateSystem } from "../src/server/system";
 import { tempDir } from "./helpers";
@@ -178,7 +178,7 @@ describe("runCustom in production", () => {
     fetch(`${srv.url}/_admin/runCustom`, { method: "POST", headers: { "content-type": "application/json", "x-forge-admin": "1", ...headers }, body });
 
   beforeAll(async () => {
-    const db = await createLocalDb(join(dataDir, "app.db"));
+    const db = createSqliteDb(join(dataDir, "app.db"));
     await migrateSystem(db);
     await addAdmin(db, "admin@example.com", "admin-password-123", "admin");
     await addAdmin(db, "owner@example.com", "owner-password-123", "owner");

@@ -1,7 +1,7 @@
 import { afterEach, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
-import { createLocalDb } from "../src/server/db/factory";
+import { createSqliteDb } from "../src/server/db/sqlite";
 import * as ops from "../src/server/cli-ops";
 import { tempDir } from "./helpers";
 
@@ -82,7 +82,7 @@ test("SQLite backup is a usable copy", async () => {
   const file = join(tempDir(), "backup.db");
   await ops.backup(p, file);
   expect(existsSync(file)).toBe(true);
-  const copy = await createLocalDb(file);
+  const copy = createSqliteDb(file);
   expect(await copy.query(`SELECT COUNT(*) AS n FROM "events"`)).toEqual([{ n: 1 }]);
   await copy.close();
 });

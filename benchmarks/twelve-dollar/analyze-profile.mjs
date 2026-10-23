@@ -11,7 +11,7 @@ const area = (url, fn) => {
   if (url.includes("better-auth") || url.includes("better-call") || url.includes("@better-auth")) return "Better Auth";
   if (url.includes("node_modules/zod") || url.includes("/zod/")) return "zod (argument validation)";
   if (url.includes("rpc.ts")) return "RPC";
-  if (url.includes("/db/sqlite") || url.includes("/db/turso")) return "database adapter (driver calls)";
+  if (url.includes("/db/sqlite")) return "SQLite adapter (bun:sqlite calls)";
   if (url.includes("docstore")) return "document store (SQL building, JSON parse)";
   if (url.includes("admin-ops") && /LogWriter|flush/.test(fn)) return "log persistence (_logs inserts)";
   if (url.includes("executor")) return "executor (call path, logging)";

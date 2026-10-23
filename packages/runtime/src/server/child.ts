@@ -6,7 +6,7 @@ import { adminOp, LogWriter } from "./admin-ops";
 import { createAuth } from "./auth";
 import { loadConfig, sqlitePath } from "./config";
 import { createPostgresDb } from "./db/postgres";
-import { createLocalDb } from "./db/factory";
+import { createSqliteDb } from "./db/sqlite";
 import { AUDITED_COMMANDS, runCommand } from "./cli-ops";
 import { Executor, logContext, serializeError, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
@@ -77,7 +77,7 @@ async function main() {
   const config = loadConfig(process.env, process.env.ARCHLAST_DEV === "1");
 
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : await createLocalDb(sqlitePath(config), config.sqliteDriver);
+  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : createSqliteDb(sqlitePath(config));
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);

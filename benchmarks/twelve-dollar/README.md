@@ -55,7 +55,9 @@ At ~180 requests/s the one core is ~59% busy: ~3.3 ms of CPU per request, 26% in
 - **More runtime processes make it worse** on SQLite (p95 614 ms warm, 2.8 s cold): the processes fight for the one write lock and wait for it synchronously.
 - **mmap** (1.5 GiB): median 7 ms vs 13 ms, p95 195 ms vs 261-315 ms, CPU 54% vs 59%; p99 didn't improve in one run.
 
-## After removing tRPC, and on Turso
+## After removing tRPC, and Turso compared
+
+The engine is now `bun:sqlite` with the plain RPC protocol. Turso was tried as the local database and dropped; its adapter is in commit 5527bb2, and this section is why.
 
 2,000 users, 45 s ramp and 75 s hold, one core, no profiler, the same load generator (`score.mjs smoke` with `VUS=2000 RAMP=45s HOLD=75s`). The first row is the earlier run on `bun:sqlite` and tRPC.
 
@@ -67,7 +69,7 @@ At ~180 requests/s the one core is ~59% busy: ~3.3 ms of CPU per request, 26% in
 
 Read the CPU columns, not the latency ones. Latency swings a lot between runs on this shared VM (two identical `bun:sqlite` profile runs gave p95 57 ms and 404 ms), and the first row used a differently built seed (indexes built after loading rather than before). The server process does about 40% less work without tRPC. Turso's runtime process uses about 1.7x the CPU of `bun:sqlite` for the same requests: 61% of its time is in `stepSync`, which runs on the JavaScript thread, so a slow statement stalls every request. It writes much less to disk, and, kept under 2 GiB, uses 255 MiB here. With `--cpu-prof` on, memory climbs to 0.7-1.1 GiB on either engine because the profiler keeps its samples, so compare memory only between runs without it.
 
-Turso needed one workaround to get through this load at all: overlapping write transactions on separate connections hung the whole process (the first run, with that bug, failed 42% of requests). The adapter now runs one write transaction at a time; see `packages/runtime/bench/mixed-writes.ts`.
+Turso needed one workaround to get through this load at all: overlapping write transactions on separate connections hung the whole process (the first run, with that bug, failed 42% of requests). The adapter ran one write transaction at a time after that (`packages/runtime/bench/mixed-writes.ts` in commit 5527bb2 reproduces the hang).
 
 ## 10,000 users
 

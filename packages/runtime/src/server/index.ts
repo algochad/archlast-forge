@@ -3,7 +3,6 @@ export { startServer, type RunningServer, type ServerOptions } from "./server";
 export { loadConfig, ConfigError, type Config } from "./config";
 export * as ops from "./cli-ops";
 export { listModules } from "./project";
-export { createLocalDb, type SqliteDriver } from "./db/factory";
 export { createSqliteDb } from "./db/sqlite";
 export { createPostgresDb } from "./db/postgres";
 export type { Db, DbTx, Dialect, TableSpec } from "./db/types";

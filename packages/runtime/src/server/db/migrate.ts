@@ -1,4 +1,4 @@
-import type { Db, DbTx, Dialect, TableSpec } from "./types";
+import type { Db, Dialect, TableSpec } from "./types";
 
 export const PREFIX = "afx_";
 
@@ -36,37 +36,21 @@ export async function migrateSqlite(db: Db, tables: TableSpec[]) {
       for (const name of existing) if (!plan.has(name)) await tx.execute(`DROP INDEX IF EXISTS "${name}"`);
       for (const [name, body] of plan) if (!existing.includes(name)) await tx.execute(`CREATE INDEX IF NOT EXISTS "${name}" ${body}`);
 
-      const wanted = new Map(Object.entries(t.searchIndexes ?? {}).map(([index, c]) => [ftsTable(t.name, index), { index, field: c.searchField }]));
+      const wanted = new Map(Object.entries(t.searchIndexes ?? {}).map(([index, c]) => [ftsTable(t.name, index), c.searchField]));
       const registered = await tx.query<{ name: string; field: string }>(`SELECT "name", "field" FROM "_search_indexes" WHERE "table" = ?`, [t.name]);
       for (const r of registered)
-        if (wanted.get(r.name)?.field !== r.field) {
+        if (wanted.get(r.name) !== r.field) {
           await tx.execute(`DROP TABLE IF EXISTS "${r.name}"`);
           await tx.execute(`DELETE FROM "_search_indexes" WHERE "name" = ?`, [r.name]);
         }
-      for (const [name, { index, field }] of wanted) {
+      for (const [name, field] of wanted) {
         if (registered.some((r) => r.name === name && r.field === field)) continue;
-        if (d.search === "tokens") {
-          await tx.execute(`CREATE TABLE "${name}" ("term" TEXT NOT NULL, "doc_id" TEXT NOT NULL, "tf" INTEGER NOT NULL, PRIMARY KEY ("term", "doc_id"))`);
-          await tx.execute(`CREATE INDEX "${name}_doc" ON "${name}" ("doc_id")`);
-          await backfillTokens(tx, d, t.name, index, field);
-        } else {
-          await tx.execute(`CREATE VIRTUAL TABLE "${name}" USING fts5(doc_id UNINDEXED, body, tokenize = 'unicode61')`);
-          await tx.execute(
-            `INSERT INTO "${name}" (doc_id, body) SELECT "_id", ${d.field(field)} FROM "${t.name}" WHERE ${d.field(field)} IS NOT NULL`,
-          );
-        }
+        await tx.execute(`CREATE VIRTUAL TABLE "${name}" USING fts5(doc_id UNINDEXED, body, tokenize = 'unicode61')`);
+        await tx.execute(
+          `INSERT INTO "${name}" (doc_id, body) SELECT "_id", ${d.field(field)} FROM "${t.name}" WHERE ${d.field(field)} IS NOT NULL`,
+        );
         await tx.execute(`INSERT INTO "_search_indexes" ("name", "table", "field") VALUES (?, ?, ?)`, [name, t.name, field]);
       }
     }
   });
-}
-
-/** Fills a new token-table search index from the documents already there, a batch at a time. */
-async function backfillTokens(tx: DbTx, d: Dialect, table: string, index: string, field: string) {
-  for (let after = ""; ; ) {
-    const rows = await tx.query<{ _id: string; v: unknown }>(`SELECT "_id", ${d.field(field)} AS v FROM "${table}" WHERE "_id" > ? ORDER BY "_id" LIMIT 500`, [after]);
-    if (!rows.length) return;
-    for (const r of rows) if (typeof r.v === "string") for (const stmt of d.searchWrite(table, index, r._id, r.v)) await tx.execute(stmt.sql, stmt.params);
-    after = rows.at(-1)!._id;
-  }
 }

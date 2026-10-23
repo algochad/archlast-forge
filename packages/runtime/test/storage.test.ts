@@ -1,6 +1,6 @@
 import { expect, test } from "bun:test";
 import { join } from "node:path";
-import { createLocalDb } from "../src/server/db/factory";
+import { createSqliteDb } from "../src/server/db/sqlite";
 import { DocStore } from "../src/server/docstore";
 import { Executor } from "../src/server/executor";
 import { loadProject, tableSpecs } from "../src/server/project";
@@ -42,7 +42,7 @@ test.skipIf(!endpoint)("browsers may upload cross-origin (CORS preflight)", asyn
 
 test.skipIf(!endpoint)("ctx.storage: metadata row commits first, the object is deleted after commit", async () => {
   const project = await loadProject(join(import.meta.dir, "fixture"));
-  const db = await createLocalDb(join(tempDir(), "app.db"));
+  const db = createSqliteDb(join(tempDir(), "app.db"));
   await db.migrate(tableSpecs(project.tables));
   const published: string[][] = [];
   const exec = new Executor({ db, tables: project.tables, functions: project.functions, storage: s3(), publish: (t) => published.push(t), log: () => {} });

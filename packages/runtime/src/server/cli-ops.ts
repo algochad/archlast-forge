@@ -4,7 +4,7 @@ import { validateFields, ValidationError } from "../values";
 import { addAdmin, listAdmins, removeAdmin, type AdminRole } from "./admin-ops";
 import { loadConfig, sqlitePath, type Config } from "./config";
 import { createPostgresDb } from "./db/postgres";
-import { createLocalDb } from "./db/factory";
+import { createSqliteDb } from "./db/sqlite";
 import type { Db } from "./db/types";
 import { Executor } from "./executor";
 import { loadProject, tableSpecs, type Project } from "./project";
@@ -22,7 +22,7 @@ export interface ProjectDb {
 export async function openProject(forgeDir: string, env: Record<string, string | undefined> = process.env, dev = true): Promise<ProjectDb> {
   const config = loadConfig({ ...env, ALLOW_INSECURE_HTTP: "1", BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET || "cli" }, dev);
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : await createLocalDb(sqlitePath(config), config.sqliteDriver);
+  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : createSqliteDb(sqlitePath(config));
   await migrateSystem(db);
   for (const { name, value } of await db.query<{ name: string; value: string }>(`SELECT "name", "value" FROM "_env"`)) env[name] ??= value;
   const project = await loadProject(forgeDir);
@@ -150,7 +150,7 @@ export async function importData(p: ProjectDb, file: string, { replace = false }
 /** A consistent copy of the SQLite database. Postgres has its own tools. */
 export async function backup(p: ProjectDb, file: string) {
   if (p.db.dialect.name !== "sqlite") throw new ValidationError("For Postgres, back up with pg_dump (or use `archlast-forge export`).");
-  await p.db.execute(`VACUUM INTO '${file.replaceAll("'", "''")}'`); // a literal: Turso doesn't take a bound parameter here
+  await p.db.execute(`VACUUM INTO ?`, [file]);
 }
 
 // ---- environment variables ----
@@ -173,7 +173,7 @@ export { addAdmin, listAdmins, removeAdmin, type AdminRole };
 export async function openDb(env: Record<string, string | undefined> = process.env) {
   const config = loadConfig({ ...env, ALLOW_INSECURE_HTTP: "1", BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET || "cli" }, true);
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : await createLocalDb(sqlitePath(config), config.sqliteDriver);
+  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : createSqliteDb(sqlitePath(config));
   await migrateSystem(db);
   return db;
 }
@@ -184,7 +184,7 @@ type Context = Pick<ProjectDb, "db"> | ProjectDb;
 
 /**
  * The CLI's data commands as `cmd` + JSON `args` in, JSON out, so they can run in this process or, over `/_cli`, inside the running server.
- * A Turso database belongs to one process, so while a server is up the CLI has to ask it instead of opening the file itself.
+ * Inside the server, an import reaches subscribers and a command never contends with the server for the write lock.
  */
 export async function runCommand(c: Context, cmd: string, a: Record<string, any> = {}): Promise<any> {
   const p = c as ProjectDb;

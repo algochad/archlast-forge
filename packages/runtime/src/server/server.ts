@@ -227,7 +227,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (path === "/health") return Response.json({ ok: true });
       if (path === "/ready")
         return Response.json({ ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, error: runtime.loadError }, { status: !shuttingDown && runtime.manifest && !runtime.loadError ? 200 : 503 });
-      // The CLI's data commands. The runtime process holds the database (Turso allows one process per file), so the CLI asks it through here.
+      // The CLI's data commands. They run in the function runtime, which owns the database, so imports reach subscribers and nothing contends with the server for the write lock.
       if (path === "/_cli" && req.method === "POST") {
         const retry = await limited(`cli:${clientIp(req, srv)}`);
         if (retry) return withId(tooMany(retry));

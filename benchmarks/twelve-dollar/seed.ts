@@ -1,19 +1,19 @@
 // Loads the challenge's deterministic seed (50,000 users, 500,000 posts, ~2,000,000 likes) into an archlast-forge database,
 // and creates a real Better Auth session for each of the first 20,000 users (the counterpart of the challenge's pre-signed JWTs).
 //
-//   bun benchmarks/twelve-dollar/seed.ts --challenge <clone of twelve-dollar-server-challenge> --out <dir> [--driver turso|bun]
+//   bun benchmarks/twelve-dollar/seed.ts --challenge <clone of twelve-dollar-server-challenge> --out <dir>
 //
-// Writes <dir>/app.db (the engine's DATA_DIR, a Turso database) and <dir>/tokens.json: [{ id, username, cookie }].
+// Writes <dir>/app.db (the engine's DATA_DIR) and <dir>/tokens.json: [{ id, username, cookie }].
 // BETTER_AUTH_SECRET must be the same value the server runs with, because it signs the session cookies.
 import { createHmac } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { createLocalDb } from "../../packages/runtime/src/server/db/factory";
+import { createSqliteDb } from "../../packages/runtime/src/server/db/sqlite";
 import { loadProject, tableSpecs } from "../../packages/runtime/src/server/project";
 import { migrateSystem } from "../../packages/runtime/src/server/system";
 
-const { values } = parseArgs({ options: { challenge: { type: "string" }, out: { type: "string" }, driver: { type: "string", default: "turso" } } });
+const { values } = parseArgs({ options: { challenge: { type: "string" }, out: { type: "string" } } });
 const challenge = resolve(values.challenge ?? "");
 const out = resolve(values.out ?? "");
 const secret = process.env.BETTER_AUTH_SECRET;
@@ -38,10 +38,10 @@ const ms = (iso: string) => Date.parse(iso);
 const dbPath = join(out, "app.db");
 for (const suffix of ["", "-wal", "-shm", "-log"]) rmSync(dbPath + suffix, { force: true });
 const project = await loadProject(resolve(import.meta.dir, "forge"));
-// The engine's own adapter creates the file: Turso refuses databases written by SQLite, and the other way round. Run the engine with the same SQLITE_DRIVER.
-const db = await createLocalDb(dbPath, values.driver as "turso" | "bun");
+// The engine's own adapter creates the file, with the pragmas the engine uses.
+const db = createSqliteDb(dbPath);
 await migrateSystem(db);
-// Indexes first: Turso builds an index over a loaded table in memory (over 2.5 GB for the 2.5 million rows here), but maintains one as rows arrive.
+// Indexes first, then the rows (the engine would otherwise build them at startup, over 2.5 million rows).
 await db.migrate(tableSpecs(project.tables));
 
 type Row = [string, number, string];

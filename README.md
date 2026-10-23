@@ -2,7 +2,7 @@
 
 A self-hosted reactive backend for TypeScript apps, in the style of Convex, on Bun. You declare a schema and functions in `forge/`. Clients call them with end-to-end types, and live queries push new results whenever the data they read changes. The engine runs as a Docker container that the CLI starts and controls.
 
-- **Data:** a local Turso (SQLite-compatible, alpha) file, or Postgres. Index and range queries, keyset pagination, full-text search, data migrations, export, import and backup.
+- **Data:** SQLite (bun:sqlite) or Postgres. Index and range queries, keyset pagination, full-text search, data migrations, export, import and backup.
 - **Functions:** queries, mutations and actions; internal functions; `returns` validators; timeouts and size limits; `ForgeError` for caller-facing errors.
 - **Batteries:** Better Auth sign-in, file storage on S3 or RustFS through presigned URLs, scheduled functions and crons.
 - **Scale:** Redis for cross-server reactivity, caching and rate limits; a pool of function-runtime processes.
