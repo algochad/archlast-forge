@@ -1,177 +1,85 @@
-import { useAction, useAuth, useMutation, usePaginatedQuery, useQuery, useSession, useUploadFile } from '@archlast-forge/react'
-import { Component, useState, type FormEvent, type ReactNode } from 'react'
-import { api } from '../convex/_generated/api'
-import type { Id } from '../convex/_generated/dataModel'
+import { useAuth, useSession } from '@archlast-forge/react'
+import { useEffect, useState } from 'react'
+import { Icon, Logo, type IconName } from './icons'
+import { SignIn } from './SignIn'
+import { Todos } from './Todos'
+
+type Theme = 'system' | 'light' | 'dark'
+const NEXT: Record<Theme, Theme> = { system: 'dark', dark: 'light', light: 'system' }
+const THEME_ICON: Record<Theme, IconName> = { system: 'monitor', dark: 'moon', light: 'sun' }
+
+function useTheme() {
+  const [theme, setTheme] = useState<Theme>(() => {
+    try {
+      return (localStorage.getItem('forge-todos:theme') as Theme) ?? 'system'
+    } catch {
+      return 'system'
+    }
+  })
+  useEffect(() => {
+    if (theme === 'system') document.documentElement.removeAttribute('data-theme')
+    else document.documentElement.setAttribute('data-theme', theme)
+    try {
+      localStorage.setItem('forge-todos:theme', theme)
+    } catch {
+      /* private mode: the choice just doesn't persist */
+    }
+  }, [theme])
+  return [theme, setTheme] as const
+}
 
 export default function App() {
   const session = useSession()
-  if (session.isPending) return <p className="muted center">Loading…</p>
-  if (!session.data) return <SignIn />
-  return <Todos email={session.data.user.email} />
-}
-
-function SignIn() {
-  const auth = useAuth()
-  const [mode, setMode] = useState<'in' | 'up'>('in')
-  const [error, setError] = useState<string>()
-
-  async function submit(e: FormEvent<HTMLFormElement>) {
-    e.preventDefault()
-    const f = new FormData(e.currentTarget)
-    const email = String(f.get('email'))
-    const password = String(f.get('password'))
-    const res =
-      mode === 'up'
-        ? await auth.signUp.email({ email, password, name: String(f.get('name')) })
-        : await auth.signIn.email({ email, password })
-    setError(res.error?.message)
-  }
-
-  return (
-    <main className="card narrow">
-      <h1>archlast-forge todos</h1>
-      <form onSubmit={submit} className="stack">
-        {mode === 'up' && <input name="name" placeholder="Name" required aria-label="Name" />}
-        <input name="email" type="email" placeholder="Email" required aria-label="Email" autoComplete="email" />
-        <input name="password" type="password" placeholder="Password (8+ characters)" minLength={8} required aria-label="Password" />
-        <button type="submit">{mode === 'up' ? 'Create account' : 'Sign in'}</button>
-        {error && <p role="alert" className="error">{error}</p>}
-      </form>
-      <button className="link" onClick={() => setMode(mode === 'in' ? 'up' : 'in')}>
-        {mode === 'in' ? 'No account? Create one' : 'Have an account? Sign in'}
-      </button>
-    </main>
+  const [theme, setTheme] = useTheme()
+  const themeToggle = (
+    <button className="btn icon" onClick={() => setTheme(NEXT[theme])} aria-label={`Theme: ${theme}. Switch to ${NEXT[theme]}.`} title={`Theme: ${theme}`}>
+      <Icon name={THEME_ICON[theme]} />
+    </button>
   )
+  if (session.isPending)
+    return (
+      <div className="boot" role="progressbar" aria-label="Loading">
+        <Logo size={56} />
+      </div>
+    )
+  if (!session.data) return <SignIn themeToggle={themeToggle} />
+  return <Signed email={session.data.user.email} name={session.data.user.name} themeToggle={themeToggle} />
 }
 
-function Todos({ email }: { email: string }) {
+function Signed({ email, name, themeToggle }: { email: string; name?: string; themeToggle: React.ReactNode }) {
   const auth = useAuth()
-  const { results: lists, status, loadMore } = usePaginatedQuery(api.lists.page, {}, { initialNumItems: 15 })
-  const createList = useMutation(api.lists.create)
-  const [selected, setSelected] = useState<Id<'lists'>>()
-  const listId = selected ?? lists?.[0]?._id
-
+  const initials = (name || email)
+    .split(/[\s@._-]+/)
+    .filter(Boolean)
+    .map((p) => p[0]!.toUpperCase())
+    .join('')
+    .slice(0, 2)
   return (
-    <main className="layout">
-      <header>
-        <strong>archlast-forge todos</strong>
-        <span className="muted">{email}</span>
-        <button className="link" onClick={() => auth.signOut()}>Sign out</button>
+    <div className="app">
+      <header className="topbar">
+        <span className="brand">
+          <Logo size={30} />
+          <span>
+            forge <b>todos</b>
+          </span>
+        </span>
+        <span className="push" />
+        {themeToggle}
+        <span className="user">
+          <span className="avatar" aria-hidden="true">
+            {initials}
+          </span>
+          <span className="who">
+            <strong>{name || email}</strong>
+            {name && <span className="muted small">{email}</span>}
+          </span>
+        </span>
+        <button className="btn ghost" onClick={() => auth.signOut()}>
+          <Icon name="logout" size={16} />
+          <span className="label">Sign out</span>
+        </button>
       </header>
-      <nav className="card">
-        <h2>Lists</h2>
-        <ul>
-          {lists.map((l) => (
-            <li key={l._id}>
-              <button className={l._id === listId ? 'selected' : 'link'} onClick={() => setSelected(l._id)}>{l.name}</button>
-            </li>
-          ))}
-        </ul>
-        {status === 'CanLoadMore' && <button className="link" onClick={() => loadMore(15)}>Load more lists</button>}
-        <AddForm placeholder="New list" onAdd={async (name) => setSelected(await createList({ name }))} />
-      </nav>
-      <section className="card">
-        {listId ? (
-          <ErrorBoundary>
-            <TodoList listId={listId} />
-          </ErrorBoundary>
-        ) : (
-          <p className="muted">Create a list to start.</p>
-        )}
-      </section>
-    </main>
+      <Todos />
+    </div>
   )
-}
-
-function TodoList({ listId }: { listId: Id<'lists'> }) {
-  const [search, setSearch] = useState('')
-  const all = useQuery(api.todos.listByList, { listId })
-  const found = useQuery(api.todos.search, search.trim() ? { listId, text: search } : 'skip')
-  // Until search results arrive, keep showing the list (the search box stays mounted and focused).
-  const todos = search.trim() && found ? found.map((t) => ({ ...t, attachmentUrl: all?.find((a) => a._id === t._id)?.attachmentUrl ?? null })) : all
-  const add = useMutation(api.todos.add)
-  // Optimistic: the checkbox flips at once; the live result replaces it (or it's undone on error).
-  const toggle = useMutation(api.todos.toggle).withOptimisticUpdate((store, { todoId }) => {
-    const current = store.getQuery(api.todos.listByList, { listId })
-    if (current) store.setQuery(api.todos.listByList, { listId }, current.map((t) => (t._id === todoId ? { ...t, done: !t.done } : t)))
-  })
-  const remove = useMutation(api.todos.remove)
-  const remind = useAction(api.todos.sendReminder)
-  const uploadFile = useUploadFile(api.todos.generateUploadUrl)
-  const attach = useMutation(api.todos.attach)
-  const [notice, setNotice] = useState<string>()
-
-  async function upload(todoId: Id<'todos'>, file: File) {
-    try {
-      // Bytes go straight to storage through a presigned URL, not through the server.
-      await attach({ todoId, storageId: await uploadFile(file) })
-    } catch (e) {
-      setNotice((e as Error).message)
-    }
-  }
-
-  if (!todos) return <p className="muted">Loading…</p>
-  return (
-    <>
-      <AddForm placeholder="What needs doing?" onAdd={(title) => add({ listId, title })} />
-      <input type="search" className="search" value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search this list" aria-label="Search this list" />
-      {notice && <p role="status" className="muted">{notice}</p>}
-      <ul className="todos">
-        {todos.map((t) => (
-          <li key={t._id} className={t.done ? 'done' : ''}>
-            <label>
-              <input type="checkbox" checked={t.done} onChange={() => toggle({ todoId: t._id })} />
-              <span>{t.title}</span>
-            </label>
-            {t.attachmentUrl && <a href={t.attachmentUrl} target="_blank" rel="noreferrer">attachment</a>}
-            {t.remindedAt && <span className="muted small">reminded</span>}
-            <span className="actions">
-              <button className="link" onClick={async () => setNotice(await remind({ todoId: t._id }))}>Remind</button>
-              <label className="link">
-                Attach
-                <input type="file" hidden onChange={(e) => e.target.files?.[0] && upload(t._id, e.target.files[0])} />
-              </label>
-              <button className="link danger" onClick={() => remove({ todoId: t._id })} aria-label={`Delete ${t.title}`}>Delete</button>
-            </span>
-          </li>
-        ))}
-      </ul>
-      {todos.length === 0 && <p className="muted">{search.trim() ? 'No matches.' : 'Nothing here yet.'}</p>}
-    </>
-  )
-}
-
-function AddForm({ placeholder, onAdd }: { placeholder: string; onAdd: (text: string) => Promise<unknown> }) {
-  const [text, setText] = useState('')
-  const [error, setError] = useState<string>()
-  return (
-    <form
-      className="row"
-      onSubmit={async (e) => {
-        e.preventDefault()
-        if (!text.trim()) return
-        try {
-          await onAdd(text.trim())
-          setText('')
-          setError(undefined)
-        } catch (err) {
-          setError((err as Error).message)
-        }
-      }}
-    >
-      <input value={text} onChange={(e) => setText(e.target.value)} placeholder={placeholder} aria-label={placeholder} />
-      <button type="submit">Add</button>
-      {error && <span role="alert" className="error">{error}</span>}
-    </form>
-  )
-}
-
-class ErrorBoundary extends Component<{ children: ReactNode }, { error?: Error }> {
-  state: { error?: Error } = {}
-  static getDerivedStateFromError(error: Error) {
-    return { error }
-  }
-  render() {
-    return this.state.error ? <p role="alert" className="error">{this.state.error.message}</p> : this.props.children
-  }
 }

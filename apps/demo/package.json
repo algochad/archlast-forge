@@ -12,6 +12,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@fontsource-variable/space-grotesk": "5.3.0",
     "@archlast-forge/react": "workspace:*",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"

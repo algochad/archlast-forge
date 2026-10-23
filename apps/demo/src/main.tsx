@@ -1,3 +1,4 @@
+import '@fontsource-variable/space-grotesk'
 import { ArchlastForgeClient, ArchlastForgeProvider } from '@archlast-forge/react'
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
