@@ -1,5 +1,5 @@
 /**
- * The challenge's bench/load.js for the tRPC version of the API, for real k6 on a machine with the memory for it
+ * The challenge's bench/load.js for the RPC version of the API, for real k6 on a machine with the memory for it
  * (k6 holds a JavaScript runtime per virtual user: thousands of users need many GB). load.mjs is the same scenario
  * for small machines. Same stages, same user loop, same thresholds.
  *
@@ -45,23 +45,23 @@ export default function () {
   const auth = { headers: { Cookie: user.cookie, 'Content-Type': 'application/json' } };
   if (__ITER === 0) sleep(between(0, 5)); // spread out VUs that start in the same tick
 
-  const feed = http.get(`${BASE_URL}/trpc/feed.list`, { tags: { name: 'feed.list' } });
+  const feed = http.get(`${BASE_URL}/rpc/feed:list`, { tags: { name: 'feed.list' } });
   if (!check(feed, { 'feed 200': (r) => r.status === 200 })) { sleep(between(3, 7)); return; }
-  const posts = feed.json('result.data.posts');
+  const posts = feed.json('result.posts');
   const post = posts[Math.floor(Math.random() * posts.length)];
   sleep(between(3, 7));
 
-  const get = http.get(`${BASE_URL}/trpc/feed.get?input=${encodeURIComponent(JSON.stringify({ id: post.id }))}`, { tags: { name: 'feed.get' } });
+  const get = http.get(`${BASE_URL}/rpc/feed:get?args=${encodeURIComponent(JSON.stringify({ id: post.id }))}`, { tags: { name: 'feed.get' } });
   check(get, { 'post 200': (r) => r.status === 200 });
   sleep(between(3, 8));
 
   if (Math.random() < LIKE_PROB) {
-    const r = http.post(`${BASE_URL}/trpc/feed.like`, JSON.stringify({ postId: post.id }), { ...auth, tags: { name: 'feed.like' } });
+    const r = http.post(`${BASE_URL}/rpc/feed:like`, JSON.stringify({ postId: post.id }), { ...auth, tags: { name: 'feed.like' } });
     check(r, { 'like 200': (r) => r.status === 200 });
   }
   if (Math.random() < POST_PROB) {
     const body = JSON.stringify({ body: `${user.username} says hi at ${new Date().toISOString()} (VU ${__VU}, iter ${__ITER})` });
-    check(http.post(`${BASE_URL}/trpc/feed.create`, body, { ...auth, tags: { name: 'feed.create' } }), { 'create 200': (r) => r.status === 200 });
+    check(http.post(`${BASE_URL}/rpc/feed:create`, body, { ...auth, tags: { name: 'feed.create' } }), { 'create 200': (r) => r.status === 200 });
   }
   sleep(between(5, 15));
 }

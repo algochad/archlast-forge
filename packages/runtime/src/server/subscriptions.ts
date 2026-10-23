@@ -7,7 +7,8 @@ import type { FunctionRuntime } from "./runtime";
 
 export type QueryUpdate = { value: unknown } | { error: string; data?: unknown; requestId?: string };
 
-type Result = { value: unknown; topics: string[] };
+/** `clean`: no write to anything the query read landed while it ran, so the result includes every write seen so far. Absent means a cache hit, which was clean when stored. */
+type Result = { value: unknown; topics: string[]; clean?: boolean };
 
 interface FunctionStats {
   /** Served from the cache. */
@@ -80,8 +81,10 @@ export class QueryRunner {
   async run(name: string, args: unknown, headers: CallHeaders, requestId?: string): Promise<Result> {
     const cache = this.cache;
     if (!cache) {
+      const start = this.seq;
       const r = await this.runtime.call(name, "query", args, headers, { requestId });
-      return { value: r.value, topics: r.topics ?? [] };
+      const topics = r.topics ?? [];
+      return { value: r.value, topics, clean: this.untouched(topics, start) };
     }
     const began = performance.now();
     const stats = this.statsOf(name);
@@ -125,10 +128,14 @@ export class QueryRunner {
     const stats = this.statsOf(name);
     stats.perUser = this.perUser.has(name);
     // Cache only if none of the topics this result read was written while it ran.
-    const clean = start >= this.horizon && !topics.some((t) => (this.invalidatedAt.get(t) ?? 0) > start);
+    const clean = this.untouched(topics, start);
     const kept = clean && !unkeyed && (await cache.set(key, { value: r.value, topics }, { ttlMs: this.ttlMs, topics }));
     if (!kept) stats.skipped++;
     return { value: r.value, topics, clean: clean && !unkeyed };
+  }
+
+  private untouched(topics: string[], start: number) {
+    return start >= this.horizon && !topics.some((t) => (this.invalidatedAt.get(t) ?? 0) > start);
   }
 
   /** Counters for a function; calls to names that don't exist are counted nowhere, so they can't grow the table. */
@@ -238,6 +245,8 @@ export class SubscriptionManager {
             dirty = true;
           }
           sub.topics = r.topics;
+          // A write that landed while the query ran may have been published before this subscription listened for it.
+          if (r.clean === false) dirty = true;
           update = { value: r.value };
         } catch (e) {
           update = this.describeError(e, requestId);

@@ -101,9 +101,9 @@ if (process.argv.includes("--smoke")) {
       ready = await fetch(`http://localhost:${port}/ready`).then((r) => r.ok, () => false);
     }
     if (!ready) throw new Error("packed server never became ready");
-    const input = encodeURIComponent(JSON.stringify({ paginationOpts: { numItems: 5, cursor: null } }));
-    const body = (await (await fetch(`http://localhost:${port}/trpc/messages.list?input=${input}`)).json()) as any;
-    if (!Array.isArray(body.result?.data?.page)) throw new Error(`unexpected response: ${JSON.stringify(body)}`);
+    const args = encodeURIComponent(JSON.stringify({ paginationOpts: { numItems: 5, cursor: null } }));
+    const body = (await (await fetch(`http://localhost:${port}/rpc/messages:list?args=${args}`)).json()) as any;
+    if (!Array.isArray(body.result?.page)) throw new Error(`unexpected response: ${JSON.stringify(body)}`);
     console.log(`✓ smoke test: scaffolded, installed from tarballs, typechecked, built and served ${app}`);
   } finally {
     server.kill();

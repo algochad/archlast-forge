@@ -38,5 +38,5 @@ Migrations run in batches, one transaction each, and record their progress, so a
 ```bash
 archlast-forge export data.jsonl                  # every document, ids preserved
 archlast-forge import data.jsonl [--replace]      # into empty tables, or clear them first
-archlast-forge backup app.db                      # SQLite: a consistent copy (use pg_dump for Postgres)
+archlast-forge backup app.db                      # local database: a consistent copy (use pg_dump for Postgres)
 ```

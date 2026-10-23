@@ -367,16 +367,24 @@ export class LogWriter {
     if (this.buffer.length > 10_000) this.buffer.splice(0, this.buffer.length - 10_000); // never grow without bound
   }
 
-  async flush() {
-    const rows = this.buffer.splice(0);
-    if (rows.length)
-      await this.db.transaction("write", async (tx) => {
-        for (const r of rows)
-          await tx.execute(
-            `INSERT INTO "_logs" ("_id", "time", "server", "name", "level", "message", "durationMs", "ok", "requestId") VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-            [newId("_logs"), r.time, r.server, r.name, r.level, r.message.slice(0, 4000), r.durationMs ?? null, r.ok === undefined ? null : r.ok, r.requestId ?? null],
-          );
-      });
+  private running?: Promise<void>;
+
+  /** One drain at a time: when writes are slow, flushes must not pile up in the database's write queue behind each other. */
+  flush(): Promise<void> {
+    return (this.running ??= this.drain().finally(() => (this.running = undefined)));
+  }
+
+  private async drain() {
+    // A transaction per 100 entries, so a request's mutation waits for one small transaction, not a whole second of logs.
+    while (this.buffer.length) {
+      const chunk = this.buffer.splice(0, 100);
+      await this.db.transaction("write", (tx) =>
+        tx.execute(
+          `INSERT INTO "_logs" ("_id", "time", "server", "name", "level", "message", "durationMs", "ok", "requestId") VALUES ${chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ")}`,
+          chunk.flatMap((r) => [newId("_logs"), r.time, r.server, r.name, r.level, r.message.slice(0, 4000), r.durationMs ?? null, r.ok === undefined ? null : r.ok, r.requestId ?? null]),
+        ),
+      );
+    }
     if (Date.now() - this.lastTrim > 3600_000) {
       this.lastTrim = Date.now();
       await this.db.execute(`DELETE FROM "_logs" WHERE "time" < ?`, [Date.now() - this.retentionMs]);

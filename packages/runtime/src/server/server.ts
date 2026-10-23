@@ -1,10 +1,8 @@
-import type { AnyRouter } from "@trpc/server";
-import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
-import { getWSConnectionHandler } from "@trpc/server/adapters/ws";
-import type { HTMLBundle, Server } from "bun";
+import type { HTMLBundle, Server, ServerWebSocket } from "bun";
 import { timingSafeEqual } from "node:crypto";
 import { hostname } from "node:os";
 import { resolve } from "node:path";
+import { buildAdminApi } from "./admin-api";
 import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
@@ -15,11 +13,10 @@ import { Metrics } from "./metrics";
 import type { Manifest } from "./project";
 import { toPublicError } from "./public-error";
 import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./ratelimit";
-import { buildAdminRouter, buildRouter, type Context } from "./router";
+import { buildRpc, errorResponse, type Rpc, type SocketData } from "./rpc";
 import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager } from "./subscriptions";
 import { Tracer } from "./tracing";
-import { WsShim, type WsData } from "./ws";
 
 export interface ServerOptions {
   forgeDir: string;
@@ -99,17 +96,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     const err = toPublicError(e, requestId, dev);
     return { error: err.message, data: err.data, requestId: err.requestId };
   });
-  if (cache) bus.subscribe("*", (topic) => queries.invalidated(topic));
+  // Evicts cache entries, and lets subscriptions notice writes that overlapped their first read. A Redis bus only delivers every topic when caching.
+  if (cache || !config.redisUrl) bus.subscribe("*", (topic) => queries.invalidated(topic));
 
   const tracer = Tracer.fromEnv(env);
-  const routerOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, tracer };
-  let router: AnyRouter = buildRouter({ functions: [], tables: {}, crons: [], storage: false }, runtime, queries, subs, routerOpts);
-  // tRPC only reads `_def`, so this stable handle lets open sockets see procedures added by a reload.
-  const routerRef = { get _def() { return router._def; } } as AnyRouter;
+  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, tracer };
+  // Rebuilt after each load; open sockets use whichever is current, so they see functions added by a reload.
+  let rpc: Rpc = buildRpc({ functions: [], tables: {}, crons: [], storage: false }, runtime, queries, subs, rpcOpts);
   let loading: Promise<unknown> = Promise.resolve();
   const load = () => {
     const p = runtime.start().then(async (manifest) => {
-      router = buildRouter(manifest, runtime, queries, subs, routerOpts);
+      rpc = buildRpc(manifest, runtime, queries, subs, rpcOpts);
       await queries.reset().catch((e) => log("error", "cache reset failed", { error: String(e) })); // results from the old code are wrong
       subs.rerunAll();
       return manifest;
@@ -121,13 +118,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const reload = () => runtime.stop().then(load);
   let connections = 0;
   let shuttingDown = false;
-  const sockets = new Set<WsShim>();
+  const sockets = new Set<ServerWebSocket<SocketData>>();
 
-  const admin = buildAdminRouter({
+  const admin = buildAdminApi({
     runtime,
     subs,
     recentLogs,
-    dev,
     serverInfo: () => ({ serverId, customFunctions: config.customFunctions, connections, subscriptions: subs.size, workers: config.runtimeWorkers, uptimeMs: Math.round(process.uptime() * 1000) }),
     reload: () => reload(),
     cache: () => ({ ...queries.snapshot(), backend: config.redisUrl ? "redis" : "memory", maxBytes: config.redisUrl ? null : config.cacheMaxBytes }),
@@ -150,17 +146,6 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const adminCookie = (token: string, maxAge: number) =>
     `afx_admin=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${config.authUrl.startsWith("https://") ? "; Secure" : ""}`;
 
-  const wsHandler = getWSConnectionHandler({
-    wss: undefined as never, // only applyWSSHandler uses it
-    router: routerRef,
-    createContext: ({ req }): Context => ({
-      headers: pickAuthHeaders((n) => req.headers[n] as string | undefined),
-      requestId: requestIdOf(req.headers["x-request-id"] as string | undefined),
-      conn: { subscriptions: 0 },
-      traceparent: req.headers.traceparent as string | undefined,
-    }),
-  });
-
   const cors = (req: Request, res: Response) => {
     const origin = req.headers.get("origin");
     if (origin && config.trustedOrigins.includes(origin)) {
@@ -171,7 +156,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     return res;
   };
 
-  const clientIp = (req: Request, srv: Server<WsData>) =>
+  const clientIp = (req: Request, srv: Server<SocketData>) =>
     (config.trustProxy && req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()) || srv.requestIP(req)?.address || "unknown";
   const limited = async (ip: string) => {
     if (!config.limits.rateLimitPerMinute) return null;
@@ -221,10 +206,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       });
       return new Response(stream, { headers: { "content-type": "text/event-stream", "cache-control": "no-store" } });
     }
-    return fetchRequestHandler({ endpoint: "/_admin", req, router: admin, createContext: () => ({ admin: who, requestId }) });
+    return admin(path.slice("/_admin/".length), req, { admin: who, requestId });
   }
 
-  const server = Bun.serve<WsData>({
+  const server = Bun.serve<SocketData>({
     port: config.port,
     hostname: config.hostname,
     maxRequestBodySize: config.limits.maxRequestBytes,
@@ -242,6 +227,20 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (path === "/health") return Response.json({ ok: true });
       if (path === "/ready")
         return Response.json({ ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, error: runtime.loadError }, { status: !shuttingDown && runtime.manifest && !runtime.loadError ? 200 : 503 });
+      // The CLI's data commands. The runtime process holds the database (Turso allows one process per file), so the CLI asks it through here.
+      if (path === "/_cli" && req.method === "POST") {
+        const retry = await limited(`cli:${clientIp(req, srv)}`);
+        if (retry) return withId(tooMany(retry));
+        const key = req.headers.get("x-admin-key");
+        if (!key || !config.adminKey || !sameSecret(key, config.adminKey)) return withId(Response.json({ message: "Invalid admin key" }, { status: 401 }));
+        const body = (await req.json().catch(() => null)) as { cmd?: string; args?: Record<string, unknown> } | null;
+        if (!body?.cmd) return withId(Response.json({ message: "Expected {cmd, args}" }, { status: 400 }));
+        try {
+          return withId(Response.json({ result: await runtime.admin("cli", { cmd: body.cmd, args: body.args ?? {} }, "cli") }));
+        } catch (e) {
+          return withId(Response.json({ message: (e as Error).message }, { status: 400 }));
+        }
+      }
       if (path === "/metrics") {
         const auth = req.headers.get("authorization")?.replace(/^Bearer /, "");
         const token = env.METRICS_TOKEN || config.adminKey;
@@ -250,12 +249,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
 
-      if (path === "/trpc" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+      if (path === "/rpc" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         const ip = clientIp(req, srv);
         const retry = await limited(ip);
         if (retry) return tooMany(retry);
-        const headers = { ...Object.fromEntries(req.headers), "x-request-id": requestId };
-        if (srv.upgrade(req, { data: { req: { url: path + url.search, headers }, ip } })) return;
+        const data: SocketData = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, traceparent: req.headers.get("traceparent") ?? undefined, ip, live: new Map() };
+        if (srv.upgrade(req, { data })) return;
         return new Response("WebSocket upgrade failed", { status: 400 });
       }
       if (req.method === "OPTIONS")
@@ -266,27 +265,20 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             headers: { "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type, authorization, x-request-id" },
           }),
         );
-      if (path.startsWith("/trpc/") || path.startsWith("/api/auth")) {
+      if (path.startsWith("/rpc/") || path.startsWith("/api/auth")) {
         const retry = await limited(clientIp(req, srv));
         if (retry) return cors(req, withId(tooMany(retry)));
       }
-      if (path.startsWith("/trpc/")) {
+      if (path.startsWith("/rpc/")) {
         await loading;
-        return cors(
-          req,
-          withId(
-            await fetchRequestHandler({
-              endpoint: "/trpc",
-              req,
-              router: routerRef,
-              createContext: ({ req }): Context => ({
-                headers: pickAuthHeaders((n) => req.headers.get(n)),
-                requestId,
-                traceparent: req.headers.get("traceparent") ?? undefined,
-              }),
-            }),
-          ),
-        );
+        let name: string;
+        try {
+          name = decodeURIComponent(path.slice("/rpc/".length));
+        } catch {
+          return cors(req, withId(errorResponse({ message: "Malformed function name", code: "BAD_REQUEST", requestId })));
+        }
+        const headers = pickAuthHeaders((n) => req.headers.get(n));
+        return cors(req, withId(await rpc.call(name, req, { headers, requestId, traceparent: req.headers.get("traceparent") ?? undefined })));
       }
       if (path.startsWith("/api/auth")) {
         const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
@@ -315,23 +307,20 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       closeOnBackpressureLimit: true,
       open(ws) {
         connections++;
-        ws.data.shim = new WsShim(ws as any);
-        sockets.add(ws.data.shim);
-        wsHandler(ws.data.shim as any, ws.data.req as any);
+        sockets.add(ws);
       },
       async message(ws, msg) {
-        if (config.limits.rateLimitPerMinute && msg !== "PONG") {
+        if (config.limits.rateLimitPerMinute) {
           const r = await limiter.consume(ws.data.ip ?? "unknown", { window: 60, max: config.limits.rateLimitPerMinute });
           if (!r.allowed) return ws.close(1008, "Too many requests");
         }
-        ws.data.shim?.emit("message", Buffer.from(msg), typeof msg !== "string"); // tRPC expects a Buffer
+        await loading; // a socket can connect before the function runtime has loaded, as an HTTP request can
+        if (typeof msg === "string") rpc.message(ws, msg);
       },
-      close(ws, code, reason) {
+      close(ws) {
         connections--;
-        if (!ws.data.shim) return;
-        sockets.delete(ws.data.shim);
-        ws.data.shim.readyState = 3;
-        ws.data.shim.emit("close", code, reason);
+        sockets.delete(ws);
+        rpc.close(ws);
       },
     },
   });
@@ -371,7 +360,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       shuttingDown = true;
       clearInterval(sampler);
       // 1012 "service restart": clients reconnect (to another server, behind a load balancer) and refetch.
-      for (const s of sockets) s.close(1012, "Server restarting");
+      for (const ws of sockets) ws.close(1012, "Server restarting");
       if (graceful) await Promise.race([server.stop(false), Bun.sleep(10_000)]);
       server.stop(true);
       await runtime.stop();

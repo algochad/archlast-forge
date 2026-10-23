@@ -103,4 +103,4 @@ export const page = query({
 ctx.db.query("todos").withSearchIndex("search_title", (q) => q.search("title", "oat mil").eq("listId", listId)).take(10);
 ```
 
-Every term must match, and the last one matches as a prefix ("mil" finds "milk"). Results come back by relevance. SQLite uses FTS5 and Postgres uses `tsvector` with a GIN index. Both stay in sync with writes automatically.
+Every term must match, and the last one matches as a prefix ("mil" finds "milk"). Results come back by relevance. The local database keeps a token table (Turso has no FTS5; `SQLITE_DRIVER=bun` uses FTS5) and Postgres uses `tsvector` with a GIN index. Both stay in sync with writes automatically.

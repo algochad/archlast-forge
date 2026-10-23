@@ -13,8 +13,8 @@ test("function calls are exported as OTLP spans that continue the caller's trace
   });
   try {
     const traceId = "4bf92f3577b34da6a3ce929d0e0e4736";
-    await fetch(`${srv.url}/trpc/todos.events?input=%7B%7D`, { headers: { traceparent: `00-${traceId}-00f067aa0ba902b7-01`, "x-request-id": "trace-req" } });
-    await fetch(`${srv.url}/trpc/todos.crash?input=%7B%7D`);
+    await fetch(`${srv.url}/rpc/todos:events?args=%7B%7D`, { headers: { traceparent: `00-${traceId}-00f067aa0ba902b7-01`, "x-request-id": "trace-req" } });
+    await fetch(`${srv.url}/rpc/todos:crash?args=%7B%7D`);
     for (let i = 0; i < 50 && received.length === 0; i++) await Bun.sleep(100);
     const spans = received.flatMap((b) => b.resourceSpans[0].scopeSpans[0].spans);
     expect(received[0].resourceSpans[0].resource.attributes).toContainEqual({ key: "service.name", value: { stringValue: "forge-test" } });

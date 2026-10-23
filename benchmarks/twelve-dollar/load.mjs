@@ -1,5 +1,5 @@
 #!/usr/bin/env node
-// A port of the challenge's bench/load.js (k6) for the tRPC version of the API, for machines where k6 can't hold
+// A port of the challenge's bench/load.js (k6) for the RPC version of the API, for machines where k6 can't hold
 // thousands of virtual users (k6 keeps a JavaScript runtime per user; this keeps a few KB).
 //
 //   VUS=2500 node load.mjs                      env: BASE_URL, VUS, RAMP_UP (60s), DURATION (5m), TOKENS, OUT
@@ -81,25 +81,25 @@ async function user(i, startAt, stopAt) {
     for (let iter = 0; clock() < stopAt; iter++) {
       if (iter === 0) await wait(between(0, 5));
       if (clock() >= stopAt) break;
-      const feed = await request(agent, "GET", "/trpc/feed.list");
+      const feed = await request(agent, "GET", "/rpc/feed:list");
       record("feed.list", feed);
       if (feed.status !== 200) {
         await wait(between(3, 7));
         continue;
       }
-      const posts = JSON.parse(feed.body).result.data.posts;
+      const posts = JSON.parse(feed.body).result.posts;
       const post = posts[Math.floor(Math.random() * posts.length)];
       await wait(between(3, 7));
       if (clock() >= stopAt) break;
 
-      record("feed.get", await request(agent, "GET", `/trpc/feed.get?input=${encodeURIComponent(JSON.stringify({ id: post.id }))}`));
+      record("feed.get", await request(agent, "GET", `/rpc/feed:get?args=${encodeURIComponent(JSON.stringify({ id: post.id }))}`));
       await wait(between(3, 8));
       if (clock() >= stopAt) break;
 
-      if (Math.random() < LIKE_PROB) record("feed.like", await request(agent, "POST", "/trpc/feed.like", JSON.stringify({ postId: post.id }), auth));
+      if (Math.random() < LIKE_PROB) record("feed.like", await request(agent, "POST", "/rpc/feed:like", JSON.stringify({ postId: post.id }), auth));
       if (Math.random() < POST_PROB) {
         const body = JSON.stringify({ body: `${me.username} says hi at ${new Date().toISOString()} (VU ${i}, iter ${iter})` });
-        record("feed.create", await request(agent, "POST", "/trpc/feed.create", body, auth));
+        record("feed.create", await request(agent, "POST", "/rpc/feed:create", body, auth));
       }
       await wait(between(5, 15));
     }

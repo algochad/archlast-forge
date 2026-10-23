@@ -13,7 +13,7 @@ bun run dev
 
 1. Codegen writes `forge/_generated/` (your typed `api`).
 2. The engine starts in a Docker container with `forge/` mounted. Edits restart only the function runtime, and open WebSockets stay connected.
-3. Vite serves the React app on http://localhost:5173 and proxies `/trpc` and `/api` to the engine on port 3000.
+3. Vite serves the React app on http://localhost:5173 and proxies `/rpc` and `/api` to the engine on port 3000.
 
 The dashboard is at http://localhost:3000/_dashboard. The admin key is printed on startup.
 

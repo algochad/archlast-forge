@@ -10,13 +10,13 @@ const area = (url, fn) => {
   if (!url) return fn?.startsWith("(") ? `engine: ${fn}` : "native / runtime internals";
   if (url.includes("better-auth") || url.includes("better-call") || url.includes("@better-auth")) return "Better Auth";
   if (url.includes("node_modules/zod") || url.includes("/zod/")) return "zod (argument validation)";
-  if (url.includes("trpc")) return "tRPC";
-  if (url.includes("/db/sqlite")) return "SQLite adapter (bun:sqlite calls)";
+  if (url.includes("rpc.ts")) return "RPC";
+  if (url.includes("/db/sqlite") || url.includes("/db/turso")) return "database adapter (driver calls)";
   if (url.includes("docstore")) return "document store (SQL building, JSON parse)";
   if (url.includes("admin-ops") && /LogWriter|flush/.test(fn)) return "log persistence (_logs inserts)";
   if (url.includes("executor")) return "executor (call path, logging)";
   if (url.includes("runtime.ts")) return "server <-> runtime IPC";
-  if (url.includes("server/server.ts") || url.includes("router.ts") || url.includes("protocol")) return "HTTP server + routing";
+  if (url.includes("server/server.ts") || url.includes("admin-api") || url.includes("protocol")) return "HTTP server + routing";
   if (url.includes("/forge/")) return "your functions (feed.ts)";
   if (url.includes("subscriptions") || url.includes("cache.ts")) return "query cache / subscriptions";
   if (url.startsWith("node:") || url.startsWith("bun:")) return `built-ins (${url.split(":")[0]})`;

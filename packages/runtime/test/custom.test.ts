@@ -2,7 +2,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
 import { addAdmin } from "../src/server/admin-ops";
 import { compileCustom, CustomCodeError } from "../src/server/custom";
-import { createSqliteDb } from "../src/server/db/sqlite";
+import { createLocalDb } from "../src/server/db/factory";
 import { startServer, type RunningServer } from "../src/server/server";
 import { migrateSystem } from "../src/server/system";
 import { tempDir } from "./helpers";
@@ -62,18 +62,18 @@ describe("runCustom in dev", () => {
 
   const run = async (code: string, extra: object = {}) => {
     const res = await fetch(`${srv.url}/_admin/runCustom`, { method: "POST", headers: admin, body: JSON.stringify({ code, ...extra }) });
-    return ((await res.json()) as any).result.data;
+    return ((await res.json()) as any);
   };
-  const trpc = async (path: string, input: unknown, mutation = false) => {
+  const rpc = async (path: string, input: unknown, mutation = false) => {
     const res = mutation
-      ? await fetch(`${srv.url}/trpc/${path}`, { method: "POST", body: JSON.stringify(input), headers: { "content-type": "application/json" } })
-      : await fetch(`${srv.url}/trpc/${path}?input=${encodeURIComponent(JSON.stringify(input))}`);
-    return ((await res.json()) as any).result.data;
+      ? await fetch(`${srv.url}/rpc/${path}`, { method: "POST", body: JSON.stringify(input), headers: { "content-type": "application/json" } })
+      : await fetch(`${srv.url}/rpc/${path}?args=${encodeURIComponent(JSON.stringify(input))}`);
+    return ((await res.json()) as any).result;
   };
 
   test("a custom query reads the database and reports how long it took", async () => {
-    const listId = await trpc("todos.createList", { name: "from custom" }, true);
-    await trpc("todos.add", { listId, title: "one" }, true);
+    const listId = await rpc("todos:createList", { name: "from custom" }, true);
+    await rpc("todos:add", { listId, title: "one" }, true);
     const out = await run(`export default query({ handler: async (ctx) => ctx.db.query("todos").collect() })`);
     expect(out).toMatchObject({ ok: true, kind: "query", value: [{ title: "one", listId }] });
     expect(out.ms).toBeGreaterThanOrEqual(0);
@@ -109,14 +109,14 @@ describe("runCustom in dev", () => {
   });
 
   test("a custom mutation writes, and live queries and the cache see it", async () => {
-    const listId = await trpc("todos.createList", { name: "mutate me" }, true);
-    expect(await trpc("todos.listByList", { listId })).toEqual([]); // now cached
+    const listId = await rpc("todos:createList", { name: "mutate me" }, true);
+    expect(await rpc("todos:listByList", { listId })).toEqual([]); // now cached
     const code = `export default mutation({
       args: { listId: v.id("lists") },
       handler: async (ctx, { listId }) => { await ctx.db.insert("todos", { listId, title: "made in the dashboard", done: false }); return "ok"; },
     })`;
     expect(await run(code, { args: { listId } })).toMatchObject({ ok: true, kind: "mutation", value: "ok" });
-    expect(await trpc("todos.listByList", { listId })).toMatchObject([{ title: "made in the dashboard" }]);
+    expect(await rpc("todos:listByList", { listId })).toMatchObject([{ title: "made in the dashboard" }]);
   });
 
   test("a mutation that throws rolls back", async () => {
@@ -136,7 +136,7 @@ describe("runCustom in dev", () => {
       .getSetCookie()
       .map((c) => c.split(";")[0])
       .join("; ");
-    const me = ((await (await fetch(`${srv.url}/trpc/todos.whoami`, { headers: { cookie } })).json()) as any).result.data;
+    const me = ((await (await fetch(`${srv.url}/rpc/todos:whoami`, { headers: { cookie } })).json()) as any).result;
     const code = `export default query({ handler: async (ctx) => (await ctx.auth.getUserIdentity())?.email ?? null })`;
     expect(await run(code)).toMatchObject({ ok: true, value: null });
     expect(await run(code, { asUserId: me.userId })).toMatchObject({ ok: true, value: "asuser@example.com" });
@@ -144,14 +144,14 @@ describe("runCustom in dev", () => {
 
   test("every run is in the audit log, with the code", async () => {
     await run(`export default query({ handler: () => "audited" })`);
-    const audit = ((await (await fetch(`${srv.url}/_admin/audit?input=${encodeURIComponent(JSON.stringify({ limit: 5 }))}`, { headers: admin })).json()) as any).result.data;
+    const audit = ((await (await fetch(`${srv.url}/_admin/audit?input=${encodeURIComponent(JSON.stringify({ limit: 5 }))}`, { headers: admin })).json()) as any);
     const entry = audit.find((a: any) => a.action === "runCustom");
     expect(entry.actor).toBe("admin-key");
     expect(entry.details).toContain("audited");
   });
 
   test("the server says whether custom functions are on", async () => {
-    expect(((await (await fetch(`${srv.url}/_admin/server`, { headers: admin })).json()) as any).result.data.customFunctions).toBe(true);
+    expect(((await (await fetch(`${srv.url}/_admin/server`, { headers: admin })).json()) as any).customFunctions).toBe(true);
   });
 });
 
@@ -178,11 +178,11 @@ describe("runCustom in production", () => {
     fetch(`${srv.url}/_admin/runCustom`, { method: "POST", headers: { "content-type": "application/json", "x-forge-admin": "1", ...headers }, body });
 
   beforeAll(async () => {
-    const db = createSqliteDb(join(dataDir, "app.db"));
+    const db = await createLocalDb(join(dataDir, "app.db"));
     await migrateSystem(db);
     await addAdmin(db, "admin@example.com", "admin-password-123", "admin");
     await addAdmin(db, "owner@example.com", "owner-password-123", "owner");
-    db.close?.();
+    await db.close();
   });
 
   test("off by default, even for the owner", async () => {
@@ -191,7 +191,7 @@ describe("runCustom in production", () => {
       const res = await post(srv, { "x-admin-key": "root-key" });
       expect(res.status).toBe(403);
       expect(((await res.json()) as any).error.message).toContain("ALLOW_CUSTOM_FUNCTIONS");
-      expect(((await (await fetch(`${srv.url}/_admin/server`, { headers: { "x-admin-key": "root-key" } })).json()) as any).result.data.customFunctions).toBe(false);
+      expect(((await (await fetch(`${srv.url}/_admin/server`, { headers: { "x-admin-key": "root-key" } })).json()) as any).customFunctions).toBe(false);
     } finally {
       await srv.stop();
     }
@@ -203,7 +203,7 @@ describe("runCustom in production", () => {
       expect((await post(srv, {})).status).toBe(401);
       expect((await post(srv, { cookie: await login(srv, "admin@example.com", "admin-password-123") })).status).toBe(403);
       const res = await post(srv, { cookie: await login(srv, "owner@example.com", "owner-password-123") });
-      expect(((await res.json()) as any).result.data).toMatchObject({ ok: true, value: 1 });
+      expect(((await res.json()) as any)).toMatchObject({ ok: true, value: 1 });
     } finally {
       await srv.stop();
     }

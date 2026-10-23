@@ -5,7 +5,8 @@ Environment variables, read at startup. Invalid or contradictory values fail fas
 | Variable | Default | |
 |---|---|---|
 | `PORT`, `HOST` | `3000`, `0.0.0.0` | |
-| `DATABASE_URL` | bun:sqlite at `DATA_DIR/app.db` | `postgres://…` for Postgres |
+| `DATABASE_URL` | Turso (SQLite) at `DATA_DIR/app.db` | `postgres://…` for Postgres |
+| `SQLITE_DRIVER` | `turso` | `bun` uses `bun:sqlite` instead. See [the local database](deployment.html#the-local-database) |
 | `DATA_DIR` | `./data` (`/data` in the engine image) | |
 | `REDIS_URL` | in-memory bus, cache, rate limits | required when `REPLICAS > 1` |
 | `REPLICAS` | `1` | |

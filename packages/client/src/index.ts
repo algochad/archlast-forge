@@ -10,7 +10,6 @@ import {
   type PaginationResult,
 } from "@archlast-forge/runtime";
 import type { QueryClient } from "@tanstack/query-core";
-import { createTRPCUntypedClient, createWSClient, httpBatchLink, splitLink, wsLink, type TRPCUntypedClient } from "@trpc/client";
 import { createAuthClient } from "better-auth/client";
 
 export { ForgeError };
@@ -23,16 +22,11 @@ export type PublicQuery = FunctionReference<"query", any, any, "public">;
 export type PublicMutation = FunctionReference<"mutation", any, any, "public">;
 export type PublicAction = FunctionReference<"action", any, any, "public">;
 
-/** Same mapping as the server's router builder: "admin/users:get" → "admin.users.get". */
-export const procedurePath = (name: string) => name.replace(":", "/").split("/").join(".");
-
 export interface ClientOptions {
   /** Server origin. Defaults to the page's origin (e.g. behind a dev proxy). */
   url?: string;
   WebSocket?: typeof WebSocket;
 }
-
-type Unsubscribable = { unsubscribe(): void };
 
 interface Watch {
   listeners: Set<(u: QueryUpdate) => void>;
@@ -41,65 +35,122 @@ interface Watch {
   stop(): void;
 }
 
-/** Turns a server error into a ForgeError when the function threw one, keeping the request id either way. */
-export function toClientError(e: unknown): unknown {
-  const forge = (e as any)?.data?.forge ?? (e as any)?.shape?.data?.forge;
-  if (forge && forge.data !== undefined) return Object.assign(new ForgeError(forge.data), { requestId: forge.requestId });
-  if (forge?.requestId && e && typeof e === "object") Object.assign(e, { requestId: forge.requestId });
-  return e;
+/** What the server sends when a call or subscription fails. `data` is what a function threw as a ForgeError. */
+export interface ErrorBody {
+  message: string;
+  code: string;
+  data?: unknown;
+  requestId?: string;
+}
+
+/** A ForgeError when the function threw one, otherwise an Error with the server's code; the request id is attached either way. */
+export function toClientError(e: ErrorBody): Error & { code?: string; requestId?: string } {
+  const err = e.data !== undefined ? new ForgeError(e.data) : new Error(e.message);
+  return Object.assign(err, { code: e.code, requestId: e.requestId });
 }
 
 export const updateError = (u: Extract<QueryUpdate, { error: string }>) =>
   Object.assign(u.data !== undefined ? new ForgeError(u.data) : new Error(u.error), { requestId: u.requestId });
 
-const rethrow = async <T>(p: Promise<T>): Promise<T> => {
-  try {
-    return await p;
-  } catch (e) {
-    throw toClientError(e);
+type Handlers = { onData(update: QueryUpdate): void; onError(error: ErrorBody): void };
+
+/**
+ * The live-query socket: opens on the first subscription, subscribes again after a dropped connection (each subscription's first
+ * message is a fresh result, so reconnecting refetches), and backs off between attempts.
+ */
+class LiveSocket {
+  private socket?: WebSocket;
+  private subscriptions = new Map<string, Handlers & { name: string; args: unknown }>();
+  private next = 0;
+  private attempts = 0;
+  private timer?: ReturnType<typeof setTimeout>;
+  private closed = false;
+
+  private url: string;
+  private WebSocketImpl?: typeof WebSocket;
+
+  constructor(url: string, WebSocketImpl?: typeof WebSocket) {
+    this.url = url;
+    this.WebSocketImpl = WebSocketImpl;
   }
-};
+
+  subscribe(name: string, args: unknown, handlers: Handlers) {
+    const id = String(++this.next);
+    this.subscriptions.set(id, { ...handlers, name, args });
+    if (this.socket?.readyState === 1) this.send({ type: "subscribe", id, name, args });
+    else this.open();
+    return () => {
+      if (!this.subscriptions.delete(id)) return;
+      if (this.socket?.readyState === 1) this.send({ type: "unsubscribe", id });
+    };
+  }
+
+  /** Drops the socket; subscriptions stay and are sent again on the next one. */
+  restart() {
+    clearTimeout(this.timer);
+    this.attempts = 0;
+    const old = this.socket;
+    this.socket = undefined;
+    old?.close();
+    if (this.subscriptions.size) this.open();
+  }
+
+  close() {
+    this.closed = true;
+    clearTimeout(this.timer);
+    this.subscriptions.clear();
+    this.socket?.close();
+  }
+
+  private send(message: object) {
+    this.socket?.send(JSON.stringify(message));
+  }
+
+  private open() {
+    if (this.closed || this.socket || this.timer) return;
+    const socket = (this.socket = new (this.WebSocketImpl ?? WebSocket)(this.url));
+    socket.onopen = () => {
+      this.attempts = 0;
+      for (const [id, { name, args }] of this.subscriptions) this.send({ type: "subscribe", id, name, args });
+    };
+    socket.onmessage = (e) => {
+      const m = JSON.parse(String(e.data)) as { type: "data"; id: string; data: QueryUpdate } | { type: "error"; id: string; error: ErrorBody };
+      const sub = this.subscriptions.get(m.id);
+      if (!sub) return;
+      if (m.type === "data") return sub.onData(m.data);
+      this.subscriptions.delete(m.id); // the server ended it
+      sub.onError(m.error);
+    };
+    socket.onclose = () => {
+      if (this.socket !== socket) return; // replaced by restart()
+      this.socket = undefined;
+      if (this.closed || !this.subscriptions.size) return;
+      const delay = Math.min(10_000, 250 * 2 ** this.attempts++) * (0.5 + Math.random() / 2);
+      this.timer = setTimeout(() => ((this.timer = undefined), this.open()), delay);
+    };
+  }
+}
 
 export class ArchlastForgeClient {
   readonly url: string;
-  private trpc!: TRPCUntypedClient<any>;
-  private ws?: ReturnType<typeof createWSClient>;
+  private live: LiveSocket;
   private watches = new Map<string, Watch>();
   private authClient?: ReturnType<typeof createAuthClient>;
-  private opts: ClientOptions;
 
   constructor(opts: ClientOptions = {}) {
-    this.opts = opts;
     this.url = (opts.url ?? globalThis.location?.origin ?? "").replace(/\/$/, "");
-    this.connect();
-  }
-
-  private connect() {
-    // Reconnects with backoff; each subscription's first message is a fresh result, so reconnecting refetches.
-    this.ws = createWSClient({ url: `${this.url.replace(/^http/, "ws")}/trpc`, WebSocket: this.opts.WebSocket });
-    this.trpc = createTRPCUntypedClient({
-      links: [
-        splitLink({
-          condition: (op) => op.type === "subscription",
-          true: wsLink({ client: this.ws }),
-          false: httpBatchLink({ url: `${this.url}/trpc`, fetch: (url, init) => fetch(url, { ...(init as RequestInit), credentials: "include" }) }),
-        }),
-      ],
-    });
-    for (const w of this.watches.values()) w.start();
+    this.live = new LiveSocket(`${this.url.replace(/^http/, "ws")}/rpc`, opts.WebSocket);
   }
 
   /** Opens a new socket, e.g. after sign-in: cookies are only sent on the WebSocket handshake. */
   reconnect() {
-    for (const w of this.watches.values()) w.stop();
-    void this.ws?.close().catch(() => {}); // closing a socket that never opened rejects; nothing to clean up
-    this.connect();
+    this.live.restart();
   }
 
   close() {
     for (const w of this.watches.values()) w.stop();
     this.watches.clear();
-    void this.ws?.close().catch(() => {}); // closing a socket that never opened rejects; nothing to clean up
+    this.live.close();
   }
 
   /** Better Auth client for this server; a change of session reconnects the socket. */
@@ -117,17 +168,28 @@ export class ArchlastForgeClient {
     return this.authClient;
   }
 
+  private async call(ref: FunctionReference<any>, args: unknown) {
+    const res = await fetch(`${this.url}/rpc/${encodeURI(getFunctionName(ref))}`, {
+      method: "POST",
+      credentials: "include",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(args ?? {}),
+    });
+    const body = (await res.json().catch(() => null)) as { result?: unknown; error?: ErrorBody } | null;
+    if (!res.ok || body?.error) throw toClientError(body?.error ?? { message: `${res.status} ${res.statusText}`, code: "INTERNAL_SERVER_ERROR" });
+    return body?.result;
+  }
+
   query<R extends PublicQuery>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>> {
-    return rethrow(this.trpc.query(procedurePath(getFunctionName(ref)), args[0] ?? {}) as Promise<FunctionReturn<R>>);
+    return this.call(ref, args[0]) as Promise<FunctionReturn<R>>;
   }
 
   mutation<R extends PublicMutation>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>> {
-    return rethrow(this.trpc.mutation(procedurePath(getFunctionName(ref)), args[0] ?? {}) as Promise<FunctionReturn<R>>);
+    return this.call(ref, args[0]) as Promise<FunctionReturn<R>>;
   }
 
-  /** Actions are served as tRPC mutations. */
   action<R extends PublicAction>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>> {
-    return rethrow(this.trpc.mutation(procedurePath(getFunctionName(ref)), args[0] ?? {}) as Promise<FunctionReturn<R>>);
+    return this.call(ref, args[0]) as Promise<FunctionReturn<R>>;
   }
 
   /**
@@ -151,7 +213,7 @@ export class ArchlastForgeClient {
     const key = `${name}:${JSON.stringify(args ?? {})}`;
     let w = this.watches.get(key);
     if (!w) {
-      let sub: Unsubscribable | undefined;
+      let unsubscribe: (() => void) | undefined;
       const watch: Watch = {
         listeners: new Set(),
         start: () => {
@@ -159,15 +221,12 @@ export class ArchlastForgeClient {
             watch.last = u;
             for (const l of watch.listeners) l(u);
           };
-          sub = this.trpc.subscription(`_sub.${procedurePath(name)}`, args ?? {}, {
-            onData: (u) => emit(u as QueryUpdate),
-            onError: (e) => {
-              const err = toClientError(e) as Error & { data?: unknown; requestId?: string };
-              emit({ error: err.message, data: err instanceof ForgeError ? err.data : undefined, requestId: err.requestId });
-            },
+          unsubscribe = this.live.subscribe(name, args ?? {}, {
+            onData: emit,
+            onError: (e) => emit({ error: e.message, data: e.data, requestId: e.requestId }),
           });
         },
-        stop: () => sub?.unsubscribe(),
+        stop: () => unsubscribe?.(),
       };
       this.watches.set(key, (w = watch));
       w.start();

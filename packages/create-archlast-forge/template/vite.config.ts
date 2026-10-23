@@ -4,5 +4,5 @@ import { defineConfig } from "vite";
 // The backend is proxied so auth cookies and the WebSocket stay same-origin.
 export default defineConfig({
   plugins: [react()],
-  server: { proxy: { "/trpc": { target: "http://localhost:3000", ws: true }, "/api": "http://localhost:3000" } },
+  server: { proxy: { "/rpc": { target: "http://localhost:3000", ws: true }, "/api": "http://localhost:3000" } },
 });

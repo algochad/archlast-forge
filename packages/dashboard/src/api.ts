@@ -48,16 +48,16 @@ export class ApiError extends Error {
 const HEADERS = { "content-type": "application/json", "x-forge-admin": "1" };
 
 async function unwrap<T>(res: Response): Promise<T> {
-  const body = await res.json().catch(() => ({}));
-  if (!res.ok || body.error) throw new ApiError(body.error?.message ?? body.message ?? res.statusText, res.status);
-  return ("result" in body ? body.result.data : body) as T; // tRPC envelope (data may be null), or a plain JSON body
+  const body = await res.json().catch(() => null);
+  if (!res.ok) throw new ApiError(body?.error?.message ?? body?.message ?? res.statusText, res.status);
+  return body as T;
 }
 
-/** Read operations (tRPC queries). The session cookie authenticates. */
+/** Read operations. The session cookie authenticates. */
 export const get = <T>(op: string, input: object = {}) =>
   fetch(`/_admin/${op}?input=${encodeURIComponent(JSON.stringify(input))}`, { credentials: "same-origin" }).then(unwrap<T>);
 
-/** Write operations (tRPC mutations). */
+/** Write operations. */
 export const post = <T>(op: string, input: object = {}) =>
   fetch(`/_admin/${op}`, { method: "POST", credentials: "same-origin", headers: HEADERS, body: JSON.stringify(input) }).then(unwrap<T>);
 

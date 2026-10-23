@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { join } from "node:path";
 import { addAdmin } from "../src/server/admin-ops";
-import { createSqliteDb } from "../src/server/db/sqlite";
+import { createLocalDb } from "../src/server/db/factory";
 import { startServer, type RunningServer } from "../src/server/server";
 import { migrateSystem } from "../src/server/system";
 import { tempDir } from "./helpers";
@@ -25,7 +25,7 @@ const prodEnv = (extra: Record<string, string> = {}) => ({
 let srv: RunningServer;
 
 beforeAll(async () => {
-  const db = createSqliteDb(join(dataDir, "app.db"));
+  const db = await createLocalDb(join(dataDir, "app.db"));
   await migrateSystem(db);
   await addAdmin(db, "viewer@example.com", "viewer-password-123", "viewer");
   await addAdmin(db, "admin@example.com", "admin-password-123", "admin");
@@ -37,23 +37,23 @@ afterAll(() => srv.stop({ graceful: false }));
 const post = (path: string, body: unknown, headers: Record<string, string> = {}) =>
   fetch(`${srv.url}${path}`, { method: "POST", body: JSON.stringify(body), headers: { "content-type": "application/json", ...headers } });
 const get = (path: string, input?: unknown, headers: Record<string, string> = {}) =>
-  fetch(`${srv.url}${path}${input === undefined ? "" : `?input=${encodeURIComponent(JSON.stringify(input))}`}`, { headers });
+  fetch(`${srv.url}${path}${input === undefined ? "" : `?${path.startsWith("/rpc/") ? "args" : "input"}=${encodeURIComponent(JSON.stringify(input))}`}`, { headers });
 
 test("internal functions aren't exposed over HTTP", async () => {
-  const res = await get("/trpc/todos.secretCount", {});
+  const res = await get("/rpc/todos:secretCount", {});
   expect(res.status).toBe(404);
 });
 
 test("ForgeError data reaches the caller; internal errors don't", async () => {
-  const forge = (await (await post("/trpc/todos.forgeFail", {})).json()) as any;
-  expect(forge.error.data.forge.data).toEqual({ code: "LIMIT", max: 3 });
+  const forge = (await (await post("/rpc/todos:forgeFail", {})).json()) as any;
+  expect(forge.error.data).toEqual({ code: "LIMIT", max: 3 });
 
-  const res = await get("/trpc/todos.crash", {}, { "x-request-id": "req-123" });
+  const res = await get("/rpc/todos:crash", {}, { "x-request-id": "req-123" });
   const body = (await res.json()) as any;
   expect(res.headers.get("x-request-id")).toBe("req-123");
   expect(body.error.message).toBe("Server error (request req-123)");
   expect(JSON.stringify(body)).not.toContain("secret internal detail");
-  expect(body.error.data.stack).toBeUndefined();
+  expect(body.error.stack).toBeUndefined();
 });
 
 test("health, readiness and metrics", async () => {
@@ -67,24 +67,22 @@ test("health, readiness and metrics", async () => {
 
 test("a call that blocks the runtime is killed, and the runtime comes back", async () => {
   const started = Date.now();
-  const body = (await (await get("/trpc/todos.spin", { ms: 20_000 })).json()) as any;
-  expect(body.error.data.code).toBe("TIMEOUT");
+  const body = (await (await get("/rpc/todos:spin", { ms: 20_000 })).json()) as any;
+  expect(body.error.code).toBe("TIMEOUT");
   expect(Date.now() - started).toBeLessThan(9000);
-  for (let i = 0; i < 50 && (await get("/trpc/todos.events", {})).status !== 200; i++) await Bun.sleep(100);
-  expect((await get("/trpc/todos.events", {})).status).toBe(200);
+  for (let i = 0; i < 50 && (await get("/rpc/todos:events", {})).status !== 200; i++) await Bun.sleep(100);
+  expect((await get("/rpc/todos:events", {})).status).toBe(200);
 }, 15_000);
 
 test("subscriptions per connection are capped", async () => {
-  const ws = new WebSocket(`${srv.url.replace("http", "ws")}/trpc`);
+  const ws = new WebSocket(`${srv.url.replace("http", "ws")}/rpc`);
   const errors: string[] = [];
-  const data = new Set<number>();
   ws.addEventListener("message", (e) => {
     const msg = JSON.parse(String(e.data));
-    if (msg.error) errors.push(msg.error.message);
-    if (msg.result?.type === "data") data.add(msg.id);
+    if (msg.type === "error") errors.push(msg.error.message);
   });
   await new Promise((r) => ws.addEventListener("open", r));
-  for (const id of [1, 2, 3]) ws.send(JSON.stringify({ id, method: "subscription", params: { path: "_sub.todos.events", input: {} } }));
+  for (const id of ["1", "2", "3"]) ws.send(JSON.stringify({ type: "subscribe", id, name: "todos:events", args: {} }));
   for (let i = 0; i < 50 && errors.length === 0; i++) await Bun.sleep(50);
   expect(errors).toContain("At most 2 subscriptions per connection");
   ws.close();
@@ -97,15 +95,15 @@ test("dashboard sign-in, roles and audit log", async () => {
   const admin = (await login("admin@example.com", "admin-password-123")).headers.get("set-cookie")!.split(";")[0]!;
   const as = (cookie: string) => ({ cookie, "x-forge-admin": "1" });
 
-  expect(((await (await get("/_admin/me", undefined, { cookie: viewer })).json()) as any).result.data).toEqual({ email: "viewer@example.com", role: "viewer" });
+  expect(((await (await get("/_admin/me", undefined, { cookie: viewer })).json()) as any)).toEqual({ email: "viewer@example.com", role: "viewer" });
   expect((await get("/_admin/docs", { table: "lists" }, { cookie: viewer })).status).toBe(200);
   expect((await post("/_admin/run", { name: "todos:createList", kind: "mutation", args: { name: "x" } }, as(viewer))).status).toBe(403);
   // Without the CSRF header, writes are refused.
   expect((await post("/_admin/run", { name: "todos:createList", kind: "mutation", args: { name: "x" } }, { cookie: admin })).status).toBe(403);
   const ran = (await (await post("/_admin/run", { name: "todos:secretCount", kind: "query", args: {} }, as(admin))).json()) as any;
-  expect(typeof ran.result.data).toBe("number"); // admins may run internal functions
+  expect(typeof ran).toBe("number"); // admins may run internal functions
 
-  const audit = ((await (await get("/_admin/audit", {}, { cookie: viewer })).json()) as any).result.data;
+  const audit = ((await (await get("/_admin/audit", {}, { cookie: viewer })).json()) as any);
   expect(audit[0]).toMatchObject({ actor: "admin@example.com", action: "run", target: "todos:secretCount" });
 
   await post("/_admin/logout", {}, as(viewer));
@@ -116,7 +114,7 @@ test("rate limiting and the dashboard being off by default", async () => {
   const s = await startServer({ forgeDir: fixture, env: prodEnv({ RATE_LIMIT_PER_MINUTE: "3", DASHBOARD: "", DATA_DIR: tempDir() }) });
   try {
     const statuses = [];
-    for (let i = 0; i < 5; i++) statuses.push((await fetch(`${s.url}/trpc/todos.events?input=%7B%7D`)).status);
+    for (let i = 0; i < 5; i++) statuses.push((await fetch(`${s.url}/rpc/todos:events?input=%7B%7D`)).status);
     expect(statuses).toEqual([200, 200, 200, 429, 429]);
     expect((await fetch(`${s.url}/_admin/me`)).status).toBe(404);
   } finally {
@@ -126,7 +124,7 @@ test("rate limiting and the dashboard being off by default", async () => {
 
 test("graceful shutdown lets in-flight requests finish", async () => {
   const s = await startServer({ forgeDir: fixture, env: prodEnv({ DATA_DIR: tempDir(), FUNCTION_TIMEOUT_MS: "5000" }) });
-  const inFlight = fetch(`${s.url}/trpc/todos.slowQuery?input=${encodeURIComponent('{"ms":500}')}`);
+  const inFlight = fetch(`${s.url}/rpc/todos:slowQuery?args=${encodeURIComponent('{"ms":500}')}`);
   await Bun.sleep(100);
   const stopping = s.stop();
   expect((await inFlight).status).toBe(200);

@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // Runs the engine limited to ONE CPU core and 2 GB of RAM and scores it like the challenge does.
 //
-//   node score.mjs check    functional checks (the tRPC translation of test.sh) on a fresh database
+//   node score.mjs check    functional checks (the RPC translation of test.sh) on a fresh database
 //   node score.mjs smoke    a short load run, to see that everything works
 //   node score.mjs profile  a load run with CPU profiling on (VUS=2000), written under WORK/profiles
 //   node score.mjs score    warm-up, find the limit (2,500 users, doubling, then narrowing to within 250), confirm with a 5-minute hold

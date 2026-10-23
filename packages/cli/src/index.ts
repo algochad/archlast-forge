@@ -156,21 +156,42 @@ function engineTarget(dir: string) {
   return dockerEngine.runningContainer(dir) ?? null;
 }
 
-async function withProject<T>(fn: (p: ops.ProjectDb) => Promise<T>) {
-  const p = await ops.openProject(findForgeDir(values.dir), { ...process.env, DATA_DIR: process.env.DATA_DIR ?? join(findForgeDir(values.dir), "data") });
-  try {
-    return await fn(p);
-  } finally {
-    await p.close();
+/**
+ * Runs a data command in the running server, which holds the database (Turso allows one process per file), or here when no server answers.
+ * Reaching the server needs ADMIN_KEY (the environment, or the dev secrets).
+ */
+async function data(cmd: string, args: Record<string, unknown> = {}): Promise<any> {
+  const dir = findForgeDir(values.dir);
+  const key = process.env.ADMIN_KEY ?? devEnv(dir).ADMIN_KEY;
+  const res = await fetch(`http://localhost:${port}/_cli`, {
+    method: "POST",
+    headers: { "x-admin-key": key!, "content-type": "application/json" },
+    body: JSON.stringify({ cmd, args }),
+  }).catch(() => null);
+  if (res && res.status !== 404) {
+    const body = (await res.json().catch(() => ({}))) as { result?: unknown; message?: string };
+    if (res.status === 401) fail(`The server on port ${port} rejected the admin key; set ADMIN_KEY to the one it runs with.`);
+    if (!res.ok) fail(body.message ?? `The server answered ${res.status}`);
+    return body.result;
   }
-}
-
-async function withDb<T>(fn: (db: Awaited<ReturnType<typeof ops.openDb>>) => Promise<T>) {
-  const db = await ops.openDb({ ...process.env, DATA_DIR: process.env.DATA_DIR ?? join(findForgeDir(values.dir), "data") });
+  const env = { ...process.env, DATA_DIR: process.env.DATA_DIR ?? join(dir, "data") };
   try {
-    return await fn(db);
-  } finally {
-    await db.close();
+    if (/^(env|admin)\./.test(cmd)) {
+      const db = await ops.openDb(env);
+      try {
+        return await ops.runCommand({ db }, cmd, args);
+      } finally {
+        await db.close();
+      }
+    }
+    const p = await ops.openProject(dir, env);
+    try {
+      return await ops.runCommand(p, cmd, args);
+    } finally {
+      await p.close();
+    }
+  } catch (e) {
+    return fail((e as Error).message);
   }
 }
 
@@ -247,20 +268,18 @@ const commands: Record<string, () => Promise<unknown>> = {
   async migrate() {
     const dir = findForgeDir(values.dir);
     if (forwarded(dir, ["migrate", ...rest, ...(values["run-migrations"] ? ["--run-migrations"] : []), ...(values.status ? ["--status"] : [])])) return;
-    await withProject(async (p) => {
-      if (values.status) {
-        for (const m of await ops.migrationStatus(p)) console.log(`${m.state.padEnd(8)} ${m.name}  (${m.table}, ${m.processed} processed)${m.error ? `  ✗ ${m.error}` : ""}`);
-        return;
-      }
-      if (values["run-migrations"]) {
-        const ran = await ops.runMigrations(p, rest, (name, n) => process.stdout.write(`\r  ${name}: ${n} documents`)).catch((e) => fail(e.message));
-        return console.log(ran.length ? `\n✓ ran ${ran.join(", ")}` : "✓ no pending migrations");
-      }
-      console.log(`✓ migrated ${Object.keys(p.project.tables).length} tables`);
-      const invalid = await ops.invalidDocuments(p);
-      for (const { id, error } of invalid.slice(0, 50)) console.error(`  ✗ ${id}: ${error}`);
-      if (invalid.length) fail(`${invalid.length} documents don't match the schema; write a migration and run \`archlast-forge migrate --run-migrations\``);
-    });
+    if (values.status) {
+      for (const m of await data("migrate.status")) console.log(`${m.state.padEnd(8)} ${m.name}  (${m.table}, ${m.processed} processed)${m.error ? `  ✗ ${m.error}` : ""}`);
+      return;
+    }
+    if (values["run-migrations"]) {
+      const ran: string[] = await data("migrate.run", { names: rest });
+      return console.log(ran.length ? `✓ ran ${ran.join(", ")}` : "✓ no pending migrations");
+    }
+    const { tables, invalid } = await data("migrate.check");
+    console.log(`✓ migrated ${tables} tables`);
+    for (const { id, error } of invalid.slice(0, 50)) console.error(`  ✗ ${id}: ${error}`);
+    if (invalid.length) fail(`${invalid.length} documents don't match the schema; write a migration and run \`archlast-forge migrate --run-migrations\``);
   },
   async export() {
     const file = rest[0] ?? fail("Usage: archlast-forge export <file>");
@@ -271,7 +290,7 @@ const commands: Record<string, () => Promise<unknown>> = {
       if (!dockerEngine.copyFrom(target, "/tmp/export.jsonl", resolve(file))) fail("docker cp failed");
       return console.log(`✓ copied to ${file}`);
     }
-    await withProject(async (p) => console.log(`✓ exported ${await ops.exportData(p, file)} documents to ${file}`));
+    console.log(`✓ exported ${await data("export", { file: resolve(file) })} documents to ${file}`);
   },
   async import() {
     const file = rest[0] ?? fail("Usage: archlast-forge import <file> [--replace]");
@@ -282,7 +301,7 @@ const commands: Record<string, () => Promise<unknown>> = {
       if (!dockerEngine.execInEngine(target, ["import", "/tmp/import.jsonl", ...(values.replace ? ["--replace"] : [])]).ok) process.exit(1);
       return;
     }
-    await withProject(async (p) => console.log(`✓ imported ${await ops.importData(p, file, { replace: values.replace }).catch((e) => fail(e.message))} documents`));
+    console.log(`✓ imported ${await data("import", { file: resolve(file), replace: values.replace })} documents`);
   },
   async backup() {
     const file = rest[0] ?? fail("Usage: archlast-forge backup <file>");
@@ -293,10 +312,8 @@ const commands: Record<string, () => Promise<unknown>> = {
       if (!dockerEngine.copyFrom(target, "/tmp/backup.db", resolve(file))) fail("docker cp failed");
       return console.log(`✓ copied to ${file}`);
     }
-    await withProject(async (p) => {
-      await ops.backup(p, resolve(file)).catch((e) => fail(e.message));
-      console.log(`✓ backed up to ${file}`);
-    });
+    await data("backup", { file: resolve(file) });
+    console.log(`✓ backed up to ${file}`);
   },
 
   async env() {
@@ -306,13 +323,11 @@ const commands: Record<string, () => Promise<unknown>> = {
       if (action === "set" || action === "rm") await reloadRunning(dir);
       return;
     }
-    await withDb(async (db) => {
-      if (action === "list" || !action) for (const e of await ops.listEnv(db)) console.log(`${e.name}=${e.value}`);
-      else if (action === "get") console.log((await ops.listEnv(db)).find((e) => e.name === name)?.value ?? fail(`${name} isn't set`));
-      else if (action === "set" && name && value !== undefined) await ops.setEnv(db, name, value).catch((e) => fail(e.message));
-      else if (action === "rm" && name) await ops.removeEnv(db, name);
-      else fail("Usage: archlast-forge env list | get <NAME> | set <NAME> <value> | rm <NAME>");
-    });
+    if (action === "list" || !action) for (const e of await data("env.list")) console.log(`${e.name}=${e.value}`);
+    else if (action === "get") console.log((await data("env.list")).find((e: { name: string }) => e.name === name)?.value ?? fail(`${name} isn't set`));
+    else if (action === "set" && name && value !== undefined) await data("env.set", { name, value });
+    else if (action === "rm" && name) await data("env.rm", { name });
+    else fail("Usage: archlast-forge env list | get <NAME> | set <NAME> <value> | rm <NAME>");
     if (action === "set" || action === "rm") {
       console.log(`✓ ${action === "set" ? "set" : "removed"} ${name}`);
       if (!inContainer) await reloadRunning(dir);
@@ -323,17 +338,15 @@ const commands: Record<string, () => Promise<unknown>> = {
     const dir = findForgeDir(values.dir);
     const args = ["admin", ...rest, ...(values.role ? ["--role", values.role] : []), ...(values.password ? ["--password", values.password] : [])];
     if (forwarded(dir, args)) return;
-    await withDb(async (db) => {
-      if (action === "list" || !action) for (const a of await ops.listAdmins(db)) console.log(`${a.role.padEnd(6)} ${a.email}`);
-      else if (action === "add" && email) {
-        const password = values.password ?? Buffer.from(crypto.getRandomValues(new Uint8Array(15))).toString("base64url");
-        await ops.addAdmin(db, email, password, (values.role ?? "admin") as ops.AdminRole).catch((e) => fail(e.message));
-        console.log(`✓ ${email} (${values.role ?? "admin"})${values.password ? "" : `  password: ${password}`}`);
-      } else if (action === "remove" && email) {
-        await ops.removeAdmin(db, email).catch((e) => fail(e.message));
-        console.log(`✓ removed ${email}`);
-      } else fail("Usage: archlast-forge admin add <email> [--role owner|admin|viewer] [--password <pw>] | list | remove <email>");
-    });
+    if (action === "list" || !action) for (const a of await data("admin.list")) console.log(`${a.role.padEnd(6)} ${a.email}`);
+    else if (action === "add" && email) {
+      const password = values.password ?? Buffer.from(crypto.getRandomValues(new Uint8Array(15))).toString("base64url");
+      await data("admin.add", { email, password, role: values.role ?? "admin" });
+      console.log(`✓ ${email} (${values.role ?? "admin"})${values.password ? "" : `  password: ${password}`}`);
+    } else if (action === "remove" && email) {
+      await data("admin.remove", { email });
+      console.log(`✓ removed ${email}`);
+    } else fail("Usage: archlast-forge admin add <email> [--role owner|admin|viewer] [--password <pw>] | admin list | admin remove <email>");
   },
   async dashboard() {
     console.log(`http://localhost:${port}/_dashboard`);

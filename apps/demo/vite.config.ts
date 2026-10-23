@@ -19,7 +19,7 @@ export default defineConfig({
       hmr: { clientPort: Number(proxied.port) || (proxied.protocol === 'https:' ? 443 : 80) },
     }),
     proxy: {
-      '/trpc': { target: backend, ws: true },
+      '/rpc': { target: backend, ws: true },
       '/api': backend,
     },
   },

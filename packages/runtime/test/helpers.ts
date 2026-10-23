@@ -3,6 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPostgresDb } from "../src/server/db/postgres";
 import { createSqliteDb } from "../src/server/db/sqlite";
+import { createTursoDb } from "../src/server/db/turso";
 import type { Db } from "../src/server/db/types";
 
 export const tempDir = () => mkdtempSync(join(tmpdir(), "afx-"));
@@ -11,6 +12,8 @@ export const tempDir = () => mkdtempSync(join(tmpdir(), "afx-"));
 export const dbAdapters: [string, () => Promise<Db>][] = [
   ["sqlite (file)", async () => createSqliteDb(join(tempDir(), "app.db"))],
   ["sqlite (:memory:)", async () => createSqliteDb(":memory:")],
+  ["turso (file)", async () => createTursoDb(join(tempDir(), "app.db"))],
+  ["turso (:memory:)", async () => createTursoDb(":memory:")],
   ...(process.env.TEST_POSTGRES_URL
     ? ([
         [

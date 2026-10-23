@@ -6,7 +6,8 @@ import { adminOp, LogWriter } from "./admin-ops";
 import { createAuth } from "./auth";
 import { loadConfig, sqlitePath } from "./config";
 import { createPostgresDb } from "./db/postgres";
-import { createSqliteDb } from "./db/sqlite";
+import { createLocalDb } from "./db/factory";
+import { AUDITED_COMMANDS, runCommand } from "./cli-ops";
 import { Executor, logContext, serializeError, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
 import type { HostMessage, RuntimeMessage, SerializedResponse } from "./protocol";
@@ -76,7 +77,7 @@ async function main() {
   const config = loadConfig(process.env, process.env.ARCHLAST_DEV === "1");
 
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : createSqliteDb(sqlitePath(config));
+  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : await createLocalDb(sqlitePath(config), config.sqliteDriver);
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);
@@ -99,6 +100,23 @@ async function main() {
   const scheduler = worker === 0 ? new SchedulerLoop(exec, db, project.functions, project.crons, config.limits.actionTimeoutMs + 60_000) : undefined;
   const deps = { db, exec, functions: project.functions, tables: project.tables, crons: project.crons, storage, serverId };
 
+  /** CLI data commands, run here because this process holds the database. */
+  async function cli({ cmd, args = {} }: { cmd: string; args?: Record<string, unknown> }) {
+    const out = await runCommand({ config, db, project, exec, close: async () => {} }, cmd, args);
+    if (AUDITED_COMMANDS.has(cmd)) {
+      const { name, email, file } = args as Record<string, unknown>; // never the values or passwords
+      await db.execute(`INSERT INTO "_audit" ("_id", "time", "actor", "action", "target", "details") VALUES (?, ?, ?, ?, ?, ?)`, [
+        `_audit:${crypto.randomUUID().replaceAll("-", "")}`,
+        Date.now(),
+        "cli",
+        cmd,
+        String(name ?? email ?? file ?? "") || null,
+        "{}",
+      ]);
+    }
+    return out;
+  }
+
   async function handle(msg: HostMessage): Promise<unknown> {
     switch (msg.t) {
       case "call":
@@ -111,6 +129,7 @@ async function main() {
         return { status: res.status, headers: [...res.headers], body: await res.text() } satisfies SerializedResponse;
       }
       case "admin":
+        if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });
         return adminOp(deps, msg.op, msg.args ?? {}, msg.actor);
     }
   }

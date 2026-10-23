@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
-import { createSqliteDb } from "../src/server/db/sqlite";
+import { createLocalDb } from "../src/server/db/factory";
 import type { Db } from "../src/server/db/types";
 import { Executor, serializeError, type LogEntry } from "../src/server/executor";
 import { loadProject, tableSpecs, type Project } from "../src/server/project";
@@ -14,7 +14,7 @@ let exec: Executor;
 let published: string[][];
 let logs: LogEntry[];
 
-async function setup(makeDb: () => Promise<Db> = async () => createSqliteDb(join(tempDir(), "app.db"))) {
+async function setup(makeDb: () => Promise<Db> = async () => createLocalDb(join(tempDir(), "app.db"))) {
   project ??= await loadProject(fixture);
   db = await makeDb();
   await db.migrate(tableSpecs(project.tables));

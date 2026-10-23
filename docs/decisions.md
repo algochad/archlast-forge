@@ -16,7 +16,8 @@ Answers to questions the build prompt and architecture doc left open, and the ch
 - **IDs** are `<table>:<32 hex>`, so `db.get(id)` knows which table to read and `v.id("lists")` rejects IDs from other tables.
 - **Index queries support `q.eq` only**, on a prefix of the index fields, as in the architecture doc. Results are ordered by the remaining index fields, then `_creationTime`.
 - **Postgres**: writes run SERIALIZABLE and retry serialization conflicts with jittered backoff, which is safe because mutations are deterministic. Queries run REPEATABLE READ READ ONLY. JSON parameters are bound as `?::text::jsonb`, because Bun JSON-encodes a string bound directly to jsonb a second time.
-- **SQLite**: WAL mode, one write connection (serialized in-process), and four `query_only` reader connections.
+- **Local database (Turso)**: `@tursodatabase/database` 0.8.3 (alpha), the default; `SQLITE_DRIVER=bun` keeps `bun:sqlite` available. Four connections per process in MVCC mode (`PRAGMA journal_mode = 'mvcc'`). Writes run as `BEGIN CONCURRENT`; a `Write-write conflict` or `Commit dependency aborted` is rethrown with code `40001`, so the executor's retry loop covers it as on Postgres. DDL needs a plain `BEGIN`, so a transaction that meets DDL is rerun exclusively. One process per file (a second gets a locking error), which is why the CLI's data commands go through the server (`POST /_cli`, admin key) while it runs. Files made by SQLite are refused: MVCC is a one-way format change, and on SQLite-created tables Turso ignores primary keys and expression indexes. Existing SQLite databases were wiped by decision at the switch; export/import moves data.
+- **`bun:sqlite` (`SQLITE_DRIVER=bun`)**: WAL mode, one write connection (serialized in-process), and four `query_only` reader connections.
 
 ## Reactivity and caching
 
@@ -30,8 +31,8 @@ Answers to questions the build prompt and architecture doc left open, and the ch
 - **Actions are at-most-once with no retries** (user decision). Scheduled mutations are exactly-once: the job row is claimed inside the mutation's own transaction. A scheduled action is claimed as `running` first. If the process crashes mid-action, the job stays `running` (`shortcut:` comment in `scheduler.ts`).
 - **Crons** live in `forge/crons.ts` and are evaluated in UTC. Every server computes the same job ID for each run (`cron:<name>:<time>`), so each run is inserted once.
 - **Function runtime** is a child process, not a Bun Worker, because Bun documents Worker termination as experimental. It owns the `forge/` modules, the database, Better Auth and the scheduler. The server process owns HTTP/WS, the bus, the cache and subscriptions.
-- **Code or dependency changes restart only the function runtime** (user decision). HTTP and WebSocket stay up. The tRPC router sits behind a stable handle, so open sockets see the new procedures, and every subscription re-runs.
-- **One tRPC procedure per function** (`todos.add`), plus `_sub.todos.listByList` for each query's subscription. Arguments are validated in the function runtime.
+- **Code or dependency changes restart only the function runtime** (user decision). HTTP and WebSocket stay up. The RPC handler is rebuilt after each load and sockets use whichever is current, so they see the new functions, and every subscription re-runs.
+- **No RPC framework** (user decision; tRPC was removed). Each public function is `POST /rpc/<name>` (`/rpc/todos:add`, JSON arguments in the body, `{ result }` or `{ error: { message, code, data?, requestId } }` back with the matching HTTP status); queries also answer `GET /rpc/<name>?args=<json>`. POST requires `content-type: application/json`, which a cross-site form can't send without a preflight. Live queries use one WebSocket at `/rpc` with `{ type: "subscribe", id, name, args }` and `{ type: "unsubscribe", id }`; the server answers `{ type: "data", id, data }` (the first message is the current result) or `{ type: "error", id, error }`. The client reconnects with jittered exponential backoff and subscribes again, so a reconnect refetches. Arguments are validated in the function runtime. The dashboard API is plain JSON too: `GET /_admin/<op>?input=<json>` and `POST /_admin/<op>`. Not carried over from tRPC: request batching (each call is its own HTTP request).
 
 ## Auth
 
@@ -83,12 +84,12 @@ Decided without asking, as directed, while implementing [roadmap.md](roadmap.md)
   - *Order and pagination:* `order()`, plus keyset `paginate()` with base64url cursors over (remaining index fields, `_creationTime`, `_id`). Documents with a missing optional field in the index can be skipped by range and paging comparisons.
   - *Reactivity:* ranges and pages are tracked at the equality prefix.
   - *Built-in index:* `by_creation_time` is available on every table.
-- **Search.** `searchIndex(name, { searchField, filterFields })`. SQLite uses an FTS5 table kept in sync by the document store and tracked in `_search_indexes`. Postgres uses a GIN index over `to_tsvector('simple', …)`. Every term must match, the last as a prefix, and search reads depend on the whole table.
+- **Search.** `searchIndex(name, { searchField, filterFields })`. `bun:sqlite` uses an FTS5 table kept in sync by the document store and tracked in `_search_indexes`; Turso (no FTS5) uses a `(term, doc_id, tf)` table filled from the same write hook (`dialect.search = "tokens"`), with the last term matched as a prefix range and ranked by summed term frequency. Postgres uses a GIN index over `to_tsvector('simple', …)`. Every term must match, the last as a prefix, and search reads depend on the whole table.
 - **Migrations.**
   - *Postgres indexes:* built `CONCURRENTLY` outside transactions, under a session advisory lock; invalid leftovers are rebuilt.
   - *Data migrations:* `migration({ table, migrateOne })` registers an internal mutation that processes one page per transaction. Progress lives in `_migrations`, and runs resume.
   - *Schema check:* outside dev, startup refuses when stored documents don't match the schema (`SCHEMA_CHECK=off` skips it).
-- **Data portability.** Export and import use JSON Lines, preserving ids and validating on import. Import refuses non-empty tables unless `--replace`. Backups use SQLite `VACUUM INTO`; for Postgres, use `pg_dump`.
+- **Data portability.** Export and import use JSON Lines, preserving ids and validating on import. Import refuses non-empty tables unless `--replace`. Backups use `VACUUM INTO` (a string literal: Turso doesn't take a bound parameter); for Postgres, use `pg_dump`.
 - **Environment variables.** Stored in `_env` and loaded into the function runtime before user code; the process environment wins. `env set` reloads a running engine (SIGHUP for a container, the admin reload endpoint otherwise).
 - **Shortcuts closed.**
   - *Lease sweep:* actions stuck in `running` fail after the action timeout plus 60 s.

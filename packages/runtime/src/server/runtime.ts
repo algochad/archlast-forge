@@ -240,7 +240,7 @@ export class FunctionRuntime {
 
   admin<T = unknown>(op: string, args: Record<string, unknown>, actor: string) {
     const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
-    const timeout = op === "run" ? t.actionMs + HARD_TIMEOUT_GRACE_MS : 60_000;
+    const timeout = op === "run" || op === "cli" ? t.actionMs + HARD_TIMEOUT_GRACE_MS : 60_000;
     return this.send({ t: "admin", op, args, actor }, timeout) as Promise<T>;
   }
 }

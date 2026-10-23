@@ -49,7 +49,7 @@ test("watch pushes changes; identical watches share one subscription", async () 
   await client.mutation(api.todos.toggle, { id });
   await until(() => b.at(-1)?.["value" as never] === 0);
   const subs = (await (await fetch(`${srv.url}/_admin/subscriptions`, { headers: { "x-admin-key": "k" } })).json()) as any;
-  expect(subs.result.data.filter((s: any) => s.name === "todos:openCount")).toHaveLength(1);
+  expect(subs.filter((s: any) => s.name === "todos:openCount")).toHaveLength(1);
   offA();
   offB();
 });
@@ -78,7 +78,7 @@ test("after the server restarts, the client reconnects and refetches", async () 
   other.close();
   await until(() => JSON.stringify(updates.at(-1)).includes("missed"), 10_000);
   off();
-});
+}, 15_000);
 
 const pg = process.env.TEST_POSTGRES_URL;
 const redis = process.env.TEST_REDIS_URL;

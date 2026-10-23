@@ -5,7 +5,7 @@ import { createRoot } from 'react-dom/client'
 import App from './App.tsx'
 import './index.css'
 
-// Same origin: Vite proxies /trpc and /api to the backend.
+// Same origin: Vite proxies /rpc and /api to the backend.
 const client = new ArchlastForgeClient()
 
 createRoot(document.getElementById('root')!).render(

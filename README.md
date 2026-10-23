@@ -1,8 +1,8 @@
 # archlast-forge
 
-A self-hosted reactive backend for TypeScript apps, in the style of Convex, on tRPC and Bun. You declare a schema and functions in `forge/`. Clients call them with end-to-end types, and live queries push new results whenever the data they read changes. The engine runs as a Docker container that the CLI starts and controls.
+A self-hosted reactive backend for TypeScript apps, in the style of Convex, on Bun. You declare a schema and functions in `forge/`. Clients call them with end-to-end types, and live queries push new results whenever the data they read changes. The engine runs as a Docker container that the CLI starts and controls.
 
-- **Data:** SQLite or Postgres. Index and range queries, keyset pagination, full-text search, data migrations, export, import and backup.
+- **Data:** a local Turso (SQLite-compatible, alpha) file, or Postgres. Index and range queries, keyset pagination, full-text search, data migrations, export, import and backup.
 - **Functions:** queries, mutations and actions; internal functions; `returns` validators; timeouts and size limits; `ForgeError` for caller-facing errors.
 - **Batteries:** Better Auth sign-in, file storage on S3 or RustFS through presigned URLs, scheduled functions and crons.
 - **Scale:** Redis for cross-server reactivity, caching and rate limits; a pool of function-runtime processes.
@@ -26,7 +26,7 @@ apps/demo/                       todo app built the way a user project is (Vite 
 apps/demo/forge/                its backend: schema, functions, crons, auth; own package.json
 apps/docs/                       documentation site (Markdown → HTML with Bun)
 packages/runtime/                engine: validators, schema, functions, document store, adapters, server, testing
-packages/client/                 framework-agnostic client: tRPC over HTTP + WebSocket, live queries
+packages/client/                 framework-agnostic client: JSON over HTTP + WebSocket, live queries
 packages/react|vue|svelte/       framework bindings
 packages/cli/                    archlast-forge: dev, build, start, migrate, export, env, admin, engine
 packages/dashboard/              admin UI served at /_dashboard

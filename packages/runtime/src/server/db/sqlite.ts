@@ -43,7 +43,12 @@ export function createSqliteDb(path: string, readers = 4): Db {
     return c;
   };
   const writer = open();
-  writer.exec("PRAGMA journal_mode = WAL");
+  try {
+    writer.exec("PRAGMA journal_mode = WAL");
+  } catch (e) {
+    if (/not a database/i.test((e as Error).message)) throw new Error(`${path} was created by the Turso driver, whose file format SQLite can't read. Delete it to start fresh, or set SQLITE_DRIVER=turso to keep using it.`, { cause: e });
+    throw e;
+  }
   writer.exec("PRAGMA synchronous = NORMAL");
   const memory = path === ":memory:";
   const pool = memory

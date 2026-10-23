@@ -18,7 +18,7 @@
     "expect-type": "^1.4.0"
   },
   "dependencies": {
-    "@trpc/server": "11.19.0",
+    "@tursodatabase/database": "0.8.3",
     "better-auth": "1.7.12",
     "zod": "4.6.7"
   }

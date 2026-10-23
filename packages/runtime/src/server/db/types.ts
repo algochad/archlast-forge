@@ -21,6 +21,8 @@ export interface Dialect {
   /** Placeholder for a value compared with `field()`, and how to encode that value. */
   valueParam: string;
   encode(value: unknown): unknown;
+  /** How full-text search is stored: an FTS5 virtual table, or a plain table of tokens (for engines without FTS5). Postgres uses a GIN index, so it leaves this out. */
+  search?: "fts5" | "tokens";
   /** Statements keeping a search index in sync when a document is written; `text` undefined removes it. */
   searchWrite(table: string, index: string, id: string, text: string | undefined): { sql: string; params: unknown[] }[];
   /** Matching ids by relevance; `terms` are lowercase words, the last matched as a prefix. */
@@ -49,6 +51,9 @@ export function isRetryableConflict(e: unknown): boolean {
   const err = e as { errno?: unknown; code?: unknown };
   return ["40001", "40P01"].includes(String(err?.errno)) || ["40001", "40P01"].includes(String(err?.code));
 }
+
+/** The SQLSTATE Postgres uses for a serialization failure; the Turso driver reports its write conflicts the same way so one retry loop covers both. */
+export const CONFLICT_CODE = "40001";
 
 /** A transaction handle that refuses calls after its transaction ends, e.g. from a handler still running after a timeout. */
 export function scopedTx(tx: DbTx): DbTx & { end(): void } {
