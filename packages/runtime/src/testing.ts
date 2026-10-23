@@ -40,7 +40,7 @@ export async function createTestBackend(convexDir = "convex") {
     },
     /** Direct database access, e.g. to seed data or inspect it. */
     run<T>(fn: (ctx: Pick<MutationCtx, "db">) => Promise<T>) {
-      return exec.mutate((s) => fn({ db: s.writer() as MutationCtx["db"] }));
+      return exec.mutate((s) => fn({ db: s.writer() as unknown as MutationCtx["db"] }));
     },
     /** Runs every scheduled function that's due (including ones scheduled meanwhile), as if time had passed. */
     async finishScheduledFunctions(maxRounds = 100) {

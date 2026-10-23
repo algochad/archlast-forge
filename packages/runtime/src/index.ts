@@ -29,6 +29,8 @@ export {
   type DatabaseWriter,
   type FunctionArgs,
   type FunctionKind,
+  type IncludeSpec,
+  type ReverseRule,
   type FunctionReference,
   type FunctionReturn,
   type MigrationResult,

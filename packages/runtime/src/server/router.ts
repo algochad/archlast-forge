@@ -90,7 +90,7 @@ export type AdminContext = { admin: AdminInfo | null; requestId: string };
 const RANK: Record<AdminRole, number> = { viewer: 0, admin: 1, owner: 2 };
 
 /** Read operations (viewer) and write operations (admin), all served by the function runtime. */
-const READ_OPS = ["docs", "counts", "scheduled", "crons", "files", "users", "sessions", "audit", "env", "logs", "metrics"] as const;
+const READ_OPS = ["docs", "docsByIds", "references", "counts", "scheduled", "crons", "files", "users", "sessions", "audit", "env", "logs", "metrics"] as const;
 const WRITE_OPS = ["insertDoc", "patchDoc", "replaceDoc", "deleteDoc", "cancelJob", "retryJob", "deleteFile", "revokeSession", "banUser", "run"] as const;
 
 export function buildAdminRouter(opts: {

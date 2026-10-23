@@ -1,7 +1,10 @@
 import { useEffect, useState } from "react";
 import { canWrite, formatTime, get, post, typeOf, type Admin, type Doc, type Manifest, type Page, type TableInfo } from "../api";
 import { Icon } from "../brand";
-import { CustomFunction, readTable, type Draft } from "./CustomFunction";
+import { idsOf, refsOf, type Go, type Place } from "../relations";
+import { CustomFunction, examples, readTable, type Draft } from "./CustomFunction";
+import { RefChips, Relationships, useResolved } from "./Refs";
+import { RelationsView, TableRelations } from "./Relations";
 import { Badge, Button, Code, Drawer, Empty, ErrorNote, Field, JsonEditor, JsonView, Segmented, Skeleton, useAction, useAsync } from "../ui";
 
 /** A filter value: JSON when it parses (numbers, booleans), otherwise the text itself. */
@@ -16,14 +19,30 @@ const parseValue = (raw: string) => {
 const builtIn = (name: string, t: TableInfo) => !t.strict || name.startsWith("_");
 const plural = (n: number, one: string, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
 
+type Tool = { kind: "runner"; key: number; initial?: Draft } | { kind: "relations" };
+
 export function Data({ manifest, admin }: { manifest: Manifest; admin: Admin }) {
   const tables = Object.keys(manifest.tables);
-  const [table, setTable] = useState(() => localStorage.getItem("afx:table") ?? tables[0] ?? "");
   const counts = useAsync(() => get<Record<string, number>>("counts", { tables }), [tables.join()], { interval: 10_000 });
+  // Where you are, and the places you followed relationships from to get here. `nonce` restarts the table view on every move.
+  const [trail, setTrail] = useState<Place[]>(() => {
+    const table = localStorage.getItem("afx:table") ?? tables[0] ?? "";
+    return [{ table, label: table }];
+  });
+  const [nonce, setNonce] = useState(0);
+  const [tool, setTool] = useState<Tool | null>(null);
+  const here = trail.at(-1)!;
+  const table = here.table;
   useEffect(() => localStorage.setItem("afx:table", table), [table]);
-  // The function runner takes the place of the table; `key` restarts it when a table's Query button opens it again.
-  const [runner, setRunner] = useState<{ key: number; initial?: Draft } | null>(null);
-  const openRunner = (initial?: Draft) => setRunner({ key: Date.now(), initial });
+  const move = (next: Place[]) => {
+    setTrail(next);
+    setNonce((n) => n + 1);
+    setTool(null);
+  };
+  const go: Go = (to) => move([...trail, { ...to, label: to.label ?? to.table }]);
+  const openTable = (t: string) => move([{ table: t, label: t }]);
+  const openRunner = (initial?: Draft) => setTool({ kind: "runner", key: Date.now(), initial });
+  const owner = admin.role === "owner";
   if (!tables.length) return <Empty icon="data">No tables yet. Define them in convex/schema.ts.</Empty>;
   const groups = [
     {
@@ -40,7 +59,13 @@ export function Data({ manifest, admin }: { manifest: Manifest; admin: Admin }) 
       <nav className="panel list" aria-label="Tables">
         <div className="list-group">
           <span className="list-head">Tools</span>
-          <button aria-current={runner !== null} onClick={() => (runner ? setRunner(null) : openRunner())}>
+          <button aria-current={tool?.kind === "relations"} onClick={() => setTool(tool?.kind === "relations" ? null : { kind: "relations" })}>
+            <span className="list-name">
+              <Icon name="graph" size={15} />
+              Relationships
+            </span>
+          </button>
+          <button aria-current={tool?.kind === "runner"} onClick={() => (tool?.kind === "runner" ? setTool(null) : openRunner())}>
             <span className="list-name">
               <Icon name="functions" size={15} />
               Run function
@@ -51,14 +76,7 @@ export function Data({ manifest, admin }: { manifest: Manifest; admin: Admin }) 
           <div key={g.label} className="list-group">
             <span className="list-head">{g.label}</span>
             {g.names.map((t) => (
-              <button
-                key={t}
-                aria-current={!runner && t === table}
-                onClick={() => {
-                  setTable(t);
-                  setRunner(null);
-                }}
-              >
+              <button key={t} aria-current={!tool && t === table} onClick={() => openTable(t)}>
                 <span className="list-name">
                   <Icon name="data" size={15} />
                   {t}
@@ -69,13 +87,55 @@ export function Data({ manifest, admin }: { manifest: Manifest; admin: Admin }) 
           </div>
         ))}
       </nav>
-      {runner ? (
-        <CustomFunction key={runner.key} manifest={manifest} admin={admin} initial={runner.initial} />
-      ) : manifest.tables[table] ? (
-        <TableView key={table} table={table} manifest={manifest} admin={admin} count={counts.data?.[table]} onChange={counts.reload} onQuery={admin.role === "owner" ? () => openRunner(readTable(table)) : undefined} />
-      ) : (
-        <Empty icon="data">Pick a table.</Empty>
-      )}
+      <div className="main-col">
+        {tool?.kind === "runner" ? (
+          <CustomFunction key={tool.key} manifest={manifest} admin={admin} initial={tool.initial} />
+        ) : tool?.kind === "relations" ? (
+          <RelationsView
+            manifest={manifest}
+            counts={counts.data}
+            onOpenTable={openTable}
+            onQuery={owner ? () => openRunner(examples(manifest).find((e) => e.label === "Join tables")?.draft) : undefined}
+          />
+        ) : manifest.tables[table] ? (
+          <>
+            {trail.length > 1 && (
+              <nav className="crumbs" aria-label="Where you came from">
+                <Button variant="ghost" onClick={() => move(trail.slice(0, -1))}>
+                  ← Back
+                </Button>
+                {trail.map((p, i) => (
+                  <span key={i} className="crumb-item">
+                    {i > 0 && <span className="faint">›</span>}
+                    {i === trail.length - 1 ? (
+                      <span className="crumb current" aria-current="location">
+                        {p.label}
+                      </span>
+                    ) : (
+                      <button className="crumb" onClick={() => move(trail.slice(0, i + 1))}>
+                        {p.label}
+                      </button>
+                    )}
+                  </span>
+                ))}
+              </nav>
+            )}
+            <TableView
+              key={`${table}:${nonce}`}
+              table={table}
+              place={here}
+              manifest={manifest}
+              admin={admin}
+              count={counts.data?.[table]}
+              onChange={counts.reload}
+              go={go}
+              onQuery={owner ? (draft) => openRunner(draft ?? readTable(table)) : undefined}
+            />
+          </>
+        ) : (
+          <Empty icon="data">Pick a table.</Empty>
+        )}
+      </div>
     </div>
   );
 }
@@ -87,13 +147,32 @@ const orderColumns = (info: TableInfo, docs: Doc[]) => {
   return ["_id", ...declared, ...extra, "_creationTime"];
 };
 
-function TableView({ table, manifest, admin, count, onChange, onQuery }: { table: string; manifest: Manifest; admin: Admin; count?: number; onChange: () => void; onQuery?: () => void }) {
+function TableView({
+  table,
+  place,
+  manifest,
+  admin,
+  count,
+  onChange,
+  go,
+  onQuery,
+}: {
+  table: string;
+  place: Place;
+  manifest: Manifest;
+  admin: Admin;
+  count?: number;
+  onChange: () => void;
+  go: Go;
+  onQuery?: (draft?: Draft) => void;
+}) {
   const info = manifest.tables[table]!;
   const indexes = ["by_creation_time", ...Object.keys(info.indexes)];
   const [view, setView] = useState<"documents" | "schema">("documents");
-  const [index, setIndex] = useState("by_creation_time");
-  const [eqDraft, setEqDraft] = useState<string[]>([]);
-  const [eq, setEq] = useState<[string, unknown][]>([]);
+  // Arriving from a relationship can mean arriving with a lookup already applied.
+  const [index, setIndex] = useState(place.filter?.index ?? "by_creation_time");
+  const [eqDraft, setEqDraft] = useState<string[]>(() => (place.filter?.eq ?? []).map(([, v]) => (typeof v === "string" ? v : JSON.stringify(v))));
+  const [eq, setEq] = useState<[string, unknown][]>(place.filter?.eq ?? []);
   const [order, setOrder] = useState<"asc" | "desc">("desc");
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const [selected, setSelected] = useState<Doc | "new" | null>(null);
@@ -114,9 +193,21 @@ function TableView({ table, manifest, admin, count, onChange, onQuery }: { table
   );
   const page = docs.data?.page ?? [];
   const columns = orderColumns(info, page);
+  // Reference fields show the documents they point at, by name, as links.
+  const refs = new Map(refsOf(info).map((r) => [r.field, r]));
+  const resolved = useResolved(page.flatMap((d) => [...refs.keys()].flatMap((f) => idsOf(d[f]))));
+  // Arrived by following a link to a document: open it.
+  useEffect(() => {
+    if (!place.openId) return;
+    void get<Record<string, Doc | null>>("docsByIds", { ids: [place.openId] }).then((r) => r[place.openId!] && setSelected(r[place.openId!]!));
+  }, []);
   const reset = () => setCursors([null]);
   const indexCount = Object.keys(info.indexes).length + Object.keys(info.searchIndexes ?? {}).length;
   const typeLabel = (c: string) => (c === "_id" ? "id" : c === "_creationTime" ? "timestamp" : info.fields[c] ? typeOf(info.fields[c]) : "not in schema");
+  const goTo: Go = (to) => {
+    setSelected(null);
+    go(to);
+  };
   const clearFilter = () => {
     setEqDraft([]);
     setEq([]);
@@ -147,7 +238,7 @@ function TableView({ table, manifest, admin, count, onChange, onQuery }: { table
           onChange={setView}
         />
         {onQuery && (
-          <Button variant="ghost" onClick={onQuery}>
+          <Button variant="ghost" onClick={() => onQuery()}>
             <Icon name="functions" size={16} /> Query
           </Button>
         )}
@@ -160,7 +251,7 @@ function TableView({ table, manifest, admin, count, onChange, onQuery }: { table
 
       {view === "schema" ? (
         <div className="table-body schema">
-          <SchemaView table={table} info={info} />
+          <SchemaView table={table} info={info} manifest={manifest} onOpenTable={(t) => go({ table: t })} />
         </div>
       ) : (
         <>
@@ -240,7 +331,10 @@ function TableView({ table, manifest, admin, count, onChange, onQuery }: { table
                     <tr>
                       {columns.map((c) => (
                         <th key={c} scope="col">
-                          <span className="col-name">{c}</span>
+                          <span className="col-name">
+                            {refs.has(c) && <Icon name="link" size={11} />}
+                            {c}
+                          </span>
                           <span className="col-type">{typeLabel(c)}</span>
                         </th>
                       ))}
@@ -248,9 +342,17 @@ function TableView({ table, manifest, admin, count, onChange, onQuery }: { table
                   </thead>
                   <tbody>
                     {page.map((d) => (
-                      <tr key={d._id} tabIndex={0} className="clickable" onClick={() => setSelected(d)} onKeyDown={(e) => e.key === "Enter" && setSelected(d)}>
+                      <tr key={d._id} tabIndex={0} className="clickable" onClick={() => setSelected(d)} onKeyDown={(e) => e.target === e.currentTarget && e.key === "Enter" && setSelected(d)}>
                         {columns.map((c) => (
-                          <td key={c}>{c === "_creationTime" ? <span className="muted nowrap small">{formatTime(d[c] as number)}</span> : <Code value={d[c]} />}</td>
+                          <td key={c}>
+                            {c === "_creationTime" ? (
+                              <span className="muted nowrap small">{formatTime(d[c] as number)}</span>
+                            ) : refs.has(c) ? (
+                              <RefChips ids={idsOf(d[c])} docs={resolved} go={goTo} />
+                            ) : (
+                              <Code value={d[c]} />
+                            )}
+                          </td>
                         ))}
                       </tr>
                     ))}
@@ -280,6 +382,9 @@ function TableView({ table, manifest, admin, count, onChange, onQuery }: { table
           table={table}
           doc={selected === "new" ? null : selected}
           admin={admin}
+          manifest={manifest}
+          go={goTo}
+          onQuery={onQuery}
           onClose={() => setSelected(null)}
           onSaved={() => {
             setSelected(null);
@@ -293,7 +398,7 @@ function TableView({ table, manifest, admin, count, onChange, onQuery }: { table
 }
 
 /** The table's shape: one row per field, then its indexes. */
-function SchemaView({ table, info }: { table: string; info: TableInfo }) {
+function SchemaView({ table, info, manifest, onOpenTable }: { table: string; info: TableInfo; manifest: Manifest; onOpenTable: (table: string) => void }) {
   const usedBy = (field: string) => [
     ...Object.entries(info.indexes)
       .filter(([, f]) => f.includes(field))
@@ -435,11 +540,30 @@ function SchemaView({ table, info }: { table: string; info: TableInfo }) {
           </table>
         </div>
       </section>
+      <TableRelations table={table} manifest={manifest} onOpenTable={onOpenTable} />
     </div>
   );
 }
 
-function DocDrawer({ table, doc, admin, onClose, onSaved }: { table: string; doc: Doc | null; admin: Admin; onClose: () => void; onSaved: () => void }) {
+function DocDrawer({
+  table,
+  doc,
+  admin,
+  manifest,
+  go,
+  onQuery,
+  onClose,
+  onSaved,
+}: {
+  table: string;
+  doc: Doc | null;
+  admin: Admin;
+  manifest: Manifest;
+  go: Go;
+  onQuery?: (draft?: Draft) => void;
+  onClose: () => void;
+  onSaved: () => void;
+}) {
   const { _id, _creationTime, ...fields } = doc ?? ({} as Doc);
   const [draft, setDraft] = useState(JSON.stringify(doc ? fields : {}, null, 2));
   const { run, busy } = useAction();
@@ -455,6 +579,7 @@ function DocDrawer({ table, doc, admin, onClose, onSaved }: { table: string; doc
           <dd>{formatTime(doc._creationTime)}</dd>
         </dl>
       )}
+      {doc && <Relationships table={table} doc={doc} manifest={manifest} admin={admin} go={go} onQuery={onQuery} />}
       {editable ? (
         <>
           <Field

@@ -8,7 +8,7 @@ import type {
   TableNames,
   WithoutSystemFields,
 } from "./schema";
-import type { Id, Infer, ObjectType, PropertyValidators, Validator } from "./values";
+import type { Expand, Id, Infer, ObjectType, PropertyValidators, Validator } from "./values";
 
 export type FunctionKind = "query" | "mutation" | "action";
 
@@ -47,13 +47,67 @@ export interface PaginationResult<D> {
   continueCursor: string;
 }
 
-export interface Query<D> {
+// ---- relationships ----
+
+/** Fields of `D` that hold an `Id` (or an array of them): the ones a join can follow. */
+type ReferenceFields<D> = {
+  [K in keyof D & string]-?: [NonNullable<D[K]>] extends [never] ? never : [NonNullable<D[K]>] extends [Id<string> | readonly Id<string>[]] ? K : never;
+}[keyof D & string];
+
+type TargetOf<V> = NonNullable<V> extends readonly (infer E)[] ? TargetOf<E> : NonNullable<V> extends Id<infer N> ? N : never;
+
+/** What `include({ x: "field" })` adds: the document the field points at, or all of them for an array of ids. */
+type ForwardResult<V> = NonNullable<V> extends readonly unknown[] ? Doc<Extract<TargetOf<V>, TableNames>>[] : Doc<Extract<TargetOf<V>, TableNames>> | null;
+
+/** The documents of another table that point back at this one, found through an index that starts with that reference. */
+export type ReverseRule<R extends TableNames = TableNames> = R extends TableNames
+  ? { table: R; index: IndexNames<R>; take?: number; order?: "asc" | "desc"; include?: IncludeSpec<R>; count?: boolean }
+  : never;
+
+/**
+ * Related documents to add to each result, by the name they'll have:
+ *
+ *     { list: "listId" }                                        // follow a field: Doc<"lists"> | null
+ *     { todos: { table: "todos", index: "by_list" } }           // look the other way: Doc<"todos">[]
+ *     { open: { table: "todos", index: "by_list", count: true } } // just how many: number
+ */
+export type IncludeSpec<T extends TableNames> = { [key: string]: ReferenceFields<Doc<T>> | ReverseRule };
+
+type Joined<T extends TableNames, S> = {
+  [K in keyof S]: S[K] extends string
+    ? ForwardResult<Doc<T>[Extract<S[K], keyof Doc<T>>]>
+    : S[K] extends { count: true }
+      ? number
+      : S[K] extends { table: infer R extends TableNames }
+        ? Expand<Doc<R> & (S[K] extends { include: infer I } ? Joined<R, I> : {})>[]
+        : never;
+};
+
+type NumberFields<D> = { [K in keyof D & string]-?: [NonNullable<D[K]>] extends [never] ? never : NonNullable<D[K]> extends number ? K : never }[keyof D & string];
+
+export interface Query<D, T extends TableNames = TableNames> {
   /** Ascending (the default) or descending, by the index's fields then `_creationTime`. */
-  order(order: "asc" | "desc"): Query<D>;
+  order(order: "asc" | "desc"): Query<D, T>;
+  /**
+   * Keeps the documents `predicate` returns true for. It sees whatever `include()` added before it, so you can filter on related data.
+   * It runs while scanning the index range, so narrow the range with `withIndex()` first: a query scans at most 100,000 documents.
+   */
+  filter(predicate: (doc: D) => boolean): Query<D, T>;
+  /** Adds related documents to each result: see `IncludeSpec`. Loaded in batches, and the query stays reactive to them. */
+  include<const S extends IncludeSpec<T>>(spec: S): Query<Expand<D & Joined<T, S>>, T>;
   collect(): Promise<D[]>;
   first(): Promise<D | null>;
+  /** The one matching document, `null` if there is none, an error if there are several. */
+  unique(): Promise<D | null>;
   take(n: number): Promise<D[]>;
   paginate(opts: PaginationOptions): Promise<PaginationResult<D>>;
+  /** How many documents match (counted by the database unless there is a `filter()`). */
+  count(): Promise<number>;
+  /** Aggregates over a number field of the matching documents; documents without the field are skipped. `avg`, `min` and `max` are `null` when nothing matched. */
+  sum(field: NumberFields<D>): Promise<number>;
+  avg(field: NumberFields<D>): Promise<number | null>;
+  min(field: NumberFields<D>): Promise<number | null>;
+  max(field: NumberFields<D>): Promise<number | null>;
 }
 
 export interface SearchFilter {
@@ -69,7 +123,9 @@ export interface SearchFilterFinalizer<D, C extends { searchField: string; filte
 }
 
 /** Results come back by relevance; every query term must match (the last one as a prefix). */
-export interface SearchQuery<D> {
+export interface SearchQuery<D, T extends TableNames = TableNames> {
+  /** Adds related documents to each result: see `IncludeSpec`. */
+  include<const S extends IncludeSpec<T>>(spec: S): SearchQuery<Expand<D & Joined<T, S>>, T>;
   take(n: number): Promise<D[]>;
   first(): Promise<D | null>;
   /** Up to 1024 results. */
@@ -79,17 +135,23 @@ export interface SearchQuery<D> {
 type IndexNamesWithBuiltins<T extends TableNames> = IndexNames<T> | "by_creation_time";
 type FieldsOf<T extends TableNames, I extends IndexNamesWithBuiltins<T>> = I extends IndexNames<T> ? IndexFields<T, I> : ["_creationTime"];
 
-export interface QueryInitializer<T extends TableNames> extends Query<Doc<T>> {
-  withIndex<I extends IndexNamesWithBuiltins<T>>(index: I, range?: (q: IndexRangeBuilder<Doc<T>, FieldsOf<T, I>>) => IndexRange): Query<Doc<T>>;
+export interface QueryInitializer<T extends TableNames> extends Query<Doc<T>, T> {
+  withIndex<I extends IndexNamesWithBuiltins<T>>(index: I, range?: (q: IndexRangeBuilder<Doc<T>, FieldsOf<T, I>>) => IndexRange): Query<Doc<T>, T>;
   withSearchIndex<I extends SearchIndexNames<T>>(
     index: I,
     filter: (q: SearchFilterBuilder<Doc<T>, SearchIndexConfig<T, I>>) => SearchFilter,
-  ): SearchQuery<Doc<T>>;
+  ): SearchQuery<Doc<T>, T>;
 }
 
 export interface DatabaseReader {
   get<T extends TableNames>(id: Id<T>): Promise<Doc<T> | null>;
+  /** Many documents by id in one round trip, in the order given; `null` where one doesn't exist. */
+  getMany<T extends TableNames>(ids: readonly Id<T>[]): Promise<(Doc<T> | null)[]>;
   query<T extends TableNames>(table: T): QueryInitializer<T>;
+  /** Adds related documents to documents you already have (a `get`, a page, your own list): see `IncludeSpec`. `null` stays `null`. */
+  include<T extends TableNames, const S extends IncludeSpec<T>>(table: T, docs: Doc<T>, spec: S): Promise<Expand<Doc<T> & Joined<T, S>>>;
+  include<T extends TableNames, const S extends IncludeSpec<T>>(table: T, docs: Doc<T> | null, spec: S): Promise<Expand<Doc<T> & Joined<T, S>> | null>;
+  include<T extends TableNames, const S extends IncludeSpec<T>>(table: T, docs: readonly Doc<T>[], spec: S): Promise<Expand<Doc<T> & Joined<T, S>>[]>;
 }
 
 export interface DatabaseWriter extends DatabaseReader {

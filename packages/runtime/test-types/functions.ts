@@ -21,3 +21,12 @@ export const remind = action({
     await ctx.runMutation(api.functions.add, { listId: "lists:x" as any, title: String(id) });
   },
 });
+
+export const todosWithLists = query({
+  handler: (ctx) => ctx.db.query("todos").include({ list: "listId", blockers: "blockedBy", assignee: "assigneeId" }).collect(),
+});
+
+export const listsWithTodos = query({
+  handler: (ctx) =>
+    ctx.db.query("lists").include({ todos: { table: "todos", index: "by_list", include: { comments: { table: "comments", index: "by_todo" }, list: "listId" } }, open: { table: "todos", index: "by_list", count: true } }).collect(),
+});

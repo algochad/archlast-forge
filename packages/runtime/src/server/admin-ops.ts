@@ -4,6 +4,9 @@ import { ValidationError } from "../values";
 import type { Db } from "./db/types";
 import { compileCustom, type CustomCodeError } from "./custom";
 import type { ConsoleLine, Executor, LogEntry } from "./executor";
+import { indexFor, relationsOf } from "../relations";
+import { tableOf } from "../values";
+import type { TablesSpec } from "./docstore";
 import { cancelScheduled, nextRun, retryScheduled } from "./scheduler";
 import type { Storage } from "./storage";
 
@@ -56,6 +59,7 @@ export interface AdminDeps {
   db: Db;
   exec: Executor;
   functions: Map<string, RegisteredFunction>;
+  tables: TablesSpec;
   crons: CronJob[];
   storage?: Storage;
   /** Clears Better Auth's own session cache, if any. */
@@ -102,6 +106,34 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
             return q.order(args.order ?? "desc").paginate({ numItems: Math.min(Number(args.numItems) || 50, 500), cursor: args.cursor ?? null });
           })
         ).value;
+      // Many documents by id, for showing what a reference points at. Ids that aren't valid, or whose document is gone, come back null.
+      case "docsByIds": {
+        const ids = [...new Set((args.ids as unknown[]) ?? [])].filter((id): id is string => typeof id === "string").slice(0, 200);
+        const known = ids.filter((id) => id.includes(":") && d.tables[tableOf(id)]);
+        const docs = (await exec.read((s) => s.getMany(known))).value;
+        const found = new Map(known.map((id, i) => [id, docs[i]]));
+        return Object.fromEntries(ids.map((id) => [id, found.get(id) ?? null]));
+      }
+      // What points at a document: for each field in the schema that references its table, how many documents hold its id.
+      case "references": {
+        const id = String(args.id);
+        if (!id.includes(":") || !d.tables[tableOf(id)]) throw new ValidationError(`Invalid id ${JSON.stringify(id)}`);
+        const target = tableOf(id);
+        const pointing = relationsOf(d.tables).filter((r) => r.target === target);
+        return Promise.all(
+          pointing.map(async (r) => {
+            const index = indexFor(d.tables[r.table]!, r.field);
+            const count = await exec
+              .read((s) => {
+                const q: any = index ? s.query(r.table).withIndex(index, (b: any) => b.eq(r.field, id)) : s.query(r.table).filter((doc) => (r.many ? (doc[r.field] ?? []).includes(id) : doc[r.field] === id));
+                return q.count();
+              })
+              .then((x) => x.value as number)
+              .catch(() => null); // too big to scan without an index
+            return { table: r.table, field: r.field, many: r.many, index: index ?? null, count };
+          }),
+        );
+      }
       case "counts":
         return Object.fromEntries(
           await Promise.all(

@@ -2,6 +2,8 @@ import { useEffect, useState } from "react";
 import { CodeEditor } from "../code-editor";
 import { get, post, type Admin, type Doc, type Manifest, type Page, type TableInfo, type Validator } from "../api";
 import { Icon } from "../brand";
+import { indexFor, refsOf } from "../relations";
+import { RefChips } from "./Refs";
 import { Badge, Button, Code, Empty, Field, JsonEditor, JsonView, KindPill, Segmented, Skeleton, useAction, useAsync, useToast } from "../ui";
 
 export type Draft = { code: string; args: string };
@@ -61,6 +63,7 @@ export function examples(manifest: Manifest): { label: string; draft: Draft }[] 
           },
         ]
       : []),
+    ...joinExamples(manifest),
     {
       label: "Update documents (mutation)",
       draft: {
@@ -88,6 +91,74 @@ export default mutation({
     const docs = await ctx.db.query("${table}").take(5);
     console.log("found", docs.length, "documents");
     return docs.map((d) => d._id);
+  },
+});
+`,
+        args: "{}",
+      },
+    },
+  ];
+}
+
+/** Examples built from the schema's own references, so they run as they are. */
+function joinExamples(manifest: Manifest): { label: string; draft: Draft }[] {
+  const mine = Object.entries(manifest.tables).filter(([name, t]) => t.strict && !name.startsWith("_"));
+  const found = mine.flatMap(([table, info]) => refsOf(info).filter((r) => !r.many && manifest.tables[r.target]?.strict).map((r) => ({ table, ref: r })))[0];
+  if (!found) return [];
+  const { table, ref } = found;
+  const name = ref.field.endsWith("Id") && ref.field.length > 2 ? ref.field.slice(0, -2) : `${ref.field}Doc`;
+  const index = indexFor(manifest.tables[table]!, ref.field);
+  return [
+    {
+      label: "Join tables",
+      draft: {
+        code: `// include() adds the document each reference points at, loaded in one batch.
+export default query({
+  handler: async (ctx) => {
+    return await ctx.db
+      .query("${table}")
+      .include({ ${name}: "${ref.field}" })
+      .take(20);
+  },
+});
+`,
+        args: "{}",
+      },
+    },
+    ...(index
+      ? [
+          {
+            label: "Join the other way",
+            draft: {
+              code: `// Look the other direction: for each ${ref.target}, the ${table} that point back at it (through the "${index}" index).
+export default query({
+  handler: async (ctx) => {
+    return await ctx.db
+      .query("${ref.target}")
+      .include({
+        ${table}: { table: "${table}", index: "${index}", take: 5 },
+        ${table}Count: { table: "${table}", index: "${index}", count: true },
+      })
+      .take(10);
+  },
+});
+`,
+              args: "{}",
+            },
+          },
+        ]
+      : []),
+    {
+      label: "Filter on joined data",
+      draft: {
+        code: `// A filter sees whatever include() added before it.
+export default query({
+  handler: async (ctx) => {
+    return await ctx.db
+      .query("${table}")
+      .include({ ${name}: "${ref.field}" })
+      .filter((doc) => doc.${name} !== null)
+      .take(20);
   },
 });
 `,
@@ -203,6 +274,12 @@ export function CustomFunction({ manifest, admin, initial }: { manifest: Manifes
   );
 }
 
+/** A document, or a list of them, as a query that used include() returns them. */
+const asDocs = (v: unknown): Doc[] | undefined => {
+  const isDoc = (x: unknown): x is Doc => Boolean(x) && typeof x === "object" && typeof (x as Doc)._id === "string" && typeof (x as Doc)._creationTime === "number";
+  return isDoc(v) ? [v] : Array.isArray(v) && v.length > 0 && v.every(isDoc) ? v : undefined;
+};
+
 const isRows = (v: unknown): v is Record<string, unknown>[] => Array.isArray(v) && v.length > 0 && v.every((x) => x && typeof x === "object" && !Array.isArray(x));
 const MAX_ROWS = 200;
 
@@ -270,7 +347,13 @@ function ResultPanel({ result }: { result: Result }) {
                 <tr key={i}>
                   {columns.map((c) => (
                     <td key={c}>
-                      {c === "_creationTime" && typeof r[c] === "number" ? <span className="muted nowrap small">{new Date(r[c] as number).toLocaleString()}</span> : <Code value={r[c]} />}
+                      {c === "_creationTime" && typeof r[c] === "number" ? (
+                        <span className="muted nowrap small">{new Date(r[c] as number).toLocaleString()}</span>
+                      ) : asDocs(r[c]) ? (
+                        <RefChips ids={asDocs(r[c])!.map((d) => d._id)} docs={Object.fromEntries(asDocs(r[c])!.map((d) => [d._id, d]))} />
+                      ) : (
+                        <Code value={r[c]} />
+                      )}
                     </td>
                   ))}
                 </tr>

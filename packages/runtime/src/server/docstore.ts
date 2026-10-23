@@ -1,3 +1,4 @@
+import { referenceOf } from "../relations";
 import { tableOf, validateFields, ValidationError, type Validator } from "../values";
 import type { DbTx, Dialect } from "./db/types";
 
@@ -13,14 +14,28 @@ export type TablesSpec = Record<
 
 type Doc = Record<string, any> & { _id: string; _creationTime: number };
 
+/**
+ * Related documents to add to each result. A string names a field holding an id (or an array of ids) and gives the document(s) it points at.
+ * An object finds the documents of another table that point back, through an index that starts with that reference.
+ */
+export type IncludeRule = string | { table: string; index: string; take?: number; order?: "asc" | "desc"; include?: IncludeSpec; count?: boolean };
+export type IncludeSpec = Record<string, IncludeRule>;
+
 /** Reactivity topics: `todos`, `todos:by_list:["lists:…"]`, `todos:by_id:["todos:…"]`. */
 export const topic = (table: string, index: string, values: unknown[]) => `${table}:${index}:${JSON.stringify(values)}`;
 
 const SELECT = `SELECT "_id", "_creationTime", "doc" FROM`;
 const MAX_PAGE = 8192;
 const MAX_SEARCH = 1024;
+/** Documents fetched per round trip when a filter has to look through a range, and the most one query will look through. */
+const SCAN_BATCH = 256;
+const MAX_SCAN = 100_000;
+/** Ids per `IN (…)` and parents per `OR` chain, to keep statements a sane size. */
+const IN_CHUNK = 500;
+const OR_CHUNK = 100;
 
 type Bound = { op: ">" | ">=" | "<" | "<="; value: unknown };
+type Step = { filter: (doc: Doc) => boolean } | { include: IncludeSpec };
 
 const encodeCursor = (values: unknown[]) => Buffer.from(JSON.stringify(values)).toString("base64url");
 function decodeCursor(cursor: string, length: number): unknown[] {
@@ -47,7 +62,16 @@ export class DocStore {
   ) {}
 
   reader() {
-    return { get: this.get.bind(this), query: this.query.bind(this) };
+    return {
+      get: this.get.bind(this),
+      getMany: this.getMany.bind(this),
+      query: this.query.bind(this),
+      include: async (table: string, docs: Doc | Doc[] | null, spec: IncludeSpec) => {
+        if (docs == null) return null;
+        if (Array.isArray(docs)) return this.join(table, docs, spec);
+        return (await this.join(table, [docs], spec))[0];
+      },
+    };
   }
 
   writer() {
@@ -97,6 +121,8 @@ export class DocStore {
     const eqs: [string, unknown][] = [];
     const bounds: Bound[] = [];
     let boundField: string | undefined;
+    /** filter() and include() in the order they were called: a filter sees what was included before it. */
+    const steps: ({ filter: (doc: Doc) => boolean } | { include: IncludeSpec })[] = [];
 
     const indexFields = () => {
       if (index === undefined || index === "by_creation_time") return ["_creationTime"];
@@ -105,7 +131,8 @@ export class DocStore {
       return [...fields];
     };
 
-    const run = async (limit?: number, after?: unknown[]) => {
+    /** The SQL for the index range, after `after` (the order key of the last document already seen). Also records what the query reads. */
+    const plan = (after?: unknown[]) => {
       const fields = indexFields();
       eqs.forEach(([f], i) => {
         if (fields[i] !== f) throw new ValidationError(`Index "${table}.${index}" field ${i} is "${fields[i]}", not "${f}"`);
@@ -120,17 +147,88 @@ export class DocStore {
         conds.push({ sql: `${c.expr} ${b.op} ${c.param}`, params: [c.encode(b.value)] });
       }
       // Order key: the index fields after the equalities, then _creationTime and _id (unique).
-      const key = [...fields.slice(eqs.length).filter((f) => f !== "_creationTime"), "_creationTime", "_id"].map((f) => this.col(f));
+      const keyFields = [...fields.slice(eqs.length).filter((f) => f !== "_creationTime"), "_creationTime", "_id"];
+      const key = keyFields.map((f) => this.col(f));
       if (after) {
         const op = order === "asc" ? ">" : "<";
         conds.push({ sql: `(${key.map((k) => k.expr).join(", ")}) ${op} (${key.map((k) => k.param).join(", ")})`, params: key.map((k, i) => k.encode(after[i])) });
       }
       // Reads of a range or page are tracked at the equality prefix: coarser, never missed.
       this.reads.add(eqs.length && index !== undefined ? topic(table, index, eqs.map(([, value]) => value)) : table);
-      const where = conds.length ? `WHERE ${conds.map((c) => c.sql).join(" AND ")}` : "";
-      const orderBy = key.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", ");
-      const rows = await this.tx.query(`${SELECT} "${table}" ${where} ORDER BY ${orderBy}${limit === undefined ? "" : ` LIMIT ${limit}`}`, conds.flatMap((c) => c.params));
-      return { docs: rows.map((r) => this.toDoc(r)), keyFields: [...fields.slice(eqs.length).filter((f) => f !== "_creationTime"), "_creationTime", "_id"] };
+      return {
+        where: conds.length ? `WHERE ${conds.map((c) => c.sql).join(" AND ")}` : "",
+        params: conds.flatMap((c) => c.params),
+        orderBy: key.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", "),
+        keyFields,
+      };
+    };
+
+    const run = async (limit?: number, after?: unknown[]) => {
+      const p = plan(after);
+      const rows = await this.tx.query(`${SELECT} "${table}" ${p.where} ORDER BY ${p.orderBy}${limit === undefined ? "" : ` LIMIT ${limit}`}`, p.params);
+      return { docs: rows.map((r) => this.toDoc(r)), keyFields: p.keyFields };
+    };
+
+    const keyOf = (keyFields: string[], doc: Doc) => keyFields.map((f) => doc[f] ?? null);
+    // Steps up to the last filter have to run on everything scanned; includes after it only on what's returned.
+    const lastFilter = () => steps.findLastIndex((x) => "filter" in x);
+    const hasFilter = () => lastFilter() >= 0;
+    const apply = async (docs: Doc[], upTo: Step[]) => {
+      let out = docs;
+      for (const step of upTo) out = "include" in step ? await this.join(table, out, step.include) : out.filter(step.filter);
+      return out;
+    };
+    const scanned = (docs: Doc[]) => apply(docs, steps.slice(0, lastFilter() + 1));
+    const finish = (docs: Doc[]) => apply(docs, steps.slice(lastFilter() + 1));
+
+    /** Up to `want` documents after `after` that pass the filters, scanning the range in batches. */
+    const matches = async (want: number, after?: unknown[]) => {
+      const out: Doc[] = [];
+      let keyFields: string[] = [];
+      if (!hasFilter()) {
+        const r = await run(Number.isFinite(want) ? want : undefined, after);
+        return { docs: r.docs, keyFields: r.keyFields };
+      }
+      let seen = 0;
+      for (let cursor = after; ; ) {
+        const batch = await run(SCAN_BATCH, cursor);
+        keyFields = batch.keyFields;
+        for (const d of await scanned(batch.docs)) {
+          out.push(d);
+          if (out.length >= want) return { docs: out, keyFields };
+        }
+        seen += batch.docs.length;
+        if (batch.docs.length < SCAN_BATCH) return { docs: out, keyFields };
+        if (seen >= MAX_SCAN) throw new ValidationError(`filter() scanned ${MAX_SCAN} documents of "${table}" without finishing; narrow the range with withIndex()`);
+        cursor = keyOf(keyFields, batch.docs.at(-1)!);
+      }
+    };
+
+    /** Every matching document, a batch at a time, for aggregates. */
+    const each = async (visit: (doc: Doc) => void) => {
+      let cursor: unknown[] | undefined;
+      let seen = 0;
+      for (;;) {
+        const batch = await run(SCAN_BATCH * 4, cursor);
+        for (const d of await scanned(batch.docs)) visit(d);
+        seen += batch.docs.length;
+        if (batch.docs.length < SCAN_BATCH * 4) return;
+        if (seen >= MAX_SCAN) throw new ValidationError(`Aggregates scan at most ${MAX_SCAN} documents of "${table}"; narrow the range with withIndex()`);
+        cursor = keyOf(batch.keyFields, batch.docs.at(-1)!);
+      }
+    };
+
+    const numbers = async (name: string, field: string) => {
+      const v = t.fields[field];
+      if (field !== "_creationTime" && t.strict && v?.kind !== "number") throw new ValidationError(`${name}() needs a number field; "${table}.${field}" isn't one`);
+      const values: number[] = [];
+      await each((d) => {
+        const x = d[field];
+        if (x === undefined || x === null) return;
+        if (typeof x !== "number") throw new ValidationError(`${name}(): "${table}.${field}" holds a ${typeof x}, not a number`);
+        values.push(x);
+      });
+      return values;
     };
 
     const q = {
@@ -139,28 +237,67 @@ export class DocStore {
         order = o;
         return q;
       },
-      collect: async () => (await run()).docs,
-      first: async () => (await run(1)).docs[0] ?? null,
+      /** Keeps documents the function returns true for, seeing whatever `include()` added before it. Reads still cover the whole index range, so a change to a skipped document re-runs the query. */
+      filter(predicate: (doc: Doc) => boolean) {
+        if (typeof predicate !== "function") throw new ValidationError("filter() expects a function");
+        steps.push({ filter: predicate });
+        return q;
+      },
+      /** Adds related documents to each result; see `IncludeSpec`. */
+      include: (spec: IncludeSpec) => {
+        this.checkInclude(table, spec);
+        steps.push({ include: spec });
+        return q;
+      },
+      collect: async () => finish((await matches(Infinity)).docs),
+      first: async () => (await finish((await matches(1)).docs))[0] ?? null,
+      unique: async () => {
+        const { docs } = await matches(2);
+        if (docs.length > 1) throw new ValidationError(`unique() found more than one document in "${table}"`);
+        return (await finish(docs))[0] ?? null;
+      },
       take: async (n: number) => {
         if (!Number.isInteger(n) || n < 0) throw new ValidationError(`take() expects a non-negative integer, got ${n}`);
-        return (await run(n)).docs;
+        return finish((await matches(n)).docs);
+      },
+      count: async () => {
+        if (hasFilter()) {
+          let n = 0;
+          await each(() => n++);
+          return n;
+        }
+        const p = plan();
+        const [row] = await this.tx.query(`SELECT COUNT(*) AS "n" FROM "${table}" ${p.where}`, p.params);
+        return Number(row?.n ?? 0);
+      },
+      sum: async (field: string) => (await numbers("sum", field)).reduce((a, b) => a + b, 0),
+      avg: async (field: string) => {
+        const xs = await numbers("avg", field);
+        return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
+      },
+      min: async (field: string) => {
+        const xs = await numbers("min", field);
+        return xs.length ? xs.reduce((a, b) => Math.min(a, b)) : null;
+      },
+      max: async (field: string) => {
+        const xs = await numbers("max", field);
+        return xs.length ? xs.reduce((a, b) => Math.max(a, b)) : null;
       },
       paginate: async ({ numItems, cursor }: { numItems: number; cursor: string | null }) => {
         if (!Number.isInteger(numItems) || numItems < 1 || numItems > MAX_PAGE)
           throw new ValidationError(`paginate() numItems must be an integer from 1 to ${MAX_PAGE}`);
         const keyLength = indexFields().slice(eqs.length).filter((f) => f !== "_creationTime").length + 2;
         const after = cursor === null ? undefined : decodeCursor(cursor, keyLength);
-        const { docs, keyFields } = await run(numItems + 1, after);
+        const { docs, keyFields } = await matches(numItems + 1, after);
         const page = docs.slice(0, numItems);
         const last = page.at(-1);
         return {
-          page,
+          page: await finish(page),
           isDone: docs.length <= numItems,
-          continueCursor: last ? encodeCursor(keyFields.map((f) => last[f] ?? null)) : (cursor ?? encodeCursor([])),
+          continueCursor: last ? encodeCursor(keyOf(keyFields, last)) : (cursor ?? encodeCursor([])),
         };
       },
     };
-
     const bound = (op: Bound["op"]) => (f: string, value: unknown) => {
       if (boundField !== undefined && boundField !== f) throw new ValidationError("Lower and upper bounds must be on the same field");
       if (bounds.some((b) => b.op[0] === op[0])) throw new ValidationError(`Only one ${op[0] === ">" ? "lower" : "upper"} bound is allowed`);
@@ -196,6 +333,7 @@ export class DocStore {
     const config = this.table(table).searchIndexes?.[name];
     if (!config) throw new ValidationError(`Unknown search index "${table}.${name}"`);
     let text: string | undefined;
+    let joins: IncludeSpec | undefined;
     const eqs: [string, unknown][] = [];
     const finalizer = {
       eq(f: string, value: unknown) {
@@ -219,9 +357,15 @@ export class DocStore {
       if (!terms.length) return [];
       const filters = eqs.map(([f, value]) => this.dialect.fieldEquals(f, value));
       const { sql, params } = this.dialect.searchSql(table, name, config.searchField, terms, filters, Math.min(limit, MAX_SEARCH));
-      return (await this.tx.query(sql, params)).map((r) => this.toDoc(r));
+      const docs = (await this.tx.query(sql, params)).map((r) => this.toDoc(r));
+      return joins ? this.join(table, docs, joins) : docs;
     };
-    return {
+    const results = {
+      include: (spec: IncludeSpec) => {
+        this.checkInclude(table, spec);
+        joins = { ...joins, ...spec };
+        return results;
+      },
       take: (n: number) => {
         if (!Number.isInteger(n) || n < 0) throw new ValidationError(`take() expects a non-negative integer, got ${n}`);
         return run(n);
@@ -229,6 +373,113 @@ export class DocStore {
       first: async () => (await run(1))[0] ?? null,
       collect: () => run(MAX_SEARCH),
     };
+    return results;
+  }
+
+  // ---- relationships ----
+
+  /** Documents by id, in the order asked for (`null` where one doesn't exist). Ids may belong to different tables. */
+  async getMany(ids: readonly string[]): Promise<(Doc | null)[]> {
+    const byTable = new Map<string, Set<string>>();
+    for (const id of ids) {
+      const table = this.parseId(id);
+      if (!byTable.has(table)) byTable.set(table, new Set());
+      byTable.get(table)!.add(id);
+    }
+    const found = new Map<string, Doc>();
+    for (const [table, set] of byTable) {
+      const unique = [...set];
+      for (const id of unique) this.reads.add(topic(table, "by_id", [id]));
+      for (let i = 0; i < unique.length; i += IN_CHUNK) {
+        const chunk = unique.slice(i, i + IN_CHUNK);
+        for (const row of await this.tx.query(`${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk)) found.set(row._id, this.toDoc(row));
+      }
+    }
+    return ids.map((id) => found.get(id) ?? null);
+  }
+
+  /** What an include rule means for `table`, or why it can't be used. */
+  private relation(table: string, key: string, rule: IncludeRule) {
+    const t = this.table(table);
+    if (key in t.fields || key === "_id" || key === "_creationTime") throw new ValidationError(`include() key "${key}" is already a field of "${table}"`);
+    if (typeof rule === "string") {
+      const ref = t.fields[rule] && referenceOf(t.fields[rule]);
+      if (!ref) throw new ValidationError(`include() "${key}": "${table}.${rule}" isn't a reference; use a field declared with v.id(...) or v.array(v.id(...))`);
+      return { kind: "forward" as const, field: rule, ...ref };
+    }
+    const child = this.table(rule.table);
+    const fields = rule.index === "by_creation_time" ? undefined : child.indexes[rule.index];
+    if (!fields) throw new ValidationError(`include() "${key}": unknown index "${rule.table}.${rule.index}"`);
+    const ref = child.fields[fields[0]!] && referenceOf(child.fields[fields[0]!]!);
+    if (!ref || ref.many || ref.target !== table)
+      throw new ValidationError(`include() "${key}": index "${rule.table}.${rule.index}" must start with a v.id("${table}") field to find the ${rule.table} of a ${table}`);
+    if (rule.take !== undefined && (!Number.isInteger(rule.take) || rule.take < 0)) throw new ValidationError(`include() "${key}": take must be a non-negative integer`);
+    return { kind: "reverse" as const, field: fields[0]!, rule, child };
+  }
+
+  checkInclude(table: string, spec: IncludeSpec) {
+    if (!spec || typeof spec !== "object") throw new ValidationError("include() expects an object like { list: \"listId\" }");
+    for (const [key, rule] of Object.entries(spec)) {
+      const r = this.relation(table, key, rule);
+      if (r.kind === "reverse" && r.rule.include) this.checkInclude(r.rule.table, r.rule.include);
+    }
+  }
+
+  /** Adds the related documents described by `spec` to each of `docs` (which belong to `table`), in as few queries as it can. */
+  async join(table: string, docs: Doc[], spec: IncludeSpec): Promise<Doc[]> {
+    this.checkInclude(table, spec);
+    if (!docs.length) return docs;
+    const out = docs.map((d) => ({ ...d }));
+    for (const [key, rule] of Object.entries(spec)) {
+      const r = this.relation(table, key, rule);
+      if (r.kind === "forward") {
+        const ids = [...new Set(out.flatMap((d) => (r.many ? ((d[r.field] as string[] | undefined) ?? []) : d[r.field] ? [d[r.field] as string] : [])))];
+        const found = new Map(ids.map((id, i) => [id, null as Doc | null]));
+        (await this.getMany(ids)).forEach((doc, i) => found.set(ids[i]!, doc));
+        for (const d of out) d[key] = r.many ? ((d[r.field] as string[] | undefined) ?? []).flatMap((id) => found.get(id) ?? []) : (found.get(d[r.field]) ?? null);
+      } else await this.joinReverse(table, out, key, r.rule, r.field);
+    }
+    return out;
+  }
+
+  private async joinReverse(table: string, docs: Doc[], key: string, rule: Extract<IncludeRule, object>, field: string) {
+    const child = this.table(rule.table);
+    const order = rule.order ?? "asc";
+    const perParent = (id: string) => {
+      const q = this.query(rule.table).withIndex(rule.index, (b: any) => b.eq(field, id)).order(order);
+      return q;
+    };
+    if (rule.count) {
+      for (const d of docs) d[key] = await perParent(d._id).count();
+      return;
+    }
+    if (rule.take !== undefined) {
+      // A limit per parent needs a query per parent.
+      for (const d of docs) {
+        const q = perParent(d._id);
+        if (rule.include) q.include(rule.include);
+        d[key] = await q.take(rule.take);
+      }
+      return;
+    }
+    // Everything at once: one query for a chunk of parents, grouped afterwards.
+    const rest = [...(child.indexes[rule.index] ?? []).slice(1).filter((f) => f !== "_creationTime"), "_creationTime", "_id"].map((f) => this.col(f));
+    const groups = new Map<string, Doc[]>(docs.map((d) => [d._id, []]));
+    const ids = [...groups.keys()];
+    for (let i = 0; i < ids.length; i += OR_CHUNK) {
+      const chunk = ids.slice(i, i + OR_CHUNK);
+      for (const id of chunk) this.reads.add(topic(rule.table, rule.index, [id]));
+      const conds = chunk.map((id) => this.dialect.fieldEquals(field, id));
+      const orderBy = rest.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", ");
+      const rows = await this.tx.query(`${SELECT} "${rule.table}" WHERE (${conds.map((c) => c.sql).join(" OR ")}) ORDER BY ${orderBy}`, conds.flatMap((c) => c.params));
+      for (const row of rows) {
+        const doc = this.toDoc(row);
+        groups.get(doc[field])?.push(doc);
+      }
+    }
+    const all = rule.include ? await this.join(rule.table, [...groups.values()].flat(), rule.include) : [...groups.values()].flat();
+    const joined = new Map(all.map((c) => [c._id, c]));
+    for (const d of docs) d[key] = groups.get(d._id)!.map((c) => joined.get(c._id)!);
   }
 
   private written(table: string, doc: Record<string, unknown>) {

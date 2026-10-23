@@ -97,7 +97,7 @@ async function main() {
   const auth = createAuth(exec, project.tables, project.authOptions, config);
   // One scheduler per server: in a runtime pool only the first process polls.
   const scheduler = worker === 0 ? new SchedulerLoop(exec, db, project.functions, project.crons, config.limits.actionTimeoutMs + 60_000) : undefined;
-  const deps = { db, exec, functions: project.functions, crons: project.crons, storage, serverId };
+  const deps = { db, exec, functions: project.functions, tables: project.tables, crons: project.crons, storage, serverId };
 
   async function handle(msg: HostMessage): Promise<unknown> {
     switch (msg.t) {

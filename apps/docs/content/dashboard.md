@@ -12,7 +12,7 @@ Every change is recorded in the audit log.
 
 | Page | What's there |
 |---|---|
-| Data | Tables with counts. Filter by index, sort, page through documents; edit (patch or replace), insert and delete with validation. A schema view per table, and a place to [run your own code](#running-your-own-code). |
+| Data | Tables with counts. Filter by index, sort, page through documents; edit (patch or replace), insert and delete with validation. A schema view per table, [relationships you can follow](#relationships), and a place to [run your own code](#running-your-own-code). |
 | Functions | An argument form generated from each function's validators. Run as any user, including internal functions; recent runs are kept per function. |
 | Logs | Live stream from this server, or history across all servers filtered by function, level, time and request id. |
 | Metrics | Calls, errors, p50/p95 latency, subscriptions and connections over 1h, 24h or 7d. |
@@ -24,6 +24,18 @@ Every change is recorded in the audit log.
 | Settings | Schema, environment variable names, live subscriptions and their topics, runtime reload. |
 
 `Alt+1` through `Alt+9` and `Alt+0` switch between the first ten pages. The theme follows your system, or pick light or dark.
+
+## Relationships
+
+Fields declared with `v.id("…")` are links between tables, and the Data page follows them:
+
+- **In the table,** a reference shows the document it points at by its name (or title, or email) instead of an id. Click it to open that document in its own table. A reference whose document was deleted shows as *missing*.
+- **In a document's drawer,** **Relationships** lists what it points at, and what points at it (`todos.listId`, 9). **Browse** opens that table with the lookup already applied, using the index on the field.
+- **A trail** at the top (*todos › lists · Forge launch › todos · listId = …*) shows how you got here. **Back**, or any step in it, returns you, with that document open again.
+- **Where there is no index** on the referencing field, the count is found by scanning, and Browse is replaced by **Query**, which opens the function runner with a query for it (owners only). Adding an index to the field turns it into a normal lookup.
+- **Relationships** in the Tools list draws every table with its references as an entity-relationship diagram, or as a list. Click a table to open it, hover to follow its connections. Your own tables are shown with the built-in ones they connect to.
+- A table's **Schema** view has a **Relations** section with both directions.
+- The function runner has join examples built from your schema.
 
 ## Running your own code
 

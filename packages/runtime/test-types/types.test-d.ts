@@ -89,3 +89,73 @@ query({
   // @ts-expect-error the handler can return null, which this validator doesn't allow
   handler: (ctx, { id }) => ctx.db.get(id),
 });
+
+// ---- relationships ----
+
+// Following a field gives the document it points at: one for an id, all of them for an array, null when there may be none.
+type TodoJoined = FunctionReturn<typeof api.functions.todosWithLists>[number];
+expectTypeOf<TodoJoined["list"]>().toEqualTypeOf<Doc<"lists"> | null>();
+expectTypeOf<TodoJoined["blockers"]>().toEqualTypeOf<Doc<"todos">[]>();
+expectTypeOf<TodoJoined["assignee"]>().toEqualTypeOf<Doc<"users"> | null>();
+expectTypeOf<TodoJoined["title"]>().toEqualTypeOf<string>(); // the document's own fields are still there
+
+// Looking the other way gives arrays of the other table's documents, with their own includes; count gives a number.
+type ListJoined = FunctionReturn<typeof api.functions.listsWithTodos>[number];
+expectTypeOf<ListJoined["open"]>().toEqualTypeOf<number>();
+expectTypeOf<ListJoined["todos"][number]["title"]>().toEqualTypeOf<string>();
+expectTypeOf<ListJoined["todos"][number]["comments"][number]>().toEqualTypeOf<Doc<"comments">>();
+expectTypeOf<ListJoined["todos"][number]["list"]>().toEqualTypeOf<Doc<"lists"> | null>();
+
+// Only id fields can be followed, only real indexes can be used, and the index must belong to the table named.
+query({
+  handler: (ctx) => {
+    // @ts-expect-error title isn't a reference
+    ctx.db.query("todos").include({ x: "title" });
+    // @ts-expect-error no such field
+    ctx.db.query("todos").include({ x: "nope" });
+    // @ts-expect-error no such index on comments
+    ctx.db.query("lists").include({ x: { table: "comments", index: "by_list" } });
+    // @ts-expect-error no such table
+    ctx.db.query("lists").include({ x: { table: "nothing", index: "by_list" } });
+    return null;
+  },
+});
+
+// A filter sees what was included before it.
+query({
+  handler: (ctx) =>
+    ctx.db
+      .query("todos")
+      .include({ list: "listId" })
+      .filter((t) => t.list?.name === "build")
+      .collect(),
+});
+
+// Aggregates take number fields only; results are numbers (or null when nothing matched).
+query({
+  handler: async (ctx) => {
+    const todos = ctx.db.query("todos");
+    expectTypeOf(await todos.count()).toEqualTypeOf<number>();
+    expectTypeOf(await todos.sum("points")).toEqualTypeOf<number>();
+    expectTypeOf(await todos.avg("points")).toEqualTypeOf<number | null>();
+    expectTypeOf(await todos.max("_creationTime")).toEqualTypeOf<number | null>();
+    // @ts-expect-error title isn't a number
+    await todos.sum("title");
+    expectTypeOf(await todos.unique()).toEqualTypeOf<Doc<"todos"> | null>();
+    return null;
+  },
+});
+
+// getMany and include on documents you already have.
+query({
+  handler: async (ctx) => {
+    const many = await ctx.db.getMany(["todos:a" as Id<"todos">]);
+    expectTypeOf(many).toEqualTypeOf<(Doc<"todos"> | null)[]>();
+    const one = await ctx.db.get("todos:a" as Id<"todos">);
+    const joined = await ctx.db.include("todos", one, { list: "listId" });
+    expectTypeOf(joined).toBeNullable(); // a null document stays null
+    expectTypeOf(joined!.list).toEqualTypeOf<Doc<"lists"> | null>();
+    expectTypeOf(joined!.title).toEqualTypeOf<string>();
+    return null;
+  },
+});
