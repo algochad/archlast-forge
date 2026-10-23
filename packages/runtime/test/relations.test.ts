@@ -145,6 +145,23 @@ for (const [label, makeDb] of dbAdapters.filter(([l]) => l === "sqlite (:memory:
       for (const l of lists) for (const t of l.todos) expect(t.listId).toBe(l._id);
     });
 
+    test("counting for many parents at once gives each its own count, zero for those with none", async () => {
+      const ids: string[] = [];
+      await write(async (db) => {
+        for (let i = 0; i < 230; i++) ids.push(await db.insert("lists", { name: `c${i}` })); // more than one batch of parents
+        for (let i = 0; i < 230; i++) for (let k = 0; k < i % 4; k++) await db.insert("todos", { listId: ids[i], title: `t${i}.${k}`, done: false });
+      });
+      const counted = () => read<any[]>((db) => db.query("lists").include({ total: { table: "todos", index: "by_list", count: true } }).collect());
+      let lists = await counted();
+      expect(lists).toHaveLength(230);
+      lists.forEach((l) => expect(l.total).toBe(ids.indexOf(l._id) % 4));
+      // A count is read live: one more child changes only its parent's count.
+      await write((db) => db.insert("todos", { listId: ids[0], title: "extra", done: false }));
+      lists = await counted();
+      expect(lists.find((l) => l._id === ids[0])!.total).toBe(1);
+      expect(lists.find((l) => l._id === ids[1])!.total).toBe(1);
+    });
+
     test("include works on pages, search results and ids you already have", async () => {
       const ids = await seed();
       const page = await read<any>((db) =>

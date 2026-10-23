@@ -59,19 +59,22 @@ export class HttpError extends Error {
   }
 }
 
-/** Reads a JSON request: the body of a POST, or the named query parameter of a GET (from the already parsed `url`). Empty means `{}`. */
-export async function readJson(req: Request, param: string, url: URL): Promise<unknown> {
+/** A request's JSON as it arrived: the body of a POST, or the named query parameter of a GET (from the already parsed `url`). */
+const rawJson = async (req: Request, param: string, url: URL) => (req.method === "GET" ? (url.searchParams.get(param) ?? "") : await req.text());
+
+/** Empty means `{}`. */
+function parseJson(raw: string): unknown {
+  if (!raw) return {};
   try {
-    if (req.method === "GET") {
-      const raw = url.searchParams.get(param);
-      return raw ? JSON.parse(raw) : {};
-    }
-    const text = await req.text();
-    return text ? JSON.parse(text) : {};
+    return JSON.parse(raw);
   } catch {
     throw new HttpError("BAD_REQUEST", "The request must be valid JSON");
   }
 }
+
+export const readJson = async (req: Request, param: string, url: URL): Promise<unknown> => parseJson(await rawJson(req, param, url));
+
+const encoder = new TextEncoder();
 
 /** A cross-site form can send a POST without a preflight, but not one with a JSON content type. */
 export const requireJson = (req: Request) => {
@@ -105,12 +108,15 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
         if (!kind) throw new HttpError("NOT_FOUND", `No function "${name}"`);
         if (req.method === "GET" ? kind !== "query" : req.method !== "POST") throw new HttpError("METHOD_NOT_ALLOWED", `Call ${name} with ${kind === "query" ? "GET or POST" : "POST"}`);
         requireJson(req);
-        const args = await readJson(req, "args", url);
-        // The body as a string: a cached query keeps its serialized form, so a hit costs no JSON work.
-        const run = async () => {
-          if (kind !== "query") return JSON.stringify({ result: (await runtime.call(name, kind, args, ctx.headers, { requestId: ctx.requestId })).value });
-          const r = await queries.run(name, args, ctx.headers, ctx.requestId);
-          return `{"result":${(r.json ??= JSON.stringify(r.value))}}`;
+        const raw = await rawJson(req, "args", url);
+        // A query's cache entry is keyed by the raw arguments and keeps its encoded response body: a hit parses, serializes and encodes nothing.
+        const run = async (): Promise<string | Uint8Array<ArrayBuffer>> => {
+          if (kind !== "query") {
+            const r = await runtime.call(name, kind, parseJson(raw), ctx.headers, { requestId: ctx.requestId });
+            return `{"result":${r.json ?? JSON.stringify(r.value) ?? "null"}}`;
+          }
+          const r = await queries.run(name, () => parseJson(raw), ctx.headers, ctx.requestId, raw);
+          return (r.body ??= encoder.encode(`{"result":${(r.json ??= JSON.stringify(r.value) ?? "null")}}`));
         };
         const body = await (opts.tracer ? opts.tracer.span(name, ctx.traceparent, { "forge.function": name, "forge.request_id": ctx.requestId }, run) : run());
         return new Response(body, { headers: { "content-type": JSON_TYPE, "x-request-id": ctx.requestId } });

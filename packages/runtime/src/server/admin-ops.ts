@@ -19,6 +19,11 @@ const SESSION_TTL_MS = 12 * 3600_000;
 const sha256 = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex");
 const randomToken = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
 const newId = (table: string) => `${table}:${crypto.randomUUID().replaceAll("-", "")}`;
+// Log ids in time order (ms, then a random tag per process, then a counter: 32 hex like any id), so inserts append to the primary key
+// index instead of landing on a random page of it. Unique across processes and servers by the tag.
+const logTag = crypto.randomUUID().replaceAll("-", "").slice(0, 8);
+let logCount = 0;
+const logId = () => `_logs:${Date.now().toString(16).padStart(12, "0")}${logTag}${(logCount = (logCount + 1) % 2 ** 48).toString(16).padStart(12, "0")}`;
 
 // ---- admin accounts (the CLI calls these in-process) ----
 
@@ -369,7 +374,8 @@ export class LogWriter {
 
   private running?: Promise<void>;
   private static ROW = "(?, ?, ?, ?, ?, ?, ?, ?, ?)";
-  private static FULL = Array(100).fill(LogWriter.ROW).join(", ");
+  private static CHUNK = 250;
+  private static FULL = Array(LogWriter.CHUNK).fill(LogWriter.ROW).join(", ");
 
   /** One drain at a time: when writes are slow, flushes must not pile up in the database's write queue behind each other. */
   flush(): Promise<void> {
@@ -377,13 +383,15 @@ export class LogWriter {
   }
 
   private async drain() {
-    // A transaction per 100 entries, so a request's mutation waits for one small transaction, not a whole second of logs.
-    while (this.buffer.length) {
-      const chunk = this.buffer.splice(0, 100);
+    // What is buffered now, in statements of 250 rows; what arrives meanwhile waits for the next second, so a busy server writes its
+    // logs in a few large statements a second rather than a stream of small ones.
+    for (let left = this.buffer.length; left > 0; ) {
+      const chunk = this.buffer.splice(0, Math.min(left, LogWriter.CHUNK));
+      left -= chunk.length;
       await this.db.transaction("write", (tx) =>
         tx.execute(
-          `INSERT INTO "_logs" ("_id", "time", "server", "name", "level", "message", "durationMs", "ok", "requestId") VALUES ${chunk.length === 100 ? LogWriter.FULL : Array(chunk.length).fill(LogWriter.ROW).join(", ")}`,
-          chunk.flatMap((r) => [newId("_logs"), r.time, r.server, r.name, r.level, r.message.slice(0, 4000), r.durationMs ?? null, r.ok === undefined ? null : r.ok, r.requestId ?? null]),
+          `INSERT INTO "_logs" ("_id", "time", "server", "name", "level", "message", "durationMs", "ok", "requestId") VALUES ${chunk.length === LogWriter.CHUNK ? LogWriter.FULL : Array(chunk.length).fill(LogWriter.ROW).join(", ")}`,
+          chunk.flatMap((r) => [logId(), r.time, r.server, r.name, r.level, r.message.slice(0, 4000), r.durationMs ?? null, r.ok === undefined ? null : r.ok, r.requestId ?? null]),
         ),
       );
     }

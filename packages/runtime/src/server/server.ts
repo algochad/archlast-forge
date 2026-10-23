@@ -84,13 +84,14 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     serverId,
     timeouts: { functionMs: config.limits.functionTimeoutMs, actionMs: config.limits.actionTimeoutMs },
     maxPending: config.limits.maxPendingCalls,
+    inline: config.runtimeMode === "inline",
   });
   const metrics = new Metrics();
   const recentLogs: LogEntry[] = [];
   const logStreams = new Set<(e: LogEntry) => void>();
   runtime.onLog = (e) => {
     recentLogs.push(e);
-    if (recentLogs.length > 2000) recentLogs.splice(0, recentLogs.length - 2000);
+    if (recentLogs.length > 2500) recentLogs.splice(0, recentLogs.length - 2000); // in steps of 500, not a copy of the array per entry
     if (e.level === "call") metrics.observe(e.name, e.durationMs ?? 0, e.ok ?? false);
     for (const send of logStreams) send(e);
   };

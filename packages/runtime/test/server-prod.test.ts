@@ -65,14 +65,36 @@ test("health, readiness and metrics", async () => {
   expect(metrics).toContain("forge_subscriptions");
 });
 
-test("a call that blocks the runtime is killed, and the runtime comes back", async () => {
-  const started = Date.now();
-  const body = (await (await get("/rpc/todos:spin", { ms: 20_000 })).json()) as any;
-  expect(body.error.code).toBe("TIMEOUT");
-  expect(Date.now() - started).toBeLessThan(9000);
-  for (let i = 0; i < 50 && (await get("/rpc/todos:events", {})).status !== 200; i++) await Bun.sleep(100);
-  expect((await get("/rpc/todos:events", {})).status).toBe(200);
+test("in process mode, a call that blocks the runtime is killed, and the runtime comes back", async () => {
+  const s = await startServer({ forgeDir: fixture, env: prodEnv({ DATA_DIR: tempDir(), RUNTIME_MODE: "process" }) });
+  const call = (name: string, args: object) => fetch(`${s.url}/rpc/${name}?args=${encodeURIComponent(JSON.stringify(args))}`);
+  try {
+    const started = Date.now();
+    const body = (await (await call("todos:spin", { ms: 20_000 })).json()) as any;
+    expect(body.error.code).toBe("TIMEOUT");
+    expect(Date.now() - started).toBeLessThan(9000);
+    for (let i = 0; i < 50 && (await call("todos:events", {})).status !== 200; i++) await Bun.sleep(100);
+    expect((await call("todos:events", {})).status).toBe(200);
+  } finally {
+    await s.stop({ graceful: false });
+  }
 }, 15_000);
+
+test("inline (the production default), a call that blocks the event loop gets the whole process killed by the watchdog", async () => {
+  // In a child, since the watchdog kills the process it runs in.
+  const script = `import { startServer } from ${JSON.stringify(join(import.meta.dir, "../src/server/server.ts"))};
+    const s = await startServer({ forgeDir: ${JSON.stringify(fixture)}, env: { ...process.env, PORT: "0", DATA_DIR: ${JSON.stringify(tempDir())}, BETTER_AUTH_SECRET: "${"s".repeat(32)}", ALLOW_INSECURE_HTTP: "1", FUNCTION_TIMEOUT_MS: "300", LOG_FORMAT: "json" } });
+    console.log("mode", s.config.runtimeMode);
+    fetch(s.url + "/rpc/todos:spin?args=" + encodeURIComponent(JSON.stringify({ ms: 60000 })));`;
+  const child = Bun.spawn([process.execPath, "-e", script], { stdout: "pipe", stderr: "pipe" });
+  const started = Date.now();
+  const code = await child.exited;
+  expect(await new Response(child.stdout).text()).toContain("mode inline");
+  expect(child.signalCode).toBe("SIGKILL");
+  expect(Date.now() - started).toBeLessThan(15_000); // the 300 ms timeout plus the 5 s grace, not the minute the call wanted
+  expect(await new Response(child.stderr).text()).toContain("event loop has been blocked");
+  void code;
+}, 30_000);
 
 test("subscriptions per connection are capped", async () => {
   const ws = new WebSocket(`${srv.url.replace("http", "ws")}/rpc`);

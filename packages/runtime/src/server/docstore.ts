@@ -1,4 +1,6 @@
 import { referenceOf } from "../relations";
+import type { Row } from "./db/types";
+import { SnapshotMoved, type ReadCache } from "./read-cache";
 import { tableOf, validateFields, ValidationError, type Validator } from "../values";
 import type { DbTx, Dialect } from "./db/types";
 
@@ -59,7 +61,53 @@ export class DocStore {
     /** Topics this transaction wrote; absent in read-only transactions. */
     readonly writes?: Set<string>,
     private maxDocumentBytes = 1024 * 1024,
-  ) {}
+    private cache?: ReadCache,
+  ) {
+    this.stamp = cache?.now() ?? 0;
+  }
+
+  /** This transaction's snapshot on the read cache's counter; whether it used cached rows or the database yet; whether it has written. */
+  private stamp: number;
+  private usedCache = false;
+  private usedDb = false;
+  private dirty = false;
+  /** Tables this transaction marked pending in the read cache; the executor settles them once it commits or rolls back. */
+  readonly writing = new Set<string>();
+
+  /** A read of `table` that reads `topics`: from the read cache when it has the rows as of this transaction's snapshot, else from the database. */
+  private async select(table: string, sql: string, params: unknown[], topics: string[]): Promise<Row[]> {
+    const key = sql + "\u0000" + JSON.stringify(params);
+    const hit = this.peek(table, key);
+    if (hit) return hit;
+    this.toDb();
+    const rows = await this.tx.query(sql, params);
+    this.keep(table, key, rows, topics);
+    return rows;
+  }
+
+  /** Cached rows for `key`, if the read cache has them as of this transaction's snapshot. */
+  private peek(table: string, key: string): Row[] | undefined {
+    if (!this.cache || this.dirty) return undefined;
+    const hit = this.cache.get(key, table, this.stamp);
+    if (hit) this.usedCache = true;
+    return hit;
+  }
+
+  /** Before a statement goes to the database. */
+  private toDb() {
+    if (this.cache && !this.dirty && !this.usedDb && !this.writes) {
+      // The database snapshot starts with this statement. Cached rows already used are the state as of `stamp`: if anything committed
+      // since, the two would disagree, so start the read over. Otherwise the snapshot is now.
+      if (this.usedCache && this.cache.now() !== this.stamp) throw new SnapshotMoved();
+      this.stamp = this.cache.now();
+    }
+    this.usedDb = true;
+  }
+
+  /** Rows a read-only transaction read, kept under the topics they depend on. */
+  private keep(table: string, key: string, rows: Row[], topics: string[]) {
+    if (this.cache && !this.dirty && !this.writes) this.cache.set(key, table, rows, this.stamp, topics);
+  }
 
   reader() {
     return {
@@ -109,8 +157,9 @@ export class DocStore {
 
   async get(id: string): Promise<Doc | null> {
     const table = this.parseId(id);
-    this.reads.add(topic(table, "by_id", [id]));
-    const [row] = await this.tx.query(`${SELECT} "${table}" WHERE "_id" = ?`, [id]);
+    const read = topic(table, "by_id", [id]);
+    this.reads.add(read);
+    const [row] = await this.select(table, `${SELECT} "${table}" WHERE "_id" = ?`, [id], [read]);
     return row ? this.toDoc(row) : null;
   }
 
@@ -154,8 +203,10 @@ export class DocStore {
         conds.push({ sql: `(${key.map((k) => k.expr).join(", ")}) ${op} (${key.map((k) => k.param).join(", ")})`, params: key.map((k, i) => k.encode(after[i])) });
       }
       // Reads of a range or page are tracked at the equality prefix: coarser, never missed.
-      this.reads.add(eqs.length && index !== undefined ? topic(table, index, eqs.map(([, value]) => value)) : table);
+      const read = eqs.length && index !== undefined ? topic(table, index, eqs.map(([, value]) => value)) : table;
+      this.reads.add(read);
       return {
+        read,
         where: conds.length ? `WHERE ${conds.map((c) => c.sql).join(" AND ")}` : "",
         params: conds.flatMap((c) => c.params),
         orderBy: key.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", "),
@@ -165,7 +216,7 @@ export class DocStore {
 
     const run = async (limit?: number, after?: unknown[]) => {
       const p = plan(after);
-      const rows = await this.tx.query(`${SELECT} "${table}" ${p.where} ORDER BY ${p.orderBy}${limit === undefined ? "" : ` LIMIT ${limit}`}`, p.params);
+      const rows = await this.select(table, `${SELECT} "${table}" ${p.where} ORDER BY ${p.orderBy}${limit === undefined ? "" : ` LIMIT ${limit}`}`, p.params, [p.read]);
       return { docs: rows.map((r) => this.toDoc(r)), keyFields: p.keyFields };
     };
 
@@ -267,7 +318,7 @@ export class DocStore {
           return n;
         }
         const p = plan();
-        const [row] = await this.tx.query(`SELECT COUNT(*) AS "n" FROM "${table}" ${p.where}`, p.params);
+        const [row] = await this.select(table, `SELECT COUNT(*) AS "n" FROM "${table}" ${p.where}`, p.params, [p.read]);
         return Number(row?.n ?? 0);
       },
       sum: async (field: string) => (await numbers("sum", field)).reduce((a, b) => a + b, 0),
@@ -392,7 +443,8 @@ export class DocStore {
       for (const id of unique) this.reads.add(topic(table, "by_id", [id]));
       for (let i = 0; i < unique.length; i += IN_CHUNK) {
         const chunk = unique.slice(i, i + IN_CHUNK);
-        for (const row of await this.tx.query(`${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk)) found.set(row._id, this.toDoc(row));
+        const topics = chunk.map((id) => topic(table, "by_id", [id]));
+        for (const row of await this.select(table, `${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk, topics)) found.set(row._id, this.toDoc(row));
       }
     }
     return ids.map((id) => found.get(id) ?? null);
@@ -450,7 +502,35 @@ export class DocStore {
       return q;
     };
     if (rule.count) {
-      for (const d of docs) d[key] = await perParent(d._id).count();
+      // Counts are cached per parent (a write to one parent's children drops only that parent's count); the ones the cache doesn't have
+      // come from one grouped query per chunk. A parent with no children isn't in that result and counts 0.
+      const counts = new Map<string, number>();
+      const countKey = (id: string) => `count\u0000${rule.table}\u0000${field}\u0000${id}`;
+      const missing: string[] = [];
+      for (const id of new Set(docs.map((d) => d._id))) {
+        this.reads.add(topic(rule.table, rule.index, [id])); // what perParent(id).count() would have read
+        const hit = this.peek(rule.table, countKey(id));
+        if (hit) counts.set(id, hit[0]!.n);
+        else missing.push(id);
+      }
+      // One count per parent, as scalar subqueries in one statement: each is answered from the index alone, where a GROUP BY on the
+      // field would have to read every child row to evaluate it (2x slower at a few hundred children each).
+      for (let i = 0; i < missing.length; i += OR_CHUNK) {
+        const chunk = missing.slice(i, i + OR_CHUNK);
+        const conds = chunk.map((id) => this.dialect.fieldEquals(field, id));
+        this.toDb();
+        const rows = await this.tx.query(
+          chunk.map((_, k) => `SELECT ${k} AS "k", (SELECT COUNT(*) FROM "${rule.table}" WHERE ${conds[k]!.sql}) AS "n"`).join(" UNION ALL "),
+          conds.flatMap((c) => c.params),
+        );
+        for (const r of rows) {
+          const id = chunk[Number(r.k)]!;
+          const n = Number(r.n);
+          counts.set(id, n);
+          this.keep(rule.table, countKey(id), [{ n }], [topic(rule.table, rule.index, [id])]);
+        }
+      }
+      for (const d of docs) d[key] = counts.get(d._id) ?? 0;
       return;
     }
     if (rule.take !== undefined) {
@@ -468,10 +548,11 @@ export class DocStore {
     const ids = [...groups.keys()];
     for (let i = 0; i < ids.length; i += OR_CHUNK) {
       const chunk = ids.slice(i, i + OR_CHUNK);
-      for (const id of chunk) this.reads.add(topic(rule.table, rule.index, [id]));
+      const topics = chunk.map((id) => topic(rule.table, rule.index, [id]));
+      for (const t of topics) this.reads.add(t);
       const conds = chunk.map((id) => this.dialect.fieldEquals(field, id));
       const orderBy = rest.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", ");
-      const rows = await this.tx.query(`${SELECT} "${rule.table}" WHERE (${conds.map((c) => c.sql).join(" OR ")}) ORDER BY ${orderBy}`, conds.flatMap((c) => c.params));
+      const rows = await this.select(rule.table, `${SELECT} "${rule.table}" WHERE (${conds.map((c) => c.sql).join(" OR ")}) ORDER BY ${orderBy}`, conds.flatMap((c) => c.params), topics);
       for (const row of rows) {
         const doc = this.toDoc(row);
         groups.get(doc[field])?.push(doc);
@@ -484,6 +565,12 @@ export class DocStore {
 
   private written(table: string, doc: Record<string, unknown>) {
     const w = this.writes!;
+    // From here this transaction reads its own uncommitted writes, so only from the database; and nobody may use the table until it settles.
+    this.dirty = true;
+    if (this.cache && !this.writing.has(table)) {
+      this.writing.add(table);
+      this.cache.writing(table);
+    }
     w.add(table);
     w.add(topic(table, "by_id", [doc._id]));
     for (const [name, fields] of Object.entries(this.table(table).indexes))

@@ -4,7 +4,7 @@
 |---|---|---|
 | Query and mutation time | 10 s | `TIMEOUT`; a mutation rolls back, and later database use by its handler is refused |
 | Action time | 10 min | `TIMEOUT` |
-| A call that blocks the process | timeout + 5 s | the function-runtime process is killed and restarted, but only if it has answered nothing since the call went in; a process that is merely behind keeps its work |
+| A call that blocks the process | timeout + 5 s | `RUNTIME_MODE=process`: the function-runtime process is killed and restarted, but only if it has answered nothing since the call went in (one that is merely behind keeps its work). `inline` (the production default): a watchdog thread kills the whole server process, so run it under something that restarts it (the engine container does) |
 | Calls waiting for the function runtime | 1000 (`MAX_PENDING_CALLS`) | the call is refused at once with `503` and `Retry-After: 1`, instead of queueing until it times out |
 | Result size | 8 MiB | the call fails |
 | Document size | 1 MiB | the write fails |

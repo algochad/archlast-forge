@@ -12,7 +12,8 @@ export interface CacheStats {
 export interface Cache {
   get<T = unknown>(key: string): Promise<T | undefined>;
   /** `topics` tag the entry so `invalidate` can evict it when a mutation writes them. Resolves false when the entry was too big to keep. */
-  set(key: string, value: unknown, opts: { ttlMs: number; topics?: string[] }): Promise<boolean>;
+  /** `size`: the caller's estimate of the entry's memory, when it already has one; otherwise its JSON length. */
+  set(key: string, value: unknown, opts: { ttlMs: number; topics?: string[]; size?: number }): Promise<boolean>;
   del(key: string): Promise<void>;
   /** Evicts every entry tagged with one of `topics`; resolves with how many were removed. */
   invalidate(topics: string[]): Promise<number>;
@@ -52,9 +53,9 @@ export class MemoryCache implements Cache {
     return e.value as T;
   }
 
-  async set(key: string, value: unknown, { ttlMs, topics = [] }: { ttlMs: number; topics?: string[] }) {
+  async set(key: string, value: unknown, { ttlMs, topics = [], size: estimate }: { ttlMs: number; topics?: string[]; size?: number }) {
     this.remove(key);
-    const size = JSON.stringify(value).length + key.length + ENTRY_OVERHEAD;
+    const size = (estimate ?? JSON.stringify(value).length) + key.length + ENTRY_OVERHEAD;
     // One huge result would flush everything else out; it's cheaper to just not keep it.
     if (size > this.maxBytes / 4) return false;
     this.entries.set(key, { value, expires: Date.now() + ttlMs, topics, size });

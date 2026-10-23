@@ -12,6 +12,11 @@ export const listByList = query({
   handler: (ctx, { listId }) => ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).collect(),
 });
 
+/** Lists with how many todos each has: the read set covers every list's todos. */
+export const listCounts = query({
+  handler: (ctx) => ctx.db.query("lists").include({ total: { table: "todos", index: "by_list", count: true } }).collect(),
+});
+
 export const openCount = query({
   args: { listId: v.id("lists") },
   handler: async (ctx, { listId }) =>

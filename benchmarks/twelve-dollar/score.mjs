@@ -202,19 +202,37 @@ async function main() {
   if (what === "capacity") {
     const ready = await start();
     log(`ready in ${ready.toFixed(1)} s`);
+    // raw*: the raw-socket generator, cheap enough to push the server to its own limit. rawmix is the challenge's mix, writes included.
+    const feed = (await (await fetch(`${BASE}/rpc/feed:list`)).json()).result.posts;
+    const getPaths = feed.map((p) => `/rpc/feed:get?args=${encodeURIComponent(JSON.stringify({ id: p.id }))}`);
+    const raw = {
+      rawlist: { PATHS: JSON.stringify(["/rpc/feed:list"]) },
+      rawget: { PATHS: JSON.stringify(getPaths) },
+      rawreads: { MIX: "1,1,0,0" },
+      rawmix: { MIX: "1,1,0.15,0.02" },
+      rawwrites: { MIX: "0,0,0.15,0.02" },
+      rawlikes: { MIX: "1,1,0.15,0" },
+      rawcreates: { MIX: "1,1,0,0.02" },
+    };
     for (const scenario of (env.SCENARIOS ?? "list,get,like,create,mix").split(",")) {
       const done = watch();
-      const child = spawn("taskset", ["-c", LOAD_CPUS, "node", join(here, "capacity.mjs")], {
-        env: { ...env, BASE_URL: BASE, SCENARIO: scenario, TOKENS: join(SEED, "tokens.json") },
-        stdio: ["ignore", "pipe", "inherit"],
-      });
+      const child = raw[scenario]
+        ? spawn("taskset", ["-c", LOAD_CPUS, "node", join(here, "rawload.mjs")], {
+            env: { ...env, PORT, TOKENS: join(SEED, "tokens.json"), SECONDS: env.SECONDS ?? "12", CONNS: env.CONNS ?? "128", ...raw[scenario] },
+            stdio: ["ignore", "pipe", "inherit"],
+          })
+        : spawn("taskset", ["-c", LOAD_CPUS, "node", join(here, "capacity.mjs")], {
+            env: { ...env, BASE_URL: BASE, SCENARIO: scenario, TOKENS: join(SEED, "tokens.json") },
+            stdio: ["ignore", "pipe", "inherit"],
+          });
       let out = "";
       child.stdout.on("data", (d) => (out += d));
       await new Promise((r) => child.on("close", r));
       const server = done();
-      const r = JSON.parse(out);
+      const r = { failed: 0, ...JSON.parse(out) };
+      r.failed ||= r.bad ?? 0;
       const us = (cpu) => Math.round(((cpu / 100) / r.rps) * 1e6);
-      console.log(`${scenario.padEnd(7)} ${String(r.rps).padStart(6)} req/s  p50 ${r.p50} ms  p99 ${r.p99} ms  failed ${r.failed}  server ${us(server.serverProcessCpu)} us/req  runtime ${us(server.runtimeProcessCpu)} us/req  (cpu ${server.cpuAvg}%)` + (scenario === "mix" ? `  ~${Math.round(r.rps / 0.115).toLocaleString()} users` : ""));
+      console.log(`${scenario.padEnd(9)} ${String(r.rps).padStart(6)} req/s  p50 ${r.p50} ms  p99 ${r.p99} ms  failed ${r.failed}  server ${us(server.serverProcessCpu)} us/req  runtime ${us(server.runtimeProcessCpu)} us/req  (cpu ${server.cpuAvg}%)` + (scenario.endsWith("mix") ? `  ~${Math.round(r.rps / 0.115).toLocaleString()} users` : ""));
       await sleep(2);
     }
     if (env.EXTRA_ENV) await stopGracefully(); // profiling is on: let the processes write their profiles

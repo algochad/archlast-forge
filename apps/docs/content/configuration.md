@@ -19,7 +19,8 @@ Environment variables, read at startup. Invalid or contradictory values fail fas
 | `ADMIN_KEY` | generated in dev | owner access to the dashboard and `/metrics` |
 | `CACHE_TTL_MS` | `60000` | longest a cached query result lives; `0` turns the [cache](caching.html) off |
 | `CACHE_MAX_MB` | `64` | memory the in-process cache may use (ignored with `REDIS_URL`) |
-| `RUNTIME_WORKERS` | `1` | function runtime processes per server |
+| `RUNTIME_MODE` | `inline` outside dev, `process` in dev or with `RUNTIME_WORKERS > 1` | `inline` runs your functions in the server process: no IPC per call, about twice the throughput on one core; a function that blocks the event loop for longer than its timeout plus 5 s gets the whole process restarted (by Docker or your supervisor). `process` runs them in a child process that is restarted alone |
+| `RUNTIME_WORKERS` | `1` | function runtime processes per server (needs `RUNTIME_MODE=process`) |
 | `MAX_PENDING_CALLS` | `1000` | calls waiting for one function runtime process; past this, new calls get `503` with `Retry-After: 1` instead of queueing (see [limits](limits.html)) |
 | `FUNCTION_TIMEOUT_MS`, `ACTION_TIMEOUT_MS` | `10000`, `600000` | |
 | `MAX_RESULT_BYTES`, `MAX_DOCUMENT_BYTES`, `MAX_REQUEST_BYTES` | 8 MiB, 1 MiB, 8 MiB | |

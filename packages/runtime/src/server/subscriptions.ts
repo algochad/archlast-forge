@@ -12,9 +12,15 @@ type Result = {
   value: unknown;
   topics: string[];
   clean?: boolean;
-  /** `JSON.stringify(value)`, built the first time an HTTP response needs it and kept with a cached entry, so a hit doesn't serialize again. */
+  /** `JSON.stringify(value)`, built once and kept with a cached entry, so a hit doesn't serialize again. */
   json?: string;
+  /** The HTTP response body for this result, encoded once: a hit sends these bytes as they are. */
+  body?: Uint8Array<ArrayBuffer>;
 };
+
+/** Arguments, or how to get them: an HTTP call passes its raw JSON, parsed only when the cache can't answer. */
+export type Args = unknown | (() => unknown);
+const argsOf = (args: Args) => (typeof args === "function" ? (args as () => unknown)() : args);
 
 interface FunctionStats {
   /** Served from the cache. */
@@ -55,6 +61,8 @@ export class QueryRunner {
   /** Invalidations at or before this were forgotten; a run older than it can't be proven clean. */
   private horizon = 0;
   private invalidating: Promise<unknown> = Promise.resolve();
+  /** Evictions from a remote cache still in flight; an in-process cache evicts synchronously, so a read never waits. */
+  private evicting = 0;
   private invalidatedEntries = 0;
   private stats = new Map<string, FunctionStats>();
   /** Functions seen reading `ctx.auth`: their cache keys include the caller. */
@@ -77,19 +85,25 @@ export class QueryRunner {
     }
     if (this.cache?.invalidateNow) this.invalidatedEntries += this.cache.invalidateNow([topic]);
     else if (this.cache) {
+      this.evicting++;
       const evicting = this.cache
         .invalidate([topic])
         .then((n) => void (this.invalidatedEntries += n))
-        .catch((e) => log("error", "cache invalidation failed", { error: String(e) })); // one failure must not poison every later read
+        .catch((e) => log("error", "cache invalidation failed", { error: String(e) })) // one failure must not poison every later read
+        .finally(() => this.evicting--);
       this.invalidating = Promise.all([this.invalidating, evicting]);
     }
   }
 
-  async run(name: string, args: unknown, headers: CallHeaders, requestId?: string): Promise<Result> {
+  /**
+   * Runs a query through the cache. `raw`, when given, is the call's arguments exactly as they arrived (the JSON text of an HTTP call):
+   * the cache is keyed by it, so a hit needs no parsing at all; the same text always means the same arguments.
+   */
+  async run(name: string, args: Args, headers: CallHeaders, requestId?: string, raw?: string): Promise<Result> {
     const cache = this.cache;
     if (!cache) {
       const start = this.seq;
-      const r = await this.runtime.call(name, "query", args, headers, { requestId });
+      const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId });
       const topics = r.topics ?? [];
       return { value: r.value, topics, clean: this.untouched(topics, start) };
     }
@@ -97,8 +111,9 @@ export class QueryRunner {
     const stats = this.statsOf(name);
     // Queries that read ctx.auth are cached per caller. Who the caller is gets resolved fresh each time, so a revoked session stops matching.
     const identity = this.perUser.has(name) ? await this.runtime.identity(headers) : undefined;
-    const key = JSON.stringify(identity === undefined ? [name, args ?? {}] : [name, identity, args ?? {}]);
-    await this.invalidating; // a pending eviction must land before we read the cache
+    const who = identity === undefined ? name : JSON.stringify([name, identity]);
+    const key = raw !== undefined ? `${who}\u0000${raw}` : `${who}\u0001${JSON.stringify(argsOf(args) ?? {})}`;
+    if (this.evicting) await this.invalidating; // a pending eviction must land before we read the cache
     const hit = await cache.get<Result>(key);
     if (hit) {
       stats.hits++;
@@ -125,9 +140,9 @@ export class QueryRunner {
     }
   }
 
-  private async execute(name: string, args: unknown, headers: CallHeaders, requestId: string | undefined, identity: UserIdentity | null | undefined, key: string, cache: Cache) {
+  private async execute(name: string, args: Args, headers: CallHeaders, requestId: string | undefined, identity: UserIdentity | null | undefined, key: string, cache: Cache) {
     const start = this.seq;
-    const r = await this.runtime.call(name, "query", args, headers, { requestId, ...(identity !== undefined && { identity }) });
+    const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId, ...(identity !== undefined && { identity }) });
     const topics = r.topics ?? [];
     // First sighting of a per-caller query: its result belongs to this caller, and the next call will be keyed by caller.
     const unkeyed = Boolean(r.usedAuth) && identity === undefined;
@@ -137,8 +152,9 @@ export class QueryRunner {
     // Cache only if none of the topics this result read was written while it ran.
     const clean = this.untouched(topics, start);
     // The entry is the object the caller gets, so the JSON a response builds from it (`json`) stays with the entry.
-    const result: Result & { clean: boolean } = { value: r.value, topics, clean: clean && !unkeyed };
-    const kept = clean && !unkeyed && (await cache.set(key, result, { ttlMs: this.ttlMs, topics }));
+    const json = r.json ?? JSON.stringify(r.value) ?? "null";
+    const result: Result & { clean: boolean } = { value: r.value, topics, clean: clean && !unkeyed, json };
+    const kept = clean && !unkeyed && (await cache.set(key, result, { ttlMs: this.ttlMs, topics, size: json.length * 3 }));
     if (!kept) stats.skipped++;
     return result;
   }

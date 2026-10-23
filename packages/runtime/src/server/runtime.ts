@@ -1,8 +1,9 @@
 import type { Subprocess } from "bun";
 import type { FunctionKind, UserIdentity } from "../functions";
-import type { CallHeaders, CallResult, ErrorKind, LogEntry } from "./executor";
+import { serializeError, type CallHeaders, type CallResult, type ErrorKind, type LogEntry } from "./executor";
 import type { Manifest } from "./project";
 import type { Batch, HostMessage, RuntimeMessage, SerializedRequest, SerializedResponse } from "./protocol";
+import { startCore, type RuntimeCore } from "./runtime-core";
 
 // Next to this module: child.ts in the repo, child.js in the published build.
 const CHILD = new URL(import.meta.url.endsWith(".ts") ? "./child.ts" : "./child.js", import.meta.url).pathname;
@@ -32,10 +33,94 @@ interface Options {
   timeouts?: { functionMs: number; actionMs: number };
   /** Calls one process may have waiting; more are refused (see ErrorKind "overloaded"). */
   maxPending?: number;
+  /** Run the core in this process instead of a child (RUNTIME_MODE=inline). */
+  inline?: boolean;
+}
+
+/** What FunctionRuntime needs from a function runtime, in a child process or in this one. */
+interface Worker {
+  proc?: unknown;
+  ready: boolean;
+  started?: Promise<Manifest>;
+  start(): Promise<Manifest>;
+  stop(): Promise<void>;
+  kill(): void;
+  request(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, onHang: () => void): Promise<unknown>;
+}
+
+/**
+ * The core in this process: no IPC, no second process, no context switch per call, which on one core is most of what a write or a cache
+ * miss costs besides its own work. The price: a function that never yields blocks the server too. A watchdog thread then kills the whole
+ * process (after the call's timeout plus the grace), so a supervisor (Docker's restart policy, systemd) can start it again.
+ */
+class InlineWorker implements Worker {
+  proc?: RuntimeCore;
+  ready = false;
+  started?: Promise<Manifest>;
+  private inFlight = 0;
+  private watchdog?: globalThis.Worker;
+  private beat?: Timer;
+
+  constructor(
+    private opts: Options,
+    private events: { onMessage(msg: RuntimeMessage): void },
+  ) {}
+
+  start(): Promise<Manifest> {
+    this.started = startCore({ forgeDir: this.opts.forgeDir, env: this.opts.env, worker: 0, serverId: this.opts.serverId ?? "local", dev: this.opts.dev, send: (m) => this.events.onMessage(m) }).then((core) => {
+      this.proc = core;
+      this.ready = true;
+      this.watch();
+      return core.manifest;
+    });
+    return this.started;
+  }
+
+  private watch() {
+    const limit = (this.opts.timeouts?.functionMs ?? 10_000) + HARD_TIMEOUT_GRACE_MS;
+    const code = `let last = Date.now();
+      self.onmessage = () => (last = Date.now());
+      setInterval(() => {
+        if (Date.now() - last < ${limit}) return;
+        console.error("The server's event loop has been blocked for over ${limit} ms (a function that never yields?); exiting so it can be restarted");
+        process.kill(process.pid, "SIGKILL");
+      }, 1000);`;
+    this.watchdog = new globalThis.Worker(URL.createObjectURL(new Blob([code], { type: "application/javascript" })));
+    (this.watchdog as unknown as { unref(): void }).unref(); // never keeps the process alive by itself
+    this.beat = setInterval(() => this.watchdog?.postMessage(0), 1000);
+    this.beat.unref();
+  }
+
+  async stop() {
+    const core = this.proc;
+    this.proc = undefined;
+    this.ready = false;
+    clearInterval(this.beat);
+    this.watchdog?.terminate();
+    await core?.shutdown();
+  }
+
+  /** Nothing to kill: the work runs on this thread (the watchdog handles a blocked one). */
+  kill() {}
+
+  async request(msg: Omit2<HostMessage, "id">) {
+    const core = this.proc;
+    if (!core) throw new RuntimeCallError("Function runtime is not running", "internal");
+    if (this.inFlight >= (this.opts.maxPending ?? 1000)) throw new RuntimeCallError("Server is busy, try again", "overloaded");
+    this.inFlight++;
+    try {
+      return await core.handle({ ...msg, id: 0 } as HostMessage);
+    } catch (e) {
+      const err = serializeError(e);
+      throw new RuntimeCallError(err.message, err.kind, err.data, err.stack);
+    } finally {
+      this.inFlight--;
+    }
+  }
 }
 
 /** One function runtime process. */
-class RuntimeProcess {
+class RuntimeProcess implements Worker {
   proc?: Subprocess;
   /** Messages sent before the process reports ready would be lost, so it only gets work after that. */
   ready = false;
@@ -171,14 +256,15 @@ export class FunctionRuntime {
   onPublish: (topics: string[]) => void = () => {};
   onLog: (entry: LogEntry) => void = () => {};
 
-  private workers: RuntimeProcess[] = [];
+  private workers: Worker[] = [];
   private starting?: Promise<Manifest>;
   private next = 0;
   private stopping = false;
 
   constructor(private opts: Options) {}
 
-  private spawn(index: number) {
+  private spawn(index: number): Worker {
+    if (this.opts.inline) return new InlineWorker(this.opts, { onMessage: (msg) => (msg.t === "publish" ? this.onPublish(msg.topics) : msg.t === "log" ? this.onLog(msg.entry) : undefined) });
     return new RuntimeProcess(index, this.opts, {
       onMessage: (msg) => {
         if (msg.t === "publish") this.onPublish(msg.topics);
@@ -201,7 +287,7 @@ export class FunctionRuntime {
 
   start(): Promise<Manifest> {
     this.stopping = false;
-    const count = this.opts.workers ?? 1;
+    const count = this.opts.inline ? 1 : (this.opts.workers ?? 1);
     this.workers = Array.from({ length: count }, (_, i) => this.spawn(i));
     // The first process migrates and checks the schema; the rest start once it's ready.
     this.starting = this.workers[0]!.start().then(

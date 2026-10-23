@@ -93,8 +93,34 @@ The challenge forbids caching across requests; this section does not follow that
 | | mix of the challenge's requests | cached `feed.list` / `feed.get` | `feed.like` | `feed.create` |
 |---|---|---|---|---|
 | before | ~2,000 req/s (~17,000 users) | ~5,000 req/s | 1.3 ms of CPU | 0.9 ms |
-| after | ~3,400 req/s (~29,000 users) | ~5,000 req/s (the probe client's limit; an empty `Bun.serve` handler costs 91 us here, a hit 125 us) | 0.8-1.1 ms | 0.65 ms |
+| after | ~3,400 req/s (~29,000 users) | ~5,000 req/s (the Node HTTP client's limit, not the server's: with the raw-socket generator `rawload.mjs` a cached `feed.list` serves 17,000-21,000 req/s at 48-58 us of CPU each, `feed.get` 10,500, against 23,000-40,000 req/s and 30 us for an empty `Bun.serve` handler) | 0.8-1.1 ms | 0.65 ms |
 
 What changed: a cached result keeps its JSON, so a hit does no serialization; IPC messages in one turn of the event loop go out as one; cache invalidation in-process is synchronous; signed-in calls read the session directly (1.2 ms to 0.08 ms; Better Auth stays for everything unusual); no client-address lookup when rate limiting is off; cheaper request ids and one URL parse.
 
 **Overload.** At 10,000 users with the cache off the runtime can't keep up (about 1,100 requests/s wanted, about 600 served). Before: calls queued past 15 s, the runtime was killed and restarted over and over (7,000-50,000 failed calls a run), 7-55% of requests failed, p95 7-15 s. Now: no restarts, 12% refused at once with 503, the rest p95 1.5 s, p99 2.0 s, max 3.7 s.
+
+### Where the CPU goes at 10,000 connections, and what is left
+
+An empty `Bun.serve` handler (a fixed 6 KB body, nothing else) under the same 10,000-user load costs **277-314 us of CPU per request**; an empty `node:http` handler costs 516 us. The BaaS's whole server process costs about 280 us. So the HTTP side is at the floor of what a Bun process can do here, and the function runtime (about 140 us per request, mostly the 8% of requests that write or rebuild a cached result) is the only part application code can still shrink. When the server is saturated by a few busy connections the same empty handler costs 30 us, because a loaded process never goes idle; with 10,000 mostly idle sockets almost every request wakes it from idle, and that is most of what a request costs. Raw syscalls are cheap here (about 2.5 us), so this is wake-up cost, not slow I/O.
+
+Consequence: on one core, a faster function runtime can buy roughly 15-20% at 10,000 users. Another 2x needs more cores for the HTTP side (several processes sharing the port with `reusePort`, which works in Bun), not more tuning of this one. Done so far: counts for a whole page of parents are one grouped query instead of one each (`feed.list` rebuild 500 us to 415 us).
+
+## Toward 3x on one core
+
+Measured with `node score.mjs capacity` and the raw-socket generator (`rawload.mjs`: the challenge's mix of feed, post, 15% likes and 2% new
+posts, as fast as one core answers; 30 s runs, medians; this VM varies about 10% between runs). The yardstick is `minimal-server.ts`, the same
+four calls hand-written on `Bun.serve` and prepared statements against the same database.
+
+| | full mix |
+|---|---|
+| minimal hand-written server, no cache | ~3,100 req/s |
+| the BaaS before this work (cache on, function runtime in a child process) | ~3,000 req/s |
+| the BaaS now (production defaults) | ~6,500 req/s (5,700-7,200) |
+| minimal hand-written server with the simplest exact cache | ~9,700 req/s (8,900-10,600) |
+
+At 10,000 users the defaults pass with 33% of the core (p95 17 ms, p99 109 ms, 0% failed, 179 MiB). What got it here, in order of effect:
+the function runtime in the server process (no IPC per call); group commit (writes alone match the minimal server, ~2,000 req/s); counting
+likes from the index (a GROUP BY on the field read every like row: 17% of the CPU); an exact read cache inside the runtime that drops only
+what a write touched (a like recounts one post, not twenty); WAL checkpoints off the serving thread; cached bodies keyed by raw arguments;
+batched log writes. What is left between the BaaS and the minimal server is spread thin: per-call logging, the rebuild path's general
+machinery (validation, timeouts, the document store), cache bookkeeping and the HTTP layer's extra steps.

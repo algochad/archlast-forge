@@ -1,4 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
+import { SnapshotMoved, type ReadCache } from "./read-cache";
 import { isForgeError, TimeoutError } from "../errors";
 import { getFunctionName, type FunctionKind, type RegisteredFunction, type UserIdentity } from "../functions";
 import { validate, validateFields, ValidationError } from "../values";
@@ -16,6 +17,8 @@ export interface CallResult {
   topics?: string[];
   /** The query called ctx.auth, so its result belongs to that caller and mustn't be shared. */
   usedAuth?: boolean;
+  /** `JSON.stringify(value)`, made for the size check and reused for the response instead of serializing again. */
+  json?: string;
 }
 
 export interface LogEntry {
@@ -67,6 +70,8 @@ export interface ExecutorOptions {
   limits?: Pick<Limits, "functionTimeoutMs" | "actionTimeoutMs" | "maxResultBytes" | "maxDocumentBytes">;
   publish(topics: string[]): void;
   log(entry: LogEntry): void;
+  /** Keep document reads in an exact read cache: only when this process is the database's only writer. */
+  readCache?: ReadCache;
 }
 
 type AfterCommit = (() => unknown)[];
@@ -111,15 +116,22 @@ export class Executor {
     this.limits = o.limits ?? { functionTimeoutMs: 10_000, actionTimeoutMs: 600_000, maxResultBytes: 8 << 20, maxDocumentBytes: 1 << 20 };
   }
 
-  private store(tx: DbTx, writes?: Set<string>) {
-    return new DocStore(tx, this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes);
+  private store(tx: DbTx, writes?: Set<string>, cached = true) {
+    return new DocStore(tx, this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes, cached ? this.o.readCache : undefined);
   }
 
-  read<T>(fn: (store: DocStore, tx: DbTx) => Promise<T>) {
-    return this.o.db.transaction("read", async (tx) => {
-      const store = this.store(tx);
-      return { value: await fn(store, tx), reads: store.reads };
-    });
+  /** One read-only transaction. Re-run when it would mix cached rows with a newer snapshot (see SnapshotMoved): reads are deterministic. */
+  async read<T>(fn: (store: DocStore, tx: DbTx) => Promise<T>): Promise<{ value: T; reads: Set<string> }> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        return await this.o.db.transaction("read", async (tx) => {
+          const store = this.store(tx, undefined, attempt < 3); // the last tries go straight to the database
+          return { value: await fn(store, tx), reads: store.reads };
+        });
+      } catch (e) {
+        if (!(e instanceof SnapshotMoved)) throw e;
+      }
+    }
   }
 
   /** One write transaction; topics publish only after commit. Retries serialization conflicts (mutations are deterministic). */
@@ -128,7 +140,14 @@ export class Executor {
       const writes = new Set<string>();
       const after: AfterCommit = [];
       try {
-        const value = await this.o.db.transaction("write", (tx) => fn(this.store(tx, writes), tx, after));
+        let store: DocStore | undefined;
+        let value: T;
+        try {
+          value = await this.o.db.transaction("write", (tx) => fn((store = this.store(tx, writes)), tx, after));
+        } finally {
+          // Committed or rolled back: the tables it wrote can be read and cached again.
+          for (const t of store?.writing ?? []) this.o.readCache?.settled(t, writes);
+        }
         if (writes.size) this.o.publish([...writes]);
         for (const f of after) Promise.resolve().then(f).catch((e) => console.error("after-commit task failed:", e));
         return value;
@@ -190,9 +209,9 @@ export class Executor {
         };
       return { value: checkReturn(fn, await withTimeout(Promise.resolve(fn.handler(this.actionCtx(auth, identity, requestId), args)), actionTimeoutMs, name)) ?? null };
     });
-    const size = JSON.stringify(result.value)?.length ?? 0;
-    if (size > this.limits.maxResultBytes) throw new Error(`${name} returned ${size} bytes; the limit is ${this.limits.maxResultBytes} (MAX_RESULT_BYTES)`);
-    return result;
+    const json = JSON.stringify(result.value) ?? "null";
+    if (json.length > this.limits.maxResultBytes) throw new Error(`${name} returned ${json.length} bytes; the limit is ${this.limits.maxResultBytes} (MAX_RESULT_BYTES)`);
+    return { ...result, json };
   }
 
   async invokeMutation(fn: RegisteredFunction, args: unknown, store: DocStore, tx: DbTx, after: AfterCommit, identity: UserIdentity | null) {

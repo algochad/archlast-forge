@@ -46,6 +46,17 @@ test("repeat queries are served from the cache, writes evict, and all of it is m
   expect(prom).toMatch(/forge_cache_entries \d+/);
 });
 
+test("a cached query that counts related documents is never stale after one is added", async () => {
+  const listId = await rpc("todos:createList", { name: "counted" }, { mutation: true });
+  const total = async () => (await rpc("todos:listCounts", {})).find((l: any) => l._id === listId).total;
+  expect(await total()).toBe(0);
+  expect(await total()).toBe(0); // from the cache
+  await rpc("todos:add", { listId, title: "one" }, { mutation: true });
+  expect(await total()).toBe(1);
+  await rpc("todos:add", { listId, title: "two" }, { mutation: true });
+  expect(await total()).toBe(2);
+});
+
 test("queries that read ctx.auth are cached per user and never leak between them", async () => {
   const signUp = async (name: string) => {
     const res = await fetch(`${srv.url}/api/auth/sign-up/email`, {

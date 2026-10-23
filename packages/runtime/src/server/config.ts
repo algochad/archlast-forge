@@ -39,6 +39,8 @@ export interface Config {
   cacheMaxBytes: number;
   /** Function runtime processes per server. */
   runtimeWorkers: number;
+  /** `process`: functions run in child processes, restarted alone on code changes or a hang. `inline`: in the server process, fastest. */
+  runtimeMode: "process" | "inline";
   limits: Limits;
   /** Use X-Forwarded-For for client IPs (rate limiting); only behind a trusted proxy. */
   trustProxy: boolean;
@@ -70,6 +72,12 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const databaseUrl = env.DATABASE_URL || undefined;
   if (databaseUrl && !/^postgres(ql)?:\/\//.test(databaseUrl))
     fail(`DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite), got "${databaseUrl.split(":")[0]}:"`);
+  // Inline is the default outside dev: no IPC hop per call, about twice the throughput on one core. Dev keeps the child process, so code
+  // changes reload without dropping connections, and so does a pool of runtime processes.
+  const runtimeMode = (env.RUNTIME_MODE || (dev || int("RUNTIME_WORKERS", 1, 1) > 1 ? "process" : "inline")) as Config["runtimeMode"];
+  if (runtimeMode !== "process" && runtimeMode !== "inline") fail(`RUNTIME_MODE must be "process" or "inline", got "${env.RUNTIME_MODE}"`);
+  if (runtimeMode === "inline" && dev) fail("RUNTIME_MODE=inline can't reload code when it changes; use it outside dev");
+  if (runtimeMode === "inline" && int("RUNTIME_WORKERS", 1, 1) > 1) fail("RUNTIME_MODE=inline runs one function runtime, in the server process; unset RUNTIME_WORKERS");
   if (replicas > 1 && !env.REDIS_URL) fail("REPLICAS > 1 requires REDIS_URL, or mutations won't reach subscribers on other servers");
   if (replicas > 1 && !databaseUrl) fail("REPLICAS > 1 requires a Postgres DATABASE_URL; bun:sqlite is single-server");
   if (Boolean(env.S3_ENDPOINT) !== Boolean(env.S3_BUCKET)) fail("Set both S3_ENDPOINT and S3_BUCKET, or neither");
@@ -108,6 +116,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     cacheMaxBytes: int("CACHE_MAX_MB", 64, 1) * 2 ** 20,
     idleTimeoutSeconds: int("IDLE_TIMEOUT_SECONDS", 75, 1),
     runtimeWorkers: int("RUNTIME_WORKERS", 1, 1),
+    runtimeMode,
     limits: {
       functionTimeoutMs: int("FUNCTION_TIMEOUT_MS", 10_000, 1),
       actionTimeoutMs: int("ACTION_TIMEOUT_MS", 600_000, 1),
