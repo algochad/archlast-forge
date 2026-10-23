@@ -10,17 +10,21 @@ export interface Storage {
 /** S3-compatible storage (AWS, RustFS, MinIO). Presigning is local, so it's safe inside queries. */
 export class S3Storage implements Storage {
   private s3: S3Client;
+  /** Signs the URLs handed to browsers, which may reach storage at a different address than the engine does. */
+  private publicS3: S3Client;
 
-  constructor(opts: { endpoint: string; bucket: string; accessKeyId?: string; secretAccessKey?: string; region?: string }) {
-    this.s3 = new S3Client(opts);
+  constructor(opts: { endpoint: string; publicEndpoint?: string; bucket: string; accessKeyId?: string; secretAccessKey?: string; region?: string }) {
+    const { publicEndpoint, ...s3 } = opts;
+    this.s3 = new S3Client(s3);
+    this.publicS3 = publicEndpoint ? new S3Client({ ...s3, endpoint: publicEndpoint }) : this.s3;
   }
 
   putPresignedUrl(key: string, { contentType, expiresIn = 3600 }: { contentType?: string; expiresIn?: number } = {}) {
-    return this.s3.presign(key, { method: "PUT", expiresIn, type: contentType });
+    return this.publicS3.presign(key, { method: "PUT", expiresIn, type: contentType });
   }
 
   getPresignedUrl(key: string, { expiresIn = 3600 } = {}) {
-    return this.s3.presign(key, { method: "GET", expiresIn });
+    return this.publicS3.presign(key, { method: "GET", expiresIn });
   }
 
   async delete(key: string) {

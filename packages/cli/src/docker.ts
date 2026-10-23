@@ -67,7 +67,9 @@ const SERVICES = {
     env: { RUSTFS_ACCESS_KEY: "forgeadmin", RUSTFS_SECRET_KEY: "forgeadmin", RUSTFS_CORS_ALLOWED_ORIGINS: "*" },
     volume: "/data",
     cmd: ["/data"],
-    provides: (host: string) => ({ S3_ENDPOINT: `http://${host}:9000`, S3_BUCKET: "forge", S3_ACCESS_KEY_ID: "forgeadmin", S3_SECRET_ACCESS_KEY: "forgeadmin", S3_REGION: "us-east-1" }),
+    // shortcut: one project per machine can publish 9000; use S3_ENDPOINT yourself for more.
+    publish: "9000:9000",
+    provides: (host: string) => ({ S3_ENDPOINT: `http://${host}:9000`, S3_PUBLIC_ENDPOINT: process.env.S3_PUBLIC_ENDPOINT || "http://localhost:9000", S3_BUCKET: "forge", S3_ACCESS_KEY_ID: "forgeadmin", S3_SECRET_ACCESS_KEY: "forgeadmin", S3_REGION: "us-east-1" }),
   },
 } as const;
 export type Service = keyof typeof SERVICES;
@@ -85,7 +87,8 @@ function startServices(name: string, services: Service[]) {
       docker(["rm", "-f", host]);
       const envArgs = Object.entries(def.env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
       const cmd = "cmd" in def ? [...def.cmd] : [];
-      const run = docker(["run", "-d", "--name", host, "--network", name, "-v", `${host}:${def.volume}`, ...envArgs, def.image, ...cmd]);
+      const publish = "publish" in def ? ["-p", def.publish] : [];
+      const run = docker(["run", "-d", "--name", host, "--network", name, "-v", `${host}:${def.volume}`, ...publish, ...envArgs, def.image, ...cmd]);
       if (!run.ok) fail(`Couldn't start ${s}: ${run.err}`);
       console.log(`✓ ${s} container ${host}`);
     }

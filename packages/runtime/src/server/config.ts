@@ -19,7 +19,7 @@ export interface Config {
   dataDir: string;
   databaseUrl?: string;
   redisUrl?: string;
-  s3?: { endpoint: string; bucket: string; accessKeyId?: string; secretAccessKey?: string; region?: string };
+  s3?: { endpoint: string; publicEndpoint?: string; bucket: string; accessKeyId?: string; secretAccessKey?: string; region?: string };
   adminKey?: string;
   /** Serve /_dashboard and the admin API. Off by default outside dev. */
   dashboard: boolean;
@@ -82,6 +82,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     s3: env.S3_ENDPOINT
       ? {
           endpoint: env.S3_ENDPOINT,
+          publicEndpoint: env.S3_PUBLIC_ENDPOINT || undefined,
           bucket: env.S3_BUCKET!,
           accessKeyId: env.S3_ACCESS_KEY_ID,
           secretAccessKey: env.S3_SECRET_ACCESS_KEY,

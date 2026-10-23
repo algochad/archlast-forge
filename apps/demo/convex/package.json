@@ -3,7 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "dev": "TRUSTED_ORIGINS=http://localhost:5173 archlast-forge dev",
+    "dev": "TRUSTED_ORIGINS=http://localhost:5173 archlast-forge dev --with s3",
     "typecheck": "bun check"
   },
   "dependencies": {

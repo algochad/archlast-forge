@@ -62,3 +62,9 @@ test.skipIf(!endpoint)("ctx.storage: metadata row commits first, the object is d
   expect((await fetch(url)).status).toBe(404);
   await db.close();
 });
+
+test("URLs for browsers are signed for the public endpoint", () => {
+  const storage = new S3Storage({ endpoint: "http://internal:9000", publicEndpoint: "https://s3.example.com", bucket: "forge", accessKeyId: "k", secretAccessKey: "s" });
+  expect(storage.putPresignedUrl("a")).toStartWith("https://s3.example.com/forge/a?");
+  expect(storage.getPresignedUrl("a")).toStartWith("https://s3.example.com/forge/a?");
+});

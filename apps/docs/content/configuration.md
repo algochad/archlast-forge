@@ -10,6 +10,7 @@ Environment variables, read at startup. Invalid or contradictory values fail fas
 | `REDIS_URL` | in-memory bus, cache, rate limits | required when `REPLICAS > 1` |
 | `REPLICAS` | `1` | |
 | `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION` | storage off | |
+| `S3_PUBLIC_ENDPOINT` | `S3_ENDPOINT` | Where browsers reach storage. Upload and download URLs are signed for it. |
 | `BETTER_AUTH_SECRET` | generated in dev | required in production |
 | `BETTER_AUTH_URL` | the server's URL | must be `https://` in production (`ALLOW_INSECURE_HTTP=1` to override for local testing) |
 | `TRUSTED_ORIGINS` | none | comma-separated browser origins |

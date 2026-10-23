@@ -1,6 +1,8 @@
 # File storage
 
-Set `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` and `S3_REGION`. Any S3-compatible service works. [RustFS](https://rustfs.com) is a good self-hosted choice, and `archlast-forge dev --with s3` runs one for you.
+Set `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` and `S3_REGION`. Any S3-compatible service works. [RustFS](https://rustfs.com) is a good self-hosted choice, and `archlast-forge dev --with s3` runs one for you on `localhost:9000`.
+
+Browsers upload to storage directly, so they must be able to reach it. When the engine reaches storage at a different address than browsers do (a Docker network name, or a dev proxy), set `S3_PUBLIC_ENDPOINT` to the browser-facing address.
 
 File bytes never pass through the engine. Clients upload straight to storage through presigned URLs:
 
