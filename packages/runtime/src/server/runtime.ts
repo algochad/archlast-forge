@@ -2,7 +2,7 @@ import type { Subprocess } from "bun";
 import type { FunctionKind, UserIdentity } from "../functions";
 import type { CallHeaders, CallResult, ErrorKind, LogEntry } from "./executor";
 import type { Manifest } from "./project";
-import type { HostMessage, RuntimeMessage, SerializedRequest, SerializedResponse } from "./protocol";
+import type { Batch, HostMessage, RuntimeMessage, SerializedRequest, SerializedResponse } from "./protocol";
 
 // Next to this module: child.ts in the repo, child.js in the published build.
 const CHILD = new URL(import.meta.url.endsWith(".ts") ? "./child.ts" : "./child.js", import.meta.url).pathname;
@@ -30,6 +30,8 @@ interface Options {
   workers?: number;
   serverId?: string;
   timeouts?: { functionMs: number; actionMs: number };
+  /** Calls one process may have waiting; more are refused (see ErrorKind "overloaded"). */
+  maxPending?: number;
 }
 
 /** One function runtime process. */
@@ -40,6 +42,8 @@ class RuntimeProcess {
   started?: Promise<Manifest>;
   private pending = new Map<number, Pending>();
   private seq = 0;
+  /** When the process last answered anything: a call that waits past its deadline in a process that is still answering is queued, not stuck. */
+  private lastResultAt = Date.now();
 
   constructor(
     private index: number,
@@ -61,21 +65,9 @@ class RuntimeProcess {
       },
       stdio: ["ignore", "inherit", "inherit"],
       serialization: "advanced",
-      ipc: (msg: RuntimeMessage) => {
-        if (msg.t === "ready") {
-          this.ready = true;
-          return ready.resolve(msg.manifest);
-        }
-        if (msg.t === "fatal") return ready.reject(new Error((fatal = msg.error)));
-        if (msg.t === "result") {
-          const p = this.pending.get(msg.id);
-          this.pending.delete(msg.id);
-          clearTimeout(p?.timer);
-          if (msg.ok) p?.resolve(msg.value);
-          else p?.reject(new RuntimeCallError(msg.error.message, msg.error.kind, msg.error.data, msg.error.stack));
-          return;
-        }
-        this.events.onMessage(msg);
+      ipc: (envelope: RuntimeMessage | Batch<RuntimeMessage>) => {
+        if (envelope.t === "batch") for (const msg of envelope.messages) this.onMessage(msg, ready, (e) => (fatal = e));
+        else this.onMessage(envelope, ready, (e) => (fatal = e));
       },
       onExit: (_p, code) => {
         if (this.proc !== proc) return;
@@ -91,10 +83,43 @@ class RuntimeProcess {
     return ready.promise;
   }
 
+  private onMessage(msg: RuntimeMessage, ready: PromiseWithResolvers<Manifest>, setFatal: (error: string) => void) {
+    if (msg.t === "ready") {
+      this.ready = true;
+      return ready.resolve(msg.manifest);
+    }
+    if (msg.t === "fatal") {
+      setFatal(msg.error);
+      return ready.reject(new Error(msg.error));
+    }
+    if (msg.t === "result") {
+      this.lastResultAt = Date.now();
+      const p = this.pending.get(msg.id);
+      this.pending.delete(msg.id);
+      clearTimeout(p?.timer);
+      if (msg.ok) p?.resolve(msg.value);
+      else p?.reject(new RuntimeCallError(msg.error.message, msg.error.kind, msg.error.data, msg.error.stack));
+      return;
+    }
+    this.events.onMessage(msg);
+  }
+
+  /** One IPC write per turn of the event loop instead of one per call. */
+  private outbox: HostMessage[] = [];
+  private enqueue(proc: Subprocess, msg: HostMessage) {
+    if (this.outbox.push(msg) === 1) setImmediate(() => this.flush(proc));
+  }
+  private flush(proc: Subprocess) {
+    const messages = this.outbox.splice(0);
+    if (!messages.length || this.proc !== proc) return; // restarted meanwhile: these calls were failed with it
+    proc.send(messages.length === 1 ? messages[0]! : ({ t: "batch", messages } satisfies Batch<HostMessage>));
+  }
+
   async stop() {
     const proc = this.proc;
     this.proc = undefined;
     this.ready = false;
+    this.outbox = [];
     this.failPending("Function runtime restarted");
     if (!proc) return;
     proc.send({ t: "shutdown" });
@@ -107,6 +132,7 @@ class RuntimeProcess {
     const proc = this.proc;
     this.proc = undefined;
     this.ready = false;
+    this.outbox = [];
     proc?.kill(9);
     this.failPending("Function runtime was restarted because a call didn't finish in time");
   }
@@ -114,15 +140,18 @@ class RuntimeProcess {
   request(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, onHang: () => void): Promise<unknown> {
     const proc = this.proc;
     if (!proc) return Promise.reject(new RuntimeCallError("Function runtime is not running", "internal"));
+    if (this.pending.size >= (this.opts.maxPending ?? 1000)) return Promise.reject(new RuntimeCallError("Server is busy, try again", "overloaded"));
     const id = ++this.seq;
+    const sentAt = Date.now();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
         reject(new RuntimeCallError(`Timed out after ${hardTimeoutMs} ms`, "timeout"));
-        onHang();
+        // Restart only a process that has answered nothing since this call went in (a synchronous loop). One that is merely behind keeps its other calls.
+        if (this.lastResultAt < sentAt) onHang();
       }, hardTimeoutMs);
       this.pending.set(id, { resolve, reject, timer });
-      proc.send({ ...msg, id });
+      this.enqueue(proc, { ...msg, id } as HostMessage);
     });
   }
 

@@ -20,6 +20,7 @@ Environment variables, read at startup. Invalid or contradictory values fail fas
 | `CACHE_TTL_MS` | `60000` | longest a cached query result lives; `0` turns the [cache](caching.html) off |
 | `CACHE_MAX_MB` | `64` | memory the in-process cache may use (ignored with `REDIS_URL`) |
 | `RUNTIME_WORKERS` | `1` | function runtime processes per server |
+| `MAX_PENDING_CALLS` | `1000` | calls waiting for one function runtime process; past this, new calls get `503` with `Retry-After: 1` instead of queueing (see [limits](limits.html)) |
 | `FUNCTION_TIMEOUT_MS`, `ACTION_TIMEOUT_MS` | `10000`, `600000` | |
 | `MAX_RESULT_BYTES`, `MAX_DOCUMENT_BYTES`, `MAX_REQUEST_BYTES` | 8 MiB, 1 MiB, 8 MiB | |
 | `IDLE_TIMEOUT_SECONDS` | `75` (at most 255) | how long an idle keep-alive connection stays open; keep it above your proxy's upstream keep-alive (nginx and cloud load balancers use 60 s or more) |

@@ -1,7 +1,7 @@
 import { log } from "./logger";
 import { RuntimeCallError } from "./runtime";
 
-export type PublicCode = "BAD_REQUEST" | "TIMEOUT" | "INTERNAL_SERVER_ERROR";
+export type PublicCode = "BAD_REQUEST" | "TIMEOUT" | "INTERNAL_SERVER_ERROR" | "SERVICE_UNAVAILABLE";
 
 export interface PublicError {
   message: string;
@@ -22,6 +22,8 @@ export function toPublicError(e: unknown, requestId: string, dev: boolean, conte
       return { message: err.message, code: "BAD_REQUEST", data: err.data, requestId };
     case "validation":
       return { message: err.message, code: "BAD_REQUEST", requestId };
+    case "overloaded":
+      return { message: err.message, code: "SERVICE_UNAVAILABLE", requestId };
     case "timeout":
       log("warn", err.message, { requestId, ...context });
       return { message: err.message, code: "TIMEOUT", requestId };

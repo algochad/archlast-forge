@@ -16,6 +16,8 @@ export interface Cache {
   del(key: string): Promise<void>;
   /** Evicts every entry tagged with one of `topics`; resolves with how many were removed. */
   invalidate(topics: string[]): Promise<number>;
+  /** The same for a cache that lives in this process, without a promise per call; absent for a remote cache. */
+  invalidateNow?(topics: string[]): number;
   /** Evicts everything; resolves with how many entries were removed. */
   clear(): Promise<number>;
   stats(): CacheStats;
@@ -74,8 +76,15 @@ export class MemoryCache implements Cache {
   }
 
   async invalidate(topics: string[]) {
+    return this.invalidateNow(topics);
+  }
+
+  invalidateNow(topics: string[]) {
     let removed = 0;
-    for (const t of topics) for (const key of [...(this.byTopic.get(t) ?? [])]) if (this.remove(key)) removed++;
+    for (const t of topics) {
+      const keys = this.byTopic.get(t);
+      if (keys) for (const key of [...keys]) if (this.remove(key)) removed++;
+    }
     return removed;
   }
 

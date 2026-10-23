@@ -3,11 +3,12 @@
 //
 //   node score.mjs check    functional checks (the RPC translation of test.sh) on a fresh database
 //   node score.mjs smoke    a short load run, to see that everything works
+//   node score.mjs capacity closed-loop probes: the most requests per second each kind of call can reach, and what each costs in CPU
 //   node score.mjs profile  a load run with CPU profiling on (VUS=2000), written under WORK/profiles
 //   node score.mjs score    warm-up, find the limit (2,500 users, doubling, then narrowing to within 250), confirm with a 5-minute hold
 //
 // Env: SEED (dir with app.db and tokens.json), WORK (scratch dir for the database copy), CHALLENGE (a clone of the challenge repo, for the
-//      golden files), PORT (3100), SERVER_CPU (0), LOAD_CPUS (2,3), MEMORY (2g), CACHE_TTL_MS (0), SECRET.
+//      golden files), PORT (3100), SERVER_CPU (0), LOAD_CPUS (2,3), MEMORY (2g), CACHE_TTL_MS (60000), SECRET.
 import { spawn, spawnSync } from "node:child_process";
 import { cpSync, existsSync, mkdirSync, openSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -79,7 +80,7 @@ async function start() {
   oomKilled = false;
   const serverEnv = {
     ...env, NODE_ENV: "production", PORT, HOST: "0.0.0.0", DATA_DIR: join(WORK, "data"), BETTER_AUTH_SECRET: SECRET, BETTER_AUTH_URL: BASE, ALLOW_INSECURE_HTTP: "1",
-    CACHE_TTL_MS: env.CACHE_TTL_MS ?? "0", // the challenge forbids caching across requests
+    CACHE_TTL_MS: env.CACHE_TTL_MS ?? "60000", // the BaaS's own query cache, as in production. The challenge forbids caching across requests: CACHE_TTL_MS=0 measures without it
     RATE_LIMIT_PER_MINUTE: "0", // every simulated user comes from one IP
     // The production startup check validates every stored document (about 70 s for this dataset, over the challenge's 60 s). The data comes from the challenge's own generator.
     SCHEMA_CHECK: env.SCHEMA_CHECK ?? "off",
@@ -194,8 +195,30 @@ async function main() {
     log(`ready in ${ready.toFixed(1)} s`);
     const r = await load(Number(env.VUS ?? 300), { ramp: env.RAMP ?? "20s", hold: env.HOLD ?? "40s", label: "smoke" });
     console.log(JSON.stringify({ pass: r.pass, ms: r.ms, rps: r.rps, failed: r.failed, server: r.server, generator: r.generator }, null, 2));
-    writeFileSync(join(RESULTS, `smoke-${env.LABEL ?? "run"}.json`), JSON.stringify({ pass: r.pass, ms: r.ms, rps: r.rps, server: r.server, generator: r.generator, timeline: r.timeline }, null, 2));
+    writeFileSync(join(RESULTS, `smoke-${env.LABEL ?? "run"}.json`), JSON.stringify({ pass: r.pass, ms: r.ms, rps: r.rps, statuses: r.statuses, server: r.server, generator: r.generator, timeline: r.timeline }, null, 2));
     stop();
+    return;
+  }
+  if (what === "capacity") {
+    const ready = await start();
+    log(`ready in ${ready.toFixed(1)} s`);
+    for (const scenario of (env.SCENARIOS ?? "list,get,like,create,mix").split(",")) {
+      const done = watch();
+      const child = spawn("taskset", ["-c", LOAD_CPUS, "node", join(here, "capacity.mjs")], {
+        env: { ...env, BASE_URL: BASE, SCENARIO: scenario, TOKENS: join(SEED, "tokens.json") },
+        stdio: ["ignore", "pipe", "inherit"],
+      });
+      let out = "";
+      child.stdout.on("data", (d) => (out += d));
+      await new Promise((r) => child.on("close", r));
+      const server = done();
+      const r = JSON.parse(out);
+      const us = (cpu) => Math.round(((cpu / 100) / r.rps) * 1e6);
+      console.log(`${scenario.padEnd(7)} ${String(r.rps).padStart(6)} req/s  p50 ${r.p50} ms  p99 ${r.p99} ms  failed ${r.failed}  server ${us(server.serverProcessCpu)} us/req  runtime ${us(server.runtimeProcessCpu)} us/req  (cpu ${server.cpuAvg}%)` + (scenario === "mix" ? `  ~${Math.round(r.rps / 0.115).toLocaleString()} users` : ""));
+      await sleep(2);
+    }
+    if (env.EXTRA_ENV) await stopGracefully(); // profiling is on: let the processes write their profiles
+    else stop();
     return;
   }
   if (what === "profile") {
@@ -256,7 +279,7 @@ async function main() {
       break;
     }
   }
-  const summary = { score, limit: { passed: lo, failed: hi }, minutes: +((Date.now() - started) / 60000).toFixed(1), limits: { cpuset: SERVER_CPU, memory: MEMORY, cache: env.CACHE_TTL_MS ?? "0" }, readySeconds: +ready.toFixed(1), runs };
+  const summary = { score, limit: { passed: lo, failed: hi }, minutes: +((Date.now() - started) / 60000).toFixed(1), limits: { cpuset: SERVER_CPU, memory: MEMORY, cache: env.CACHE_TTL_MS ?? "60000" }, readySeconds: +ready.toFixed(1), runs };
   writeFileSync(join(RESULTS, `summary-${new Date().toISOString().replace(/[:.]/g, "-")}.json`), JSON.stringify(summary, null, 2));
   console.log(`\nSCORE: ${score} users\n`);
   console.table(runs.map((r) => ({ run: r.mode, users: r.users, pass: r.pass, "p95 ms": r.p95, "p99 ms": r.p99, "fail %": +((r.failedRate ?? 1) * 100).toFixed(2), "req/s": r.rps, "cpu avg %": r.server.cpuAvg, "mem max MiB": r.server.memMaxMiB })));

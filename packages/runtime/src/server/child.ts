@@ -10,13 +10,21 @@ import { createSqliteDb } from "./db/sqlite";
 import { AUDITED_COMMANDS, runCommand } from "./cli-ops";
 import { Executor, logContext, serializeError, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
-import type { HostMessage, RuntimeMessage, SerializedResponse } from "./protocol";
+import type { Batch, HostMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
 import { S3Storage } from "./storage";
 import { migrateSystem } from "./system";
 import type { Db } from "./db/types";
 
-const send = (msg: RuntimeMessage) => process.send!(msg);
+// One IPC write per turn of the event loop instead of one per message.
+const outbox: RuntimeMessage[] = [];
+const flush = () => {
+  const messages = outbox.splice(0);
+  process.send!(messages.length === 1 ? messages[0] : ({ t: "batch", messages } satisfies Batch<RuntimeMessage>));
+};
+const send = (msg: RuntimeMessage) => {
+  if (outbox.push(msg) === 1) setImmediate(flush);
+};
 process.on("disconnect", () => process.exit(0)); // the server is gone
 
 let logWriter: LogWriter | undefined;
@@ -134,18 +142,23 @@ async function main() {
     }
   }
 
-  process.on("message", async (msg: HostMessage | { t: "shutdown" }) => {
+  async function answer(msg: HostMessage) {
+    try {
+      send({ t: "result", id: msg.id, ok: true, value: await handle(msg) });
+    } catch (e) {
+      send({ t: "result", id: msg.id, ok: false, error: serializeError(e) });
+    }
+  }
+
+  process.on("message", async (msg: HostMessage | Batch<HostMessage> | { t: "shutdown" }) => {
     if (msg.t === "shutdown") {
       scheduler?.stop();
       await logWriter?.close().catch(() => {});
       await db.close();
       process.exit(0);
     }
-    try {
-      send({ t: "result", id: msg.id, ok: true, value: await handle(msg) });
-    } catch (e) {
-      send({ t: "result", id: msg.id, ok: false, error: serializeError(e) });
-    }
+    if (msg.t === "batch") for (const m of msg.messages) void answer(m);
+    else await answer(msg);
   });
 
   scheduler?.start();

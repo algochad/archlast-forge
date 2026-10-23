@@ -1,4 +1,5 @@
 import { RedisClient } from "bun";
+import { createHmac, timingSafeEqual } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { createAdapterFactory, type CleanedWhere } from "better-auth/adapters";
 import type { AuthOptions, UserIdentity } from "../functions";
@@ -163,9 +164,64 @@ export function createAuth(exec: Executor, tables: TablesSpec, options: AuthOpti
       },
     },
   });
-  exec.resolveIdentity = async (headers: CallHeaders): Promise<UserIdentity | null> => {
+  // Every signed-in call resolves its caller. Better Auth's getSession spends about a millisecond on that (async WebCrypto, adapter layers);
+  // checking the signed cookie and reading the session straight from the store takes a few hundredths. It applies when nothing could change
+  // what a session means (no plugins, no external session storage, no secret rotation); anything else goes through Better Auth.
+  const o = options as { plugins?: unknown[]; secondaryStorage?: unknown; secrets?: unknown; session?: { expiresIn?: number; updateAge?: number } };
+  const direct = Boolean(config.authSecret) && !o.plugins?.length && !o.secondaryStorage && !o.secrets;
+  const expiresInMs = (o.session?.expiresIn ?? 7 * 86400) * 1000;
+  const updateAgeMs = (o.session?.updateAge ?? 86400) * 1000;
+  let cookieName: string | undefined;
+  const cookieNameOf = async () => (cookieName ??= (await auth.$context).authCookies.sessionToken.name);
+
+  // Signature checks by cookie value: the same signed cookie arrives on every call a signed-in client makes, and the result only depends on the secret.
+  // Only the check is remembered; the session itself is read from the store on every call, so a revoked session stops working at once.
+  const checked = new Map<string, string | null>();
+  const check = (value: string) => {
+    const dot = value.lastIndexOf(".");
+    if (dot < 1) return null;
+    const token = value.slice(0, dot);
+    const given = Buffer.from(value.slice(dot + 1));
+    const expected = Buffer.from(createHmac("sha256", config.authSecret!).update(token).digest("base64"));
+    return given.length === expected.length && timingSafeEqual(given, expected) ? token : null;
+  };
+
+  /** The token in a request's signed session cookie, or undefined when there isn't one or its signature doesn't match. */
+  const verifiedToken = (cookie: string | undefined, name: string) => {
+    const at = cookie?.indexOf(name + "=") ?? -1;
+    if (!cookie || at < 0 || (at > 0 && cookie[at - 1] !== " " && cookie[at - 1] !== ";")) return undefined;
+    const end = cookie.indexOf(";", at);
+    const raw = cookie.slice(at + name.length + 1, end < 0 ? undefined : end);
+    let token = checked.get(raw);
+    if (token === undefined) {
+      try {
+        token = check(decodeURIComponent(raw));
+      } catch {
+        token = null;
+      }
+      if (checked.size >= 20_000) checked.clear(); // shortcut: a flush rather than an LRU; the next calls pay one HMAC each again
+      checked.set(raw, token);
+    }
+    return token ?? undefined;
+  };
+
+  const slow = async (headers: CallHeaders): Promise<UserIdentity | null> => {
     const s = await auth.api.getSession({ headers: new Headers(headers) });
     return s ? { userId: s.user.id as UserIdentity["userId"], sessionId: s.session.id, email: s.user.email, name: s.user.name } : null;
+  };
+
+  exec.resolveIdentity = async (headers: CallHeaders): Promise<UserIdentity | null> => {
+    const token = direct ? verifiedToken(headers.cookie, await cookieNameOf()) : undefined;
+    if (!token) return slow(headers);
+    const { value } = await exec.read(async (s) => {
+      const [session] = await find(s, tables, "sessions", [{ field: "token", value: token, operator: "eq", connector: "AND", mode: "sensitive" }], { limit: 1 });
+      if (!session || session.expiresAt <= Date.now()) return null; // revoked or expired
+      // Due for Better Auth's refresh of the session's expiry: let it do that.
+      if (session.expiresAt - expiresInMs + updateAgeMs <= Date.now()) return undefined;
+      const user = await s.get(session.userId);
+      return user ? { userId: user._id as UserIdentity["userId"], sessionId: session._id, email: user.email, name: user.name } : null;
+    });
+    return value === undefined ? slow(headers) : value;
   };
   return auth;
 }

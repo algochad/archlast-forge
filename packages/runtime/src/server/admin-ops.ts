@@ -368,6 +368,8 @@ export class LogWriter {
   }
 
   private running?: Promise<void>;
+  private static ROW = "(?, ?, ?, ?, ?, ?, ?, ?, ?)";
+  private static FULL = Array(100).fill(LogWriter.ROW).join(", ");
 
   /** One drain at a time: when writes are slow, flushes must not pile up in the database's write queue behind each other. */
   flush(): Promise<void> {
@@ -380,7 +382,7 @@ export class LogWriter {
       const chunk = this.buffer.splice(0, 100);
       await this.db.transaction("write", (tx) =>
         tx.execute(
-          `INSERT INTO "_logs" ("_id", "time", "server", "name", "level", "message", "durationMs", "ok", "requestId") VALUES ${chunk.map(() => "(?, ?, ?, ?, ?, ?, ?, ?, ?)").join(", ")}`,
+          `INSERT INTO "_logs" ("_id", "time", "server", "name", "level", "message", "durationMs", "ok", "requestId") VALUES ${chunk.length === 100 ? LogWriter.FULL : Array(chunk.length).fill(LogWriter.ROW).join(", ")}`,
           chunk.flatMap((r) => [newId("_logs"), r.time, r.server, r.name, r.level, r.message.slice(0, 4000), r.durationMs ?? null, r.ok === undefined ? null : r.ok, r.requestId ?? null]),
         ),
       );

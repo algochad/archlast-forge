@@ -23,6 +23,9 @@ export type HostMessage = { id: number } & (
   | { t: "admin"; op: string; args?: Record<string, unknown>; actor: string }
 );
 
+/** Messages in one direction sent in the same turn of the event loop travel as one, in order (a write's publish, log and result are three). */
+export type Batch<M> = { t: "batch"; messages: M[] };
+
 /** Function runtime → server. */
 export type RuntimeMessage =
   | { t: "ready"; manifest: Manifest }

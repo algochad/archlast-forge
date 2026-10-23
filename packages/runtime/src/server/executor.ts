@@ -38,7 +38,8 @@ export interface ConsoleLine {
 /** `logs`, when set, also collects the function's console output for the caller. */
 export const logContext = new AsyncLocalStorage<{ name: string; requestId?: string; logs?: ConsoleLine[] }>();
 
-export type ErrorKind = "user" | "validation" | "timeout" | "internal";
+/** `overloaded`: the function runtime has more calls waiting than `MAX_PENDING_CALLS`, so this one was refused without running. */
+export type ErrorKind = "user" | "validation" | "timeout" | "internal" | "overloaded";
 
 export interface SerializedError {
   kind: ErrorKind;

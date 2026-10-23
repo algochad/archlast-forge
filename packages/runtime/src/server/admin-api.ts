@@ -72,7 +72,7 @@ export function buildAdminApi(opts: {
         if (!ctx.admin) throw new HttpError("UNAUTHORIZED", "Sign in to the dashboard");
         if (RANK[ctx.admin.role] < RANK[def.role]) throw new HttpError("FORBIDDEN", `Requires the ${def.role} role`);
       }
-      const input = ((await readJson(req, "input")) ?? {}) as Input;
+      const input = ((await readJson(req, "input", new URL(req.url))) ?? {}) as Input;
       return Response.json((await def.run(input, ctx as AdminContext & { admin: AdminInfo })) ?? null);
     } catch (e) {
       if (e instanceof HttpError) return errorResponse({ message: e.message, code: e.code, requestId: ctx.requestId });

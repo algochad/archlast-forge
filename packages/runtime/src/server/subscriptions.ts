@@ -8,7 +8,13 @@ import type { FunctionRuntime } from "./runtime";
 export type QueryUpdate = { value: unknown } | { error: string; data?: unknown; requestId?: string };
 
 /** `clean`: no write to anything the query read landed while it ran, so the result includes every write seen so far. Absent means a cache hit, which was clean when stored. */
-type Result = { value: unknown; topics: string[]; clean?: boolean };
+type Result = {
+  value: unknown;
+  topics: string[];
+  clean?: boolean;
+  /** `JSON.stringify(value)`, built the first time an HTTP response needs it and kept with a cached entry, so a hit doesn't serialize again. */
+  json?: string;
+};
 
 interface FunctionStats {
   /** Served from the cache. */
@@ -69,7 +75,8 @@ export class QueryRunner {
       for (const [s, t] of this.history.splice(0, 10_000)) if (this.invalidatedAt.get(t) === s) this.invalidatedAt.delete(t);
       this.horizon = this.history[0]![0] - 1;
     }
-    if (this.cache) {
+    if (this.cache?.invalidateNow) this.invalidatedEntries += this.cache.invalidateNow([topic]);
+    else if (this.cache) {
       const evicting = this.cache
         .invalidate([topic])
         .then((n) => void (this.invalidatedEntries += n))
@@ -129,9 +136,11 @@ export class QueryRunner {
     stats.perUser = this.perUser.has(name);
     // Cache only if none of the topics this result read was written while it ran.
     const clean = this.untouched(topics, start);
-    const kept = clean && !unkeyed && (await cache.set(key, { value: r.value, topics }, { ttlMs: this.ttlMs, topics }));
+    // The entry is the object the caller gets, so the JSON a response builds from it (`json`) stays with the entry.
+    const result: Result & { clean: boolean } = { value: r.value, topics, clean: clean && !unkeyed };
+    const kept = clean && !unkeyed && (await cache.set(key, result, { ttlMs: this.ttlMs, topics }));
     if (!kept) stats.skipped++;
-    return { value: r.value, topics, clean: clean && !unkeyed };
+    return result;
   }
 
   private untouched(topics: string[], start: number) {

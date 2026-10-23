@@ -81,3 +81,20 @@ Turso needed one workaround to get through this load at all: overlapping write t
 | Turso, RPC | 104,997 / 92,644 (two runs) | 51.7% / 55.1% | 10.8 s / 14.6 s | 11.5 s / 15.3 s |
 
 Past capacity, calls queue inside the single-threaded function runtime. Any call that waits longer than 15 s makes the server kill and restart the runtime, which fails every call in flight, and the cycle repeats. `bun:sqlite` stayed on the right side of that line for most of one run and crossed it for one 10 s window in the other; Turso, with the higher CPU cost per request, crossed it repeatedly. The fix for 10,000 users is capacity (more cores or runtime processes; Turso allows only one process per database file) and load shedding (answer 503 quickly instead of queueing until the kill), neither of which exists yet.
+
+## Optimizing for 10,000 users (the BaaS's own cache on)
+
+The challenge forbids caching across requests; this section does not follow that rule. It measures the BaaS as it runs by default: the query cache on (`CACHE_TTL_MS=60000`), still one core and 2 GiB. `score.mjs` now defaults to it; `CACHE_TTL_MS=0` measures without.
+
+**10,000 users, 60 s ramp, 90 s hold: pass.** Five consecutive runs: 0% failed, p95 17-69 ms, p99 73-468 ms, 41-45% of the core (server process 28%, function runtime 15%), 160-190 MiB. The load generator (one Node process on two cores) is the limit above about 13,000 users, so this setup can't measure further.
+
+**Capacity** (`node score.mjs capacity`: 64 keep-alive connections as fast as the server answers, one core). The first row is the code before these changes, the second after, medians of several runs:
+
+| | mix of the challenge's requests | cached `feed.list` / `feed.get` | `feed.like` | `feed.create` |
+|---|---|---|---|---|
+| before | ~2,000 req/s (~17,000 users) | ~5,000 req/s | 1.3 ms of CPU | 0.9 ms |
+| after | ~3,400 req/s (~29,000 users) | ~5,000 req/s (the probe client's limit; an empty `Bun.serve` handler costs 91 us here, a hit 125 us) | 0.8-1.1 ms | 0.65 ms |
+
+What changed: a cached result keeps its JSON, so a hit does no serialization; IPC messages in one turn of the event loop go out as one; cache invalidation in-process is synchronous; signed-in calls read the session directly (1.2 ms to 0.08 ms; Better Auth stays for everything unusual); no client-address lookup when rate limiting is off; cheaper request ids and one URL parse.
+
+**Overload.** At 10,000 users with the cache off the runtime can't keep up (about 1,100 requests/s wanted, about 600 served). Before: calls queued past 15 s, the runtime was killed and restarted over and over (7,000-50,000 failed calls a run), 7-55% of requests failed, p95 7-15 s. Now: no restarts, 12% refused at once with 503, the rest p95 1.5 s, p99 2.0 s, max 3.7 s.

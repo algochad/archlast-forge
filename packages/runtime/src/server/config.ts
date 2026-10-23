@@ -10,6 +10,8 @@ export interface Limits {
   /** Requests (HTTP calls and WebSocket messages) per client IP per minute. 0 disables. */
   rateLimitPerMinute: number;
   maxSubscriptionsPerConnection: number;
+  /** Calls waiting for one function runtime process; past this, new calls are refused with 503 instead of queueing. */
+  maxPendingCalls: number;
 }
 
 export interface Config {
@@ -114,6 +116,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       maxRequestBytes: int("MAX_REQUEST_BYTES", 8 * 1024 * 1024, 1),
       rateLimitPerMinute: int("RATE_LIMIT_PER_MINUTE", dev ? 0 : 1200),
       maxSubscriptionsPerConnection: int("MAX_SUBSCRIPTIONS_PER_CONNECTION", 200, 1),
+      maxPendingCalls: int("MAX_PENDING_CALLS", 1000, 1),
     },
     trustProxy: bool(env.TRUST_PROXY, false),
     logFormat,

@@ -46,7 +46,10 @@ const pickAuthHeaders = (get: (name: string) => string | null | undefined): Call
 };
 
 const REQUEST_ID = /^[\w.-]{1,64}$/;
-const requestIdOf = (given: string | null | undefined) => (given && REQUEST_ID.test(given) ? given : crypto.randomUUID());
+// Ids for requests that bring none: a random prefix per process and a counter, which costs far less than a UUID per request.
+const idPrefix = crypto.randomUUID().slice(0, 8);
+let idCount = 0;
+const requestIdOf = (given: string | null | undefined) => (given && REQUEST_ID.test(given) ? given : `${idPrefix}-${(++idCount).toString(36)}`);
 
 const cookieValue = (cookie: string | null, name: string) =>
   cookie
@@ -80,6 +83,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     workers: config.runtimeWorkers,
     serverId,
     timeouts: { functionMs: config.limits.functionTimeoutMs, actionMs: config.limits.actionTimeoutMs },
+    maxPending: config.limits.maxPendingCalls,
   });
   const metrics = new Metrics();
   const recentLogs: LogEntry[] = [];
@@ -158,10 +162,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   const clientIp = (req: Request, srv: Server<SocketData>) =>
     (config.trustProxy && req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()) || srv.requestIP(req)?.address || "unknown";
-  const limited = async (ip: string) => {
-    if (!config.limits.rateLimitPerMinute) return null;
-    const r = await limiter.consume(ip, { window: 60, max: config.limits.rateLimitPerMinute });
-    return r.allowed ? null : r.retryAfter ?? 60;
+  /** Seconds to wait when this client is over its rate limit; with no limit configured, null at once and the client's address is never looked up. */
+  const limited = (req: Request, srv: Server<SocketData>, prefix = ""): Promise<number | null> | null => {
+    const max = config.limits.rateLimitPerMinute;
+    if (!max) return null;
+    return limiter.consume(prefix + clientIp(req, srv), { window: 60, max }).then((r) => (r.allowed ? null : r.retryAfter ?? 60));
   };
   const tooMany = (retryAfter: number) => Response.json({ message: "Too many requests" }, { status: 429, headers: { "retry-after": String(retryAfter) } });
 
@@ -229,7 +234,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         return Response.json({ ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, error: runtime.loadError }, { status: !shuttingDown && runtime.manifest && !runtime.loadError ? 200 : 503 });
       // The CLI's data commands. They run in the function runtime, which owns the database, so imports reach subscribers and nothing contends with the server for the write lock.
       if (path === "/_cli" && req.method === "POST") {
-        const retry = await limited(`cli:${clientIp(req, srv)}`);
+        const retry = await limited(req, srv, "cli:");
         if (retry) return withId(tooMany(retry));
         const key = req.headers.get("x-admin-key");
         if (!key || !config.adminKey || !sameSecret(key, config.adminKey)) return withId(Response.json({ message: "Invalid admin key" }, { status: 401 }));
@@ -250,9 +255,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
 
       if (path === "/rpc" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
-        const ip = clientIp(req, srv);
-        const retry = await limited(ip);
+        const retry = await limited(req, srv);
         if (retry) return tooMany(retry);
+        const ip = config.limits.rateLimitPerMinute ? clientIp(req, srv) : undefined;
         const data: SocketData = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, traceparent: req.headers.get("traceparent") ?? undefined, ip, live: new Map() };
         if (srv.upgrade(req, { data })) return;
         return new Response("WebSocket upgrade failed", { status: 400 });
@@ -266,7 +271,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           }),
         );
       if (path.startsWith("/rpc/") || path.startsWith("/api/auth")) {
-        const retry = await limited(clientIp(req, srv));
+        const retry = await limited(req, srv);
         if (retry) return cors(req, withId(tooMany(retry)));
       }
       if (path.startsWith("/rpc/")) {
@@ -278,7 +283,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           return cors(req, withId(errorResponse({ message: "Malformed function name", code: "BAD_REQUEST", requestId })));
         }
         const headers = pickAuthHeaders((n) => req.headers.get(n));
-        return cors(req, withId(await rpc.call(name, req, { headers, requestId, traceparent: req.headers.get("traceparent") ?? undefined })));
+        return cors(req, await rpc.call(name, req, url, { headers, requestId, traceparent: req.headers.get("traceparent") ?? undefined })); // sets x-request-id itself
       }
       if (path.startsWith("/api/auth")) {
         const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
@@ -293,7 +298,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (path.startsWith("/_admin/")) {
         if (!config.dashboard) return new Response("Not found", { status: 404 });
         if (path === "/_admin/login") {
-          const retry = await limited(`admin:${clientIp(req, srv)}`);
+          const retry = await limited(req, srv, "admin:");
           if (retry) return withId(tooMany(retry));
         }
         return withId(await handleAdmin(req, path, requestId));

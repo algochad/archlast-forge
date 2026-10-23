@@ -130,3 +130,46 @@ test("graceful shutdown lets in-flight requests finish", async () => {
   expect((await inFlight).status).toBe(200);
   await stopping;
 });
+
+test("a signed session cookie resolves the caller directly; a forged, tampered or revoked one doesn't", async () => {
+  const signUp = await fetch(`${srv.url}/api/auth/sign-up/email`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: srv.url },
+    body: JSON.stringify({ email: "direct@example.com", password: "correct horse battery", name: "Direct" }),
+  });
+  const cookie = signUp.headers
+    .getSetCookie()
+    .map((c) => c.split(";")[0])
+    .join("; ");
+  const whoami = async (c?: string) =>
+    ((await (await fetch(`${srv.url}/rpc/todos:whoami`, { method: "POST", headers: { "content-type": "application/json", ...(c ? { cookie: c } : {}) }, body: "{}" })).json()) as any).result;
+  expect(await whoami(cookie)).toMatchObject({ email: "direct@example.com", name: "Direct" });
+  expect(await whoami()).toBeNull();
+  // The signature covers the token: any other value fails, and so does a signature from another secret.
+  const [name, value] = cookie.split("; ").find((c) => c.includes("session_token"))!.split(/=(.*)/s);
+  const token = decodeURIComponent(value!).split(".")[0]!;
+  expect(await whoami(`${name}=${encodeURIComponent(`${token}.AAAA`)}`)).toBeNull();
+  expect(await whoami(`${name}=${encodeURIComponent(`${token}x.${decodeURIComponent(value!).split(".")[1]}`)}`)).toBeNull();
+  // Signing out deletes the session; the very next call sees it.
+  await fetch(`${srv.url}/api/auth/sign-out`, { method: "POST", headers: { "content-type": "application/json", origin: srv.url, cookie }, body: "{}" });
+  expect(await whoami(cookie)).toBeNull();
+});
+
+test("past MAX_PENDING_CALLS new calls get a quick 503, and a runtime that is behind is not restarted", async () => {
+  const s = await startServer({ forgeDir: fixture, env: prodEnv({ DATA_DIR: tempDir(), FUNCTION_TIMEOUT_MS: "5000", MAX_PENDING_CALLS: "2", RATE_LIMIT_PER_MINUTE: "0" }) });
+  try {
+    // Distinct arguments, so the cache can't answer or share them.
+    const calls = Array.from({ length: 8 }, (_, i) => fetch(`${s.url}/rpc/todos:slowQuery?args=${encodeURIComponent(JSON.stringify({ ms: 300 + i }))}`));
+    const responses = await Promise.all(calls);
+    const statuses = responses.map((r) => r.status).sort();
+    expect(statuses.filter((c) => c === 200).length).toBeGreaterThanOrEqual(2);
+    expect(statuses.filter((c) => c === 503).length).toBeGreaterThan(0);
+    const busy = responses.find((r) => r.status === 503)!;
+    expect(busy.headers.get("retry-after")).toBe("1");
+    expect(((await busy.json()) as any).error).toMatchObject({ code: "SERVICE_UNAVAILABLE", message: "Server is busy, try again" });
+    // The runtime wasn't touched: it answers normally afterwards.
+    expect((await fetch(`${s.url}/rpc/todos:slowQuery?args=${encodeURIComponent('{"ms":1}')}`)).status).toBe(200);
+  } finally {
+    await s.stop({ graceful: false });
+  }
+});

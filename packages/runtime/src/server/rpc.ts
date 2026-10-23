@@ -34,6 +34,7 @@ const STATUS: Record<ErrorCode, number> = {
   UNSUPPORTED_MEDIA_TYPE: 415,
   TOO_MANY_REQUESTS: 429,
   INTERNAL_SERVER_ERROR: 500,
+  SERVICE_UNAVAILABLE: 503,
 };
 
 export interface ErrorBody {
@@ -44,7 +45,9 @@ export interface ErrorBody {
   requestId: string;
 }
 
-export const errorResponse = (error: ErrorBody) => Response.json({ error }, { status: STATUS[error.code] });
+const JSON_TYPE = "application/json;charset=utf-8";
+export const errorResponse = (error: ErrorBody) =>
+  Response.json({ error }, { status: STATUS[error.code], headers: { "x-request-id": error.requestId, ...(error.code === "SERVICE_UNAVAILABLE" && { "retry-after": "1" }) } });
 
 /** A failure with a code, for handlers that answer with something other than a function's own error. */
 export class HttpError extends Error {
@@ -56,11 +59,11 @@ export class HttpError extends Error {
   }
 }
 
-/** Reads a JSON request: the body of a POST, or the named query parameter of a GET. Empty means `{}`. */
-export async function readJson(req: Request, param: string): Promise<unknown> {
+/** Reads a JSON request: the body of a POST, or the named query parameter of a GET (from the already parsed `url`). Empty means `{}`. */
+export async function readJson(req: Request, param: string, url: URL): Promise<unknown> {
   try {
     if (req.method === "GET") {
-      const raw = new URL(req.url).searchParams.get(param);
+      const raw = url.searchParams.get(param);
       return raw ? JSON.parse(raw) : {};
     }
     const text = await req.text();
@@ -96,19 +99,21 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
 
   return {
     /** Args are validated in the function runtime. */
-    async call(name: string, req: Request, ctx: Context): Promise<Response> {
+    async call(name: string, req: Request, url: URL, ctx: Context): Promise<Response> {
       try {
         const kind = kinds.get(name);
         if (!kind) throw new HttpError("NOT_FOUND", `No function "${name}"`);
         if (req.method === "GET" ? kind !== "query" : req.method !== "POST") throw new HttpError("METHOD_NOT_ALLOWED", `Call ${name} with ${kind === "query" ? "GET or POST" : "POST"}`);
         requireJson(req);
-        const args = await readJson(req, "args");
-        const run = async () =>
-          kind === "query"
-            ? (await queries.run(name, args, ctx.headers, ctx.requestId)).value
-            : (await runtime.call(name, kind, args, ctx.headers, { requestId: ctx.requestId })).value;
-        const result = await (opts.tracer ? opts.tracer.span(name, ctx.traceparent, { "forge.function": name, "forge.request_id": ctx.requestId }, run) : run());
-        return Response.json({ result });
+        const args = await readJson(req, "args", url);
+        // The body as a string: a cached query keeps its serialized form, so a hit costs no JSON work.
+        const run = async () => {
+          if (kind !== "query") return JSON.stringify({ result: (await runtime.call(name, kind, args, ctx.headers, { requestId: ctx.requestId })).value });
+          const r = await queries.run(name, args, ctx.headers, ctx.requestId);
+          return `{"result":${(r.json ??= JSON.stringify(r.value))}}`;
+        };
+        const body = await (opts.tracer ? opts.tracer.span(name, ctx.traceparent, { "forge.function": name, "forge.request_id": ctx.requestId }, run) : run());
+        return new Response(body, { headers: { "content-type": JSON_TYPE, "x-request-id": ctx.requestId } });
       } catch (e) {
         if (e instanceof HttpError) return errorResponse({ message: e.message, code: e.code, requestId: ctx.requestId });
         return errorResponse(toPublicError(e, ctx.requestId, opts.dev, { function: name }));
