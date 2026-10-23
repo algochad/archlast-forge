@@ -15,6 +15,22 @@ export type Manifest = {
   storage: boolean;
   error?: string;
 };
+export type CacheInfo = {
+  enabled: boolean;
+  backend: "memory" | "redis";
+  ttlMs: number;
+  /** In-process cache budget; null when Redis holds the entries. */
+  maxBytes: number | null;
+  entries: number | null;
+  bytes: number | null;
+  evictions: number;
+  invalidatedEntries: number;
+  hits: number;
+  misses: number;
+  coalesced: number;
+  skipped: number;
+  functions: { name: string; hits: number; misses: number; coalesced: number; skipped: number; hitMs: number; missMs: number; perUser: boolean; savedMs: number }[];
+};
 export type Admin = { email: string; role: Role };
 export type Doc = Record<string, unknown> & { _id: string; _creationTime: number };
 export type Page<T = Doc> = { page: T[]; isDone: boolean; continueCursor: string };
@@ -76,3 +92,12 @@ export const ago = (t: number) => {
   const s = Math.round((Date.now() - t) / 1000);
   return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : s < 86400 ? `${Math.round(s / 3600)}h ago` : `${Math.round(s / 86400)}d ago`;
 };
+
+/** Share of query calls answered without running the function: from the cache, or by sharing a run already in flight. */
+export const hitRate = (c: { hits: number; misses: number; coalesced: number }) => {
+  const served = c.hits + c.coalesced;
+  return served + c.misses ? (served / (served + c.misses)) * 100 : null;
+};
+
+export const formatDuration = (ms: number) =>
+  ms < 1 ? "<1 ms" : ms < 1000 ? `${Math.round(ms)} ms` : ms < 60_000 ? `${(ms / 1000).toFixed(1)} s` : ms < 3600_000 ? `${(ms / 60_000).toFixed(1)} min` : `${(ms / 3600_000).toFixed(1)} h`;

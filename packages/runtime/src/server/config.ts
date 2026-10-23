@@ -29,6 +29,8 @@ export interface Config {
   replicas: number;
   /** TTL for cached query results. 0 disables the cache. */
   cacheTtlMs: number;
+  /** Memory the in-process cache may use; Redis applies its own limits. */
+  cacheMaxBytes: number;
   /** Function runtime processes per server. */
   runtimeWorkers: number;
   limits: Limits;
@@ -95,7 +97,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     authUrl,
     trustedOrigins: (env.TRUSTED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
     replicas,
-    cacheTtlMs: int("CACHE_TTL_MS", dev ? 0 : 60_000),
+    cacheTtlMs: int("CACHE_TTL_MS", 60_000),
+    cacheMaxBytes: int("CACHE_MAX_MB", 64, 1) * 2 ** 20,
     runtimeWorkers: int("RUNTIME_WORKERS", 1, 1),
     limits: {
       functionTimeoutMs: int("FUNCTION_TIMEOUT_MS", 10_000, 1),

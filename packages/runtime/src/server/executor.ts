@@ -14,7 +14,7 @@ export interface CallResult {
   value: unknown;
   /** Read topics, for queries. */
   topics?: string[];
-  /** The query called ctx.auth, so its result is per-user and must not be shared. */
+  /** The query called ctx.auth, so its result belongs to that caller and mustn't be shared. */
   usedAuth?: boolean;
 }
 
@@ -88,6 +88,8 @@ export interface RunOptions {
   /** Clients can't call internal functions; the dashboard and other functions can. */
   allowInternal?: boolean;
   requestId?: string;
+  /** The caller, when the server already resolved it (to key the query cache). `undefined` means resolve it from the headers. */
+  identity?: UserIdentity | null;
 }
 
 export class Executor {
@@ -133,8 +135,13 @@ export class Executor {
     const fn = this.o.functions.get(name);
     // Same message as a missing function, so internal names don't leak.
     if (fn?.visibility === "internal" && !opts.allowInternal) throw new ValidationError(`Unknown function "${name}"`);
-    const identity = headers.cookie || headers.authorization ? await this.resolveIdentity(headers) : null;
+    const identity = opts.identity !== undefined ? opts.identity : await this.identityOf(headers);
     return this.call(name, kind, args, identity, opts.requestId);
+  }
+
+  /** Who is calling: the signed-in user, or null for anonymous requests. */
+  identityOf(headers: CallHeaders) {
+    return headers.cookie || headers.authorization ? this.resolveIdentity(headers) : Promise.resolve(null);
   }
 
   async call(name: string, kind: FunctionKind, args: unknown, identity: UserIdentity | null, requestId?: string): Promise<CallResult> {

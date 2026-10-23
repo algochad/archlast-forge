@@ -1,4 +1,4 @@
-import type { FunctionKind } from "../functions";
+import type { FunctionKind, UserIdentity } from "../functions";
 import type { CallHeaders, CallResult, LogEntry, SerializedError } from "./executor";
 import type { Manifest } from "./project";
 
@@ -17,7 +17,8 @@ export interface SerializedResponse {
 
 /** Server → function runtime. */
 export type HostMessage = { id: number } & (
-  | { t: "call"; name: string; kind: FunctionKind; args: unknown; headers: CallHeaders; allowInternal?: boolean; requestId?: string }
+  | { t: "call"; name: string; kind: FunctionKind; args: unknown; headers: CallHeaders; allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null }
+  | { t: "identity"; headers: CallHeaders }
   | { t: "auth"; req: SerializedRequest }
   | { t: "admin"; op: string; args?: Record<string, unknown>; actor: string }
 );

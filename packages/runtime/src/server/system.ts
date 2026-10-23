@@ -15,6 +15,8 @@ export async function migrateSystem(db: Db) {
     `CREATE INDEX IF NOT EXISTS "afx_logs_name_time" ON "_logs" ("name", "time")`,
     `CREATE TABLE IF NOT EXISTS "_metrics" ("time" ${real} NOT NULL, "server" TEXT NOT NULL, "subscriptions" INTEGER NOT NULL, "connections" INTEGER NOT NULL)`,
     `CREATE INDEX IF NOT EXISTS "afx_metrics_time" ON "_metrics" ("time")`,
+    `CREATE TABLE IF NOT EXISTS "_cache_stats" ("time" ${real} NOT NULL, "server" TEXT NOT NULL, "hits" INTEGER NOT NULL, "misses" INTEGER NOT NULL, "coalesced" INTEGER NOT NULL, "entries" INTEGER)`,
+    `CREATE INDEX IF NOT EXISTS "afx_cache_stats_time" ON "_cache_stats" ("time")`,
     `CREATE TABLE IF NOT EXISTS "_env" ("name" TEXT PRIMARY KEY, "value" TEXT NOT NULL, "updatedAt" ${real} NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS "_migrations" ("name" TEXT PRIMARY KEY, "state" TEXT NOT NULL, "cursor" TEXT, "processed" INTEGER NOT NULL, "error" TEXT, "updatedAt" ${real} NOT NULL)`,
   ];
@@ -24,4 +26,4 @@ export async function migrateSystem(db: Db) {
   });
 }
 
-export const SYSTEM_TABLES = ["_scheduled_functions", "_admins", "_admin_sessions", "_audit", "_logs", "_metrics", "_env", "_migrations", "_search_indexes"];
+export const SYSTEM_TABLES = ["_scheduled_functions", "_admins", "_admin_sessions", "_audit", "_logs", "_metrics", "_cache_stats", "_env", "_migrations", "_search_indexes"];

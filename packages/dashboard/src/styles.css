@@ -410,3 +410,9 @@ dl.meta dd { margin: 0; overflow-wrap: anywhere; }
   .filter-bar .field.push { margin-left: 0; }
   .docs-table { max-height: none; }
 }
+
+/* ---------- cache ---------- */
+.meter-cell { display: inline-flex; align-items: center; gap: 0.6rem; }
+.meter { display: inline-block; width: 7rem; height: 6px; border-radius: 999px; background: var(--raised); border: 1px solid var(--border); overflow: hidden; }
+.meter i { display: block; height: 100%; border-radius: inherit; background: linear-gradient(90deg, var(--ember-deep), var(--ember), var(--spark)); }
+.meter-cell .num { min-width: 2.6rem; text-align: right; }

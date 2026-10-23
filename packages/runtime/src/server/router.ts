@@ -100,6 +100,8 @@ export function buildAdminRouter(opts: {
   dev: boolean;
   serverInfo: () => object;
   reload: () => Promise<unknown>;
+  cache: () => object;
+  clearCache: () => Promise<number>;
 }) {
   const a = initTRPC.context<AdminContext>().create({ isDev: opts.dev, errorFormatter: formatter });
   const as = (role: AdminRole) =>
@@ -129,6 +131,14 @@ export function buildAdminRouter(opts: {
     subscriptions: as("viewer").query(() => opts.subs.list()),
     recentLogs: as("viewer").query(() => opts.recentLogs),
     server: as("viewer").query(() => opts.serverInfo()),
+    /** This server's query cache: contents and per-function counters. */
+    cache: as("viewer").query(() => opts.cache()),
+    /** Empties this server's cache (or the shared Redis cache) and records it in the audit log. */
+    clearCache: as("admin").mutation(async ({ ctx }) => {
+      const entries = await opts.clearCache();
+      await opts.runtime.admin("clearCache", { entries, requestId: ctx.requestId }, ctx.admin.email);
+      return entries;
+    }),
     /** Restarts this server's function runtime, e.g. to pick up `archlast-forge env` changes. */
     reload: as("admin").mutation(async () => {
       await opts.reload();

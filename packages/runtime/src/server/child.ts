@@ -100,7 +100,9 @@ async function main() {
   async function handle(msg: HostMessage): Promise<unknown> {
     switch (msg.t) {
       case "call":
-        return exec.run(msg.name, msg.kind, msg.args, msg.headers, { allowInternal: msg.allowInternal, requestId: msg.requestId });
+        return exec.run(msg.name, msg.kind, msg.args, msg.headers, { allowInternal: msg.allowInternal, requestId: msg.requestId, identity: msg.identity });
+      case "identity":
+        return exec.identityOf(msg.headers);
       case "auth": {
         const { method, url, headers, body } = msg.req;
         const res = await auth.handler(new Request(url, { method, headers, body }));

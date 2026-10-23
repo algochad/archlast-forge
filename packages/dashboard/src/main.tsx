@@ -9,6 +9,7 @@ import { Data } from "./pages/Data";
 import { Files } from "./pages/Files";
 import { Functions } from "./pages/Functions";
 import { Logs } from "./pages/Logs";
+import { Cache } from "./pages/Cache";
 import { Metrics } from "./pages/Metrics";
 import { Overview } from "./pages/Overview";
 import { Scheduled } from "./pages/Scheduled";
@@ -25,6 +26,7 @@ const PAGES = {
   Scheduled: { icon: "scheduled", section: "Runtime", blurb: "Crons and scheduled jobs." },
   Logs: { icon: "logs", section: "Runtime", blurb: "Function calls and console output." },
   Metrics: { icon: "metrics", section: "Runtime", blurb: "Throughput, errors and latency over time." },
+  Cache: { icon: "cache", section: "Runtime", blurb: "How much work the query cache is saving." },
   Audit: { icon: "audit", section: "Admin", blurb: "Every change made from this dashboard." },
   Settings: { icon: "settings", section: "Admin", blurb: "Schema, environment and live subscriptions." },
 } satisfies Record<string, { icon: IconName; section: string; blurb: string }>;
@@ -169,7 +171,7 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
                 <button key={p} className="nav-item" aria-current={p === page ? "page" : undefined} onClick={() => open(p)}>
                   <Icon name={PAGES[p].icon} />
                   {p}
-                  <kbd>⌥{n % 10}</kbd>
+                  {n <= 10 && <kbd>⌥{n % 10}</kbd>}
                 </button>
               );
             })}
@@ -226,6 +228,7 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
               {page === "Functions" && <Functions manifest={m} admin={admin} />}
               {page === "Logs" && <Logs manifest={m} />}
               {page === "Metrics" && <Metrics />}
+              {page === "Cache" && <Cache admin={admin} />}
               {page === "Scheduled" && <Scheduled admin={admin} />}
               {page === "Files" && <Files manifest={m} admin={admin} />}
               {page === "Users" && <Users admin={admin} />}

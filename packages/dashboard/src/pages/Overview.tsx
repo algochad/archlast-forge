@@ -1,4 +1,4 @@
-import { ago, get, type Log, type Manifest } from "../api";
+import { ago, get, hitRate, type CacheInfo, type Log, type Manifest } from "../api";
 import { Logo } from "../brand";
 import { Badge, Empty, Stat, useAsync } from "../ui";
 
@@ -13,6 +13,7 @@ export function Overview({ manifest, onOpen }: { manifest: Manifest; onOpen: (pa
   const metrics = useAsync(() => get<Bucket[]>("metrics", { windowMs: 3600_000, buckets: 24 }), [], { interval: 15_000 });
   const server = useAsync(() => get<Server>("server"), [], { interval: 5000 });
   const logs = useAsync(() => get<Log[]>("recentLogs"), [], { interval: 5000 });
+  const cache = useAsync(() => get<CacheInfo>("cache"), [], { interval: 5000 });
   const audit = useAsync(() => get<AuditEntry[]>("audit", { limit: 6 }), [], { interval: 15_000 });
 
   const b = metrics.data ?? [];
@@ -22,6 +23,7 @@ export function Overview({ manifest, onOpen }: { manifest: Manifest; onOpen: (pa
   const p95 = Math.max(0, ...b.map((x) => x.p95));
   const publicFns = manifest.functions.filter((f) => f.visibility !== "internal").length;
   const userTables = Object.entries(manifest.tables).filter(([name, t]) => t.strict && !name.startsWith("_")).length;
+  const cacheRate = cache.data ? hitRate(cache.data) : null;
   const healthy = !manifest.error;
   const recent = [...(logs.data ?? [])].reverse().slice(0, 8);
 
@@ -45,9 +47,16 @@ export function Overview({ manifest, onOpen }: { manifest: Manifest; onOpen: (pa
       </section>
 
       <section className="stats" aria-label="Last hour">
-        <Stat label="Calls · 1h" icon="bolt" tone="ember" value={compact(calls)} hint={`${(calls / 60).toFixed(1)} per minute`} trend={b.map((x) => x.calls)} />
+        <Stat label="Function runs · 1h" icon="bolt" tone="ember" value={compact(calls)} hint={`${(calls / 60).toFixed(1)} per minute, uncached`} trend={b.map((x) => x.calls)} />
         <Stat label="Error rate" icon="flame" tone={errorRate > 5 ? "bad" : errorRate > 1 ? "warn" : undefined} value={`${errorRate.toFixed(errorRate < 10 ? 1 : 0)}%`} hint={`${errors} failed calls`} trend={b.map((x) => x.errors)} />
         <Stat label="p95 latency" icon="metrics" value={`${Math.round(p95)} ms`} hint="slowest 5% of calls" trend={b.map((x) => x.p95)} />
+        <Stat
+          label="Cache hit rate"
+          icon="cache"
+          tone="ember"
+          value={!cache.data?.enabled ? "off" : cacheRate === null ? "—" : `${Math.round(cacheRate)}%`}
+          hint={!cache.data?.enabled ? "set CACHE_TTL_MS to enable" : `${(cache.data.hits + cache.data.coalesced).toLocaleString()} queries served from cache`}
+        />
         <Stat label="Live queries" icon="data" tone="ok" value={server.data?.subscriptions ?? "…"} hint={`${server.data?.connections ?? 0} open connections`} />
       </section>
 

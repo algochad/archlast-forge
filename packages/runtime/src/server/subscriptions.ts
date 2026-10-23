@@ -1,11 +1,45 @@
+import type { UserIdentity } from "../functions";
 import type { Bus } from "./bus";
 import type { Cache } from "./cache";
 import type { CallHeaders } from "./executor";
+import { log } from "./logger";
 import type { FunctionRuntime } from "./runtime";
 
 export type QueryUpdate = { value: unknown } | { error: string; data?: unknown; requestId?: string };
 
-/** Runs queries through the shared result cache. */
+type Result = { value: unknown; topics: string[] };
+
+interface FunctionStats {
+  /** Served from the cache. */
+  hits: number;
+  /** Executed because nothing usable was cached. */
+  misses: number;
+  /** Shared the result of an identical call already running. */
+  coalesced: number;
+  /** Executions whose result couldn't be kept: a write overlapped, it was too big, or it is per-caller and wasn't keyed yet. */
+  skipped: number;
+  hitMs: number;
+  missMs: number;
+  /** Cached separately for each signed-in user, because the query reads `ctx.auth`. */
+  perUser: boolean;
+}
+
+export interface CacheSnapshot {
+  enabled: boolean;
+  ttlMs: number;
+  entries: number | null;
+  bytes: number | null;
+  evictions: number;
+  /** Entries removed because a mutation wrote something they read. */
+  invalidatedEntries: number;
+  hits: number;
+  misses: number;
+  coalesced: number;
+  skipped: number;
+  functions: (FunctionStats & { name: string; savedMs: number })[];
+}
+
+/** Runs queries through the shared result cache: identical calls are answered from it, or share one execution. */
 export class QueryRunner {
   /** Sequence number of the latest invalidation, and of the latest per topic. */
   private seq = 0;
@@ -14,6 +48,11 @@ export class QueryRunner {
   /** Invalidations at or before this were forgotten; a run older than it can't be proven clean. */
   private horizon = 0;
   private invalidating: Promise<unknown> = Promise.resolve();
+  private invalidatedEntries = 0;
+  private stats = new Map<string, FunctionStats>();
+  /** Functions seen reading `ctx.auth`: their cache keys include the caller. */
+  private perUser = new Set<string>();
+  private inflight = new Map<string, Promise<Result & { clean: boolean }>>();
 
   constructor(
     private runtime: FunctionRuntime,
@@ -29,21 +68,108 @@ export class QueryRunner {
       for (const [s, t] of this.history.splice(0, 10_000)) if (this.invalidatedAt.get(t) === s) this.invalidatedAt.delete(t);
       this.horizon = this.history[0]![0] - 1;
     }
-    if (this.cache) this.invalidating = Promise.all([this.invalidating, this.cache.invalidate([topic])]).then(() => {});
+    if (this.cache) {
+      const evicting = this.cache
+        .invalidate([topic])
+        .then((n) => void (this.invalidatedEntries += n))
+        .catch((e) => log("error", "cache invalidation failed", { error: String(e) })); // one failure must not poison every later read
+      this.invalidating = Promise.all([this.invalidating, evicting]);
+    }
   }
 
-  async run(name: string, args: unknown, headers: CallHeaders, requestId?: string) {
-    const key = `${name}:${JSON.stringify(args ?? {})}`;
+  async run(name: string, args: unknown, headers: CallHeaders, requestId?: string): Promise<Result> {
+    const cache = this.cache;
+    if (!cache) {
+      const r = await this.runtime.call(name, "query", args, headers, { requestId });
+      return { value: r.value, topics: r.topics ?? [] };
+    }
+    const began = performance.now();
+    const stats = this.statsOf(name);
+    // Queries that read ctx.auth are cached per caller. Who the caller is gets resolved fresh each time, so a revoked session stops matching.
+    const identity = this.perUser.has(name) ? await this.runtime.identity(headers) : undefined;
+    const key = JSON.stringify(identity === undefined ? [name, args ?? {}] : [name, identity, args ?? {}]);
     await this.invalidating; // a pending eviction must land before we read the cache
-    const hit = await this.cache?.get<{ value: unknown; topics: string[] }>(key);
-    if (hit) return hit;
+    const hit = await cache.get<Result>(key);
+    if (hit) {
+      stats.hits++;
+      stats.hitMs += performance.now() - began;
+      return hit;
+    }
+    const running = this.inflight.get(key);
+    if (running) {
+      // Only a run that no write overlapped is sure to include the write that woke this caller; otherwise run again.
+      const shared = await running.catch(() => undefined);
+      if (shared?.clean) {
+        stats.coalesced++;
+        return shared;
+      }
+    }
+    const mine = this.execute(name, args, headers, requestId, identity, key, cache);
+    this.inflight.set(key, mine);
+    try {
+      return await mine;
+    } finally {
+      if (this.inflight.get(key) === mine) this.inflight.delete(key);
+      stats.misses++;
+      stats.missMs += performance.now() - began;
+    }
+  }
+
+  private async execute(name: string, args: unknown, headers: CallHeaders, requestId: string | undefined, identity: UserIdentity | null | undefined, key: string, cache: Cache) {
     const start = this.seq;
-    const r = await this.runtime.call(name, "query", args, headers, { requestId });
+    const r = await this.runtime.call(name, "query", args, headers, { requestId, ...(identity !== undefined && { identity }) });
     const topics = r.topics ?? [];
+    // First sighting of a per-caller query: its result belongs to this caller, and the next call will be keyed by caller.
+    const unkeyed = Boolean(r.usedAuth) && identity === undefined;
+    if (unkeyed) this.perUser.add(name);
+    const stats = this.statsOf(name);
+    stats.perUser = this.perUser.has(name);
     // Cache only if none of the topics this result read was written while it ran.
     const clean = start >= this.horizon && !topics.some((t) => (this.invalidatedAt.get(t) ?? 0) > start);
-    if (this.cache && !r.usedAuth && clean) await this.cache.set(key, { value: r.value, topics }, { ttlMs: this.ttlMs, topics });
-    return { value: r.value, topics };
+    const kept = clean && !unkeyed && (await cache.set(key, { value: r.value, topics }, { ttlMs: this.ttlMs, topics }));
+    if (!kept) stats.skipped++;
+    return { value: r.value, topics, clean: clean && !unkeyed };
+  }
+
+  /** Counters for a function; calls to names that don't exist are counted nowhere, so they can't grow the table. */
+  private statsOf(name: string) {
+    let s = this.stats.get(name);
+    if (!s && this.runtime.manifest?.functions.some((f) => f.name === name))
+      this.stats.set(name, (s = { hits: 0, misses: 0, coalesced: 0, skipped: 0, hitMs: 0, missMs: 0, perUser: false }));
+    return s ?? { hits: 0, misses: 0, coalesced: 0, skipped: 0, hitMs: 0, missMs: 0, perUser: false };
+  }
+
+  /** Drops everything cached, e.g. from the dashboard. Resolves with the number of entries removed. */
+  clear() {
+    return this.cache?.clear() ?? Promise.resolve(0);
+  }
+
+  /** After the function code changes, what the old code computed is wrong. */
+  async reset() {
+    this.perUser.clear();
+    this.inflight.clear();
+    await this.clear();
+  }
+
+  snapshot(): CacheSnapshot {
+    const functions = [...this.stats].map(([name, s]) => ({
+      name,
+      ...s,
+      // What the avoided executions would have cost, at this function's average miss time.
+      savedMs: s.misses ? Math.max(0, (s.hits + s.coalesced) * (s.missMs / s.misses) - s.hitMs) : 0,
+    }));
+    const total = (k: "hits" | "misses" | "coalesced" | "skipped") => functions.reduce((n, f) => n + f[k], 0);
+    return {
+      enabled: Boolean(this.cache),
+      ttlMs: this.ttlMs,
+      ...(this.cache?.stats() ?? { entries: 0, bytes: 0, evictions: 0 }),
+      invalidatedEntries: this.invalidatedEntries,
+      hits: total("hits"),
+      misses: total("misses"),
+      coalesced: total("coalesced"),
+      skipped: total("skipped"),
+      functions,
+    };
   }
 }
 

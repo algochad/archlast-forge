@@ -275,6 +275,8 @@ export function LineChart({ title, series, labels, unit = "", height = 190 }: { 
         {series.map((s) => (
           <path key={s.name} d={path(s.values)} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         ))}
+        {/* A lone reading has no line to draw; show it as a dot. */}
+        {series.flatMap((s) => s.values.map((v, i) => (v !== null && s.values[i - 1] == null && s.values[i + 1] == null ? <circle key={`${s.name}-${i}`} cx={x(i)} cy={y(v)} r={3.5} fill={s.color} /> : null)))}
       </svg>
     </figure>
   );

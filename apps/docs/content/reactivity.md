@@ -15,4 +15,4 @@ A mutation publishes the topics its writes touch, covering both the old and new 
 - **Consistency:** each query run reads one snapshot. Separate queries don't share a snapshot.
 - **Multiple servers:** with `REDIS_URL`, writes on one server reach subscribers on every server. Each server subscribes only to the topics its clients need.
 - **Reconnects:** pub/sub is fire-and-forget, so a client that reconnects gets fresh results for all its subscriptions.
-- **Caching:** with `CACHE_TTL_MS` (on by default outside dev), results of queries that don't read `ctx.auth` are cached per (function, args) and evicted by the same topics.
+- **Caching:** query results are cached per (function, args, caller) and evicted by the same topics. See [Caching](caching.html).

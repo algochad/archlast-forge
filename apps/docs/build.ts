@@ -9,6 +9,7 @@ const ORDER = [
   ["functions", "Functions"],
   ["queries", "Reading data"],
   ["reactivity", "Reactivity"],
+  ["caching", "Caching"],
   ["auth", "Authentication"],
   ["storage", "File storage"],
   ["scheduling", "Scheduling and crons"],

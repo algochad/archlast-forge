@@ -58,7 +58,7 @@ export function Metrics() {
       ) : (
         <div className="charts">
           <LineChart
-            title="Calls and errors"
+            title="Function runs and errors"
             labels={labels}
             series={[
               { name: "calls", values: b.map((x) => x.calls), color: "var(--accent)" },

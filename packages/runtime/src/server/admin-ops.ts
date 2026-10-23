@@ -61,7 +61,7 @@ export interface AdminDeps {
   serverId: string;
 }
 
-const WRITE_OPS = new Set(["insertDoc", "patchDoc", "replaceDoc", "deleteDoc", "cancelJob", "retryJob", "deleteFile", "revokeSession", "banUser", "run"]);
+const WRITE_OPS = new Set(["insertDoc", "patchDoc", "replaceDoc", "deleteDoc", "cancelJob", "retryJob", "deleteFile", "revokeSession", "banUser", "run", "clearCache"]);
 
 export async function adminOp(d: AdminDeps, op: string, args: any, actor: string): Promise<unknown> {
   const { db, exec } = d;
@@ -197,6 +197,20 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
           Number(args.connections),
         ]);
         await db.execute(`DELETE FROM "_metrics" WHERE "time" < ?`, [Date.now() - 30 * 86400_000]);
+        if (args.cacheHits !== undefined) {
+          await db.execute(`INSERT INTO "_cache_stats" ("time", "server", "hits", "misses", "coalesced", "entries") VALUES (?, ?, ?, ?, ?, ?)`, [
+            Date.now(),
+            String(args.server),
+            Number(args.cacheHits),
+            Number(args.cacheMisses),
+            Number(args.cacheCoalesced),
+            args.cacheEntries === null ? null : Number(args.cacheEntries),
+          ]);
+          await db.execute(`DELETE FROM "_cache_stats" WHERE "time" < ?`, [Date.now() - 30 * 86400_000]);
+        }
+        return null;
+      // The cache lives in the server process, which has already emptied it; this records the action in the audit log.
+      case "clearCache":
         return null;
 
       // -- environment variables (values stay server-side) --
@@ -246,6 +260,10 @@ async function metrics(db: Db, windowMs: number, buckets: number) {
     `SELECT * FROM "_metrics" WHERE "time" >= ? ORDER BY "time"`,
     [since],
   );
+  const cacheSamples = await db.query<{ time: number; server: string; hits: number; misses: number; coalesced: number; entries: number | null }>(
+    `SELECT * FROM "_cache_stats" WHERE "time" >= ? ORDER BY "time"`,
+    [since],
+  );
   return Array.from({ length: buckets }, (_, i) => {
     const start = since + i * size;
     const end = start + size;
@@ -255,8 +273,17 @@ async function metrics(db: Db, windowMs: number, buckets: number) {
     const latest = new Map<string, { subscriptions: number; connections: number }>();
     for (const s of samples) if (s.time >= start && s.time < end) latest.set(s.server, s);
     const sum = (k: "subscriptions" | "connections") => (latest.size ? [...latest.values()].reduce((n, s) => n + Number(s[k]), 0) : null);
+    // Cache counters are per-interval deltas, so a bucket's total is their sum; entries is the latest reading per server.
+    const cached = cacheSamples.filter((c) => c.time >= start && c.time < end);
+    const entries = new Map<string, number>();
+    for (const c of cached) if (c.entries !== null) entries.set(c.server, Number(c.entries));
+    const total = (k: "hits" | "misses" | "coalesced") => cached.reduce((n, c) => n + Number(c[k]), 0);
     return {
       start,
+      cacheHits: cached.length ? total("hits") : null,
+      cacheMisses: cached.length ? total("misses") : null,
+      cacheCoalesced: cached.length ? total("coalesced") : null,
+      cacheEntries: entries.size ? [...entries.values()].reduce((n, v) => n + v, 0) : null,
       calls: inBucket.length,
       errors: inBucket.filter((c) => !c.ok).length,
       p50: percentile(durations, 0.5),

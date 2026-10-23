@@ -72,7 +72,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const serverId = `${hostname()}:${process.pid}`;
   const ttl = config.cacheTtlMs;
   const bus: Bus = config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0 }) : new MemoryBus();
-  const cache = ttl > 0 ? (config.redisUrl ? await RedisCache.connect(config.redisUrl) : new MemoryCache()) : undefined;
+  const cache = ttl > 0 ? (config.redisUrl ? await RedisCache.connect(config.redisUrl) : new MemoryCache(10_000, config.cacheMaxBytes)) : undefined;
   const limiter: RateLimiter = config.redisUrl ? new RedisRateLimiter(await connectRedis(config.redisUrl), "archlast-forge:rl:") : new MemoryRateLimiter();
 
   const runtimeEnv = { ...env }; // gets the bound URL before the runtime starts
@@ -108,8 +108,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const routerRef = { get _def() { return router._def; } } as AnyRouter;
   let loading: Promise<unknown> = Promise.resolve();
   const load = () => {
-    const p = runtime.start().then((manifest) => {
+    const p = runtime.start().then(async (manifest) => {
       router = buildRouter(manifest, runtime, queries, subs, routerOpts);
+      await queries.reset().catch((e) => log("error", "cache reset failed", { error: String(e) })); // results from the old code are wrong
       subs.rerunAll();
       return manifest;
     });
@@ -129,6 +130,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     dev,
     serverInfo: () => ({ serverId, connections, subscriptions: subs.size, workers: config.runtimeWorkers, uptimeMs: Math.round(process.uptime() * 1000) }),
     reload: () => reload(),
+    cache: () => ({ ...queries.snapshot(), backend: config.redisUrl ? "redis" : "memory", maxBytes: config.redisUrl ? null : config.cacheMaxBytes }),
+    clearCache: () => queries.clear(),
   });
   const adminSessions = new Map<string, { admin: AdminInfo | null; at: number }>();
   async function adminOf(req: Request): Promise<AdminInfo | null> {
@@ -241,7 +244,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const auth = req.headers.get("authorization")?.replace(/^Bearer /, "");
         const token = env.METRICS_TOKEN || config.adminKey;
         if (token ? !(auth && sameSecret(auth, token)) : !dev) return new Response("Not found", { status: 404 });
-        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: config.runtimeWorkers }), { headers: { "content-type": "text/plain; version=0.0.4" } });
+        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: config.runtimeWorkers }, queries.snapshot()), { headers: { "content-type": "text/plain; version=0.0.4" } });
       }
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
 
@@ -344,9 +347,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     });
 
   // Subscription and connection counts over time, for the dashboard's charts.
+  // The cache counters are totals since start; the chart wants what happened in each interval.
+  let sampled = { hits: 0, misses: 0, coalesced: 0 };
   const sampler = setInterval(() => {
-    if (runtime.manifest && !runtime.loadError)
-      void runtime.admin("recordMetric", { server: serverId, subscriptions: subs.size, connections }, "system").catch(() => {});
+    if (!runtime.manifest || runtime.loadError) return;
+    const c = queries.snapshot();
+    const cache = c.enabled ? { cacheHits: c.hits - sampled.hits, cacheMisses: c.misses - sampled.misses, cacheCoalesced: c.coalesced - sampled.coalesced, cacheEntries: c.entries } : {};
+    const previous = sampled;
+    sampled = { hits: c.hits, misses: c.misses, coalesced: c.coalesced };
+    void runtime.admin("recordMetric", { server: serverId, subscriptions: subs.size, connections, ...cache }, "system").catch(() => {
+      sampled = previous; // not recorded: count it in the next sample instead
+    });
   }, 30_000);
 
   return {

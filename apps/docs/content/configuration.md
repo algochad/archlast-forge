@@ -16,7 +16,8 @@ Environment variables, read at startup. Invalid or contradictory values fail fas
 | `TRUSTED_ORIGINS` | none | comma-separated browser origins |
 | `DASHBOARD` | on in dev, off in production | |
 | `ADMIN_KEY` | generated in dev | owner access to the dashboard and `/metrics` |
-| `CACHE_TTL_MS` | `60000` (`0` in dev) | query result cache |
+| `CACHE_TTL_MS` | `60000` | longest a cached query result lives; `0` turns the [cache](caching.html) off |
+| `CACHE_MAX_MB` | `64` | memory the in-process cache may use (ignored with `REDIS_URL`) |
 | `RUNTIME_WORKERS` | `1` | function runtime processes per server |
 | `FUNCTION_TIMEOUT_MS`, `ACTION_TIMEOUT_MS` | `10000`, `600000` | |
 | `MAX_RESULT_BYTES`, `MAX_DOCUMENT_BYTES`, `MAX_REQUEST_BYTES` | 8 MiB, 1 MiB, 8 MiB | |

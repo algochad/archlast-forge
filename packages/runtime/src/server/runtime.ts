@@ -1,5 +1,5 @@
 import type { Subprocess } from "bun";
-import type { FunctionKind } from "../functions";
+import type { FunctionKind, UserIdentity } from "../functions";
 import type { CallHeaders, CallResult, ErrorKind, LogEntry } from "./executor";
 import type { Manifest } from "./project";
 import type { HostMessage, RuntimeMessage, SerializedRequest, SerializedResponse } from "./protocol";
@@ -224,9 +224,14 @@ export class FunctionRuntime {
     });
   }
 
-  call(name: string, kind: FunctionKind, args: unknown, headers: CallHeaders, opts: { allowInternal?: boolean; requestId?: string } = {}) {
+  call(name: string, kind: FunctionKind, args: unknown, headers: CallHeaders, opts: { allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null } = {}) {
     const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
     return this.send({ t: "call", name, kind, args, headers, ...opts }, (kind === "action" ? t.actionMs : t.functionMs) + HARD_TIMEOUT_GRACE_MS) as Promise<CallResult>;
+  }
+
+  /** Resolves the caller from request headers; null when anonymous. */
+  identity(headers: CallHeaders) {
+    return this.send({ t: "identity", headers }, 30_000) as Promise<UserIdentity | null>;
   }
 
   auth(req: SerializedRequest) {
