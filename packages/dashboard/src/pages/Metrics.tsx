@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { get, type Log } from "../api";
-import { ErrorNote, Field, LineChart, Spinner, useAsync } from "../ui";
+import { Empty, ErrorNote, Field, LineChart, Skeleton, useAsync } from "../ui";
 
 type Bucket = { start: number; calls: number; errors: number; p50: number; p95: number; subscriptions: number | null; connections: number | null };
 const WINDOWS = { "1h": 3600_000, "24h": 86400_000, "7d": 7 * 86400_000 } as const;
@@ -54,7 +54,7 @@ export function Metrics() {
       </section>
       <ErrorNote error={metrics.error} />
       {metrics.loading && !metrics.data ? (
-        <Spinner />
+        <Skeleton rows={5} />
       ) : (
         <div className="charts">
           <LineChart
@@ -71,7 +71,7 @@ export function Metrics() {
             labels={labels}
             series={[
               { name: "p50", values: b.map((x) => (x.calls ? x.p50 : null)), color: "var(--accent)" },
-              { name: "p95", values: b.map((x) => (x.calls ? x.p95 : null)), color: "var(--warn)" },
+              { name: "p95", values: b.map((x) => (x.calls ? x.p95 : null)), color: "var(--spark)" },
             ]}
           />
           <LineChart
@@ -86,6 +86,9 @@ export function Metrics() {
       )}
       <section className="panel" aria-label="Recent calls by function">
         <h3>Recent calls on this server</h3>
+        {!perFunction.length ? (
+          <Empty icon="bolt">No calls on this server since it started.</Empty>
+        ) : (
         <div className="table-wrap">
           <table>
             <thead>
@@ -108,6 +111,7 @@ export function Metrics() {
             </tbody>
           </table>
         </div>
+        )}
       </section>
     </div>
   );

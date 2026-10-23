@@ -43,7 +43,7 @@ export function Scheduled({ admin }: { admin: Admin }) {
             </table>
           </div>
         ) : (
-          <Empty>No crons (convex/crons.ts).</Empty>
+          <Empty icon="scheduled">No crons (convex/crons.ts).</Empty>
         )}
       </section>
       <section className="panel stack" aria-label="Scheduled jobs">
@@ -104,7 +104,7 @@ export function Scheduled({ admin }: { admin: Admin }) {
             </table>
           </div>
         ) : (
-          <Empty>No scheduled jobs{state ? ` in state "${state}"` : ""}.</Empty>
+          <Empty icon="scheduled">No scheduled jobs{state ? ` in state "${state}"` : ""}.</Empty>
         )}
       </section>
     </div>

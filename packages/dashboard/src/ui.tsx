@@ -1,4 +1,5 @@
 import { createContext, useCallback, useContext, useEffect, useId, useRef, useState, type ReactNode } from "react";
+import { Icon, type IconName } from "./brand";
 
 // ---- data loading ----
 
@@ -85,7 +86,49 @@ export const Spinner = ({ label = "Loading" }: { label?: string }) => (
 
 export const ErrorNote = ({ error }: { error?: string }) => (error ? <p className="note error" role="alert">{error}</p> : null);
 
-export const Empty = ({ children }: { children: ReactNode }) => <p className="empty">{children}</p>;
+export const Empty = ({ children, icon = "flame" }: { children: ReactNode; icon?: IconName }) => (
+  <div className="empty">
+    <span className="empty-icon">
+      <Icon name={icon} size={22} />
+    </span>
+    <p>{children}</p>
+  </div>
+);
+
+/** Placeholder rows while data loads. */
+export const Skeleton = ({ rows = 4 }: { rows?: number }) => (
+  <div className="skeleton" role="progressbar" aria-label="Loading">
+    {Array.from({ length: rows }, (_, i) => (
+      <span key={i} style={{ width: `${92 - ((i * 17) % 40)}%` }} />
+    ))}
+  </div>
+);
+
+/** A headline number. `trend` draws a sparkline under it. */
+export function Stat({ label, value, hint, tone, icon, trend }: { label: string; value: ReactNode; hint?: ReactNode; tone?: "ok" | "bad" | "warn" | "ember"; icon?: IconName; trend?: number[] }) {
+  return (
+    <div className={`stat-tile ${tone ?? ""}`}>
+      <div className="stat-head">
+        {icon && <Icon name={icon} size={16} />}
+        <span>{label}</span>
+      </div>
+      <strong className="stat-value">{value}</strong>
+      {hint && <span className="stat-hint">{hint}</span>}
+      {trend && trend.length > 1 && <Sparkline values={trend} />}
+    </div>
+  );
+}
+
+export function Sparkline({ values }: { values: number[] }) {
+  const max = Math.max(1, ...values);
+  const pts = values.map((v, i) => `${((i / (values.length - 1)) * 100).toFixed(1)},${(28 - (v / max) * 26).toFixed(1)}`).join(" ");
+  return (
+    <svg className="sparkline" viewBox="0 0 100 30" preserveAspectRatio="none" aria-hidden="true">
+      <polyline points={`0,30 ${pts} 100,30`} className="spark-fill" />
+      <polyline points={pts} className="spark-line" />
+    </svg>
+  );
+}
 
 export function Button({ variant = "primary", ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: "primary" | "ghost" | "danger" }) {
   return <button type="button" {...props} className={`btn ${variant} ${props.className ?? ""}`} />;
@@ -106,8 +149,24 @@ export function Field({ label, hint, children }: { label: string; hint?: string;
   );
 }
 
+const ID = /^([a-zA-Z_][\w]*):([0-9a-f]{32})$/;
+
+/** A field value in a table cell: ids as chips, booleans as badges, text as text. */
 export function Code({ value }: { value: unknown }) {
-  return <code className="cell-code">{typeof value === "string" ? JSON.stringify(value) : JSON.stringify(value) ?? "undefined"}</code>;
+  if (value === undefined || value === null) return <span className="faint">—</span>;
+  if (typeof value === "boolean") return <span className={`badge ${value ? "ok" : ""}`}>{String(value)}</span>;
+  if (typeof value === "number") return <span className="mono num">{value}</span>;
+  if (typeof value === "string") {
+    const id = ID.exec(value);
+    if (id)
+      return (
+        <code className="id-chip" title={value}>
+          <b>{id[1]}</b>:{id[2]!.slice(0, 8)}…
+        </code>
+      );
+    return <span className="cell-code text">{value}</span>;
+  }
+  return <code className="cell-code">{JSON.stringify(value)}</code>;
 }
 
 export function JsonView({ value }: { value: unknown }) {
@@ -163,9 +222,10 @@ export function Drawer({ title, onClose, children }: { title: string; onClose: (
 export type Series = { name: string; values: (number | null)[]; color: string };
 
 /** Minimal SVG line chart. The aria-label summarizes it for screen readers. */
-export function LineChart({ title, series, labels, unit = "", height = 160 }: { title: string; series: Series[]; labels: string[]; unit?: string; height?: number }) {
-  const width = 600;
-  const pad = { l: 44, r: 8, t: 8, b: 22 };
+export function LineChart({ title, series, labels, unit = "", height = 190 }: { title: string; series: Series[]; labels: string[]; unit?: string; height?: number }) {
+  const gid = useId().replace(/:/g, "");
+  const width = 420;
+  const pad = { l: 40, r: 8, t: 10, b: 24 };
   const all = series.flatMap((s) => s.values.filter((v): v is number => v !== null));
   const max = Math.max(1, ...all);
   const n = Math.max(1, labels.length - 1);
@@ -197,16 +257,52 @@ export function LineChart({ title, series, labels, unit = "", height = 160 }: { 
           </g>
         ))}
         {labels.map((l, i) =>
-          i % Math.ceil(labels.length / 6) === 0 ? (
+          i % Math.ceil(labels.length / 4) === 0 ? (
             <text key={i} x={x(i)} y={height - 6} textAnchor="middle" className="axis">
               {l}
             </text>
           ) : null,
         )}
+        <defs>
+          <linearGradient id={`${gid}-area`} x1="0" y1="0" x2="0" y2="1">
+            <stop offset="0" stopColor={series[0]?.color} stopOpacity="0.28" />
+            <stop offset="1" stopColor={series[0]?.color} stopOpacity="0" />
+          </linearGradient>
+        </defs>
+        {series[0] && series[0].values.length > 1 && series[0].values.every((v) => v !== null) && (
+          <path d={`${path(series[0].values)}L${x(series[0].values.length - 1)},${y(0)}L${x(series[0].values.findIndex((v) => v !== null))},${y(0)}Z`} fill={`url(#${gid}-area)`} />
+        )}
         {series.map((s) => (
-          <path key={s.name} d={path(s.values)} fill="none" stroke={s.color} strokeWidth={2} />
+          <path key={s.name} d={path(s.values)} fill="none" stroke={s.color} strokeWidth={2} strokeLinejoin="round" strokeLinecap="round" />
         ))}
       </svg>
     </figure>
   );
 }
+
+/** Pick one of a few options; arrow keys move between them. */
+export function Segmented<T extends string>({ label, value, options, onChange }: { label: string; value: T; options: { value: T; label: ReactNode }[]; onChange: (v: T) => void }) {
+  return (
+    <div className="segmented inline" role="radiogroup" aria-label={label}>
+      {options.map((o, i) => (
+        <button
+          key={o.value}
+          type="button"
+          role="radio"
+          aria-checked={o.value === value}
+          aria-pressed={o.value === value}
+          tabIndex={o.value === value ? 0 : -1}
+          onClick={() => onChange(o.value)}
+          onKeyDown={(e) => {
+            const next = e.key === "ArrowRight" ? options[(i + 1) % options.length] : e.key === "ArrowLeft" ? options[(i - 1 + options.length) % options.length] : undefined;
+            if (next) (e.preventDefault(), onChange(next.value), (e.currentTarget.parentElement?.children[options.indexOf(next)] as HTMLElement)?.focus());
+          }}
+        >
+          {o.label}
+        </button>
+      ))}
+    </div>
+  );
+}
+
+export const KindPill = ({ kind }: { kind: string }) => <span className={`kind-pill ${kind}`}>{kind}</span>;

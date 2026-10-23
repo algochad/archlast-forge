@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { canWrite, fieldsOf, formatTime, get, post, type Admin, type Doc, type Manifest, type Page } from "../api";
-import { Badge, Button, Code, Drawer, Empty, ErrorNote, Field, JsonEditor, JsonView, Spinner, useAction, useAsync } from "../ui";
+import { Badge, Button, Code, Drawer, Empty, ErrorNote, Field, JsonEditor, JsonView, Skeleton, useAction, useAsync } from "../ui";
 
 /** A filter value: JSON when it parses (numbers, booleans), otherwise the text itself. */
 const parseValue = (raw: string) => {
@@ -16,7 +16,7 @@ export function Data({ manifest, admin }: { manifest: Manifest; admin: Admin }) 
   const [table, setTable] = useState(() => localStorage.getItem("afx:table") ?? tables[0] ?? "");
   const counts = useAsync(() => get<Record<string, number>>("counts", { tables }), [tables.join()], { interval: 10_000 });
   useEffect(() => localStorage.setItem("afx:table", table), [table]);
-  if (!tables.length) return <Empty>No tables yet. Define them in convex/schema.ts.</Empty>;
+  if (!tables.length) return <Empty icon="data">No tables yet. Define them in convex/schema.ts.</Empty>;
   return (
     <div className="split">
       <nav className="panel list" aria-label="Tables">
@@ -27,7 +27,7 @@ export function Data({ manifest, admin }: { manifest: Manifest; admin: Admin }) 
           </button>
         ))}
       </nav>
-      {manifest.tables[table] ? <TableView key={table} table={table} manifest={manifest} admin={admin} onChange={counts.reload} /> : <Empty>Pick a table.</Empty>}
+      {manifest.tables[table] ? <TableView key={table} table={table} manifest={manifest} admin={admin} onChange={counts.reload} /> : <Empty icon="data">Pick a table.</Empty>}
     </div>
   );
 }
@@ -115,7 +115,7 @@ function TableView({ table, manifest, admin, onChange }: { table: string; manife
       </form>
       <ErrorNote error={docs.error} />
       {docs.loading && !docs.data ? (
-        <Spinner />
+        <Skeleton rows={5} />
       ) : docs.data?.page.length ? (
         <div className="table-wrap">
           <table>
@@ -140,7 +140,7 @@ function TableView({ table, manifest, admin, onChange }: { table: string; manife
           </table>
         </div>
       ) : (
-        <Empty>No documents{eq.length ? " match this filter" : ""}.</Empty>
+        <Empty icon="data">No documents{eq.length ? " match this filter" : ""}.</Empty>
       )}
       <div className="toolbar">
         <Button variant="ghost" disabled={cursors.length === 1} onClick={() => setCursors((c) => c.slice(0, -1))}>

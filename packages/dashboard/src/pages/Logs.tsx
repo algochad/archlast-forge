@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { get, type Log, type Manifest } from "../api";
-import { Badge, Button, Empty, ErrorNote, Field, Spinner, useAsync } from "../ui";
+import { Badge, Button, Empty, ErrorNote, Field, Segmented, Skeleton, useAsync } from "../ui";
 
 const RANGES = { "15m": 15 * 60_000, "1h": 3600_000, "24h": 86400_000, "7d": 7 * 86400_000 } as const;
 
@@ -10,7 +10,7 @@ function LevelBadge({ log }: { log: Log }) {
 }
 
 function LogTable({ logs, onRequest }: { logs: Log[]; onRequest: (id: string) => void }) {
-  if (!logs.length) return <Empty>No log entries.</Empty>;
+  if (!logs.length) return <Empty icon="logs">No log entries.</Empty>;
   return (
     <div className="table-wrap">
       <table>
@@ -58,14 +58,15 @@ export function Logs({ manifest }: { manifest: Manifest }) {
   const [filters, setFilters] = useState({ name: "", level: "", range: "1h" as keyof typeof RANGES, requestId: "" });
   return (
     <section className="panel stack" aria-label="Logs">
-      <div className="toolbar" role="radiogroup" aria-label="Source">
-        <Button variant={mode === "live" ? "primary" : "ghost"} aria-pressed={mode === "live"} onClick={() => setMode("live")}>
-          Live (this server)
-        </Button>
-        <Button variant={mode === "history" ? "primary" : "ghost"} aria-pressed={mode === "history"} onClick={() => setMode("history")}>
-          History (all servers)
-        </Button>
-      </div>
+      <Segmented
+        label="Source"
+        value={mode}
+        options={[
+          { value: "live", label: "Live · this server" },
+          { value: "history", label: "History · all servers" },
+        ]}
+        onChange={setMode}
+      />
       {mode === "live" ? (
         <Live onRequest={(id) => (setFilters({ ...filters, requestId: id }), setMode("history"))} />
       ) : (
@@ -163,7 +164,7 @@ function History({
         </Button>
       </div>
       <ErrorNote error={logs.error} />
-      {logs.loading && !logs.data ? <Spinner /> : <LogTable logs={logs.data ?? []} onRequest={(id) => setFilters({ ...filters, requestId: id })} />}
+      {logs.loading && !logs.data ? <Skeleton rows={5} /> : <LogTable logs={logs.data ?? []} onRequest={(id) => setFilters({ ...filters, requestId: id })} />}
     </>
   );
 }

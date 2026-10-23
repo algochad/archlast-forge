@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ago, canWrite, formatTime, get, post, type Admin, type Doc, type Page } from "../api";
-import { Badge, Button, Drawer, Empty, ErrorNote, Field, Spinner, useAction, useAsync } from "../ui";
+import { Badge, Button, Drawer, Empty, ErrorNote, Field, Skeleton, useAction, useAsync } from "../ui";
 
 type User = Doc & { email: string; name: string; emailVerified?: boolean; banned?: boolean };
 type Session = Doc & { expiresAt: number; ipAddress?: string; userAgent?: string; createdAt: number };
@@ -26,7 +26,7 @@ export function Users({ admin }: { admin: Admin }) {
       </form>
       <ErrorNote error={users.error} />
       {users.loading && !users.data ? (
-        <Spinner />
+        <Skeleton rows={5} />
       ) : users.data?.page.length ? (
         <div className="table-wrap">
           <table>
@@ -53,7 +53,7 @@ export function Users({ admin }: { admin: Admin }) {
           </table>
         </div>
       ) : (
-        <Empty>No users{query ? ` with email ${query}` : ""}.</Empty>
+        <Empty icon="users">No users{query ? ` with email ${query}` : ""}.</Empty>
       )}
       <div className="toolbar">
         <Button variant="ghost" disabled={cursors.length === 1} onClick={() => setCursors((c) => c.slice(0, -1))}>
@@ -100,7 +100,7 @@ function UserDrawer({ user, admin, onClose, onChanged }: { user: User; admin: Ad
       <h3>Sessions</h3>
       <ErrorNote error={sessions.error} />
       {sessions.loading ? (
-        <Spinner />
+        <Skeleton rows={5} />
       ) : sessions.data?.length ? (
         <ul className="sessions">
           {sessions.data.map((s) => (
@@ -120,7 +120,7 @@ function UserDrawer({ user, admin, onClose, onChanged }: { user: User; admin: Ad
           ))}
         </ul>
       ) : (
-        <Empty>No active sessions.</Empty>
+        <Empty icon="users">No active sessions.</Empty>
       )}
     </Drawer>
   );

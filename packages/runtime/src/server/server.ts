@@ -224,9 +224,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     port: config.port,
     hostname: config.hostname,
     maxRequestBodySize: config.limits.maxRequestBytes,
-    // Production bundling for the dashboard: it must match React's build (NODE_ENV=production in the engine image),
-    // and Bun's HMR dev server would reject proxied Host headers.
-    development: false,
+    // Dashboard bundling must match React's build: production under NODE_ENV=production (the engine image),
+    // otherwise dev bundling so dashboard edits show on reload. HMR stays off: it rejects proxied Host headers.
+    development: process.env.NODE_ENV === "production" ? false : { hmr: false },
     routes: opts.dashboard && config.dashboard ? { "/_dashboard": opts.dashboard } : {},
     async fetch(req, srv) {
       const url = new URL(req.url);

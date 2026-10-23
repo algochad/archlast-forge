@@ -1,5 +1,5 @@
 import { get } from "../api";
-import { Empty, ErrorNote, Spinner, useAsync } from "../ui";
+import { Empty, ErrorNote, Skeleton, useAsync } from "../ui";
 
 type Entry = { _id: string; time: number; actor: string; action: string; target: string | null; details: string | null };
 
@@ -10,7 +10,7 @@ export function Audit() {
       <p className="muted small">Every change made from the dashboard: who, what, and with which arguments.</p>
       <ErrorNote error={audit.error} />
       {audit.loading && !audit.data ? (
-        <Spinner />
+        <Skeleton rows={5} />
       ) : audit.data?.length ? (
         <div className="table-wrap">
           <table>
@@ -39,7 +39,7 @@ export function Audit() {
           </table>
         </div>
       ) : (
-        <Empty>No dashboard changes yet.</Empty>
+        <Empty icon="audit">No dashboard changes yet.</Empty>
       )}
     </section>
   );

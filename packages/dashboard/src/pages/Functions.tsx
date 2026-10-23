@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { canWrite, get, post, typeOf, type Admin, type Doc, type FunctionInfo, type Manifest, type Page, type Validator } from "../api";
-import { Badge, Button, Empty, Field, JsonEditor, JsonView, useAction } from "../ui";
+import { Badge, Button, Empty, Field, JsonEditor, JsonView, KindPill, Segmented, useAction } from "../ui";
 
 type Run = { time: number; args: unknown; asUser?: string; ok: boolean; value: unknown; ms: number };
 
@@ -17,7 +17,7 @@ const simple = (v: Validator) => ["string", "number", "boolean", "id", "null"].i
 
 export function Functions({ manifest, admin }: { manifest: Manifest; admin: Admin }) {
   const [filter, setFilter] = useState("");
-  const [name, setName] = useState(manifest.functions[0]?.name ?? "");
+  const [name, setName] = useState(() => localStorage.getItem("afx:fn") ?? manifest.functions[0]?.name ?? "");
   const shown = manifest.functions.filter((f) => f.name.toLowerCase().includes(filter.toLowerCase()));
   const fn = manifest.functions.find((f) => f.name === name);
   return (
@@ -27,15 +27,15 @@ export function Functions({ manifest, admin }: { manifest: Manifest; admin: Admi
         {shown.map((f) => (
           <button key={f.name} aria-current={f.name === name} onClick={() => setName(f.name)}>
             <span>{f.name}</span>
-            <span className="muted small">
-              {f.kind[0]!.toUpperCase()}
-              {f.visibility === "internal" ? " · internal" : ""}
+            <span className="fn-meta">
+              {f.visibility === "internal" && <span className="muted small">internal</span>}
+              <KindPill kind={f.kind} />
             </span>
           </button>
         ))}
-        {!shown.length && <Empty>No matches.</Empty>}
+        {!shown.length && <Empty icon="functions">No matches.</Empty>}
       </nav>
-      {fn ? <Runner key={fn.name} fn={fn} admin={admin} /> : <Empty>Pick a function.</Empty>}
+      {fn ? <Runner key={fn.name} fn={fn} admin={admin} /> : <Empty icon="functions">Pick a function.</Empty>}
     </div>
   );
 }
@@ -89,7 +89,7 @@ function Runner({ fn, admin }: { fn: FunctionInfo; admin: Admin }) {
     <section className="panel stack" aria-label={fn.name}>
       <div className="toolbar">
         <h2>{fn.name}</h2>
-        <Badge tone="accent">{fn.kind}</Badge>
+        <KindPill kind={fn.kind} />
         {fn.visibility === "internal" && <Badge tone="warn">internal</Badge>}
       </div>
       <p className="muted small">
@@ -112,21 +112,18 @@ function Runner({ fn, admin }: { fn: FunctionInfo; admin: Admin }) {
           }}
         >
           {formable && (
-            <div className="toolbar" role="radiogroup" aria-label="Arguments as">
-              <Button variant={mode === "form" ? "primary" : "ghost"} onClick={() => setMode("form")} aria-pressed={mode === "form"}>
-                Form
-              </Button>
-              <Button
-                variant={mode === "json" ? "primary" : "ghost"}
-                onClick={() => {
-                  setJson(JSON.stringify(buildArgs(), null, 2));
-                  setMode("json");
-                }}
-                aria-pressed={mode === "json"}
-              >
-                JSON
-              </Button>
-            </div>
+            <Segmented
+              label="Arguments as"
+              value={mode}
+              options={[
+                { value: "form", label: "Form" },
+                { value: "json", label: "JSON" },
+              ]}
+              onChange={(m) => {
+                if (m === "json") setJson(JSON.stringify(buildArgs(), null, 2));
+                setMode(m);
+              }}
+            />
           )}
           {mode === "form" ? (
             Object.keys(fn.args).length ? (

@@ -1,4 +1,4 @@
-import { ago, canWrite, fieldsOf, get, post, type Admin, type Manifest } from "../api";
+import { ago, canWrite, get, post, typeOf, type Admin, type Manifest } from "../api";
 import { Badge, Button, Empty, useAction, useAsync } from "../ui";
 
 type Sub = { name: string; args: unknown; topics: string[]; since: number };
@@ -27,7 +27,14 @@ export function Settings({ manifest, admin }: { manifest: Manifest; admin: Admin
                     {name} {!t.strict && <Badge tone="accent">Better Auth</Badge>}
                   </td>
                   <td>
-                    <code className="cell-code">{fieldsOf(t.fields)}</code>
+                    {Object.entries(t.fields).map(([k, v]) => (
+                      <div key={k}>
+                        <code>
+                          {k}
+                          {v.optional ? "?" : ""}: <span className="muted">{typeOf(v)}</span>
+                        </code>
+                      </div>
+                    ))}
                   </td>
                   <td>
                     {Object.entries(t.indexes).map(([i, f]) => (
@@ -73,7 +80,7 @@ export function Settings({ manifest, admin }: { manifest: Manifest; admin: Admin
             ))}
           </ul>
         ) : (
-          <Empty>None set.</Empty>
+          <Empty icon="settings">None set.</Empty>
         )}
       </section>
       <section className="panel" aria-label="Live subscriptions">
@@ -110,7 +117,7 @@ export function Settings({ manifest, admin }: { manifest: Manifest; admin: Admin
             </table>
           </div>
         ) : (
-          <Empty>No live subscriptions.</Empty>
+          <Empty icon="settings">No live subscriptions.</Empty>
         )}
       </section>
     </div>
