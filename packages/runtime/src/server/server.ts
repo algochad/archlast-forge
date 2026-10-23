@@ -228,6 +228,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     port: config.port,
     hostname: config.hostname,
     maxRequestBodySize: config.limits.maxRequestBytes,
+    idleTimeout: Math.min(config.idleTimeoutSeconds, 255), // Bun's own ceiling
     // Dashboard bundling must match React's build: production under NODE_ENV=production (the engine image),
     // otherwise dev bundling so dashboard edits show on reload. HMR stays off: it rejects proxied Host headers.
     development: process.env.NODE_ENV === "production" ? false : { hmr: false },

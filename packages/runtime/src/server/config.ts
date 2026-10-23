@@ -31,6 +31,8 @@ export interface Config {
   cacheTtlMs: number;
   /** Lets owners run code written in the dashboard. That is arbitrary code with the function runtime's privileges, so it is off in production unless asked for. */
   customFunctions: boolean;
+  /** How long an idle keep-alive connection stays open. Proxies and load balancers reuse upstream connections for 60-75 s, so closing sooner makes them hit a socket just closed. */
+  idleTimeoutSeconds: number;
   /** Memory the in-process cache may use; Redis applies its own limits. */
   cacheMaxBytes: number;
   /** Function runtime processes per server. */
@@ -102,6 +104,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     replicas,
     cacheTtlMs: int("CACHE_TTL_MS", 60_000),
     cacheMaxBytes: int("CACHE_MAX_MB", 64, 1) * 2 ** 20,
+    idleTimeoutSeconds: int("IDLE_TIMEOUT_SECONDS", 75, 1),
     runtimeWorkers: int("RUNTIME_WORKERS", 1, 1),
     limits: {
       functionTimeoutMs: int("FUNCTION_TIMEOUT_MS", 10_000, 1),

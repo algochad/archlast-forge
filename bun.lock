@@ -43,6 +43,16 @@
     "apps/docs": {
       "name": "@archlast-forge/docs",
     },
+    "benchmarks/twelve-dollar/forge": {
+      "name": "@archlast-forge/bench-twelve-dollar",
+      "dependencies": {
+        "@archlast-forge/runtime": "workspace:*",
+      },
+      "devDependencies": {
+        "@archlast-forge/cli": "workspace:*",
+        "@types/node": "24",
+      },
+    },
     "packages/cli": {
       "name": "@archlast-forge/cli",
       "version": "0.1.0",
@@ -153,6 +163,8 @@
     },
   },
   "packages": {
+    "@archlast-forge/bench-twelve-dollar": ["@archlast-forge/bench-twelve-dollar@workspace:benchmarks/twelve-dollar/forge"],
+
     "@archlast-forge/cli": ["@archlast-forge/cli@workspace:packages/cli"],
 
     "@archlast-forge/client": ["@archlast-forge/client@workspace:packages/client"],

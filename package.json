@@ -26,6 +26,7 @@
   "workspaces": [
     "apps/*",
     "apps/*/forge",
-    "packages/*"
+    "packages/*",
+    "benchmarks/*/forge"
   ]
 }

@@ -1,0 +1,246 @@
+{
+  "score": 2000,
+  "limit": {
+    "passed": 2500,
+    "failed": 2750
+  },
+  "minutes": 42.7,
+  "limits": {
+    "cpuset": "0",
+    "memory": "2g",
+    "cache": "0"
+  },
+  "readySeconds": 6.3,
+  "runs": [
+    {
+      "mode": "warmup",
+      "users": 1000,
+      "pass": false,
+      "p95": 451.52,
+      "p99": 1253.12,
+      "avg": 91.73,
+      "rps": 85.7,
+      "failedRate": 0,
+      "requests": 14144,
+      "server": {
+        "samples": 31,
+        "cpuAvg": 43.6,
+        "cpuMax": 65.8,
+        "memMaxMiB": 154,
+        "running": true,
+        "oomKilled": false
+      },
+      "generator": {
+        "cpuSeconds": 42.5,
+        "maxEventLoopLagMs": 1676.3
+      }
+    },
+    {
+      "mode": "search",
+      "users": 2500,
+      "pass": true,
+      "p95": 424.99,
+      "p99": 724.94,
+      "avg": 89.99,
+      "rps": 213.5,
+      "failedRate": 0,
+      "requests": 35223,
+      "server": {
+        "samples": 31,
+        "cpuAvg": 63.6,
+        "cpuMax": 76.6,
+        "memMaxMiB": 157,
+        "running": true,
+        "oomKilled": false
+      },
+      "generator": {
+        "cpuSeconds": 66.6,
+        "maxEventLoopLagMs": 762.8
+      }
+    },
+    {
+      "mode": "search",
+      "users": 5000,
+      "pass": false,
+      "p95": 3195.89,
+      "p99": 6279.66,
+      "avg": 832.79,
+      "rps": 394.5,
+      "failedRate": 0,
+      "requests": 65100,
+      "server": {
+        "samples": 31,
+        "cpuAvg": 80.5,
+        "cpuMax": 91.9,
+        "memMaxMiB": 219,
+        "running": true,
+        "oomKilled": false
+      },
+      "generator": {
+        "cpuSeconds": 86.9,
+        "maxEventLoopLagMs": 1368.7
+      }
+    },
+    {
+      "mode": "narrow",
+      "users": 3750,
+      "pass": false,
+      "p95": 8142.95,
+      "p99": 11097.44,
+      "avg": 1500.01,
+      "rps": 275.9,
+      "failedRate": 0,
+      "requests": 45523,
+      "server": {
+        "samples": 31,
+        "cpuAvg": 71,
+        "cpuMax": 89,
+        "memMaxMiB": 223,
+        "running": true,
+        "oomKilled": false
+      },
+      "generator": {
+        "cpuSeconds": 79.5,
+        "maxEventLoopLagMs": 1325.3
+      }
+    },
+    {
+      "mode": "narrow",
+      "users": 3250,
+      "pass": false,
+      "p95": 1217.7,
+      "p99": 1818.56,
+      "avg": 323.15,
+      "rps": 270.4,
+      "failedRate": 0,
+      "requests": 44609,
+      "server": {
+        "samples": 31,
+        "cpuAvg": 70.4,
+        "cpuMax": 88.7,
+        "memMaxMiB": 172,
+        "running": true,
+        "oomKilled": false
+      },
+      "generator": {
+        "cpuSeconds": 75.3,
+        "maxEventLoopLagMs": 1553.8
+      }
+    },
+    {
+      "mode": "narrow",
+      "users": 3000,
+      "pass": false,
+      "p95": 1059.89,
+      "p99": 2651.27,
+      "avg": 261.59,
+      "rps": 250.2,
+      "failedRate": 0,
+      "requests": 41286,
+      "server": {
+        "samples": 31,
+        "cpuAvg": 70.5,
+        "cpuMax": 85.2,
+        "memMaxMiB": 172,
+        "running": true,
+        "oomKilled": false
+      },
+      "generator": {
+        "cpuSeconds": 72.2,
+        "maxEventLoopLagMs": 999.7
+      }
+    },
+    {
+      "mode": "narrow",
+      "users": 2750,
+      "pass": false,
+      "p95": 837.77,
+      "p99": 1959.13,
+      "avg": 171.48,
+      "rps": 231.9,
+      "failedRate": 0,
+      "requests": 38271,
+      "server": {
+        "samples": 31,
+        "cpuAvg": 66.2,
+        "cpuMax": 81,
+        "memMaxMiB": 167,
+        "running": true,
+        "oomKilled": false
+      },
+      "generator": {
+        "cpuSeconds": 67.7,
+        "maxEventLoopLagMs": 708.3
+      }
+    },
+    {
+      "mode": "confirm",
+      "users": 2500,
+      "pass": false,
+      "p95": 811.12,
+      "p99": 1654.68,
+      "avg": 165.01,
+      "rps": 233.6,
+      "failedRate": 0,
+      "requests": 91106,
+      "server": {
+        "samples": 76,
+        "cpuAvg": 68.4,
+        "cpuMax": 81.7,
+        "memMaxMiB": 173,
+        "running": true,
+        "oomKilled": false
+      },
+      "generator": {
+        "cpuSeconds": 163.9,
+        "maxEventLoopLagMs": 1076.7
+      }
+    },
+    {
+      "mode": "confirm",
+      "users": 2250,
+      "pass": false,
+      "p95": 620.51,
+      "p99": 2631,
+      "avg": 146.4,
+      "rps": 211.5,
+      "failedRate": 0,
+      "requests": 82480,
+      "server": {
+        "samples": 76,
+        "cpuAvg": 62.2,
+        "cpuMax": 80.2,
+        "memMaxMiB": 176,
+        "running": true,
+        "oomKilled": false
+      },
+      "generator": {
+        "cpuSeconds": 142.3,
+        "maxEventLoopLagMs": 1005.5
+      }
+    },
+    {
+      "mode": "confirm",
+      "users": 2000,
+      "pass": true,
+      "p95": 225.23,
+      "p99": 713.66,
+      "avg": 46.56,
+      "rps": 189.8,
+      "failedRate": 0,
+      "requests": 74024,
+      "server": {
+        "samples": 76,
+        "cpuAvg": 55,
+        "cpuMax": 74.3,
+        "memMaxMiB": 163,
+        "running": true,
+        "oomKilled": false
+      },
+      "generator": {
+        "cpuSeconds": 120,
+        "maxEventLoopLagMs": 981.5
+      }
+    }
+  ]
+}

@@ -22,6 +22,7 @@ Environment variables, read at startup. Invalid or contradictory values fail fas
 | `RUNTIME_WORKERS` | `1` | function runtime processes per server |
 | `FUNCTION_TIMEOUT_MS`, `ACTION_TIMEOUT_MS` | `10000`, `600000` | |
 | `MAX_RESULT_BYTES`, `MAX_DOCUMENT_BYTES`, `MAX_REQUEST_BYTES` | 8 MiB, 1 MiB, 8 MiB | |
+| `IDLE_TIMEOUT_SECONDS` | `75` (at most 255) | how long an idle keep-alive connection stays open; keep it above your proxy's upstream keep-alive (nginx and cloud load balancers use 60 s or more) |
 | `RATE_LIMIT_PER_MINUTE` | `1200` (`0`, off, in dev) | per client IP |
 | `MAX_SUBSCRIPTIONS_PER_CONNECTION` | `200` | |
 | `TRUST_PROXY` | off | use `X-Forwarded-For` for client IPs |
