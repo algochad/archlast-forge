@@ -364,3 +364,49 @@ details.run[open] summary { margin-bottom: 0.5rem; }
 .kind-pill.mutation { color: var(--ember); border-color: color-mix(in srgb, var(--ember) 35%, transparent); background: var(--ember-soft); }
 .kind-pill.action { color: var(--spark); border-color: color-mix(in srgb, var(--spark) 40%, transparent); background: color-mix(in srgb, var(--spark) 10%, transparent); }
 .fn-meta { display: inline-flex; gap: 0.35rem; align-items: center; flex-shrink: 0; white-space: nowrap; }
+
+/* ---------- data browser ---------- */
+.list-group { display: grid; gap: 2px; }
+.list-group + .list-group { margin-top: 0.6rem; padding-top: 0.6rem; border-top: 1px solid var(--border); }
+.list-head { font: 600 10.5px/1.4 var(--font-display); text-transform: uppercase; letter-spacing: 0.08em; color: var(--faint); padding: 0.25rem 0.6rem 0.35rem; }
+.list-name { display: inline-flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.list-name .icon { color: var(--faint); flex-shrink: 0; }
+.list button[aria-current="true"] .list-name .icon { color: var(--ember); }
+.table-view { display: grid; gap: 1rem; padding: 0; overflow: hidden; }
+.table-body { display: grid; gap: 1rem; padding: 0 1.1rem; min-width: 0; }
+.table-body.schema { padding-bottom: 1.1rem; }
+.table-head { display: flex; flex-wrap: wrap; align-items: center; gap: 0.75rem; padding: 1rem 1.1rem 0; }
+.table-icon { display: grid; place-items: center; width: 40px; height: 40px; border-radius: 10px; color: var(--ember); background: var(--ember-soft); border: 1px solid color-mix(in srgb, var(--ember) 25%, transparent); flex-shrink: 0; }
+.table-title h2 { font-size: 1.2rem; font-family: var(--font-mono); font-weight: 600; letter-spacing: -0.02em; }
+.table-title p { margin: 0.1rem 0 0; font-variant-numeric: tabular-nums; }
+.table-head .btn { display: inline-flex; align-items: center; gap: 0.35rem; }
+.filter-bar { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 0.75rem; padding: 0.85rem 1.1rem; background: var(--panel-2); border-block: 1px solid var(--border); }
+.filter-bar select { min-width: 16rem; }
+.filter-bar input { min-width: 12rem; }
+.filter-actions { display: flex; gap: 0.5rem; }
+.filter-bar .segmented { padding: 2px; }
+.filter-bar .segmented button { padding: 0.3rem 0.8rem; }
+.field .label { font: 600 11.5px var(--font-display); color: var(--muted); letter-spacing: 0.02em; }
+.docs-table { max-height: calc(100vh - 21rem); overflow: auto; }
+.docs-table th { vertical-align: bottom; }
+.col-name { display: block; font: 600 12px/1.3 var(--font-mono); text-transform: none; letter-spacing: 0; color: var(--text); }
+.col-type { display: block; max-width: 16rem; overflow: hidden; text-overflow: ellipsis; font: 400 10.5px/1.3 var(--font-mono); text-transform: none; letter-spacing: 0; color: var(--faint); }
+.docs-table td { white-space: nowrap; }
+.pager { display: flex; align-items: center; gap: 0.5rem; padding: 0.75rem 1.1rem; border-top: 1px solid var(--border); background: var(--panel-2); }
+.section-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 0.75rem; }
+.section-head h3 { margin: 0; }
+.schema-table td { vertical-align: middle; }
+.schema-table th { font-size: 10.5px; }
+.field-name { font-weight: 600; color: var(--text); }
+.type-code { color: var(--info); word-break: break-word; }
+.chips { display: inline-flex; flex-wrap: wrap; gap: 0.35rem; }
+.chips .id-chip b { margin-right: 0.15rem; font-size: 10.5px; }
+dl.meta { display: grid; grid-template-columns: auto 1fr; gap: 0.35rem 1rem; margin: 0; padding: 0.75rem 0.9rem; background: var(--panel-2); border: 1px solid var(--border); border-radius: var(--radius-sm); font-size: 13px; }
+dl.meta dt { color: var(--faint); font: 600 11px/1.6 var(--font-display); text-transform: uppercase; letter-spacing: 0.06em; }
+dl.meta dd { margin: 0; overflow-wrap: anywhere; }
+@media (max-width: 900px) {
+  .filter-bar select, .filter-bar input { min-width: 0; width: 100%; }
+  .filter-bar .field { flex: 1 1 100%; }
+  .filter-bar .field.push { margin-left: 0; }
+  .docs-table { max-height: none; }
+}
