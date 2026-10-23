@@ -28,7 +28,15 @@ export interface LogEntry {
   requestId?: string;
 }
 
-export const logContext = new AsyncLocalStorage<{ name: string; requestId?: string }>();
+/** One console line from a function, as shown next to a custom function's result. */
+export interface ConsoleLine {
+  time: number;
+  level: LogEntry["level"];
+  message: string;
+}
+
+/** `logs`, when set, also collects the function's console output for the caller. */
+export const logContext = new AsyncLocalStorage<{ name: string; requestId?: string; logs?: ConsoleLine[] }>();
 
 export type ErrorKind = "user" | "validation" | "timeout" | "internal";
 
@@ -148,6 +156,12 @@ export class Executor {
     const fn = this.o.functions.get(name);
     if (!fn) throw new ValidationError(`Unknown function "${name}"`);
     if (fn.kind !== kind) throw new ValidationError(`"${name}" is a ${fn.kind}, not a ${kind}`);
+    return this.execute(fn, name, args, identity, requestId);
+  }
+
+  /** Runs a function object directly, like the dashboard's custom functions, with the validation, limits, transaction and logging of any call. */
+  async execute(fn: RegisteredFunction, name: string, args: unknown, identity: UserIdentity | null, requestId?: string, logs?: ConsoleLine[]): Promise<CallResult> {
+    const kind = fn.kind;
     args ??= {};
     validateFields(fn.args, args as Record<string, unknown>, "args");
     let usedAuth = false;
@@ -158,7 +172,7 @@ export class Executor {
       },
     };
     const { functionTimeoutMs, actionTimeoutMs } = this.limits;
-    const result = await this.logged(name, requestId, async () => {
+    const result = await this.logged(name, requestId, logs, async () => {
       if (kind === "query") {
         const { value, reads } = await this.read((store) =>
           withTimeout(
@@ -194,12 +208,12 @@ export class Executor {
     return checkReturn(fn, await fn.handler(ctx, args)); // inside the transaction, so a bad value rolls back
   }
 
-  async logged<T>(name: string, requestId: string | undefined, fn: () => Promise<T>): Promise<T> {
+  async logged<T>(name: string, requestId: string | undefined, logs: ConsoleLine[] | undefined, fn: () => Promise<T>): Promise<T> {
     const start = performance.now();
     const entry = (ok: boolean, message: string) =>
       this.o.log({ time: Date.now(), name, level: "call", message, ok, requestId, durationMs: Math.round((performance.now() - start) * 10) / 10 });
     try {
-      const out = await logContext.run({ name, requestId }, fn);
+      const out = await logContext.run({ name, requestId, logs }, fn);
       entry(true, "ok");
       return out;
     } catch (e) {

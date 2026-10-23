@@ -20,3 +20,7 @@
 - Validate everything with `args`. Authorize in the function, with `ctx.auth.getUserIdentity()`.
 - Set `TRUST_PROXY=1` only behind a proxy you control, or clients can spoof their IP.
 - Server dependencies don't run install scripts unless listed in `trustedDependencies`.
+
+## Custom functions in the dashboard
+
+The dashboard can run code its owner types in (see [Dashboard](dashboard.html#running-your-own-code)). That code runs in the function runtime with the server's environment and network access, which is far more than an admin can otherwise do. It is limited to the `owner` role, off in production unless `ALLOW_CUSTOM_FUNCTIONS=on`, subject to the same time and result limits as any query or mutation, and audited. Leave it off on deployments where owner sessions are shared widely, and keep `DASHBOARD` off on a server you don't need to inspect.

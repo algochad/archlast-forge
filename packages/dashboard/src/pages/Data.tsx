@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { canWrite, formatTime, get, post, typeOf, type Admin, type Doc, type Manifest, type Page, type TableInfo } from "../api";
 import { Icon } from "../brand";
+import { CustomFunction, readTable, type Draft } from "./CustomFunction";
 import { Badge, Button, Code, Drawer, Empty, ErrorNote, Field, JsonEditor, JsonView, Segmented, Skeleton, useAction, useAsync } from "../ui";
 
 /** A filter value: JSON when it parses (numbers, booleans), otherwise the text itself. */
@@ -20,6 +21,9 @@ export function Data({ manifest, admin }: { manifest: Manifest; admin: Admin }) 
   const [table, setTable] = useState(() => localStorage.getItem("afx:table") ?? tables[0] ?? "");
   const counts = useAsync(() => get<Record<string, number>>("counts", { tables }), [tables.join()], { interval: 10_000 });
   useEffect(() => localStorage.setItem("afx:table", table), [table]);
+  // The function runner takes the place of the table; `key` restarts it when a table's Query button opens it again.
+  const [runner, setRunner] = useState<{ key: number; initial?: Draft } | null>(null);
+  const openRunner = (initial?: Draft) => setRunner({ key: Date.now(), initial });
   if (!tables.length) return <Empty icon="data">No tables yet. Define them in convex/schema.ts.</Empty>;
   const groups = [
     {
@@ -34,11 +38,27 @@ export function Data({ manifest, admin }: { manifest: Manifest; admin: Admin }) 
   return (
     <div className="split">
       <nav className="panel list" aria-label="Tables">
+        <div className="list-group">
+          <span className="list-head">Tools</span>
+          <button aria-current={runner !== null} onClick={() => (runner ? setRunner(null) : openRunner())}>
+            <span className="list-name">
+              <Icon name="functions" size={15} />
+              Run function
+            </span>
+          </button>
+        </div>
         {groups.map((g) => (
           <div key={g.label} className="list-group">
             <span className="list-head">{g.label}</span>
             {g.names.map((t) => (
-              <button key={t} aria-current={t === table} onClick={() => setTable(t)}>
+              <button
+                key={t}
+                aria-current={!runner && t === table}
+                onClick={() => {
+                  setTable(t);
+                  setRunner(null);
+                }}
+              >
                 <span className="list-name">
                   <Icon name="data" size={15} />
                   {t}
@@ -49,8 +69,10 @@ export function Data({ manifest, admin }: { manifest: Manifest; admin: Admin }) 
           </div>
         ))}
       </nav>
-      {manifest.tables[table] ? (
-        <TableView key={table} table={table} manifest={manifest} admin={admin} count={counts.data?.[table]} onChange={counts.reload} />
+      {runner ? (
+        <CustomFunction key={runner.key} manifest={manifest} admin={admin} initial={runner.initial} />
+      ) : manifest.tables[table] ? (
+        <TableView key={table} table={table} manifest={manifest} admin={admin} count={counts.data?.[table]} onChange={counts.reload} onQuery={admin.role === "owner" ? () => openRunner(readTable(table)) : undefined} />
       ) : (
         <Empty icon="data">Pick a table.</Empty>
       )}
@@ -65,7 +87,7 @@ const orderColumns = (info: TableInfo, docs: Doc[]) => {
   return ["_id", ...declared, ...extra, "_creationTime"];
 };
 
-function TableView({ table, manifest, admin, count, onChange }: { table: string; manifest: Manifest; admin: Admin; count?: number; onChange: () => void }) {
+function TableView({ table, manifest, admin, count, onChange, onQuery }: { table: string; manifest: Manifest; admin: Admin; count?: number; onChange: () => void; onQuery?: () => void }) {
   const info = manifest.tables[table]!;
   const indexes = ["by_creation_time", ...Object.keys(info.indexes)];
   const [view, setView] = useState<"documents" | "schema">("documents");
@@ -124,6 +146,11 @@ function TableView({ table, manifest, admin, count, onChange }: { table: string;
           ]}
           onChange={setView}
         />
+        {onQuery && (
+          <Button variant="ghost" onClick={onQuery}>
+            <Icon name="functions" size={16} /> Query
+          </Button>
+        )}
         {canWrite(admin) && (
           <Button onClick={() => setSelected("new")}>
             <Icon name="plus" size={16} /> Add document

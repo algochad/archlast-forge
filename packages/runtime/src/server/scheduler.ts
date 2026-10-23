@@ -132,7 +132,7 @@ export class SchedulerLoop {
     try {
       if (!fn) throw new Error(`Unknown function "${name}"`);
       if (fn.kind === "mutation") {
-        await this.exec.logged(name, undefined, () =>
+        await this.exec.logged(name, undefined, undefined, () =>
           this.exec.mutate(async (store, tx, after) => {
             if (!(await this.claim(tx, _id, "success")).length) return;
             validateFields(fn.args, parsed, "args");

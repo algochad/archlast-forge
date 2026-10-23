@@ -102,6 +102,7 @@ export function buildAdminRouter(opts: {
   reload: () => Promise<unknown>;
   cache: () => object;
   clearCache: () => Promise<number>;
+  customFunctions: boolean;
 }) {
   const a = initTRPC.context<AdminContext>().create({ isDev: opts.dev, errorFormatter: formatter });
   const as = (role: AdminRole) =>
@@ -110,10 +111,11 @@ export function buildAdminRouter(opts: {
       if (RANK[ctx.admin.role] < RANK[role]) throw new TRPCError({ code: "FORBIDDEN", message: `Requires the ${role} role` });
       return next({ ctx: { ...ctx, admin: ctx.admin } });
     });
-  const forward = (op: string, role: AdminRole) =>
+  const forward = (op: string, role: AdminRole, allowed = true) =>
     as(role)
       .input((raw) => (raw ?? {}) as Record<string, unknown>)
       [role === "viewer" ? "query" : "mutation"](async ({ input, ctx }) => {
+        if (!allowed) throw new TRPCError({ code: "FORBIDDEN", message: "Custom functions are off. Set ALLOW_CUSTOM_FUNCTIONS=on to allow owners to run them." });
         try {
           return await opts.runtime.admin(op, { ...input, requestId: ctx.requestId }, ctx.admin.email);
         } catch (e) {
@@ -124,6 +126,8 @@ export function buildAdminRouter(opts: {
   const ops: Record<string, any> = {};
   for (const op of READ_OPS) ops[op] = forward(op, "viewer");
   for (const op of WRITE_OPS) ops[op] = forward(op, "admin");
+  // Arbitrary code runs with the function runtime's privileges, so it takes the top role, not just an admin's.
+  ops.runCustom = forward("runCustom", "owner", opts.customFunctions);
   return a.router({
     ...ops,
     me: a.procedure.query(({ ctx }) => ctx.admin),

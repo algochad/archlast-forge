@@ -2,7 +2,8 @@
 import type { CronJob, FunctionKind, RegisteredFunction, UserIdentity } from "../functions";
 import { ValidationError } from "../values";
 import type { Db } from "./db/types";
-import type { Executor, LogEntry } from "./executor";
+import { compileCustom, type CustomCodeError } from "./custom";
+import type { ConsoleLine, Executor, LogEntry } from "./executor";
 import { cancelScheduled, nextRun, retryScheduled } from "./scheduler";
 import type { Storage } from "./storage";
 
@@ -61,7 +62,7 @@ export interface AdminDeps {
   serverId: string;
 }
 
-const WRITE_OPS = new Set(["insertDoc", "patchDoc", "replaceDoc", "deleteDoc", "cancelJob", "retryJob", "deleteFile", "revokeSession", "banUser", "run", "clearCache"]);
+const WRITE_OPS = new Set(["insertDoc", "patchDoc", "replaceDoc", "deleteDoc", "cancelJob", "retryJob", "deleteFile", "revokeSession", "banUser", "run", "runCustom", "clearCache"]);
 
 export async function adminOp(d: AdminDeps, op: string, args: any, actor: string): Promise<unknown> {
   const { db, exec } = d;
@@ -120,6 +121,27 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
       case "run": {
         const identity = args.asUserId ? await identityOf(exec, args.asUserId) : null;
         return (await exec.call(args.name, args.kind as FunctionKind, args.args, identity, args.requestId)).value;
+      }
+
+      // Code written in the dashboard. The router only lets owners get here, and only when ALLOW_CUSTOM_FUNCTIONS is on.
+      // Failures come back as data so the dashboard can show them next to the console output.
+      case "runCustom": {
+        const logs: ConsoleLine[] = [];
+        const began = performance.now();
+        const done = (r: object) => ({ ms: Math.round((performance.now() - began) * 10) / 10, logs, ...r });
+        let fn: RegisteredFunction;
+        try {
+          fn = await compileCustom(String(args.code ?? ""));
+        } catch (e) {
+          return done({ ok: false, error: (e as Error).message, line: (e as CustomCodeError).line, phase: "compile" });
+        }
+        try {
+          const identity = args.asUserId ? await identityOf(exec, args.asUserId) : null;
+          const out = await exec.execute(fn, `custom:${fn.kind}`, args.args, identity, args.requestId, logs);
+          return done({ ok: true, kind: fn.kind, value: out.value });
+        } catch (e) {
+          return done({ ok: false, kind: fn.kind, error: (e as Error).message, phase: "run" });
+        }
       }
 
       // -- scheduler --

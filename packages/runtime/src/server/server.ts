@@ -128,10 +128,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     subs,
     recentLogs,
     dev,
-    serverInfo: () => ({ serverId, connections, subscriptions: subs.size, workers: config.runtimeWorkers, uptimeMs: Math.round(process.uptime() * 1000) }),
+    serverInfo: () => ({ serverId, customFunctions: config.customFunctions, connections, subscriptions: subs.size, workers: config.runtimeWorkers, uptimeMs: Math.round(process.uptime() * 1000) }),
     reload: () => reload(),
     cache: () => ({ ...queries.snapshot(), backend: config.redisUrl ? "redis" : "memory", maxBytes: config.redisUrl ? null : config.cacheMaxBytes }),
     clearCache: () => queries.clear(),
+    customFunctions: config.customFunctions,
   });
   const adminSessions = new Map<string, { admin: AdminInfo | null; at: number }>();
   async function adminOf(req: Request): Promise<AdminInfo | null> {

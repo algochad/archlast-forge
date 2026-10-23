@@ -15,6 +15,7 @@ Environment variables, read at startup. Invalid or contradictory values fail fas
 | `BETTER_AUTH_URL` | the server's URL | must be `https://` in production (`ALLOW_INSECURE_HTTP=1` to override for local testing) |
 | `TRUSTED_ORIGINS` | none | comma-separated browser origins |
 | `DASHBOARD` | on in dev, off in production | |
+| `ALLOW_CUSTOM_FUNCTIONS` | on in dev, off in production | lets dashboard owners [run their own code](dashboard.html#running-your-own-code) |
 | `ADMIN_KEY` | generated in dev | owner access to the dashboard and `/metrics` |
 | `CACHE_TTL_MS` | `60000` | longest a cached query result lives; `0` turns the [cache](caching.html) off |
 | `CACHE_MAX_MB` | `64` | memory the in-process cache may use (ignored with `REDIS_URL`) |

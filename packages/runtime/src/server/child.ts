@@ -30,7 +30,9 @@ for (const level of ["log", "info", "warn", "error", "debug"] as const) {
     const ctx = logContext.getStore();
     if (ctx) {
       const message = args.map((a) => (typeof a === "string" ? a : Bun.inspect(a))).join(" ");
-      emit({ time: Date.now(), name: ctx.name, level, message, requestId: ctx.requestId });
+      const time = Date.now();
+      emit({ time, name: ctx.name, level, message, requestId: ctx.requestId });
+      ctx.logs?.push({ time, level, message });
       original(`[${ctx.name}]`, ...args);
     } else original(...args);
   };

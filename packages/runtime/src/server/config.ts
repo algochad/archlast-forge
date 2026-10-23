@@ -29,6 +29,8 @@ export interface Config {
   replicas: number;
   /** TTL for cached query results. 0 disables the cache. */
   cacheTtlMs: number;
+  /** Lets owners run code written in the dashboard. That is arbitrary code with the function runtime's privileges, so it is off in production unless asked for. */
+  customFunctions: boolean;
   /** Memory the in-process cache may use; Redis applies its own limits. */
   cacheMaxBytes: number;
   /** Function runtime processes per server. */
@@ -93,6 +95,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       : undefined,
     adminKey: env.ADMIN_KEY || undefined,
     dashboard: bool(env.DASHBOARD, dev),
+    customFunctions: bool(env.ALLOW_CUSTOM_FUNCTIONS, dev),
     authSecret: env.BETTER_AUTH_SECRET,
     authUrl,
     trustedOrigins: (env.TRUSTED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
