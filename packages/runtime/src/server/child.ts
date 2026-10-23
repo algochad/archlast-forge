@@ -1,4 +1,4 @@
-// Function runtime process: owns convex/ modules, the database, auth and the scheduler.
+// Function runtime process: owns forge/ modules, the database, auth and the scheduler.
 // The server restarts this process alone when code or dependencies change, and kills it if a call hangs.
 import { mkdirSync } from "node:fs";
 import { validateFields } from "../values";
@@ -70,7 +70,7 @@ async function checkSchema(exec: Executor, project: Project) {
 }
 
 async function main() {
-  const convexDir = process.env.ARCHLAST_CONVEX_DIR!;
+  const forgeDir = process.env.ARCHLAST_FORGE_DIR!;
   const worker = Number(process.env.ARCHLAST_WORKER ?? 0);
   const serverId = process.env.ARCHLAST_SERVER_ID ?? "local";
   const config = loadConfig(process.env, process.env.ARCHLAST_DEV === "1");
@@ -79,7 +79,7 @@ async function main() {
   const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : createSqliteDb(sqlitePath(config));
   await migrateSystem(db);
   await loadEnv(db);
-  const project = await loadProject(convexDir);
+  const project = await loadProject(forgeDir);
   await db.migrate(tableSpecs(project.tables));
   logWriter = new LogWriter(db, serverId, config.logRetentionDays * 86400_000);
 

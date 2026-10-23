@@ -11,7 +11,7 @@ test("scaffolds a project with the name and versions filled in", () => {
   expect(pkg.name).toBe("my-chat");
   expect(pkg.dependencies["@archlast-forge/react"]).toBe("^1.2.3");
   expect(existsSync(join(dir, ".gitignore"))).toBe(true);
-  expect(existsSync(join(dir, "convex/schema.ts"))).toBe(true);
-  expect(readFileSync(join(dir, "convex/package.json"), "utf8")).toContain('"@archlast-forge/runtime": "^1.2.3"');
+  expect(existsSync(join(dir, "forge/schema.ts"))).toBe(true);
+  expect(readFileSync(join(dir, "forge/package.json"), "utf8")).toContain('"@archlast-forge/runtime": "^1.2.3"');
   expect(() => scaffold(dir)).toThrow("isn't empty");
 });

@@ -5,7 +5,7 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
-    "codegen": "archlast-forge codegen --dir convex",
+    "codegen": "archlast-forge codegen --dir forge",
     "build": "vite build",
     "typecheck": "bun check -b",
     "lint": "oxlint",

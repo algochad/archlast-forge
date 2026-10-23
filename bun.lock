@@ -29,8 +29,8 @@
         "vite": "^8.3.4",
       },
     },
-    "apps/demo/convex": {
-      "name": "@archlast-forge/demo-convex",
+    "apps/demo/forge": {
+      "name": "@archlast-forge/demo-forge",
       "dependencies": {
         "@archlast-forge/runtime": "workspace:*",
         "date-fns": "4",
@@ -161,7 +161,7 @@
 
     "@archlast-forge/demo": ["@archlast-forge/demo@workspace:apps/demo"],
 
-    "@archlast-forge/demo-convex": ["@archlast-forge/demo-convex@workspace:apps/demo/convex"],
+    "@archlast-forge/demo-forge": ["@archlast-forge/demo-forge@workspace:apps/demo/forge"],
 
     "@archlast-forge/docs": ["@archlast-forge/docs@workspace:apps/docs"],
 

@@ -349,7 +349,7 @@ export function getFunctionName(ref: FunctionReference | string): string {
 
 export type AuthOptions = Omit<BetterAuthOptions, "database" | "secret" | "baseURL">;
 
-/** Default export of `convex/auth.ts`. Without that file, email and password sign-in is enabled. */
+/** Default export of `forge/auth.ts`. Without that file, email and password sign-in is enabled. */
 export const defineAuth = (options: AuthOptions): AuthOptions => options;
 
 // ---- crons ----

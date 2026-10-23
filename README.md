@@ -1,6 +1,6 @@
 # archlast-forge
 
-A self-hosted reactive backend for TypeScript apps, in the style of Convex, on tRPC and Bun. You declare a schema and functions in `convex/`. Clients call them with end-to-end types, and live queries push new results whenever the data they read changes. The engine runs as a Docker container that the CLI starts and controls.
+A self-hosted reactive backend for TypeScript apps, in the style of Convex, on tRPC and Bun. You declare a schema and functions in `forge/`. Clients call them with end-to-end types, and live queries push new results whenever the data they read changes. The engine runs as a Docker container that the CLI starts and controls.
 
 - **Data:** SQLite or Postgres. Index and range queries, keyset pagination, full-text search, data migrations, export, import and backup.
 - **Functions:** queries, mutations and actions; internal functions; `returns` validators; timeouts and size limits; `ForgeError` for caller-facing errors.
@@ -23,7 +23,7 @@ Full documentation is in [`apps/docs`](apps/docs/content). Build it with `bun ru
 
 ```
 apps/demo/                       todo app built the way a user project is (Vite + React)
-apps/demo/convex/                its backend: schema, functions, crons, auth; own package.json
+apps/demo/forge/                its backend: schema, functions, crons, auth; own package.json
 apps/docs/                       documentation site (Markdown → HTML with Bun)
 packages/runtime/                engine: validators, schema, functions, document store, adapters, server, testing
 packages/client/                 framework-agnostic client: tRPC over HTTP + WebSocket, live queries

@@ -6,9 +6,9 @@ import type { TablesSpec } from "./docstore";
 
 const SPECIAL = new Set(["schema", "auth", "crons"]);
 
-/** Function modules in a convex/ dir. `name` is the path without extension: "todos", "admin/users". */
-export function listModules(convexDir: string): { name: string; file: string }[] {
-  return [...new Bun.Glob("**/*.{ts,js}").scanSync({ cwd: convexDir })]
+/** Function modules in a forge/ dir. `name` is the path without extension: "todos", "admin/users". */
+export function listModules(forgeDir: string): { name: string; file: string }[] {
+  return [...new Bun.Glob("**/*.{ts,js}").scanSync({ cwd: forgeDir })]
     .map((file) => file.replaceAll("\\", "/"))
     .filter((f) => !f.split("/").some((seg) => seg.startsWith("_") || seg.startsWith(".") || seg === "node_modules"))
     .filter((f) => !/\.(test|spec|d)\.(ts|js)$/.test(f))
@@ -18,20 +18,20 @@ export function listModules(convexDir: string): { name: string; file: string }[]
 }
 
 /** Imports a user module, turning "Cannot find package" into an actionable error. */
-export async function importUserModule(path: string, convexDir: string): Promise<any> {
+export async function importUserModule(path: string, forgeDir: string): Promise<any> {
   try {
     return await import(path);
   } catch (e) {
     const msg = String((e as Error)?.message ?? e);
     const pkg = /Cannot find (?:package|module) ['"]([^'"]+)['"]/.exec(msg)?.[1];
-    const file = relative(convexDir, path);
+    const file = relative(forgeDir, path);
     if (pkg && !pkg.startsWith(".") && !pkg.startsWith("/")) {
       const name = pkg.startsWith("@") ? pkg.split("/").slice(0, 2).join("/") : pkg.split("/")[0];
       throw new Error(
-        `convex/${file} imports "${pkg}", which is not installed. Add it to ${join(convexDir, "package.json")}: bun add --cwd ${convexDir} ${name}`,
+        `forge/${file} imports "${pkg}", which is not installed. Add it to ${join(forgeDir, "package.json")}: bun add --cwd ${forgeDir} ${name}`,
       );
     }
-    throw new Error(`Failed to load convex/${file}: ${msg}`, { cause: e });
+    throw new Error(`Failed to load forge/${file}: ${msg}`, { cause: e });
   }
 }
 
@@ -45,11 +45,11 @@ export interface Project {
   crons: CronJob[];
 }
 
-export async function loadProject(convexDir: string): Promise<Project> {
-  const schemaPath = join(convexDir, "schema.ts");
-  if (!existsSync(schemaPath)) throw new Error(`No schema.ts in ${convexDir}`);
-  const schema: SchemaDefinition<any> = (await importUserModule(schemaPath, convexDir)).default;
-  if (!schema?.tables) throw new Error("convex/schema.ts must default-export defineSchema({...})");
+export async function loadProject(forgeDir: string): Promise<Project> {
+  const schemaPath = join(forgeDir, "schema.ts");
+  if (!existsSync(schemaPath)) throw new Error(`No schema.ts in ${forgeDir}`);
+  const schema: SchemaDefinition<any> = (await importUserModule(schemaPath, forgeDir)).default;
+  if (!schema?.tables) throw new Error("forge/schema.ts must default-export defineSchema({...})");
   const tables: TablesSpec = Object.fromEntries(
     Object.entries(schema.tables).map(([name, t]: [string, any]) => [
       name,
@@ -58,13 +58,13 @@ export async function loadProject(convexDir: string): Promise<Project> {
   );
 
   const functions = new Map<string, RegisteredFunction>();
-  for (const mod of listModules(convexDir)) {
-    const exports = await importUserModule(join(convexDir, mod.file), convexDir);
+  for (const mod of listModules(forgeDir)) {
+    const exports = await importUserModule(join(forgeDir, mod.file), forgeDir);
     for (const [name, value] of Object.entries(exports)) if (isRegistered(value)) functions.set(`${mod.name}:${name}`, value);
   }
 
   const optional = async (name: string) =>
-    existsSync(join(convexDir, `${name}.ts`)) ? (await importUserModule(join(convexDir, `${name}.ts`), convexDir)).default : undefined;
+    existsSync(join(forgeDir, `${name}.ts`)) ? (await importUserModule(join(forgeDir, `${name}.ts`), forgeDir)).default : undefined;
   const authOptions: AuthOptions = (await optional("auth")) ?? { emailAndPassword: { enabled: true } };
   const crons: CronJob[] = (await optional("crons"))?.jobs ?? [];
   for (const job of crons) {

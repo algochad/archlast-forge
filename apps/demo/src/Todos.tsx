@@ -1,7 +1,7 @@
 import { useAction, useMutation, usePaginatedQuery, useQuery, useUploadFile } from '@archlast-forge/react'
 import { Component, useEffect, useState, type ReactNode } from 'react'
-import { api } from '../convex/_generated/api'
-import type { Id } from '../convex/_generated/dataModel'
+import { api } from '../forge/_generated/api'
+import type { Id } from '../forge/_generated/dataModel'
 import { Icon } from './icons'
 
 type Filter = 'all' | 'active' | 'done'

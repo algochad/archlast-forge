@@ -1,4 +1,4 @@
-// What codegen writes to convex/_generated/dataModel.ts.
+// What codegen writes to forge/_generated/dataModel.ts.
 import type schema from "./schema";
 
 declare module "../src/index" {

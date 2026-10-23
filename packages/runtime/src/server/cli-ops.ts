@@ -19,13 +19,13 @@ export interface ProjectDb {
 }
 
 /** Connects to the project's database and applies table/index migrations. */
-export async function openProject(convexDir: string, env: Record<string, string | undefined> = process.env, dev = true): Promise<ProjectDb> {
+export async function openProject(forgeDir: string, env: Record<string, string | undefined> = process.env, dev = true): Promise<ProjectDb> {
   const config = loadConfig({ ...env, ALLOW_INSECURE_HTTP: "1", BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET || "cli" }, dev);
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
   const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : createSqliteDb(sqlitePath(config));
   await migrateSystem(db);
   for (const { name, value } of await db.query<{ name: string; value: string }>(`SELECT "name", "value" FROM "_env"`)) env[name] ??= value;
-  const project = await loadProject(convexDir);
+  const project = await loadProject(forgeDir);
   await db.migrate(tableSpecs(project.tables));
   const exec = new Executor({ db, tables: project.tables, functions: project.functions, limits: config.limits, publish: () => {}, log: () => {} });
   return { config, db, project, exec, close: () => db.close() };

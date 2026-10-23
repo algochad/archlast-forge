@@ -1,6 +1,6 @@
 import { useAuth, useMutation, usePaginatedQuery, useSession } from "@archlast-forge/react";
 import { useState, type FormEvent } from "react";
-import { api } from "../convex/_generated/api";
+import { api } from "../forge/_generated/api";
 
 export default function App() {
   const session = useSession();

@@ -7,7 +7,7 @@ test("function calls are exported as OTLP spans that continue the caller's trace
   const received: any[] = [];
   const collector = Bun.serve({ port: 0, fetch: async (req) => (received.push(await req.json()), new Response("{}")) });
   const srv = await startServer({
-    convexDir: join(import.meta.dir, "fixture"),
+    forgeDir: join(import.meta.dir, "fixture"),
     dev: true,
     env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), OTEL_EXPORTER_OTLP_ENDPOINT: collector.url.href, OTEL_SERVICE_NAME: "forge-test" },
   });

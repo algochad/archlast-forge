@@ -5,10 +5,10 @@
 ```ts
 import { createTestBackend } from "@archlast-forge/runtime/testing";
 import { expect, test } from "bun:test";
-import { api, internal } from "../convex/_generated/api";
+import { api, internal } from "../forge/_generated/api";
 
 test("adding a todo", async () => {
-  const t = await createTestBackend("convex");
+  const t = await createTestBackend("forge");
   const ada = await t.withIdentity({ email: "ada@example.com", name: "Ada" });
   const listId = await ada.mutation(api.lists.create, { name: "home" });
   await ada.mutation(api.todos.add, { listId, title: "milk" });

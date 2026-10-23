@@ -3,7 +3,7 @@ import { ops } from "@archlast-forge/runtime/server";
 import { watch } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
-import { devSecrets, fail, findConvexDir, generate, trustProxyOrigins, VERSION } from "./common";
+import { devSecrets, fail, findForgeDir, generate, trustProxyOrigins, VERSION } from "./common";
 import { ensureDeps, findUp } from "./deps";
 import * as dockerEngine from "./docker";
 import { engineServe, prepare } from "./engine";
@@ -12,11 +12,11 @@ import { serve } from "./serve";
 const USAGE = `archlast-forge ${VERSION}
 
 Development
-  dev                     codegen, then run the engine in Docker and watch convex/
+  dev                     codegen, then run the engine in Docker and watch forge/
       --no-docker         run in this process instead
       --with <list>       also start service containers: postgres, redis, s3
       --run "<cmd>"       also run a command alongside, e.g. --run vite
-  codegen                 write convex/_generated/ and check that src/ imports only convex/_generated
+  codegen                 write forge/_generated/ and check that src/ imports only forge/_generated
 
 Production
   build [--tag <image>]   build an app image: the engine plus your code and dependencies
@@ -38,7 +38,7 @@ Config
 Engine
   engine build            build the engine image from this repository
 
-Options: --dir <convex dir>  --port <n>  --no-docker`;
+Options: --dir <forge dir>  --port <n>  --no-docker`;
 
 const { positionals, values } = parseArgs({
   args: Bun.argv.slice(2),
@@ -90,7 +90,7 @@ function companion() {
 }
 
 async function dev() {
-  const dir = findConvexDir(values.dir);
+  const dir = findForgeDir(values.dir);
   const env = devEnv(dir);
   companion();
   await ensureDeps(dir); // host install: editor types; the engine installs its own copy
@@ -98,7 +98,7 @@ async function dev() {
 
   if (useDocker()) {
     const name = dockerEngine.runEngine({
-      convexDir: dir,
+      forgeDir: dir,
       port,
       dev: true,
       env: { BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET!, ADMIN_KEY: env.ADMIN_KEY!, BETTER_AUTH_URL: `http://localhost:${port}`, TRUSTED_ORIGINS: env.TRUSTED_ORIGINS ?? "" },
@@ -116,7 +116,7 @@ async function dev() {
   }
 
   const server = await serve({
-    convexDir: dir,
+    forgeDir: dir,
     dev: true,
     env: { ...env, PORT: String(port) },
     watchDir: dir,
@@ -157,7 +157,7 @@ function engineTarget(dir: string) {
 }
 
 async function withProject<T>(fn: (p: ops.ProjectDb) => Promise<T>) {
-  const p = await ops.openProject(findConvexDir(values.dir), { ...process.env, DATA_DIR: process.env.DATA_DIR ?? join(findConvexDir(values.dir), "data") });
+  const p = await ops.openProject(findForgeDir(values.dir), { ...process.env, DATA_DIR: process.env.DATA_DIR ?? join(findForgeDir(values.dir), "data") });
   try {
     return await fn(p);
   } finally {
@@ -166,7 +166,7 @@ async function withProject<T>(fn: (p: ops.ProjectDb) => Promise<T>) {
 }
 
 async function withDb<T>(fn: (db: Awaited<ReturnType<typeof ops.openDb>>) => Promise<T>) {
-  const db = await ops.openDb({ ...process.env, DATA_DIR: process.env.DATA_DIR ?? join(findConvexDir(values.dir), "data") });
+  const db = await ops.openDb({ ...process.env, DATA_DIR: process.env.DATA_DIR ?? join(findForgeDir(values.dir), "data") });
   try {
     return await fn(db);
   } finally {
@@ -198,25 +198,25 @@ async function reloadRunning(dir: string) {
 const commands: Record<string, () => Promise<unknown>> = {
   dev,
   async codegen() {
-    const dir = findConvexDir(values.dir);
+    const dir = findForgeDir(values.dir);
     await ensureDeps(dir).catch((e) => fail(e.message));
     const modules = await generate(dir).catch((e) => fail(e.message));
     console.log(`✓ wrote ${join(dir, "_generated")} (${modules.length} modules)`);
   },
 
   async build() {
-    const dir = findConvexDir(values.dir);
+    const dir = findForgeDir(values.dir);
     await generate(dir);
     const tag = values.tag ?? `${dockerEngine.projectName(dir)}:latest`;
     dockerEngine.buildAppImage(dir, tag);
     console.log(`✓ built ${tag}\n  run it: archlast-forge start --image ${tag}   (or docker run -p 3000:3000 -v data:/data --env-file .env ${tag})`);
   },
   async start() {
-    const dir = findConvexDir(values.dir);
+    const dir = findForgeDir(values.dir);
     if (useDocker()) {
       const image = values.image ?? fail("Pass --image <tag> (from `archlast-forge build`), or --no-docker to run in this process.");
       const name = dockerEngine.runEngine({
-        convexDir: dir,
+        forgeDir: dir,
         port,
         dev: false,
         env: {},
@@ -226,26 +226,26 @@ const commands: Record<string, () => Promise<unknown>> = {
       });
       return console.log(`✓ ${name} running ${image} on port ${port} (restarts automatically; \`archlast-forge logs\` to follow)`);
     }
-    const server = await serve({ convexDir: dir, dev: false, env: process.env });
+    const server = await serve({ forgeDir: dir, dev: false, env: process.env });
     console.log(`✓ archlast-forge on ${server.url}`);
   },
   async stop() {
-    const dir = findConvexDir(values.dir);
+    const dir = findForgeDir(values.dir);
     for (const name of [dockerEngine.containerName(dir), dockerEngine.containerName(dir, true)])
       if (dockerEngine.isRunning(name)) dockerEngine.docker(["stop", "-t", "15", name], { inherit: true });
   },
   async logs() {
-    const name = dockerEngine.runningContainer(findConvexDir(values.dir)) ?? fail("No engine container is running for this project");
+    const name = dockerEngine.runningContainer(findForgeDir(values.dir)) ?? fail("No engine container is running for this project");
     await dockerEngine.attach(name, false);
   },
   async status() {
-    const name = dockerEngine.containerName(findConvexDir(values.dir));
+    const name = dockerEngine.containerName(findForgeDir(values.dir));
     const r = dockerEngine.docker(["ps", "-a", "--filter", `name=^${name}`, "--format", "{{.Names}}\t{{.Status}}\t{{.Ports}}"]);
     console.log(r.out || `no containers for ${name}`);
   },
 
   async migrate() {
-    const dir = findConvexDir(values.dir);
+    const dir = findForgeDir(values.dir);
     if (forwarded(dir, ["migrate", ...rest, ...(values["run-migrations"] ? ["--run-migrations"] : []), ...(values.status ? ["--status"] : [])])) return;
     await withProject(async (p) => {
       if (values.status) {
@@ -264,7 +264,7 @@ const commands: Record<string, () => Promise<unknown>> = {
   },
   async export() {
     const file = rest[0] ?? fail("Usage: archlast-forge export <file>");
-    const dir = findConvexDir(values.dir);
+    const dir = findForgeDir(values.dir);
     const target = engineTarget(dir);
     if (target) {
       if (!dockerEngine.execInEngine(target, ["export", "/tmp/export.jsonl"]).ok) process.exit(1);
@@ -275,7 +275,7 @@ const commands: Record<string, () => Promise<unknown>> = {
   },
   async import() {
     const file = rest[0] ?? fail("Usage: archlast-forge import <file> [--replace]");
-    const dir = findConvexDir(values.dir);
+    const dir = findForgeDir(values.dir);
     const target = engineTarget(dir);
     if (target) {
       if (!dockerEngine.copyTo(target, resolve(file), "/tmp/import.jsonl")) fail("docker cp failed");
@@ -286,7 +286,7 @@ const commands: Record<string, () => Promise<unknown>> = {
   },
   async backup() {
     const file = rest[0] ?? fail("Usage: archlast-forge backup <file>");
-    const dir = findConvexDir(values.dir);
+    const dir = findForgeDir(values.dir);
     const target = engineTarget(dir);
     if (target) {
       if (!dockerEngine.execInEngine(target, ["backup", "/tmp/backup.db"]).ok) process.exit(1);
@@ -301,7 +301,7 @@ const commands: Record<string, () => Promise<unknown>> = {
 
   async env() {
     const [action, name, value] = rest;
-    const dir = findConvexDir(values.dir);
+    const dir = findForgeDir(values.dir);
     if (forwarded(dir, ["env", ...rest])) {
       if (action === "set" || action === "rm") await reloadRunning(dir);
       return;
@@ -320,7 +320,7 @@ const commands: Record<string, () => Promise<unknown>> = {
   },
   async admin() {
     const [action, email] = rest;
-    const dir = findConvexDir(values.dir);
+    const dir = findForgeDir(values.dir);
     const args = ["admin", ...rest, ...(values.role ? ["--role", values.role] : []), ...(values.password ? ["--password", values.password] : [])];
     if (forwarded(dir, args)) return;
     await withDb(async (db) => {

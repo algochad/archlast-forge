@@ -30,7 +30,7 @@ beforeAll(async () => {
   await addAdmin(db, "viewer@example.com", "viewer-password-123", "viewer");
   await addAdmin(db, "admin@example.com", "admin-password-123", "admin");
   await db.close();
-  srv = await startServer({ convexDir: fixture, env: prodEnv() });
+  srv = await startServer({ forgeDir: fixture, env: prodEnv() });
 });
 afterAll(() => srv.stop({ graceful: false }));
 
@@ -113,7 +113,7 @@ test("dashboard sign-in, roles and audit log", async () => {
 });
 
 test("rate limiting and the dashboard being off by default", async () => {
-  const s = await startServer({ convexDir: fixture, env: prodEnv({ RATE_LIMIT_PER_MINUTE: "3", DASHBOARD: "", DATA_DIR: tempDir() }) });
+  const s = await startServer({ forgeDir: fixture, env: prodEnv({ RATE_LIMIT_PER_MINUTE: "3", DASHBOARD: "", DATA_DIR: tempDir() }) });
   try {
     const statuses = [];
     for (let i = 0; i < 5; i++) statuses.push((await fetch(`${s.url}/trpc/todos.events?input=%7B%7D`)).status);
@@ -125,7 +125,7 @@ test("rate limiting and the dashboard being off by default", async () => {
 });
 
 test("graceful shutdown lets in-flight requests finish", async () => {
-  const s = await startServer({ convexDir: fixture, env: prodEnv({ DATA_DIR: tempDir(), FUNCTION_TIMEOUT_MS: "5000" }) });
+  const s = await startServer({ forgeDir: fixture, env: prodEnv({ DATA_DIR: tempDir(), FUNCTION_TIMEOUT_MS: "5000" }) });
   const inFlight = fetch(`${s.url}/trpc/todos.slowQuery?input=${encodeURIComponent('{"ms":500}')}`);
   await Bun.sleep(100);
   const stopping = s.stop();

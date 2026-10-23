@@ -14,9 +14,9 @@ const render = (tree: Tree, visibility: string, indent = "  "): string =>
     )
     .join("");
 
-/** Writes convex/_generated/{api,dataModel}.ts. Types are derived from the modules, so nothing is hand-written. */
-export async function codegen(convexDir: string) {
-  const modules = listModules(convexDir);
+/** Writes forge/_generated/{api,dataModel}.ts. Types are derived from the modules, so nothing is hand-written. */
+export async function codegen(forgeDir: string) {
+  const modules = listModules(forgeDir);
   const tree: Tree = {};
   const imports = modules.map((m, i) => {
     const id = `m${i}_${m.name.replace(/[^a-zA-Z0-9]/g, "_")}`;
@@ -38,7 +38,7 @@ export async function codegen(convexDir: string) {
     `import type schema from "../schema";\n\n` +
     `declare module "@archlast-forge/runtime" {\n  interface Register {\n    schema: typeof schema;\n  }\n}\n\n` +
     `export type { Doc, Id, TableNames } from "@archlast-forge/runtime";\n`;
-  const out = join(convexDir, "_generated");
+  const out = join(forgeDir, "_generated");
   mkdirSync(out, { recursive: true });
   // Skip unchanged files so watchers don't loop.
   for (const [file, content] of [["api.ts", api], ["dataModel.ts", dataModel]] as const) {
@@ -48,11 +48,11 @@ export async function codegen(convexDir: string) {
   return modules.map((m) => m.name);
 }
 
-/** Frontend code may import only convex/_generated, or server-only code would reach the browser bundle. */
-export async function checkFrontendImports(convexDir: string) {
-  const srcDir = join(dirname(convexDir), "src");
+/** Frontend code may import only forge/_generated, or server-only code would reach the browser bundle. */
+export async function checkFrontendImports(forgeDir: string) {
+  const srcDir = join(dirname(forgeDir), "src");
   if (!existsSync(srcDir)) return [];
-  const generated = join(convexDir, "_generated");
+  const generated = join(forgeDir, "_generated");
   const violations: string[] = [];
   for (const file of new Bun.Glob("**/*.{ts,tsx,js,jsx,mts}").scanSync({ cwd: srcDir, absolute: true })) {
     const loader = file.endsWith("x") ? "tsx" : "ts";
@@ -60,7 +60,7 @@ export async function checkFrontendImports(convexDir: string) {
       if (!imp.path.startsWith(".")) continue;
       const target = resolve(dirname(file), imp.path);
       const inside = (dir: string) => target === dir || target.startsWith(dir + "/");
-      if (inside(convexDir) && !inside(generated)) violations.push(`${relative(process.cwd(), file)} imports "${imp.path}"`);
+      if (inside(forgeDir) && !inside(generated)) violations.push(`${relative(process.cwd(), file)} imports "${imp.path}"`);
     }
   }
   return violations;

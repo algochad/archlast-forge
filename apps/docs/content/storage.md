@@ -7,7 +7,7 @@ Browsers upload to storage directly, so they must be able to reach it. When the 
 File bytes never pass through the engine. Clients upload straight to storage through presigned URLs:
 
 ```ts
-// convex/files.ts
+// forge/files.ts
 export const generateUploadUrl = mutation({
   args: { contentType: v.optional(v.string()) },
   handler: (ctx, args) => ctx.storage.generateUploadUrl(args), // { uploadUrl, storageId }

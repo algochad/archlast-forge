@@ -9,7 +9,7 @@ A cached result is never stale. It is evicted the moment a mutation commits a wr
 - **Key:** the function, its arguments, and for queries that read `ctx.auth`, the signed-in user. Each user gets their own entry, and a signed-out caller gets another. The first time a query reads `ctx.auth` it runs uncached; from then on it is keyed by user. A revoked or expired session stops matching straight away, because who is calling is resolved on every request.
 - **Shared runs:** if identical calls arrive while one is already running, they share its result instead of each running the function. A call that arrives after a write the running one overlapped runs again.
 - **Not cached:** mutations and actions, failed queries, and results larger than a quarter of `CACHE_MAX_MB`.
-- **Reloads:** changing your `convex/` code (or reloading the runtime) empties the cache, since the old code's results are no longer right.
+- **Reloads:** changing your `forge/` code (or reloading the runtime) empties the cache, since the old code's results are no longer right.
 
 Queries are expected to depend only on their arguments, the caller and the database. A query that also reads the clock or calls something external can serve a result up to `CACHE_TTL_MS` old.
 

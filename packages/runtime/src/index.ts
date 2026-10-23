@@ -1,4 +1,4 @@
-// Browser-safe entry: used by convex/ code and by generated client types. No Bun APIs here.
+// Browser-safe entry: used by forge/ code and by generated client types. No Bun APIs here.
 export { ForgeError, isForgeError } from "./errors";
 export { paginationOptsValidator, v, ValidationError, type Id, type Infer, type ObjectType, type PropertyValidators, type Validator } from "./values";
 export {

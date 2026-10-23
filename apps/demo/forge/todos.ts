@@ -1,5 +1,5 @@
 import { action, ForgeError, internalMutation, mutation, query, v, type MutationCtx } from "@archlast-forge/runtime";
-import { formatDistanceToNow } from "date-fns"; // a server-only dependency from convex/package.json
+import { formatDistanceToNow } from "date-fns"; // a server-only dependency from forge/package.json
 import { api, internal } from "./_generated/api";
 
 async function requireUser(ctx: Pick<MutationCtx, "auth">) {

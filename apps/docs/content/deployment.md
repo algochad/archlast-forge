@@ -7,7 +7,7 @@ archlast-forge build --tag my-app:1.0
 archlast-forge start --image my-app:1.0 --env-file .env.production --port 3000
 ```
 
-The image is the engine plus your `convex/` code and its dependencies (installed for Linux). It's a normal container: run it with Docker Compose, Kubernetes, Fly, or anything else.
+The image is the engine plus your `forge/` code and its dependencies (installed for Linux). It's a normal container: run it with Docker Compose, Kubernetes, Fly, or anything else.
 
 - The volume at `/data` holds SQLite and needs to persist.
 - `GET /health` is liveness; `GET /ready` is readiness (503 while starting, or after a failed load).

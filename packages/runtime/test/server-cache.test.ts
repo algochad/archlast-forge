@@ -8,7 +8,7 @@ const admin = { "x-admin-key": "secret", "x-forge-admin": "1", "content-type": "
 let srv: RunningServer;
 
 beforeAll(async () => {
-  srv = await startServer({ convexDir: fixture, dev: true, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret" } });
+  srv = await startServer({ forgeDir: fixture, dev: true, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret" } });
 });
 afterAll(() => srv.stop());
 

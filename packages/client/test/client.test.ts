@@ -13,7 +13,7 @@ const dataDir = mkdtempSync(join(tmpdir(), "afx-client-"));
 let srv: RunningServer;
 let client: ArchlastForgeClient;
 
-const boot = (port = "0") => startServer({ convexDir: fixture, dev: true, env: { ...process.env, PORT: port, DATA_DIR: dataDir, ADMIN_KEY: "k" } });
+const boot = (port = "0") => startServer({ forgeDir: fixture, dev: true, env: { ...process.env, PORT: port, DATA_DIR: dataDir, ADMIN_KEY: "k" } });
 
 beforeAll(async () => {
   srv = await boot();
@@ -84,7 +84,7 @@ const pg = process.env.TEST_POSTGRES_URL;
 const redis = process.env.TEST_REDIS_URL;
 test.skipIf(!pg || !redis)("two servers: a mutation on one reaches subscribers on the other, and caches invalidate", async () => {
   const env = { ...process.env, PORT: "0", DATABASE_URL: pg, REDIS_URL: redis, REPLICAS: "2", BETTER_AUTH_SECRET: "x".repeat(32), CACHE_TTL_MS: "60000", ALLOW_INSECURE_HTTP: "1" };
-  const [s1, s2] = [await startServer({ convexDir: fixture, env }), await startServer({ convexDir: fixture, env })];
+  const [s1, s2] = [await startServer({ forgeDir: fixture, env }), await startServer({ forgeDir: fixture, env })];
   const [c1, c2] = [new ArchlastForgeClient({ url: s1.url }), new ArchlastForgeClient({ url: s2.url })];
   try {
     const listId = await c1.mutation(api.todos.createList, { name: "cluster" });

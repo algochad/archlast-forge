@@ -12,22 +12,22 @@ const depsHash = async (pkg: string, lock?: string) =>
   String(Bun.hash((await Bun.file(pkg).text()) + (lock && existsSync(lock) ? await Bun.file(lock).text() : "")));
 
 /**
- * Runs `bun install` for convex/package.json when it or the lockfile changed since the last install.
+ * Runs `bun install` for forge/package.json when it or the lockfile changed since the last install.
  * Lifecycle scripts are off unless the manifest lists `trustedDependencies` (then Bun runs only those).
  */
-export async function ensureDeps(convexDir: string): Promise<boolean> {
-  const pkg = join(convexDir, "package.json");
+export async function ensureDeps(forgeDir: string): Promise<boolean> {
+  const pkg = join(forgeDir, "package.json");
   if (!existsSync(pkg)) return false;
-  const lock = findUp(convexDir, "bun.lock");
-  const stamp = join(convexDir, "_generated", ".depshash");
+  const lock = findUp(forgeDir, "bun.lock");
+  const stamp = join(forgeDir, "_generated", ".depshash");
   if (existsSync(stamp) && (await Bun.file(stamp).text()) === (await depsHash(pkg, lock))) return false;
   const manifest = await Bun.file(pkg).json();
   const args = manifest.trustedDependencies ? ["install"] : ["install", "--ignore-scripts"];
-  console.log(`→ installing server dependencies: bun ${args.join(" ")} (${convexDir})`);
-  const proc = Bun.spawnSync([process.execPath, ...args], { cwd: convexDir, stdout: "inherit", stderr: "inherit" });
+  console.log(`→ installing server dependencies: bun ${args.join(" ")} (${forgeDir})`);
+  const proc = Bun.spawnSync([process.execPath, ...args], { cwd: forgeDir, stdout: "inherit", stderr: "inherit" });
   if (proc.exitCode !== 0)
-    throw new Error(`bun install failed in ${convexDir} (exit ${proc.exitCode}). Fix convex/package.json; native packages may need "trustedDependencies".`);
+    throw new Error(`bun install failed in ${forgeDir} (exit ${proc.exitCode}). Fix forge/package.json; native packages may need "trustedDependencies".`);
   mkdirSync(dirname(stamp), { recursive: true });
-  await Bun.write(stamp, await depsHash(pkg, findUp(convexDir, "bun.lock")));
+  await Bun.write(stamp, await depsHash(pkg, findUp(forgeDir, "bun.lock")));
   return true;
 }

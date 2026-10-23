@@ -8,7 +8,7 @@ What remained before archlast-forge was ready for production use, assessed again
 
 archlast-forge is a **self-hosted framework**, like self-hosted Convex: one deployment per app, run by the team that owns the app.
 
-A **hosted multi-tenant platform** (like Convex Cloud or Supabase) is out of scope for now. It would need tenant isolation (separate databases or schemas, and sandboxed function runtimes), project and team management, a pipeline that uploads `convex/` code, usage metering and billing, and a control-plane UI. Nothing below should block that later, but nothing below works toward it either.
+A **hosted multi-tenant platform** (like Convex Cloud or Supabase) is out of scope for now. It would need tenant isolation (separate databases or schemas, and sandboxed function runtimes), project and team management, a pipeline that uploads `forge/` code, usage metering and billing, and a control-plane UI. Nothing below should block that later, but nothing below works toward it either.
 
 ## Target architecture: the engine as a Docker container, controlled by the CLI
 
@@ -18,21 +18,21 @@ Today, `archlast-forge dev` and `start` run the engine in the CLI's own process,
 host                                   container: archlast-forge engine
 ────                                   ────────────────────────────────
 archlast-forge CLI ── Docker API ───▶  server (HTTP/WS, bus, cache, subscriptions)
-  codegen (host: editor types)           └─ function runtime (convex/ code, DB, auth, scheduler)
+  codegen (host: editor types)           └─ function runtime (forge/ code, DB, auth, scheduler)
   dev / start / stop / logs / status     dashboard at /_dashboard
-convex/ ─────────── mount or image ──▶  /app/convex
+forge/ ──────────── mount or image ──▶  /app/forge
                                         volume: /data (SQLite, dev secrets)
 optional sibling containers: Postgres, Redis, RustFS (CLI-managed)
 ```
 
 What stays the same:
 - The server and function-runtime split already exists, and restarting only the function runtime keeps working inside the container.
-- Codegen stays on the host, because the editor needs `convex/_generated` types locally.
+- Codegen stays on the host, because the editor needs `forge/_generated` types locally.
 
 Open questions to settle before building it:
 
-1. **Getting code into the container.** Bind-mount `convex/` in dev for live reload? For production, build an app image (`FROM archlast-forge/engine` + `COPY convex/`), or mount code into a stock image?
-2. **Server dependencies.** Run `bun install` for `convex/package.json` inside the container? That gives Linux-native binaries matching the runtime, but needs a cached volume for `node_modules`. Install on the host and mount instead?
+1. **Getting code into the container.** Bind-mount `forge/` in dev for live reload? For production, build an app image (`FROM archlast-forge/engine` + `COPY forge/`), or mount code into a stock image?
+2. **Server dependencies.** Run `bun install` for `forge/package.json` inside the container? That gives Linux-native binaries matching the runtime, but needs a cached volume for `node_modules`. Install on the host and mount instead?
 3. **Docker API access.** Shell out to the `docker` CLI, or talk to the Docker socket directly? Should Podman be supported?
 4. **Service containers.** Should `dev` start Postgres, Redis and RustFS when configured, or only the engine? Who owns their volumes and lifecycle (`archlast-forge stop --all`)?
 5. **Versioning.** Pin the engine image tag to the CLI version (`archlast-forge@x.y.z` → `engine:x.y.z`)? How are upgrades and rollbacks handled?
@@ -74,7 +74,7 @@ Open questions to settle before building it:
 
 - **React hooks:** a `"skip"` option for `useQuery`, optimistic updates, and a file-upload hook.
 - **Testing library for user code**, like `convex-test`: run functions against an in-memory database in one line.
-- **`archlast-forge env`:** manage environment variables for `convex/` code.
+- **`archlast-forge env`:** manage environment variables for `forge/` code.
 - **A docs site.**
 - **Clients for other frameworks** (Vue, Svelte, React Native), if wanted.
 

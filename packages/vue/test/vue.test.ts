@@ -14,7 +14,7 @@ const until = async (cond: () => boolean) => {
 };
 
 test("useQuery is live and stops with its scope", async () => {
-  const srv = await startServer({ convexDir: join(import.meta.dir, "../../runtime/test/fixture"), dev: true, env: { ...process.env, PORT: "0", DATA_DIR: mkdtempSync(join(tmpdir(), "afx-vue-")) } });
+  const srv = await startServer({ forgeDir: join(import.meta.dir, "../../runtime/test/fixture"), dev: true, env: { ...process.env, PORT: "0", DATA_DIR: mkdtempSync(join(tmpdir(), "afx-vue-")) } });
   const client = new ArchlastForgeClient({ url: srv.url });
   const app = createApp({}).use(archlastForge(client));
   const scope = effectScope();

@@ -1,5 +1,5 @@
 // Test helper for user code: run a project's functions against an in-memory database, no server.
-//   const t = await createTestBackend("convex");
+//   const t = await createTestBackend("forge");
 //   const id = await t.withIdentity({ email: "a@b.c" }).mutation(api.todos.add, { listId, title: "milk" });
 import { resolve } from "node:path";
 import { getFunctionName, type FunctionArgs, type FunctionReference, type FunctionReturn, type MutationCtx, type OptionalArgs, type UserIdentity } from "./functions";
@@ -15,10 +15,10 @@ type Caller = {
   action<R extends FunctionReference<"action">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
 };
 
-export async function createTestBackend(convexDir = "convex") {
+export async function createTestBackend(forgeDir = "forge") {
   const db = createSqliteDb(":memory:");
   await migrateSystem(db);
-  const project = await loadProject(resolve(convexDir));
+  const project = await loadProject(resolve(forgeDir));
   await db.migrate(tableSpecs(project.tables));
   const exec = new Executor({ db, tables: project.tables, functions: project.functions, publish: () => {}, log: () => {} });
   const scheduler = new SchedulerLoop(exec, db, project.functions, []);

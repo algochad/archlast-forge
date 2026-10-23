@@ -24,7 +24,7 @@ type Omit2<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
 type Pending = { resolve(v: unknown): void; reject(e: Error): void; timer?: Timer };
 
 interface Options {
-  convexDir: string;
+  forgeDir: string;
   env: Record<string, string | undefined>;
   dev: boolean;
   workers?: number;
@@ -54,7 +54,7 @@ class RuntimeProcess {
       cwd: process.cwd(),
       env: {
         ...this.opts.env,
-        ARCHLAST_CONVEX_DIR: this.opts.convexDir,
+        ARCHLAST_FORGE_DIR: this.opts.forgeDir,
         ARCHLAST_DEV: this.opts.dev ? "1" : "0",
         ARCHLAST_WORKER: String(this.index),
         ARCHLAST_SERVER_ID: this.opts.serverId ?? "local",

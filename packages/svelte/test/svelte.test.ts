@@ -9,7 +9,7 @@ import { ArchlastForgeClient, query } from "../src/index";
 const api = anyApi;
 
 test("query() is a live store that closes with its last subscriber", async () => {
-  const srv = await startServer({ convexDir: join(import.meta.dir, "../../runtime/test/fixture"), dev: true, env: { ...process.env, PORT: "0", DATA_DIR: mkdtempSync(join(tmpdir(), "afx-svelte-")) } });
+  const srv = await startServer({ forgeDir: join(import.meta.dir, "../../runtime/test/fixture"), dev: true, env: { ...process.env, PORT: "0", DATA_DIR: mkdtempSync(join(tmpdir(), "afx-svelte-")) } });
   const client = new ArchlastForgeClient({ url: srv.url });
   const store = query(client, api.todos.events);
   const seen: any[] = [];

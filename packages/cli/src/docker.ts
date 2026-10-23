@@ -23,17 +23,17 @@ export function docker(args: string[], opts: { inherit?: boolean; input?: string
 let available: boolean | undefined;
 export const dockerAvailable = () => (available ??= Bun.spawnSync([DOCKER, "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0);
 
-/** Stable per-project name, from the directory holding convex/. */
-export function projectName(convexDir: string) {
-  const root = basename(convexDir) === "convex" ? dirname(convexDir) : convexDir;
+/** Stable per-project name, from the directory holding forge/. */
+export function projectName(forgeDir: string) {
+  const root = ["forge", "convex"].includes(basename(forgeDir)) ? dirname(forgeDir) : forgeDir;
   const slug = basename(root).toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "app";
   return `${slug}-${Bun.hash(root).toString(16).slice(0, 6)}`;
 }
 /** Production and dev containers of a project have separate names, so one never replaces the other. */
-export const containerName = (convexDir: string, dev = false) => `archlast-forge-${projectName(convexDir)}${dev ? "-dev" : ""}`;
+export const containerName = (forgeDir: string, dev = false) => `archlast-forge-${projectName(forgeDir)}${dev ? "-dev" : ""}`;
 
 /** The project's running engine container (production first), if any. */
-export const runningContainer = (convexDir: string) => [containerName(convexDir), containerName(convexDir, true)].find(isRunning);
+export const runningContainer = (forgeDir: string) => [containerName(forgeDir), containerName(forgeDir, true)].find(isRunning);
 
 export const isRunning = (name: string) => docker(["inspect", "-f", "{{.State.Running}}", name]).out === "true";
 
@@ -106,24 +106,24 @@ function startServices(name: string, services: Service[]) {
 }
 
 export interface RunOptions {
-  convexDir: string;
+  forgeDir: string;
   port: number;
   dev: boolean;
   env: Record<string, string>;
   services?: Service[];
   image?: string;
-  /** Defaults to convex/.env when it exists. */
+  /** Defaults to forge/.env when it exists. */
   envFile?: string;
 }
 
-/** Runs the engine container. In dev, convex/ is mounted read-only and the engine watches it. */
+/** Runs the engine container. In dev, forge/ is mounted read-only and the engine watches it. */
 export function runEngine(o: RunOptions) {
-  const name = containerName(o.convexDir, o.dev);
+  const name = containerName(o.forgeDir, o.dev);
   const image = o.image ?? ensureEngineImage();
   docker(["rm", "-f", name]);
   const serviceEnv = startServices(name, o.services ?? []);
   const env = { PORT: "3000", DATA_DIR: "/data", ...serviceEnv, ...o.env };
-  const envFile = o.envFile ?? join(o.convexDir, ".env");
+  const envFile = o.envFile ?? join(o.forgeDir, ".env");
   const args = [
     "run",
     "-d",
@@ -138,7 +138,7 @@ export function runEngine(o: RunOptions) {
     ...((o.services ?? []).length ? ["--network", name] : []),
     ...(existsSync(envFile) ? ["--env-file", envFile] : []),
     ...Object.entries(env).flatMap(([k, v]) => ["-e", `${k}=${v}`]),
-    ...(o.dev ? ["-v", `${o.convexDir}:/src/convex:ro`, "-v", `${name}-modules:/app/convex/node_modules`] : ["--restart", "unless-stopped"]),
+    ...(o.dev ? ["-v", `${o.forgeDir}:/src/forge:ro`, "-v", `${name}-modules:/app/forge/node_modules`] : ["--restart", "unless-stopped"]),
     image,
     "engine",
     "serve",
@@ -166,17 +166,17 @@ export function attach(name: string, stopOnExit: boolean) {
 }
 
 /** Builds a production image: the engine plus this project's code and dependencies. */
-export function buildAppImage(convexDir: string, tag: string) {
+export function buildAppImage(forgeDir: string, tag: string) {
   const image = ensureEngineImage();
   const ctx = mkdtempSync(join(tmpdir(), "afx-build-"));
   try {
-    cpSync(convexDir, join(ctx, "convex"), {
+    cpSync(forgeDir, join(ctx, "forge"), {
       recursive: true,
-      filter: (src) => !relative(convexDir, src).split("/").some((seg) => seg === "node_modules" || seg === "data" || seg === ".env" || seg === ".git"),
+      filter: (src) => !relative(forgeDir, src).split("/").some((seg) => seg === "node_modules" || seg === "data" || seg === ".env" || seg === ".git"),
     });
     writeFileSync(
       join(ctx, "Dockerfile"),
-      `FROM ${image}\nCOPY convex /src/convex\nRUN bun /engine/packages/cli/src/index.ts engine prepare\nENV NODE_ENV=production\n`,
+      `FROM ${image}\nCOPY forge /src/forge\nRUN bun /engine/packages/cli/src/index.ts engine prepare\nENV NODE_ENV=production\n`,
     );
     console.log(`→ building ${tag} from ${image}`);
     if (!docker(["build", "-t", tag, ctx], { inherit: true }).ok) fail("App image build failed");
@@ -188,7 +188,7 @@ export function buildAppImage(convexDir: string, tag: string) {
 
 /** Runs a CLI command inside the running engine container. */
 export function execInEngine(name: string, args: string[], opts: { inherit?: boolean } = { inherit: true }) {
-  return docker(["exec", name, "bun", "/engine/packages/cli/src/index.ts", ...args, "--dir", "/app/convex", "--no-docker"], opts);
+  return docker(["exec", name, "bun", "/engine/packages/cli/src/index.ts", ...args, "--dir", "/app/forge", "--no-docker"], opts);
 }
 
 export const copyFrom = (name: string, path: string, to: string) => docker(["cp", `${name}:${path}`, to]).ok;

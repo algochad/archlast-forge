@@ -125,7 +125,7 @@ export function defineSchema<T extends Record<string, TableDefinition<any, any>>
 
 // ---- type-level data model, bound to the user's schema by codegen via `Register` ----
 
-/** Augmented by `convex/_generated/dataModel.ts`: `interface Register { schema: typeof schema }`. */
+/** Augmented by `forge/_generated/dataModel.ts`: `interface Register { schema: typeof schema }`. */
 export interface Register {}
 
 export type GenericTables = Record<string, TableDefinition<any, any>>;

@@ -43,7 +43,7 @@ export function Scheduled({ admin }: { admin: Admin }) {
             </table>
           </div>
         ) : (
-          <Empty icon="scheduled">No crons (convex/crons.ts).</Empty>
+          <Empty icon="scheduled">No crons (forge/crons.ts).</Empty>
         )}
       </section>
       <section className="panel stack" aria-label="Scheduled jobs">

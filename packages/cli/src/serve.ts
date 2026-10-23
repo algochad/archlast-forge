@@ -4,7 +4,7 @@ import { basename } from "node:path";
 import { fail, loadDashboard } from "./common";
 
 export interface ServeOptions {
-  convexDir: string;
+  forgeDir: string;
   dev: boolean;
   env: Record<string, string | undefined>;
   /** Watch this directory and call `onChange` with changed files (dev). */
@@ -15,7 +15,7 @@ export interface ServeOptions {
 
 /** Runs the server in this process: SIGTERM/SIGINT stop gracefully, SIGHUP reloads the function runtime. */
 export async function serve(opts: ServeOptions): Promise<RunningServer> {
-  const server = await startServer({ convexDir: opts.convexDir, dev: opts.dev, env: opts.env, dashboard: await loadDashboard() }).catch((e) => fail(e.message));
+  const server = await startServer({ forgeDir: opts.forgeDir, dev: opts.dev, env: opts.env, dashboard: await loadDashboard() }).catch((e) => fail(e.message));
   let stopping = false;
   const stop = async (signal: string) => {
     if (stopping) process.exit(1); // second signal: don't wait

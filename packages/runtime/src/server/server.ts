@@ -22,7 +22,7 @@ import { Tracer } from "./tracing";
 import { WsShim, type WsData } from "./ws";
 
 export interface ServerOptions {
-  convexDir: string;
+  forgeDir: string;
   dev?: boolean;
   env?: Record<string, string | undefined>;
   /** Bun HTML import of the dashboard, served at /_dashboard when enabled. */
@@ -77,7 +77,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   const runtimeEnv = { ...env }; // gets the bound URL before the runtime starts
   const runtime = new FunctionRuntime({
-    convexDir: resolve(opts.convexDir),
+    forgeDir: resolve(opts.forgeDir),
     env: runtimeEnv,
     dev,
     workers: config.runtimeWorkers,

@@ -28,25 +28,25 @@ Answers to questions the build prompt and architecture doc left open, and the ch
 ## Functions
 
 - **Actions are at-most-once with no retries** (user decision). Scheduled mutations are exactly-once: the job row is claimed inside the mutation's own transaction. A scheduled action is claimed as `running` first. If the process crashes mid-action, the job stays `running` (`shortcut:` comment in `scheduler.ts`).
-- **Crons** live in `convex/crons.ts` and are evaluated in UTC. Every server computes the same job ID for each run (`cron:<name>:<time>`), so each run is inserted once.
-- **Function runtime** is a child process, not a Bun Worker, because Bun documents Worker termination as experimental. It owns the `convex/` modules, the database, Better Auth and the scheduler. The server process owns HTTP/WS, the bus, the cache and subscriptions.
+- **Crons** live in `forge/crons.ts` and are evaluated in UTC. Every server computes the same job ID for each run (`cron:<name>:<time>`), so each run is inserted once.
+- **Function runtime** is a child process, not a Bun Worker, because Bun documents Worker termination as experimental. It owns the `forge/` modules, the database, Better Auth and the scheduler. The server process owns HTTP/WS, the bus, the cache and subscriptions.
 - **Code or dependency changes restart only the function runtime** (user decision). HTTP and WebSocket stay up. The tRPC router sits behind a stable handle, so open sockets see the new procedures, and every subscription re-runs.
 - **One tRPC procedure per function** (`todos.add`), plus `_sub.todos.listByList` for each query's subscription. Arguments are validated in the function runtime.
 
 ## Auth
 
 - **Better Auth by default** (user decision), through an adapter over the document store. `users`, `sessions`, `accounts` and `verifications` are added to every schema and visible in the dashboard. Writes to them publish topics like any other write. They aren't validated against the schema, so Better Auth plugins can add fields.
-- `convex/auth.ts` (optional) default-exports `defineAuth(options)`. Without it, email and password sign-in is on.
+- `forge/auth.ts` (optional) default-exports `defineAuth(options)`. Without it, email and password sign-in is on.
 - **Identity** is resolved once per request from the `cookie`/`authorization` headers, before the function's transaction starts.
 - WebSockets carry cookies only on the handshake, so the client reconnects when the session changes.
 - In dev, `BETTER_AUTH_SECRET` and `ADMIN_KEY` are generated once and kept in `DATA_DIR/.dev-secrets.json`. Outside dev, `BETTER_AUTH_SECRET` is required.
 
 ## Server-side dependencies
 
-- `convex/` has its own `package.json`. In this monorepo it is a workspace member (`apps/*/convex`).
+- `forge/` has its own `package.json`. In this monorepo it is a workspace member (`apps/*/forge`).
 - `codegen` and `dev` run `bun install` when that manifest or the nearest `bun.lock` changes. They pass `--ignore-scripts` unless the manifest lists `trustedDependencies`, in which case Bun runs scripts for those packages only.
 - A missing package fails at load with the `bun add` command to fix it.
-- Codegen fails if `src/` imports anything from `convex/` other than `convex/_generated`.
+- Codegen fails if `src/` imports anything from `forge/` other than `forge/_generated`.
 
 ## Config
 
@@ -102,8 +102,8 @@ Decided without asking, as directed, while implementing [roadmap.md](roadmap.md)
 
 ## Docker engine (the open questions from the roadmap)
 
-1. **Code delivery.** In dev, `convex/` is mounted read-only at `/src/convex` and the engine syncs it into its own filesystem (`/app/convex`), so the host's `node_modules` never shadows the container's. In production, `archlast-forge build` creates an app image `FROM` the engine with the code and dependencies baked in (`engine prepare`).
-2. **Server dependencies.** Installed inside the container, from `convex/package.json` minus `@archlast-forge/*` and `workspace:` entries; `@archlast-forge/runtime` is linked to the engine's copy. `node_modules` sits on a named volume. The host also installs, but only for editor types.
+1. **Code delivery.** In dev, `forge/` is mounted read-only at `/src/forge` and the engine syncs it into its own filesystem (`/app/forge`), so the host's `node_modules` never shadows the container's. In production, `archlast-forge build` creates an app image `FROM` the engine with the code and dependencies baked in (`engine prepare`).
+2. **Server dependencies.** Installed inside the container, from `forge/package.json` minus `@archlast-forge/*` and `workspace:` entries; `@archlast-forge/runtime` is linked to the engine's copy. `node_modules` sits on a named volume. The host also installs, but only for editor types.
 3. **Docker access.** The CLI shells out to `docker`; `DOCKER=podman` switches binaries.
 4. **Services.** The engine only, by default. `--with postgres,redis,s3` starts sibling containers on a per-project network and wires their URLs in.
 5. **Versioning.** The engine image is `ghcr.io/algochad/archlast-forge-engine:<cli version>` (`ARCHLAST_ENGINE_IMAGE` overrides). Inside this repo the CLI builds it if it's missing; a published CLI pulls it.

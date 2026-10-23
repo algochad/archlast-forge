@@ -76,7 +76,7 @@ if (process.argv.includes("--smoke")) {
   run(["bun", join(OUT, "stage", "create-archlast-forge", "src", "index.ts"), app], ROOT);
   // Resolve every @archlast-forge package (direct or transitive) to the local tarballs.
   const overrides = Object.fromEntries(packed.filter((p) => p.name.startsWith("@archlast-forge/")).map((p) => [p.name, `file:${p.tarball}`]));
-  for (const file of [join(app, "package.json"), join(app, "convex", "package.json")]) {
+  for (const file of [join(app, "package.json"), join(app, "forge", "package.json")]) {
     const pkg = JSON.parse(readFileSync(file, "utf8"));
     for (const field of ["dependencies", "devDependencies"]) for (const name of Object.keys(pkg[field] ?? {})) if (overrides[name]) pkg[field][name] = overrides[name];
     pkg.overrides = overrides;

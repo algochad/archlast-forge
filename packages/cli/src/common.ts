@@ -7,10 +7,19 @@ export function fail(message: string): never {
   process.exit(1);
 }
 
-export function findConvexDir(dir?: string) {
-  const picked = dir ?? (existsSync("convex/schema.ts") ? "convex" : existsSync("schema.ts") ? "." : "convex");
+/** The folder holding schema.ts and your functions: `forge/`, or the current directory if it has schema.ts. A project still using the old `convex/` name keeps working, with a nudge to rename it. */
+export function findForgeDir(dir?: string) {
+  let picked = dir;
+  if (!picked) {
+    if (existsSync("forge/schema.ts")) picked = "forge";
+    else if (existsSync("schema.ts")) picked = ".";
+    else if (existsSync("convex/schema.ts")) {
+      console.warn("! Using convex/, the old name for this folder. Rename it to forge/ (and update imports of ../convex/_generated).");
+      picked = "convex";
+    } else picked = "forge";
+  }
   const abs = resolve(picked);
-  if (!existsSync(join(abs, "schema.ts"))) fail(`No schema.ts in ${abs}. Pass --dir <path to convex/>.`);
+  if (!existsSync(join(abs, "schema.ts"))) fail(`No schema.ts in ${abs}. Pass --dir <path to forge/>.`);
   return abs;
 }
 
@@ -36,7 +45,7 @@ export function trustProxyOrigins(env: Record<string, string | undefined>) {
 export async function generate(dir: string) {
   const modules = await codegen(dir);
   const violations = await checkFrontendImports(dir);
-  if (violations.length) throw new Error(`Frontend code must import only convex/_generated:\n  ${violations.join("\n  ")}`);
+  if (violations.length) throw new Error(`Frontend code must import only forge/_generated:\n  ${violations.join("\n  ")}`);
   return modules;
 }
 

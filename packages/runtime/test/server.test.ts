@@ -7,7 +7,7 @@ const fixture = join(import.meta.dir, "fixture");
 let srv: RunningServer;
 
 beforeAll(async () => {
-  srv = await startServer({ convexDir: fixture, dev: true, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret" } });
+  srv = await startServer({ forgeDir: fixture, dev: true, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret" } });
 });
 afterAll(() => srv.stop());
 

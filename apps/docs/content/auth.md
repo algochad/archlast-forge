@@ -2,7 +2,7 @@
 
 [Better Auth](https://better-auth.com) is built in. Its data lives in your database as ordinary documents, in the `users`, `sessions`, `accounts` and `verifications` tables, so it's reactive and visible in the dashboard.
 
-Email and password sign-in works out of the box. To customize it, add `convex/auth.ts`:
+Email and password sign-in works out of the box. To customize it, add `forge/auth.ts`:
 
 ```ts
 import { defineAuth } from "@archlast-forge/runtime";

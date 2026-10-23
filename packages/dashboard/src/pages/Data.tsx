@@ -43,7 +43,7 @@ export function Data({ manifest, admin }: { manifest: Manifest; admin: Admin }) 
   const openTable = (t: string) => move([{ table: t, label: t }]);
   const openRunner = (initial?: Draft) => setTool({ kind: "runner", key: Date.now(), initial });
   const owner = admin.role === "owner";
-  if (!tables.length) return <Empty icon="data">No tables yet. Define them in convex/schema.ts.</Empty>;
+  if (!tables.length) return <Empty icon="data">No tables yet. Define them in forge/schema.ts.</Empty>;
   const groups = [
     {
       label: "Your tables",

@@ -18,7 +18,7 @@ You can retry failed jobs from the dashboard.
 ## Crons
 
 ```ts
-// convex/crons.ts
+// forge/crons.ts
 import { cronJobs } from "@archlast-forge/runtime";
 import { internal } from "./_generated/api";
 

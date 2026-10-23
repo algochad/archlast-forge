@@ -1,7 +1,7 @@
 # Schema and validators
 
 ```ts
-// convex/schema.ts
+// forge/schema.ts
 import { defineSchema, defineTable, v } from "@archlast-forge/runtime";
 
 export default defineSchema({

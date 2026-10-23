@@ -56,7 +56,7 @@ const admin = { "x-admin-key": "secret", "x-forge-admin": "1", "content-type": "
 describe("runCustom in dev", () => {
   let srv: RunningServer;
   beforeAll(async () => {
-    srv = await startServer({ convexDir: fixture, dev: true, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret" } });
+    srv = await startServer({ forgeDir: fixture, dev: true, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret" } });
   });
   afterAll(() => srv.stop());
 
@@ -186,7 +186,7 @@ describe("runCustom in production", () => {
   });
 
   test("off by default, even for the owner", async () => {
-    const srv = await startServer({ convexDir: fixture, env: env() });
+    const srv = await startServer({ forgeDir: fixture, env: env() });
     try {
       const res = await post(srv, { "x-admin-key": "root-key" });
       expect(res.status).toBe(403);
@@ -198,7 +198,7 @@ describe("runCustom in production", () => {
   });
 
   test("on: owners only", async () => {
-    const srv = await startServer({ convexDir: fixture, env: env({ ALLOW_CUSTOM_FUNCTIONS: "on" }) });
+    const srv = await startServer({ forgeDir: fixture, env: env({ ALLOW_CUSTOM_FUNCTIONS: "on" }) });
     try {
       expect((await post(srv, {})).status).toBe(401);
       expect((await post(srv, { cookie: await login(srv, "admin@example.com", "admin-password-123") })).status).toBe(403);
