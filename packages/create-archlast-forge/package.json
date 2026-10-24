@@ -6,12 +6,22 @@
   "bin": {
     "create-archlast-forge": "./src/index.ts"
   },
-  "files": ["src", "template"],
+  "files": [
+    "src",
+    "template"
+  ],
   "scripts": {
     "typecheck": "bun check",
     "test": "bun test"
   },
   "devDependencies": {
     "@types/bun": "1.4.3"
+  },
+  "dependencies": {
+    "@clack/prompts": "^1.8.1"
+  },
+  "exports": {
+    ".": "./src/index.ts",
+    "./stack": "./src/stack.ts"
   }
 }

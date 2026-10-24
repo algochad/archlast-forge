@@ -48,19 +48,19 @@ export async function codegen(forgeDir: string) {
   return modules.map((m) => m.name);
 }
 
-/** Frontend code may import only forge/_generated, or server-only code would reach the browser bundle. */
+/** Frontend code (src/ in an app with its own bundler, app/ in framework mode) may import only forge/_generated, or server-only code would reach the browser bundle. */
 export async function checkFrontendImports(forgeDir: string) {
-  const srcDir = join(dirname(forgeDir), "src");
-  if (!existsSync(srcDir)) return [];
   const generated = join(forgeDir, "_generated");
   const violations: string[] = [];
-  for (const file of new Bun.Glob("**/*.{ts,tsx,js,jsx,mts}").scanSync({ cwd: srcDir, absolute: true })) {
-    const loader = file.endsWith("x") ? "tsx" : "ts";
-    for (const imp of new Bun.Transpiler({ loader }).scanImports(await Bun.file(file).text())) {
-      if (!imp.path.startsWith(".")) continue;
-      const target = resolve(dirname(file), imp.path);
-      const inside = (dir: string) => target === dir || target.startsWith(dir + "/");
-      if (inside(forgeDir) && !inside(generated)) violations.push(`${relative(process.cwd(), file)} imports "${imp.path}"`);
+  for (const dir of ["src", "app"].map((d) => join(dirname(forgeDir), d)).filter(existsSync)) {
+    for (const file of new Bun.Glob("**/*.{ts,tsx,js,jsx,mts}").scanSync({ cwd: dir, absolute: true })) {
+      const loader = file.endsWith("x") ? "tsx" : "ts";
+      for (const imp of new Bun.Transpiler({ loader }).scanImports(await Bun.file(file).text())) {
+        if (!imp.path.startsWith(".")) continue;
+        const target = resolve(dirname(file), imp.path);
+        const inside = (d: string) => target === d || target.startsWith(d + "/");
+        if (inside(forgeDir) && !inside(generated)) violations.push(`${relative(process.cwd(), file)} imports "${imp.path}"`);
+      }
     }
   }
   return violations;

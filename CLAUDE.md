@@ -17,7 +17,9 @@ bun run format               # prettier over ts/tsx/md
 bun run test                 # SQLite and in-memory adapters only
 bun run services:up          # Postgres, Redis, RustFS in Docker
 bun run test:all             # everything, one package at a time, with TEST_* env set
-bun run pack:smoke           # pack all packages, install into a fresh project, run it
+bun run pack:smoke           # pack all packages; scaffold a full-stack app and a backend from the tarballs; build and serve both
+bun run e2e                  # the same in Docker (needs Docker): `up`, `dev` with services, uploads, restarts, `down`
+bun scripts/e2e-docker.ts caddy   # HTTPS behind Caddy; needs ports 80 and 443
 ```
 
 Single test file or test name, from the package directory:
@@ -26,6 +28,8 @@ Single test file or test name, from the package directory:
 cd packages/runtime && bun test test/values.test.ts
 cd packages/runtime && bun test -t "name fragment"
 ```
+
+The browser tests in `packages/framework` drive Chromium through `playwright-core`; they skip when no browser can be launched (`CHROMIUM_PATH`, or `bunx playwright-core install chromium`). `turbo.json` passes `CHROMIUM_PATH`, `LD_LIBRARY_PATH`, `FONTCONFIG_FILE` and `SCREENSHOTS` through to tests; `SCREENSHOTS=<dir>` makes the template test save images of its pages. The `e2e` scripts need `bun scripts/pack.ts` first and the engine image (`bun packages/cli/src/index.ts engine build`, which they do not rebuild: rebuild it after changing `packages/cli/src/engine.ts` or anything else that runs inside the container).
 
 Postgres, Redis or S3 tests run only when their `TEST_*` variable is set (`TEST_POSTGRES_URL`, `TEST_REDIS_URL`, `TEST_S3_ENDPOINT`); `test:all` sets them, matching `services:up`. Type-level tests live in `packages/runtime/test-types` and run with `bun check -p test-types`.
 
@@ -46,6 +50,10 @@ Postgres, Redis or S3 tests run only when their `TEST_*` variable is set (`TEST_
 **Validators and types.** `packages/runtime/src/values.ts` (`v`) defines validators as plain data, so they can cross into the dashboard and the runtime process. `schema.ts`, `functions.ts` and `relations.ts` build on them, and the client types are derived from `api`.
 
 **Clients.** `packages/client` speaks the wire protocol directly: JSON over HTTP at `POST /rpc/<name>`, and a WebSocket at `/rpc` for live queries. The React, Vue and Svelte packages wrap it. The dashboard is served at `/_dashboard`, with its API at `/_admin/<op>`.
+
+**Modes.** A project is a full-stack app or a backend (`archlast-forge.json`: `mode`, `services`; no file means a backend with no services). `packages/create-archlast-forge` holds the templates (`template/base` plus `framework` or `backend`) and `src/stack.ts`, which renders `compose.yaml`, `Dockerfile`, `.env` and the Caddyfile and validates the config; the CLI imports it. Backend: `dev` runs the engine in Docker; `up`/`down` run `compose.yaml` (`packages/cli/src/stack.ts`).
+
+**Full-stack apps.** `packages/framework` (on React Router's data router) scans `app/routes` into a route manifest (`routes.ts`), generates entry files into `<project>/.forge/gen` (`generate.ts`), and bundles for the browser and the server with `Bun.build` (`build.ts`). `server.tsx`'s `createApp` returns the `AppHost` that `startServer({ app })` calls for every request the engine doesn't own (`packages/runtime/src/server/server.ts`): it runs loaders with a per-request context, renders with `renderToReadableStream`, embeds `window.__FORGE__` (loader data, the TanStack query cache, the viewer, sanitized errors), and serves `/_app/*` and `public/`. `client.tsx` hydrates the document. Development is one process on the host with rebuild and live reload (`dev.ts`); the CLI loads the framework from the project at runtime (`packages/cli/src/app.ts`), and `engine prepare` builds the app inside the image while linking React from the engine so there is one copy. Convention docs: `apps/docs/content/framework.md`.
 
 **HTTP endpoints.** `forge/http.ts` (like `crons.ts` and `auth.ts`, a special module that `listModules` skips) exports `httpRouter()`. The server forwards `/http/*` to the function runtime as an `{ t: "http" }` message (like `/api/auth`), which matches the route and runs the handler as an action. Routing is in `server/http.ts`.
 

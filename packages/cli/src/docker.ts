@@ -3,6 +3,7 @@ import { cpSync, existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs"
 import { tmpdir } from "node:os";
 import { basename, dirname, join, relative } from "node:path";
 import { fail, VERSION } from "./common";
+import { projectRoot } from "./project";
 
 const DOCKER = process.env.DOCKER ?? "docker";
 const REPO_ROOT = new URL("../../..", import.meta.url).pathname.replace(/\/$/, "");
@@ -59,40 +60,90 @@ const SERVICES = {
     image: "postgres:17-alpine",
     env: { POSTGRES_USER: "forge", POSTGRES_PASSWORD: "forge", POSTGRES_DB: "forge" },
     volume: "/var/lib/postgresql/data",
-    provides: (host: string) => ({ DATABASE_URL: `postgres://forge:forge@${host}:5432/forge` }),
+    port: 5432,
+    provides: (address: string) => ({ DATABASE_URL: `postgres://forge:forge@${address}/forge` }),
   },
-  redis: { image: "redis:7-alpine", env: {}, volume: "/data", provides: (host: string) => ({ REDIS_URL: `redis://${host}:6379` }) },
+  redis: { image: "redis:7-alpine", env: {}, volume: "/data", port: 6379, provides: (address: string) => ({ REDIS_URL: `redis://${address}` }) },
   s3: {
     image: "rustfs/rustfs:latest",
     env: { RUSTFS_ACCESS_KEY: "forgeadmin", RUSTFS_SECRET_KEY: "forgeadmin", RUSTFS_CORS_ALLOWED_ORIGINS: "*" },
     volume: "/data",
     cmd: ["/data"],
-    // shortcut: one project per machine can publish 9000; use S3_ENDPOINT yourself for more.
+    port: 9000,
+    // shortcut: with the engine in a container, one project per machine can publish 9000; set S3_ENDPOINT yourself for more.
     publish: "9000:9000",
-    provides: (host: string) => ({ S3_ENDPOINT: `http://${host}:9000`, S3_PUBLIC_ENDPOINT: process.env.S3_PUBLIC_ENDPOINT || "http://localhost:9000", S3_BUCKET: "forge", S3_ACCESS_KEY_ID: "forgeadmin", S3_SECRET_ACCESS_KEY: "forgeadmin", S3_REGION: "us-east-1" }),
+    provides: (address: string, host: boolean) => ({
+      S3_ENDPOINT: `http://${address}`,
+      S3_PUBLIC_ENDPOINT: host ? `http://${address}` : process.env.S3_PUBLIC_ENDPOINT || "http://localhost:9000",
+      S3_BUCKET: "forge",
+      S3_ACCESS_KEY_ID: "forgeadmin",
+      S3_SECRET_ACCESS_KEY: "forgeadmin",
+      S3_REGION: "us-east-1",
+    }),
   },
 } as const;
 export type Service = keyof typeof SERVICES;
 
-/** Starts service containers on the project's network; returns the env vars that point the engine at them. */
-function startServices(name: string, services: Service[]) {
-  const env: Record<string, string> = {};
-  if (!services.length) return env;
+/** The host port Docker published for a container port. */
+function publishedPort(container: string, port: number) {
+  const out = docker(["port", container, `${port}/tcp`]).out;
+  const found = /:(\d+)\s*$/m.exec(out);
+  if (!found) fail(`Couldn't find the published port of ${container} (docker port said: ${out || "nothing"})`);
+  return Number(found![1]);
+}
+
+/** Blocks until a service answers, so the engine doesn't start against a database that is still initializing. */
+function waitReady(container: string, service: Service) {
+  const probe = { postgres: ["pg_isready", "-U", "forge", "-d", "forge"], redis: ["redis-cli", "ping"], s3: undefined }[service];
+  if (!probe) return;
+  for (let i = 0; i < 120; i++) {
+    if (docker(["exec", container, ...probe]).ok) return;
+    Bun.sleepSync(500);
+  }
+  fail(`${service} didn't become ready in 60 s. See: docker logs ${container}`);
+}
+
+export interface StartedServices {
+  env: Record<string, string>;
+  /** For display: "postgres on localhost:54321". */
+  where: string[];
+}
+
+/** Service containers this process started, so `dev` can stop exactly those when it ends. */
+const startedHere = new Set<string>();
+
+/** Stops the service containers this process started. Their data stays in the named volumes. */
+export function stopStartedServices() {
+  for (const container of startedHere) docker(["stop", "-t", "3", container]);
+  startedHere.clear();
+}
+
+/**
+ * Starts service containers on the project's network and returns the env vars that point the engine at them.
+ * `host: true` is for an engine running on this machine: ports are published on 127.0.0.1 and the URLs say localhost.
+ * Otherwise the engine is a container on the same network and uses the containers' names.
+ */
+export function startServices(name: string, services: Service[], opts: { host?: boolean } = {}): StartedServices {
+  const out: StartedServices = { env: {}, where: [] };
+  if (!services.length) return out;
   docker(["network", "create", name]);
   for (const s of services) {
     const def = SERVICES[s];
     if (!def) fail(`Unknown service "${s}" (postgres, redis, s3)`);
-    const host = `${name}-${s}`;
-    if (!isRunning(host)) {
-      docker(["rm", "-f", host]);
+    const container = `${name}-${s}`;
+    if (!isRunning(container)) {
+      docker(["rm", "-f", container]);
       const envArgs = Object.entries(def.env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
       const cmd = "cmd" in def ? [...def.cmd] : [];
-      const publish = "publish" in def ? ["-p", def.publish] : [];
-      const run = docker(["run", "-d", "--name", host, "--network", name, "-v", `${host}:${def.volume}`, ...publish, ...envArgs, def.image, ...cmd]);
+      const publish = opts.host ? ["-p", `127.0.0.1::${def.port}`] : "publish" in def ? ["-p", def.publish] : [];
+      const run = docker(["run", "-d", "--name", container, "--network", name, "-v", `${container}:${def.volume}`, ...publish, ...envArgs, def.image, ...cmd]);
       if (!run.ok) fail(`Couldn't start ${s}: ${run.err}`);
-      console.log(`✓ ${s} container ${host}`);
+      startedHere.add(container);
     }
-    Object.assign(env, def.provides(host));
+    waitReady(container, s);
+    const address = opts.host ? `localhost:${publishedPort(container, def.port)}` : `${container}:${def.port}`;
+    Object.assign(out.env, (def.provides as (a: string, h: boolean) => Record<string, string>)(address, Boolean(opts.host)));
+    out.where.push(`${s} on ${address}`);
   }
   if (services.includes("s3")) {
     // The bucket must exist before the first upload.
@@ -102,7 +153,7 @@ function startServices(name: string, services: Service[]) {
       Bun.sleepSync(1000);
     }
   }
-  return env;
+  return out;
 }
 
 export interface RunOptions {
@@ -121,7 +172,7 @@ export function runEngine(o: RunOptions) {
   const name = containerName(o.forgeDir, o.dev);
   const image = o.image ?? ensureEngineImage();
   docker(["rm", "-f", name]);
-  const serviceEnv = startServices(name, o.services ?? []);
+  const serviceEnv = startServices(name, o.services ?? []).env;
   const env = { PORT: "3000", DATA_DIR: "/data", ...serviceEnv, ...o.env };
   const envFile = o.envFile ?? join(o.forgeDir, ".env");
   const args = [
@@ -156,6 +207,7 @@ export function attach(name: string, stopOnExit: boolean) {
     if (stopOnExit) {
       console.log(`\nstopping ${name}…`);
       docker(["stop", "-t", "15", name]); // SIGTERM: the engine drains connections first
+      stopStartedServices();
     }
     logs.kill();
     process.exit(0);
@@ -165,9 +217,18 @@ export function attach(name: string, stopOnExit: boolean) {
   return logs.exited;
 }
 
-/** Builds a production image: the engine plus this project's code and dependencies. */
+/**
+ * Builds a production image: the engine plus this project's code and dependencies.
+ * A project made by `archlast-forge init` has its own Dockerfile and builds from its root; older ones get a generated one around forge/.
+ */
 export function buildAppImage(forgeDir: string, tag: string) {
   const image = ensureEngineImage();
+  const root = projectRoot(forgeDir);
+  if (existsSync(join(root, "Dockerfile")) && existsSync(join(root, "archlast-forge.json"))) {
+    console.log(`→ building ${tag} from ${image}`);
+    if (!docker(["build", "-t", tag, "-f", join(root, "Dockerfile"), "--build-arg", `ENGINE_IMAGE=${image}`, root], { inherit: true }).ok) fail("App image build failed");
+    return tag;
+  }
   const ctx = mkdtempSync(join(tmpdir(), "afx-build-"));
   try {
     cpSync(forgeDir, join(ctx, "forge"), {

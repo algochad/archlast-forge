@@ -12,7 +12,7 @@ concurrency:
 jobs:
   test:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 40
     services:
       postgres:
         image: postgres:17-alpine
@@ -44,12 +44,19 @@ jobs:
             sleep 1
           done
       - run: bun install --frozen-lockfile
+      - name: Chromium for the browser tests
+        run: cd packages/framework && bunx playwright-core install --with-deps chromium
       - name: Typecheck and build
         run: bunx turbo build typecheck
       - name: Test (SQLite, Postgres, Redis, S3, two servers)
         run: bunx turbo test --concurrency=1
-      - name: Package smoke test (packed tarballs in a fresh project)
+      - name: Package smoke test (packed tarballs, a full-stack app and a backend, each served)
         run: bun scripts/pack.ts --smoke
+      - name: Docker end to end (the stack with `up`, and `dev` with services)
+        run: |
+          bun packages/cli/src/index.ts engine build
+          bun scripts/e2e-docker.ts
+          bun scripts/e2e-dev.ts
 
   engine-image:
     runs-on: ubuntu-latest

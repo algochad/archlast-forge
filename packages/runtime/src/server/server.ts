@@ -7,6 +7,8 @@ import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
 import { loadConfig, type Config } from "./config";
+import { ForgeError } from "../errors";
+import type { FunctionKind, UserIdentity } from "../functions";
 import type { CallHeaders, LogEntry } from "./executor";
 import { log, setLogFormat } from "./logger";
 import { Metrics } from "./metrics";
@@ -18,12 +20,40 @@ import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager } from "./subscriptions";
 import { Tracer } from "./tracing";
 
+/** A frontend the engine serves next to the API (framework mode). */
+export interface AppHost {
+  /**
+   * Called for requests the engine has no route for: everything except /rpc, /api/auth, /http, /_admin, /_dashboard, /_cli,
+   * /health, /ready and /metrics. Return undefined for the plain 404.
+   */
+  fetch(req: Request, env: AppEnv): Response | undefined | Promise<Response | undefined>;
+  dispose?(): void | Promise<void>;
+}
+
+/** What an app host may do for one request. */
+export interface AppEnv {
+  requestId: string;
+  dev: boolean;
+  /** The caller's cookie and authorization headers, as functions see them. */
+  headers: CallHeaders;
+  /** Runs a public function in this process as the caller; queries go through the query cache. Fails like a client call: a ForgeError for ForgeErrors, else an Error with the public message. */
+  call(name: string, kind: FunctionKind, args?: unknown): Promise<unknown>;
+  /** The signed-in user, or null. */
+  identity(): Promise<UserIdentity | null>;
+  /** Seconds the caller must wait when over its rate limit, otherwise null. Pages call it before doing real work. */
+  rateLimited(): Promise<number | null>;
+  /** Long-lived responses (server-sent events) must opt out of the idle timeout. */
+  keepAlive(): void;
+}
+
 export interface ServerOptions {
   forgeDir: string;
   dev?: boolean;
   env?: Record<string, string | undefined>;
   /** Bun HTML import of the dashboard, served at /_dashboard when enabled. */
   dashboard?: HTMLBundle;
+  /** A frontend served for every path the engine doesn't own. */
+  app?: AppHost;
 }
 
 export interface RunningServer {
@@ -320,6 +350,35 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         }
         return withId(await handleAdmin(req, path, requestId));
       }
+      if (opts.app) {
+        await loading;
+        const headers = pickAuthHeaders((n) => req.headers.get(n));
+        const publicError = (e: unknown) => {
+          const err = toPublicError(e, requestId, dev, { path });
+          return err.data !== undefined ? new ForgeError(err.data) : Object.assign(new Error(err.message), { code: err.code, requestId });
+        };
+        const res = await opts.app.fetch(req, {
+          requestId,
+          dev,
+          headers,
+          async call(name, kind, args) {
+            try {
+              if (kind === "query") {
+                // A copy: the result may be the object the query cache keeps, and a page is free to change what it gets.
+                const r = await queries.run(name, (args ?? {}) as Record<string, unknown>, headers, requestId);
+                return r.json !== undefined ? JSON.parse(r.json) : structuredClone(r.value);
+              }
+              return (await runtime.call(name, kind, args ?? {}, headers, { requestId })).value;
+            } catch (e) {
+              throw publicError(e);
+            }
+          },
+          identity: () => runtime.identity(headers).catch((e) => Promise.reject(publicError(e))),
+          rateLimited: async () => (await limited(req, srv)) ?? null,
+          keepAlive: () => srv.timeout(req, 0),
+        });
+        if (res) return res;
+      }
       return new Response("Not found", { status: 404 });
     },
     websocket: {
@@ -385,6 +444,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       for (const ws of sockets) ws.close(1012, "Server restarting");
       if (graceful) await Promise.race([server.stop(false), Bun.sleep(10_000)]);
       server.stop(true);
+      await opts.app?.dispose?.();
       await runtime.stop();
       await bus.close();
       await cache?.close();

@@ -63,7 +63,9 @@ export type PaginationStatus = "LoadingFirstPage" | "CanLoadMore" | "LoadingMore
 export function usePaginatedQuery<R extends PaginatedQuery>(ref: R, args: PaginatedArgs<R> | "skip", opts: { initialNumItems: number }) {
   const [numItems, setNumItems] = useState(opts.initialNumItems);
   const argsHash = JSON.stringify(args);
-  useEffect(() => setNumItems(opts.initialNumItems), [argsHash]); // new args start over
+  useEffect(() => {
+    setNumItems(opts.initialNumItems); // new args start over
+  }, [argsHash]);
   const result = useQuery(ref as unknown as PublicQuery, ...([args === "skip" ? "skip" : windowArgs(args, numItems)] as [any]));
   const page = result as { page: PaginatedItem<R>[]; isDone: boolean } | undefined;
   const status: PaginationStatus = !page ? "LoadingFirstPage" : page.isDone ? "Exhausted" : page.page.length < numItems ? "LoadingMore" : "CanLoadMore";
@@ -139,9 +141,13 @@ export function useUploadFile<R extends FunctionReference<"mutation", { contentT
 /** The Better Auth client: signIn, signUp, signOut, … */
 export const useAuth = () => useArchlastForge().auth;
 
+/** What the session is on the server and during hydration: still loading. Sign-in state arrives in the browser. */
+const PENDING_SESSION = { data: null, error: null, isPending: true, isRefetching: false, refetch: async () => {} };
+
 export function useSession() {
   const atom = useArchlastForge().auth.useSession;
-  return useSyncExternalStore((cb) => atom.listen(cb), () => atom.get());
+  type State = ReturnType<typeof atom.get>;
+  return useSyncExternalStore((cb) => atom.listen(cb), () => atom.get(), () => PENDING_SESSION as State);
 }
 
 export { updateError };

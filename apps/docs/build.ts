@@ -5,6 +5,8 @@ import { join } from "node:path";
 const ORDER = [
   ["index", "Introduction"],
   ["getting-started", "Getting started"],
+  ["framework", "Full-stack apps"],
+  ["backend", "Backends"],
   ["schema", "Schema and validators"],
   ["functions", "Functions"],
   ["queries", "Reading data"],

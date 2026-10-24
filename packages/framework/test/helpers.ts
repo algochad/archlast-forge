@@ -1,0 +1,49 @@
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { startServer, type RunningServer } from "@archlast-forge/runtime/server";
+import { buildApp } from "../src/build";
+import { createApp } from "../src/server";
+
+export const fixture = join(import.meta.dir, "fixture");
+
+export const tempDir = () => mkdtempSync(join(tmpdir(), "afx-fw-"));
+
+/** An engine serving the fixture app, built the way production builds it. */
+export async function startFixture(o: { root?: string; dev?: boolean; env?: Record<string, string> } = {}): Promise<RunningServer> {
+  const root = o.root ?? fixture;
+  const dev = o.dev ?? false;
+  if (!dev) await buildApp({ root, dev });
+  return startServer({
+    forgeDir: join(root, "forge"),
+    dev,
+    env: {
+      ...process.env,
+      PORT: "0",
+      DATA_DIR: tempDir(),
+      BETTER_AUTH_SECRET: "s".repeat(32),
+      ALLOW_INSECURE_HTTP: "1",
+      RATE_LIMIT_PER_MINUTE: "100000",
+      LOG_FORMAT: "json",
+      ...o.env,
+    },
+    app: await createApp({ root, dev, log: () => {} }),
+  });
+}
+
+/** Signs a user up and returns the cookie header that proves it. */
+export async function signUp(srv: RunningServer, email: string, name = "Ada"): Promise<string> {
+  const res = await fetch(`${srv.url}/api/auth/sign-up/email`, {
+    method: "POST",
+    headers: { "content-type": "application/json", origin: srv.url },
+    body: JSON.stringify({ email, password: "correct horse battery", name }),
+  });
+  if (!res.ok) throw new Error(`sign-up failed: ${res.status} ${await res.text()}`);
+  return res.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
+}
+
+export const stateOf = (html: string) => {
+  const m = /window\.__FORGE__=(\{.*?\});<\/script>/s.exec(html);
+  if (!m) throw new Error("no window.__FORGE__ in the page");
+  return JSON.parse(m[1]!) as import("../src/state").PageState;
+};

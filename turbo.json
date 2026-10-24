@@ -6,6 +6,6 @@
     "codegen": { "dependsOn": ["^build"], "cache": false },
     "dev": { "cache": false, "persistent": true, "passThroughEnv": ["S3_PUBLIC_ENDPOINT"] },
     "typecheck": { "dependsOn": ["^build", "codegen"] },
-    "test": { "dependsOn": ["^build"], "env": ["TEST_*"] }
+    "test": { "dependsOn": ["^build"], "env": ["TEST_*"], "passThroughEnv": ["CHROMIUM_PATH", "LD_LIBRARY_PATH", "FONTCONFIG_FILE", "SCREENSHOTS"] }
   }
 }

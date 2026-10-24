@@ -12,6 +12,7 @@
 | Requests per IP | 1200 per minute | `429` with `Retry-After`; WebSocket closed with 1008 |
 | Subscriptions per connection | 200 | the extra subscription fails |
 | Slow WebSocket clients | 4 MiB buffered | disconnected; they reconnect and refetch |
+| Page requests (full-stack apps) | the same per-IP limit | `429` with `Retry-After`. A page is rendered per request, so it costs more than a file; built assets and `public/` files are not counted |
 
 ## Security checklist for production
 

@@ -1,9 +1,10 @@
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { checkFrontendImports, codegen } from "./codegen";
+import { c } from "./ui";
 
 export function fail(message: string): never {
-  console.error(`✗ ${message}`);
+  console.error(`${c.red("✗")} ${message}`);
   process.exit(1);
 }
 

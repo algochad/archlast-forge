@@ -1,0 +1,26 @@
+{
+  "name": "__NAME__",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "archlast-forge dev",
+    "build": "archlast-forge build --no-docker",
+    "start": "archlast-forge start --no-docker",
+    "codegen": "archlast-forge codegen",
+    "typecheck": "archlast-forge codegen && tsc --noEmit",
+    "up": "archlast-forge up",
+    "down": "archlast-forge down"
+  },
+  "dependencies": {
+    "@archlast-forge/framework": "^__VERSION__",
+    "@archlast-forge/react": "^__VERSION__",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  },
+  "devDependencies": {
+    "@archlast-forge/cli": "^__VERSION__",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "typescript": "^7.0.2"
+  }
+}

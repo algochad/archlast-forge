@@ -1,4 +1,4 @@
-import { startServer, type RunningServer } from "@archlast-forge/runtime/server";
+import { startServer, type AppHost, type RunningServer } from "@archlast-forge/runtime/server";
 import { watch } from "node:fs";
 import { basename } from "node:path";
 import { fail, loadDashboard } from "./common";
@@ -11,11 +11,13 @@ export interface ServeOptions {
   watchDir?: string;
   /** Prepares for a reload (codegen, installs); return false to skip it. */
   onChange?: (files: string[]) => Promise<boolean>;
+  /** A frontend served next to the API (framework mode). */
+  app?: AppHost;
 }
 
 /** Runs the server in this process: SIGTERM/SIGINT stop gracefully, SIGHUP reloads the function runtime. */
 export async function serve(opts: ServeOptions): Promise<RunningServer> {
-  const server = await startServer({ forgeDir: opts.forgeDir, dev: opts.dev, env: opts.env, dashboard: await loadDashboard() }).catch((e) => fail(e.message));
+  const server = await startServer({ forgeDir: opts.forgeDir, dev: opts.dev, env: opts.env, dashboard: await loadDashboard(), app: opts.app }).catch((e) => fail(e.message));
   let stopping = false;
   const stop = async (signal: string) => {
     if (stopping) process.exit(1); // second signal: don't wait

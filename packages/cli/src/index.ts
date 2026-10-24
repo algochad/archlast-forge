@@ -3,40 +3,59 @@ import { ops } from "@archlast-forge/runtime/server";
 import { watch } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";
+import { buildFramework, loadFramework } from "./app";
 import { devSecrets, fail, findForgeDir, generate, trustProxyOrigins, VERSION } from "./common";
 import { ensureDeps, findUp } from "./deps";
 import * as dockerEngine from "./docker";
 import { engineServe, prepare } from "./engine";
+import { loadProjectConfig, projectRoot, type ProjectConfig } from "./project";
 import { serve } from "./serve";
+import * as stack from "./stack";
+import { banner, c, ok, step, warn } from "./ui";
 
-const USAGE = `archlast-forge ${VERSION}
+// `init` has its own options and prompts: hand everything after it to the scaffolder.
+if (Bun.argv[2] === "init") {
+  await (await import("create-archlast-forge")).main(Bun.argv.slice(3));
+  process.exit(0);
+}
 
-Development
-  dev                     codegen, then run the engine in Docker and watch forge/
-      --no-docker         run in this process instead
-      --with <list>       also start service containers: postgres, redis, s3
-      --run "<cmd>"       also run a command alongside, e.g. --run vite
-  codegen                 write forge/_generated/ and check that src/ imports only forge/_generated
+const USAGE = `${c.bold("archlast-forge")} ${VERSION}
 
-Production
-  build [--tag <image>]   build an app image: the engine plus your code and dependencies
-  start                   run in production: --image <tag> [--env-file <file>] in Docker, or --no-docker here
-  stop | logs | status    control this project's engine container
+${c.bold("Start")}
+  init [dir]              create a project: a full-stack app or a backend, with the services you pick
+      --mode <framework|backend>   --services <postgres,redis,s3,caddy | none>   --yes   --no-install   --no-git
 
-Data
+${c.bold("Develop")}
+  dev                     run with live reload: a full-stack app on this machine, a backend's engine in Docker
+      --port <n>          port to listen on (default 3000)
+      --with <list>       services to start: postgres, redis, s3 (default: the ones in archlast-forge.json)
+      --no-docker         run a backend's engine in this process
+      --run "<cmd>"       also run a command alongside, e.g. a separate frontend
+  codegen                 write forge/_generated/ and check what your frontend imports
+
+${c.bold("Ship")}
+  up                      build the image and start the stack in compose.yaml: the app and its services
+  down [--volumes]        stop the stack (--volumes also deletes its data)
+  logs [service]          follow the logs
+  status                  show what is running
+  build [--tag <image>]   build the app image   (--no-docker: only the production bundles of a full-stack app)
+  start                   run in production: --no-docker here, or --image <tag> in Docker
+
+${c.bold("Data")}
   migrate                 sync tables and indexes; report documents that don't match the schema
       --run-migrations [name…]  run data migrations (resumable)   --status   list them
   export <file>           all documents as JSON Lines
   import <file>           restore an export (--replace clears the tables first)
   backup <file>           SQLite database copy (use pg_dump for Postgres)
 
-Config
+${c.bold("Config")}
   env list | env get <NAME> | env set <NAME> <value> | env rm <NAME>
   admin add <email> [--role owner|admin|viewer] [--password <pw>] | admin list | admin remove <email>
   dashboard               print the dashboard URL
 
-Engine
+${c.bold("Engine")}
   engine build            build the engine image from this repository
+  stop                    stop a single engine container (older projects)
 
 Options: --dir <forge dir>  --port <n>  --no-docker`;
 
@@ -58,6 +77,8 @@ const { positionals, values } = parseArgs({
     password: { type: "string" },
     "env-file": { type: "string" },
     run: { type: "string" },
+    volumes: { type: "boolean" },
+    rebuild: { type: "boolean" },
     dev: { type: "boolean" },
     help: { type: "boolean", short: "h" },
   },
@@ -89,12 +110,70 @@ function companion() {
   process.on("exit", () => proc.kill());
 }
 
+/** The services `dev` starts: --with, or the ones in archlast-forge.json (Caddy is only for production). */
+function devServices(cfg?: ProjectConfig): dockerEngine.Service[] {
+  const wanted = values.with ? values.with.split(",").map((x) => x.trim()) : (cfg?.services ?? []);
+  return wanted.filter((x) => x !== "caddy" && x !== "none") as dockerEngine.Service[];
+}
+
+/** Regenerates types and installs dependencies when forge/ changes; false means nothing needs a reload. */
+function forgeChanged(dir: string) {
+  return async (files: string[]) => {
+    const source = files.filter((f) => !f.includes("_generated"));
+    if (!source.length) return false; // our own codegen output
+    const installed = source.some((f) => ["package.json", "bun.lock"].includes(basename(f))) && (await ensureDeps(dir));
+    const code = source.some((f) => /\.(ts|js)$/.test(f));
+    if (!installed && !code) return false;
+    await generate(dir);
+    return true;
+  };
+}
+
+/** A full-stack app: the engine and the app in this process, services (if any) in Docker with ports on localhost. */
+async function devFramework(dir: string, cfg: ProjectConfig) {
+  const began = performance.now();
+  const root = projectRoot(dir);
+  const env = devEnv(dir);
+  env.BETTER_AUTH_URL = `http://localhost:${port}`; // a stray .env must not point sessions at another port
+  await ensureDeps(dir);
+  ok(`codegen: ${(await generate(dir)).length} modules`);
+
+  const services = devServices(cfg);
+  let where: string[] = [];
+  const noDocker = Boolean(values["no-docker"] || process.env.ARCHLAST_NO_DOCKER === "1");
+  if (services.length && noDocker) warn(`--no-docker: not starting ${services.join(", ")}; using SQLite. Set DATABASE_URL, REDIS_URL or S3_* yourself to use others.`);
+  else if (services.length) {
+    if (!dockerEngine.dockerAvailable()) fail(`This project uses ${services.join(", ")}, which run in Docker, and Docker isn't available.\nStart Docker, or run \`archlast-forge dev --no-docker\` to develop on SQLite.`);
+    step(`starting ${services.join(", ")}`);
+    const started = dockerEngine.startServices(dockerEngine.containerName(dir, true), services, { host: true });
+    Object.assign(env, started.env);
+    where = started.where;
+    process.on("exit", dockerEngine.stopStartedServices); // Ctrl-C ends the session, so it ends its services too
+  }
+
+  const { createApp } = await loadFramework(root, "server");
+  const app = await createApp({ root, dev: true });
+  const server = await serve({ forgeDir: dir, dev: true, env: { ...env, PORT: String(port) }, app, watchDir: dir, onChange: forgeChanged(dir) });
+  banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  full-stack app  ${c.dim(`· ready in ${Math.round(performance.now() - began)} ms`)}`, [
+    ["App", server.url],
+    ["Dashboard", `${server.url}/_dashboard`],
+    ["Admin key", env.ADMIN_KEY!],
+    ...where.map((w): [string, string] => ["Service", w]),
+  ]);
+  console.log(c.dim("  Save a file and the page reloads. Ctrl-C stops everything.\n"));
+  const lock = findUp(dir, "bun.lock");
+  if (lock && !lock.startsWith(dir)) watch(lock, () => void ensureDeps(dir).then(async (did) => void (did && (await server.reload()))));
+}
+
 async function dev() {
   const dir = findForgeDir(values.dir);
+  const cfg = loadProjectConfig(dir);
+  if (cfg?.mode === "framework") return devFramework(dir, cfg);
+
   const env = devEnv(dir);
   companion();
   await ensureDeps(dir); // host install: editor types; the engine installs its own copy
-  console.log(`✓ codegen: ${(await generate(dir)).length} modules`);
+  ok(`codegen: ${(await generate(dir)).length} modules`);
 
   if (useDocker()) {
     const name = dockerEngine.runEngine({
@@ -102,9 +181,14 @@ async function dev() {
       port,
       dev: true,
       env: { BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET!, ADMIN_KEY: env.ADMIN_KEY!, BETTER_AUTH_URL: `http://localhost:${port}`, TRUSTED_ORIGINS: env.TRUSTED_ORIGINS ?? "" },
-      services: values.with ? (values.with.split(",").map((s) => s.trim()) as dockerEngine.Service[]) : [],
+      services: devServices(cfg),
     });
-    console.log(`✓ engine container ${name} on http://localhost:${port}\n  dashboard: http://localhost:${port}/_dashboard  (admin key: ${env.ADMIN_KEY})`);
+    banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  backend  ${c.dim("· engine in Docker")}`, [
+      ["API", `http://localhost:${port}`],
+      ["Dashboard", `http://localhost:${port}/_dashboard`],
+      ["Admin key", env.ADMIN_KEY!],
+      ["Container", name],
+    ]);
     // The engine watches the mounted source; the host only keeps codegen current.
     watchSource(dir, async (files) => {
       if (files.some((f) => ["package.json", "bun.lock"].includes(basename(f)))) await ensureDeps(dir);
@@ -115,22 +199,14 @@ async function dev() {
     process.exit(0); // the container is gone; don't linger on the file watcher
   }
 
-  const server = await serve({
-    forgeDir: dir,
-    dev: true,
-    env: { ...env, PORT: String(port) },
-    watchDir: dir,
-    onChange: async (files) => {
-      const source = files.filter((f) => !f.includes("_generated"));
-      if (!source.length) return false; // our own codegen output
-      const installed = source.some((f) => ["package.json", "bun.lock"].includes(basename(f))) && (await ensureDeps(dir));
-      const code = source.some((f) => /\.(ts|js)$/.test(f));
-      if (!installed && !code) return false;
-      await generate(dir);
-      return true;
-    },
-  });
-  console.log(`✓ archlast-forge dev on ${server.url}\n  dashboard: ${server.url}/_dashboard  (admin key: ${env.ADMIN_KEY})`);
+  const skipped = devServices(cfg);
+  if (skipped.length) warn(`Not starting ${skipped.join(", ")} without Docker; using SQLite. Set DATABASE_URL, REDIS_URL or S3_* yourself to use others.`);
+  const server = await serve({ forgeDir: dir, dev: true, env: { ...env, PORT: String(port) }, watchDir: dir, onChange: forgeChanged(dir) });
+  banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  backend  ${c.dim("· in this process")}`, [
+    ["API", server.url],
+    ["Dashboard", `${server.url}/_dashboard`],
+    ["Admin key", env.ADMIN_KEY!],
+  ]);
   const lock = findUp(dir, "bun.lock");
   if (lock && !lock.startsWith(dir)) watch(lock, () => void ensureDeps(dir).then(async (did) => void (did && (await server.reload()))));
 }
@@ -227,14 +303,34 @@ const commands: Record<string, () => Promise<unknown>> = {
 
   async build() {
     const dir = findForgeDir(values.dir);
+    const cfg = loadProjectConfig(dir);
     await generate(dir);
+    if (!useDocker()) {
+      if (cfg?.mode !== "framework") return console.log("Nothing to build without Docker: a backend runs straight from forge/ (`archlast-forge start --no-docker`).");
+      await buildFramework(projectRoot(dir));
+      return console.log(`\nRun it here with: archlast-forge start --no-docker`);
+    }
     const tag = values.tag ?? `${dockerEngine.projectName(dir)}:latest`;
     dockerEngine.buildAppImage(dir, tag);
-    console.log(`✓ built ${tag}\n  run it: archlast-forge start --image ${tag}   (or docker run -p 3000:3000 -v data:/data --env-file .env ${tag})`);
+    ok(`built ${tag}`);
+    console.log(`  run the whole stack: archlast-forge up\n  or just this image:  archlast-forge start --image ${tag}   (or docker run -p 3000:3000 -v data:/data --env-file .env ${tag})`);
+  },
+  async up() {
+    const dir = findForgeDir(values.dir);
+    const cfg = loadProjectConfig(dir) ?? fail("This folder has no archlast-forge.json. Create a project with `archlast-forge init`, or run a single image with `archlast-forge build` and `start --image`.");
+    await ensureDeps(dir).catch((e) => fail(e.message));
+    await generate(dir).catch((e) => fail(e.message));
+    await stack.up(projectRoot(dir), cfg.services, { rebuild: values.rebuild });
+  },
+  async down() {
+    await stack.down(projectRoot(findForgeDir(values.dir)), { volumes: values.volumes });
   },
   async start() {
     const dir = findForgeDir(values.dir);
+    const cfg = loadProjectConfig(dir);
     if (useDocker()) {
+      // A project with a stack starts as a stack; --image runs one image on its own.
+      if (cfg && !values.image) return commands.up!();
       const image = values.image ?? fail("Pass --image <tag> (from `archlast-forge build`), or --no-docker to run in this process.");
       const name = dockerEngine.runEngine({
         forgeDir: dir,
@@ -245,22 +341,32 @@ const commands: Record<string, () => Promise<unknown>> = {
         envFile: values["env-file"],
         services: values.with ? (values.with.split(",") as dockerEngine.Service[]) : [],
       });
-      return console.log(`✓ ${name} running ${image} on port ${port} (restarts automatically; \`archlast-forge logs\` to follow)`);
+      return ok(`${name} running ${image} on port ${port} (restarts automatically; \`archlast-forge logs\` to follow)`);
     }
-    const server = await serve({ forgeDir: dir, dev: false, env: process.env });
-    console.log(`✓ archlast-forge on ${server.url}`);
+    let app;
+    if (cfg?.mode === "framework") {
+      const root = projectRoot(dir);
+      app = await (await loadFramework(root, "server")).createApp({ root, dev: false }).catch((e: Error) => fail(e.message.includes("No production build") ? `${e.message}` : e.message));
+    }
+    const server = await serve({ forgeDir: dir, dev: false, env: { ...process.env, PORT: String(port) }, app });
+    ok(`archlast-forge on ${server.url}${app ? " (app and API)" : ""}`);
   },
   async stop() {
     const dir = findForgeDir(values.dir);
+    if (await stack.hasStack(projectRoot(dir))) return stack.down(projectRoot(dir));
     for (const name of [dockerEngine.containerName(dir), dockerEngine.containerName(dir, true)])
       if (dockerEngine.isRunning(name)) dockerEngine.docker(["stop", "-t", "15", name], { inherit: true });
   },
   async logs() {
-    const name = dockerEngine.runningContainer(findForgeDir(values.dir)) ?? fail("No engine container is running for this project");
+    const dir = findForgeDir(values.dir);
+    if (await stack.hasStack(projectRoot(dir))) return stack.logs(projectRoot(dir), rest[0]);
+    const name = dockerEngine.runningContainer(dir) ?? fail("Nothing is running for this project (`archlast-forge up` starts the stack)");
     await dockerEngine.attach(name, false);
   },
   async status() {
-    const name = dockerEngine.containerName(findForgeDir(values.dir));
+    const dir = findForgeDir(values.dir);
+    if (await stack.hasStack(projectRoot(dir))) return stack.status(projectRoot(dir));
+    const name = dockerEngine.containerName(dir);
     const r = dockerEngine.docker(["ps", "-a", "--filter", `name=^${name}`, "--format", "{{.Names}}\t{{.Status}}\t{{.Ports}}"]);
     console.log(r.out || `no containers for ${name}`);
   },

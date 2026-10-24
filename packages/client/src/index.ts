@@ -35,6 +35,13 @@ interface Watch {
   stop(): void;
 }
 
+/** The signed-in user, from Better Auth. */
+export interface SessionUser {
+  id: string;
+  email: string;
+  name: string;
+}
+
 /** What the server sends when a call or subscription fails. `data` is what a function threw as a ForgeError. */
 export interface ErrorBody {
   message: string;
@@ -136,6 +143,7 @@ export class ArchlastForgeClient {
   private live: LiveSocket;
   private watches = new Map<string, Watch>();
   private authClient?: ReturnType<typeof createAuthClient>;
+  private sessionListeners = new Set<(user: SessionUser | null) => void>();
 
   constructor(opts: ClientOptions = {}) {
     this.url = (opts.url ?? globalThis.location?.origin ?? "").replace(/\/$/, "");
@@ -153,6 +161,15 @@ export class ArchlastForgeClient {
     this.live.close();
   }
 
+  /**
+   * Calls `listener` with the signed-in user (or null) each time the browser learns the session: after sign-in, sign-out or a reload.
+   * Only fires once something uses `auth`; nothing here asks the server for the session by itself.
+   */
+  onSessionChange(listener: (user: SessionUser | null) => void): () => void {
+    this.sessionListeners.add(listener);
+    return () => void this.sessionListeners.delete(listener);
+  }
+
   /** Better Auth client for this server; a change of session reconnects the socket. */
   get auth() {
     if (!this.authClient) {
@@ -163,6 +180,7 @@ export class ArchlastForgeClient {
         const id = s.data?.session.id ?? null;
         if (session !== undefined && id !== session) this.reconnect();
         session = id;
+        for (const l of this.sessionListeners) l(s.data?.user ?? null);
       });
     }
     return this.authClient;

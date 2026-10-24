@@ -1,0 +1,3 @@
+:root { --accent: rebeccapurple; }
+body { font-family: system-ui, sans-serif; }
+.about-marker { color: var(--accent); }

@@ -5,3 +5,8 @@
 **/.env
 .git
 docker-compose.yml
+**/.forge
+**/.tmp
+**/test
+**/test-types
+.pack

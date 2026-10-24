@@ -44,3 +44,6 @@ data/
 *.db-wal
 **/_generated/.depshash
 .pack
+
+# archlast-forge framework mode
+.forge

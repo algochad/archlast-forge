@@ -11,13 +11,15 @@
     "test": "bun test"
   },
   "devDependencies": {
-    "@types/bun": "1.4.3"
+    "@types/bun": "1.4.3",
+    "@archlast-forge/framework": "workspace:*"
   },
   "bin": {
     "archlast-forge": "./src/index.ts"
   },
   "dependencies": {
     "@archlast-forge/dashboard": "workspace:*",
-    "@archlast-forge/runtime": "workspace:*"
+    "@archlast-forge/runtime": "workspace:*",
+    "create-archlast-forge": "workspace:*"
   }
 }

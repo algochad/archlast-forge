@@ -14,6 +14,7 @@ const PACKAGES = [
   { dir: "react", dist: true },
   { dir: "vue", dist: true },
   { dir: "svelte", dist: true },
+  { dir: "framework", dist: true },
   { dir: "dashboard", dist: false },
   { dir: "cli", dist: false },
   { dir: "create-archlast-forge", dist: false },
@@ -46,7 +47,7 @@ function stage(dir: string, dist: boolean) {
   const exportsOut = dist
     ? Object.fromEntries(
         Object.entries(pkg.exports as Record<string, string>).map(([key, path]) => {
-          const base = path.replace(/^\.\/src\//, "./dist/").replace(/\.ts$/, "");
+          const base = path.replace(/^\.\/src\//, "./dist/").replace(/\.tsx?$/, "");
           return [key, { types: `${base}.d.ts`, import: `${base}.js` }];
         }),
       )
@@ -71,11 +72,16 @@ const packed = PACKAGES.map(({ dir, dist }) => stage(dir, dist));
 for (const p of packed) if (!existsSync(p.tarball)) throw new Error(`expected ${p.tarball}`);
 console.log(`✓ packed ${packed.length} packages into ${OUT}`);
 
-if (process.argv.includes("--smoke")) {
-  const app = join(mkdtempSync(join(tmpdir(), "afx-smoke-")), "smoke-app");
-  run(["bun", join(OUT, "stage", "create-archlast-forge", "src", "index.ts"), app], ROOT);
+/** Scaffolds a project of `mode`, points it at the packed tarballs, and proves it: types, build, and a running production server. */
+async function smoke(mode: "framework" | "backend") {
+  const app = join(mkdtempSync(join(tmpdir(), `afx-smoke-${mode}-`)), `smoke-${mode}`);
+  // Install the scaffolder the way a user's `bun create` would: from its tarball, with its own dependencies.
+  const creator = mkdtempSync(join(tmpdir(), "afx-creator-"));
+  writeFileSync(join(creator, "package.json"), "{}");
+  run(["bun", "add", packed.find((p) => p.name === "create-archlast-forge")!.tarball], creator);
+  run(["bun", join(creator, "node_modules", "create-archlast-forge", "src", "index.ts"), app, "--mode", mode, "--yes", "--no-install", "--no-git"], ROOT);
   // Resolve every @archlast-forge package (direct or transitive) to the local tarballs.
-  const overrides = Object.fromEntries(packed.filter((p) => p.name.startsWith("@archlast-forge/")).map((p) => [p.name, `file:${p.tarball}`]));
+  const overrides = Object.fromEntries(packed.filter((p) => p.name.startsWith("@archlast-forge/") || p.name === "create-archlast-forge").map((p) => [p.name, `file:${p.tarball}`]));
   for (const file of [join(app, "package.json"), join(app, "forge", "package.json")]) {
     const pkg = JSON.parse(readFileSync(file, "utf8"));
     for (const field of ["dependencies", "devDependencies"]) for (const name of Object.keys(pkg[field] ?? {})) if (overrides[name]) pkg[field][name] = overrides[name];
@@ -84,13 +90,13 @@ if (process.argv.includes("--smoke")) {
   }
   run(["bun", "install"], app);
   run(["bunx", "archlast-forge", "codegen"], app);
-  run(["bunx", "tsc", "--noEmit"], app);
-  run(["bunx", "vite", "build"], app);
+  run(["bunx", "tsc", ...(mode === "framework" ? [] : ["-p", "forge"]), "--noEmit"], app);
+  if (mode === "framework") run(["bunx", "archlast-forge", "build", "--no-docker"], app);
 
   const port = String(40000 + Math.floor(Math.random() * 20000));
   const server = Bun.spawn(["bunx", "archlast-forge", "start", "--no-docker"], {
     cwd: app,
-    env: { ...process.env, PORT: port, DATA_DIR: join(app, "data"), BETTER_AUTH_SECRET: "x".repeat(40), ALLOW_INSECURE_HTTP: "1", ARCHLAST_NO_DOCKER: "1" },
+    env: { ...process.env, PORT: port, DATA_DIR: join(app, "data"), BETTER_AUTH_SECRET: "x".repeat(40), ALLOW_INSECURE_HTTP: "1", ARCHLAST_NO_DOCKER: "1", BETTER_AUTH_URL: `http://localhost:${port}` },
     stdout: "inherit",
     stderr: "inherit",
   });
@@ -100,13 +106,31 @@ if (process.argv.includes("--smoke")) {
       await Bun.sleep(500);
       ready = await fetch(`http://localhost:${port}/ready`).then((r) => r.ok, () => false);
     }
-    if (!ready) throw new Error("packed server never became ready");
+    if (!ready) throw new Error(`packed ${mode} server never became ready`);
+    const base = `http://localhost:${port}`;
     const args = encodeURIComponent(JSON.stringify({ paginationOpts: { numItems: 5, cursor: null } }));
-    const body = (await (await fetch(`http://localhost:${port}/rpc/messages:list?args=${args}`)).json()) as any;
+    const body = (await (await fetch(`${base}/rpc/messages:list?args=${args}`)).json()) as any;
     if (!Array.isArray(body.result?.page)) throw new Error(`unexpected response: ${JSON.stringify(body)}`);
-    console.log(`✓ smoke test: scaffolded, installed from tarballs, typechecked, built and served ${app}`);
+    if (mode === "framework") {
+      const home = await (await fetch(`${base}/`)).text();
+      if (!home.includes("<html") || !home.includes("Realtime. Full-stack. One deploy.")) throw new Error(`the home page isn't rendered: ${home.slice(0, 300)}`);
+      const entry = /src="(\/_app\/[^"]+\.js)"/.exec(home)?.[1];
+      if (!entry || !(await fetch(`${base}${entry}`)).ok) throw new Error("the page's script isn't served");
+      const chat = await fetch(`${base}/chat`, { redirect: "manual" });
+      if (chat.status !== 302 || chat.headers.get("location") !== "/sign-in") throw new Error(`/chat should send visitors to /sign-in, got ${chat.status}`);
+      if ((await fetch(`${base}/no/such/page`)).status !== 404) throw new Error("unknown pages should be 404");
+    } else {
+      const hello = (await (await fetch(`${base}/http/hello`)).json()) as any;
+      if (!String(hello.message).startsWith("Hello from")) throw new Error(`unexpected /http/hello: ${JSON.stringify(hello)}`);
+    }
+    console.log(`✓ smoke test (${mode}): scaffolded, installed from tarballs, typechecked${mode === "framework" ? ", built" : ""} and served ${app}`);
   } finally {
     server.kill();
     await server.exited;
   }
+}
+
+if (process.argv.includes("--smoke")) {
+  await smoke("framework");
+  await smoke("backend");
 }

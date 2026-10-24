@@ -1,5 +1,19 @@
 # Deployment
 
+## The stack
+
+A project made with `archlast-forge init` carries its own deployment: `compose.yaml` runs your app and the services you chose (PostgreSQL, Redis, S3 storage, Caddy for HTTPS) as one stack.
+
+```bash
+archlast-forge up      # builds the image, starts everything, waits until the app is healthy
+archlast-forge logs
+archlast-forge down    # data stays in Docker volumes
+```
+
+`up` creates `.env` with fresh secrets the first time. Copy the project and `.env` to a server and run `archlast-forge up`, or `docker compose up -d --build` where the CLI isn't installed. [Backends](backend.html) covers the stack in detail: what each service does, HTTPS, backups and upgrades. For a full-stack app, the same image also carries the pages.
+
+The rest of this page is what is underneath: the image on its own, and the settings you can change.
+
 ## Build and run
 
 ```bash
@@ -43,4 +57,4 @@ Without `DATABASE_URL` the engine stores data in a SQLite file (`bun:sqlite`, WA
 
 ## Serving the frontend
 
-Host the built frontend anywhere. Either put it on the same origin behind a reverse proxy that forwards `/rpc` (with WebSocket upgrades) and `/api` to the engine, or serve it from another origin listed in `TRUSTED_ORIGINS` and create the client with `{ url }`.
+A full-stack app needs nothing here: the engine serves its pages. For a backend with a separate frontend, host the built frontend anywhere. Either put it on the same origin behind a reverse proxy that forwards `/rpc` (with WebSocket upgrades) and `/api` to the engine, or serve it from another origin listed in `TRUSTED_ORIGINS` and create the client with `{ url }`.
