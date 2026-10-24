@@ -11,6 +11,8 @@ permissions:
 
 jobs:
   publish:
+    # The engine image goes first: a new project's `archlast-forge up` pulls it as soon as the packages exist.
+    needs: engine-image
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -23,7 +25,10 @@ jobs:
       - name: Publish to npm
         env:
           NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
-        run: for f in .pack/*.tgz; do bun publish "$f" --access public; done
+        run: |
+          # 0.2.0-rc.1 and the like are published under the "next" tag, so `latest` only moves for real releases.
+          TAG=latest; case "$GITHUB_REF_NAME" in *-*) TAG=next;; esac
+          for f in .pack/*.tgz; do bun publish "$f" --access public --tag $TAG; done
 
   engine-image:
     runs-on: ubuntu-latest

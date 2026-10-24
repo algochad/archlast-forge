@@ -14,8 +14,8 @@
   "dependencies": {
     "@archlast-forge/framework": "^__VERSION__",
     "@archlast-forge/react": "^__VERSION__",
-    "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@archlast-forge/cli": "^__VERSION__",

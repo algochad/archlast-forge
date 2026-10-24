@@ -1,6 +1,22 @@
 {
   "name": "@archlast-forge/runtime",
   "version": "0.1.0",
+  "description": "The archlast-forge engine: schema, functions, the reactive server, and the testing library.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/algochad/archlast-forge.git",
+    "directory": "packages/runtime"
+  },
+  "homepage": "https://github.com/algochad/archlast-forge#readme",
+  "bugs": "https://github.com/algochad/archlast-forge/issues",
+  "keywords": [
+    "archlast-forge",
+    "backend",
+    "realtime",
+    "bun",
+    "convex"
+  ],
   "private": true,
   "type": "module",
   "exports": {
@@ -20,5 +36,8 @@
   "dependencies": {
     "better-auth": "1.7.12",
     "zod": "4.6.7"
+  },
+  "engines": {
+    "bun": ">=1.4.3"
   }
 }

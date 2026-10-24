@@ -1,6 +1,22 @@
 {
   "name": "@archlast-forge/cli",
   "version": "0.1.0",
+  "description": "The archlast-forge command line: dev, up, build, data and config commands.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/algochad/archlast-forge.git",
+    "directory": "packages/cli"
+  },
+  "homepage": "https://github.com/algochad/archlast-forge#readme",
+  "bugs": "https://github.com/algochad/archlast-forge/issues",
+  "keywords": [
+    "archlast-forge",
+    "backend",
+    "realtime",
+    "bun",
+    "convex"
+  ],
   "private": true,
   "type": "module",
   "exports": {
@@ -21,5 +37,8 @@
     "@archlast-forge/dashboard": "workspace:*",
     "@archlast-forge/runtime": "workspace:*",
     "create-archlast-forge": "workspace:*"
+  },
+  "engines": {
+    "bun": ">=1.4.3"
   }
 }

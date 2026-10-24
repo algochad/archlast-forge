@@ -1,11 +1,17 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createPostgresDb } from "../src/server/db/postgres";
 import { createSqliteDb } from "../src/server/db/sqlite";
 import type { Db } from "../src/server/db/types";
 
-export const tempDir = () => mkdtempSync(join(tmpdir(), "afx-"));
+const made: string[] = [];
+process.on("exit", () => made.forEach((d) => rmSync(d, { recursive: true, force: true }))); // tests leave databases and projects behind otherwise
+export const tempDir = () => {
+  const dir = mkdtempSync(join(tmpdir(), "afx-"));
+  made.push(dir);
+  return dir;
+};
 
 /** Every Db adapter the contract suite runs against. Postgres needs TEST_POSTGRES_URL. */
 export const dbAdapters: [string, () => Promise<Db>][] = [

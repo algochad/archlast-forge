@@ -135,4 +135,4 @@ Paths the engine uses itself are not available to routes: `/rpc`, `/api/auth`, `
 - Streaming responses, and static generation: every page is rendered per request.
 - Form actions: change data with mutations from event handlers.
 - Per-route CSS files loaded on demand: all CSS is one file.
-- `react` and `react-dom` are pinned to the version the framework was built with; install exactly that one.
+- In production the engine image supplies `react` and `react-dom` (19.3.x); a different 19.x on your machine is fine for development, but test against the image (`archlast-forge up`) before shipping.

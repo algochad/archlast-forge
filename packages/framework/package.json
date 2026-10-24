@@ -1,6 +1,22 @@
 {
   "name": "@archlast-forge/framework",
   "version": "0.1.0",
+  "description": "Full-stack React for archlast-forge: file routes, loaders, server rendering and the build.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/algochad/archlast-forge.git",
+    "directory": "packages/framework"
+  },
+  "homepage": "https://github.com/algochad/archlast-forge#readme",
+  "bugs": "https://github.com/algochad/archlast-forge/issues",
+  "keywords": [
+    "archlast-forge",
+    "backend",
+    "realtime",
+    "bun",
+    "convex"
+  ],
   "private": true,
   "type": "module",
   "exports": {
@@ -22,8 +38,8 @@
     "react-router": "8.5.0"
   },
   "peerDependencies": {
-    "react": "19.3.1",
-    "react-dom": "19.3.1"
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
   },
   "devDependencies": {
     "@types/bun": "1.4.3",
@@ -32,5 +48,8 @@
     "playwright-core": "^1.64.1",
     "react": "19.3.1",
     "react-dom": "19.3.1"
+  },
+  "engines": {
+    "bun": ">=1.4.3"
   }
 }

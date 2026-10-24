@@ -1,6 +1,22 @@
 {
   "name": "@archlast-forge/svelte",
   "version": "0.1.0",
+  "description": "Svelte bindings for archlast-forge.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/algochad/archlast-forge.git",
+    "directory": "packages/svelte"
+  },
+  "homepage": "https://github.com/algochad/archlast-forge#readme",
+  "bugs": "https://github.com/algochad/archlast-forge/issues",
+  "keywords": [
+    "archlast-forge",
+    "backend",
+    "realtime",
+    "bun",
+    "convex"
+  ],
   "private": true,
   "type": "module",
   "exports": {

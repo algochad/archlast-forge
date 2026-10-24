@@ -20,7 +20,7 @@ describe("scaffold", () => {
     const pkg = JSON.parse(read(dir, "package.json"));
     expect(pkg.name).toBe("my-chat");
     expect(pkg.dependencies["@archlast-forge/framework"]).toBe("^1.2.3");
-    expect(pkg.dependencies.react).toBe("19.3.1");
+    expect(pkg.dependencies.react).toBe("^19.3.1");
     expect(pkg.scripts.dev).toBe("archlast-forge dev");
     expect(JSON.parse(read(dir, "archlast-forge.json"))).toEqual({ mode: "framework", services: [] });
     expect(read(dir, "forge/package.json")).toContain('"@archlast-forge/runtime": "^1.2.3"');

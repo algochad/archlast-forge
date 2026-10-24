@@ -1,5 +1,5 @@
 // Shared by the end-to-end scripts: build a project from the packed tarballs, run commands in it, make assertions.
-import { mkdtempSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -7,6 +7,10 @@ export const ROOT = resolve(import.meta.dir, "..", "..");
 export const PACK = join(ROOT, ".pack");
 const tarballs = readdirSync(PACK).filter((f) => f.endsWith(".tgz"));
 if (!tarballs.length) throw new Error("No tarballs in .pack: run `bun scripts/pack.ts` first");
+
+/** Every project and scaffolder install made here is removed when the script ends: each is about 100 MB. */
+const scratch: string[] = [];
+process.on("exit", () => scratch.forEach((d) => rmSync(d, { recursive: true, force: true })));
 
 export function sh(cmd: string[], cwd: string, env: Record<string, string | undefined> = {}) {
   const p = Bun.spawnSync(cmd, { cwd, env: { ...process.env, ...env }, stdout: "pipe", stderr: "pipe" });
@@ -33,8 +37,10 @@ export interface Project {
 
 /** A project from the tarballs: scaffolded, installed, and set to listen on ports that are free here. */
 export function createProject(name: string, mode: string, services: string[], port: number, s3Port: number): Project {
-  const dir = join(mkdtempSync(join(tmpdir(), "afx-e2e-")), name);
+  const root = mkdtempSync(join(tmpdir(), "afx-e2e-"));
+  const dir = join(root, name);
   const creator = mkdtempSync(join(tmpdir(), "afx-creator-"));
+  scratch.push(root, creator);
   writeFileSync(join(creator, "package.json"), "{}");
   must(["bun", "add", join(PACK, tarballs.find((t) => t.startsWith("create-archlast-forge"))!)], creator);
   must(["bun", join(creator, "node_modules/create-archlast-forge/src/index.ts"), dir, "--mode", mode, "--services", services.join(",") || "none", "--yes", "--no-install", "--no-git"], ROOT);

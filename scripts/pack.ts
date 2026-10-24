@@ -40,7 +40,13 @@ function stage(dir: string, dist: boolean) {
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
   for (const entry of dist ? ["dist"] : ["src", "template"]) if (existsSync(join(src, entry))) cpSync(join(src, entry), join(target, entry), { recursive: true });
-  for (const f of ["README.md", "LICENSE"]) if (existsSync(join(src, f))) cpSync(join(src, f), join(target, f));
+  cpSync(join(ROOT, "LICENSE"), join(target, "LICENSE"));
+  if (existsSync(join(src, "README.md"))) cpSync(join(src, "README.md"), join(target, "README.md"));
+  else
+    writeFileSync(
+      join(target, "README.md"),
+      `# ${pkg.name}\n\n${pkg.description}\n\nPart of [archlast-forge](https://github.com/algochad/archlast-forge), a self-hosted reactive backend and full-stack framework for TypeScript on Bun. Start with \`bun create archlast-forge\`; the documentation is in the repository.\n\nMIT licensed.\n`,
+    );
 
   const pin = (deps?: Record<string, string>) =>
     deps && Object.fromEntries(Object.entries(deps).map(([name, spec]) => [name, spec.startsWith("workspace:") ? `^${versions[name]}` : spec]));
@@ -74,9 +80,11 @@ console.log(`✓ packed ${packed.length} packages into ${OUT}`);
 
 /** Scaffolds a project of `mode`, points it at the packed tarballs, and proves it: types, build, and a running production server. */
 async function smoke(mode: "framework" | "backend") {
-  const app = join(mkdtempSync(join(tmpdir(), `afx-smoke-${mode}-`)), `smoke-${mode}`);
+  const base = mkdtempSync(join(tmpdir(), `afx-smoke-${mode}-`));
+  const app = join(base, `smoke-${mode}`);
   // Install the scaffolder the way a user's `bun create` would: from its tarball, with its own dependencies.
   const creator = mkdtempSync(join(tmpdir(), "afx-creator-"));
+  process.on("exit", () => [base, creator].forEach((d) => rmSync(d, { recursive: true, force: true }))); // about 150 MB each
   writeFileSync(join(creator, "package.json"), "{}");
   run(["bun", "add", packed.find((p) => p.name === "create-archlast-forge")!.tarball], creator);
   run(["bun", join(creator, "node_modules", "create-archlast-forge", "src", "index.ts"), app, "--mode", mode, "--yes", "--no-install", "--no-git"], ROOT);

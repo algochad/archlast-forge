@@ -149,4 +149,4 @@ Decided together, as directed ("a framework mode on React with a lightweight bun
 
 - Libraries (runtime, client, react, vue, svelte) publish `dist/`: bundled ESM (each entry separately, because the runtime spawns `child.js` next to its own module) plus `.d.ts` from `tsc --emitDeclarationOnly`. Bun-run packages (cli, dashboard, create-archlast-forge) publish source.
 - Releases are lockstep (`scripts/version.ts`). `scripts/pack.ts` stages the packages, pins `workspace:` dependencies and packs tarballs; `--smoke` proves them in a fresh project. A tag runs the release workflow, which publishes to npm (needs `NPM_TOKEN`) and pushes the engine image to GHCR.
-- No license is declared yet: that's the owner's choice to make before publishing.
+- MIT licensed, and the repository is meant to be public. Packages carry the license, repository and engine (`bun >=1.4.3`) fields; `pack.ts` adds the license and a short README to each tarball. The release workflow builds the engine image before it publishes, and publishes prereleases (`v0.2.0-rc.1`) under the `next` tag. `react` is a `^19.3.1` peer, not an exact pin.

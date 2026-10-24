@@ -1,6 +1,22 @@
 {
   "name": "@archlast-forge/dashboard",
   "version": "0.1.0",
+  "description": "The archlast-forge admin dashboard.",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/algochad/archlast-forge.git",
+    "directory": "packages/dashboard"
+  },
+  "homepage": "https://github.com/algochad/archlast-forge#readme",
+  "bugs": "https://github.com/algochad/archlast-forge/issues",
+  "keywords": [
+    "archlast-forge",
+    "backend",
+    "realtime",
+    "bun",
+    "convex"
+  ],
   "private": true,
   "type": "module",
   "exports": {
@@ -19,5 +35,8 @@
     "@fontsource-variable/space-grotesk": "5.3.0",
     "react": "19.3.1",
     "react-dom": "19.3.1"
+  },
+  "engines": {
+    "bun": ">=1.4.3"
   }
 }

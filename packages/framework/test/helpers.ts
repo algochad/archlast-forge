@@ -1,4 +1,4 @@
-import { mkdtempSync } from "node:fs";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer, type RunningServer } from "@archlast-forge/runtime/server";
@@ -7,7 +7,13 @@ import { createApp } from "../src/server";
 
 export const fixture = join(import.meta.dir, "fixture");
 
-export const tempDir = () => mkdtempSync(join(tmpdir(), "afx-fw-"));
+const made: string[] = [];
+process.on("exit", () => made.forEach((d) => rmSync(d, { recursive: true, force: true })));
+export const tempDir = () => {
+  const dir = mkdtempSync(join(tmpdir(), "afx-fw-"));
+  made.push(dir);
+  return dir;
+};
 
 /** An engine serving the fixture app, built the way production builds it. */
 export async function startFixture(o: { root?: string; dev?: boolean; env?: Record<string, string> } = {}): Promise<RunningServer> {
