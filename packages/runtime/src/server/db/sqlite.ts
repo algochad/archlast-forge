@@ -39,18 +39,15 @@ export const sqliteDialect: Dialect = {
 // loop of the process that serves requests, so the connections here never checkpoint: a thread with its own connection does, passively
 // (it never waits for or blocks readers or the writer), once the WAL passes 32 MiB, so each hot page is copied once per 32 MiB of writes
 // rather than on every few commits.
-const CHECKPOINTER = `import { Database } from "bun:sqlite";
-self.onmessage = (e) => {
-  const db = new Database(e.data);
-  db.exec("PRAGMA busy_timeout = 0");
-  const checkpoint = db.query("PRAGMA wal_checkpoint(PASSIVE)");
-  const wal = Bun.file(e.data + "-wal");
-  setInterval(() => {
-    try {
-      if (wal.size > 32 * 1024 * 1024) checkpoint.get();
-    } catch {}
-  }, 250);
-};`;
+const checkpointer = (path: string) => `import { Database } from "bun:sqlite";
+const db = new Database(${JSON.stringify(path)});
+db.exec("PRAGMA busy_timeout = 0");
+const checkpoint = db.query("PRAGMA wal_checkpoint(PASSIVE)");
+setInterval(() => {
+  try {
+    if (Bun.file(${JSON.stringify(path + "-wal")}).size > 32 * 1024 * 1024) checkpoint.get();
+  } catch {}
+}, 250);`;
 
 /** WAL mode, one write connection (group commit, below), a small pool of readers. `:memory:` runs everything on one connection. */
 export function createSqliteDb(path: string, readers = 4): Db {
@@ -73,11 +70,11 @@ export function createSqliteDb(path: string, readers = 4): Db {
         return c;
       });
   const waiting: ((c: Database) => void)[] = [];
-  let checkpointer: Worker | undefined;
+  let checkpointThread: Worker | undefined;
+  // The path is part of the script, not a message: a message sent before the thread has loaded can be lost, and then nothing ever checkpoints.
   if (!memory) {
-    checkpointer = new Worker(URL.createObjectURL(new Blob([CHECKPOINTER], { type: "application/javascript" })));
-    (checkpointer as unknown as { unref(): void }).unref();
-    checkpointer.postMessage(path);
+    checkpointThread = new Worker(URL.createObjectURL(new Blob([checkpointer(path)], { type: "application/javascript" })));
+    (checkpointThread as unknown as { unref(): void }).unref();
   }
 
   // Group commit. Write transactions run one at a time on the writer, but those that queue up meanwhile run back to back in one SQLite
@@ -234,7 +231,7 @@ export function createSqliteDb(path: string, readers = 4): Db {
     migrate: (tables) => migrateSqlite(db, tables),
     async close() {
       await enqueue(true, async () => {}); // after everything already queued
-      checkpointer?.terminate();
+      checkpointThread?.terminate();
       for (const c of [writer, ...pool]) c.close();
     },
   };

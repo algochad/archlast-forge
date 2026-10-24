@@ -11,7 +11,7 @@
     "logs": "archlast-forge logs"
   },
   "devDependencies": {
-    "@archlast-forge/cli": "^__VERSION__",
+    "@archlast/forge-cli": "^__VERSION__",
     "typescript": "^7.0.2"
   }
 }

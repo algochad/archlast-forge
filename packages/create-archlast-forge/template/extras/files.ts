@@ -1,4 +1,4 @@
-import { ForgeError, mutation, query, v } from "@archlast-forge/runtime";
+import { ForgeError, mutation, query, v } from "@archlast/forge-runtime";
 
 /**
  * Step one of an upload: the browser PUTs the file to the returned `uploadUrl`, then saves `storageId`

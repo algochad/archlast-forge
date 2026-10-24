@@ -1,5 +1,5 @@
 {
-  "name": "@archlast-forge/runtime",
+  "name": "@archlast/forge-runtime",
   "version": "0.1.0",
   "description": "The archlast-forge engine: schema, functions, the reactive server, and the testing library.",
   "license": "MIT",

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
-import type { RunningServer } from "@archlast-forge/runtime/server";
+import type { RunningServer } from "@archlast/forge-runtime/server";
 import type { Browser, Page } from "playwright-core";
 import { launchBrowser } from "./browser";
 import { signUp, startFixture } from "./helpers";

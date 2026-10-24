@@ -17,7 +17,7 @@ cd api && bun install && bun run dev
 Call it from a frontend:
 
 ```ts
-import { ArchlastForgeClient } from "@archlast-forge/client";
+import { ArchlastForgeClient } from "@archlast/forge-client";
 import { api } from "./forge/_generated/api";
 
 const client = new ArchlastForgeClient({ url: "http://localhost:3000" });
@@ -74,7 +74,7 @@ Without Caddy, put your own HTTPS proxy in front: outside development the engine
 
 - PostgreSQL: `docker compose exec -T postgres pg_dump -U forge forge > backup.sql`
 - Without PostgreSQL, SQLite: `archlast-forge backup app.db` takes a consistent copy while the stack runs.
-- Upgrade archlast-forge by updating the `@archlast-forge/*` packages and running `up` again: the image builds on the engine image of the CLI's version. To build on another engine image, set `ARCHLAST_ENGINE_IMAGE` for the CLI, or `ENGINE_IMAGE` in `.env` for plain `docker compose`.
+- Upgrade archlast-forge by updating the `@archlast/forge-*` packages and running `up` again: the image builds on the engine image of the CLI's version. To build on another engine image, set `ARCHLAST_ENGINE_IMAGE` for the CLI, or `ENGINE_IMAGE` in `.env` for plain `docker compose`.
 - Storage and Postgres images are named in `compose.yaml`; pin the versions you have tested.
 
 ## Without Docker

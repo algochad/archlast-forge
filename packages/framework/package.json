@@ -1,5 +1,5 @@
 {
-  "name": "@archlast-forge/framework",
+  "name": "@archlast/forge-framework",
   "version": "0.1.0",
   "description": "Full-stack React for archlast-forge: file routes, loaders, server rendering and the build.",
   "license": "MIT",
@@ -31,9 +31,9 @@
     "build": "rm -rf dist && bun build ./src/index.ts ./src/client.tsx ./src/server.tsx ./src/build.ts --root ./src --outdir ./dist --target bun --splitting --packages external && tsc -p tsconfig.build.json"
   },
   "dependencies": {
-    "@archlast-forge/client": "workspace:*",
-    "@archlast-forge/react": "workspace:*",
-    "@archlast-forge/runtime": "workspace:*",
+    "@archlast/forge-client": "workspace:*",
+    "@archlast/forge-react": "workspace:*",
+    "@archlast/forge-runtime": "workspace:*",
     "@tanstack/react-query": "5.104.5",
     "react-router": "8.5.0"
   },

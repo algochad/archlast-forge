@@ -1,5 +1,5 @@
-import { ArchlastForgeClient, queryKey } from "@archlast-forge/client";
-import { getFunctionName } from "@archlast-forge/runtime";
+import { ArchlastForgeClient, queryKey } from "@archlast/forge-client";
+import { getFunctionName } from "@archlast/forge-runtime";
 import { hydrate, QueryClient } from "@tanstack/react-query";
 import { hydrateRoot } from "react-dom/client";
 import { createBrowserRouter, matchRoutes, RouterContextProvider } from "react-router";

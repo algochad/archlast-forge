@@ -1,4 +1,4 @@
-import { defineSchema, defineTable, v } from "@archlast-forge/runtime";
+import { defineSchema, defineTable, v } from "@archlast/forge-runtime";
 
 // The challenge's users table is the built-in `users` (name is the username); the rest is the same shape as its schema.sql.
 // `_creationTime` is posts.created_at, so the built-in by_creation_time index is posts_created_at_id_idx.

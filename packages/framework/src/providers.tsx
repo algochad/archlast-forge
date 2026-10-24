@@ -1,5 +1,5 @@
-import type { ArchlastForgeClient } from "@archlast-forge/client";
-import { ArchlastForgeProvider } from "@archlast-forge/react";
+import type { ArchlastForgeClient } from "@archlast/forge-client";
+import { ArchlastForgeProvider } from "@archlast/forge-react";
 import type { QueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 import { createViewerStore, type Viewer, type ViewerStore } from "./context";

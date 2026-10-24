@@ -3,7 +3,7 @@
 Throw `ForgeError` for errors meant for the caller. Its message and data reach the client unchanged:
 
 ```ts
-import { ForgeError } from "@archlast-forge/runtime";
+import { ForgeError } from "@archlast/forge-runtime";
 
 if (!identity) throw new ForgeError("Sign in to post");
 if (count >= limit) throw new ForgeError({ code: "LIMIT", max: limit });

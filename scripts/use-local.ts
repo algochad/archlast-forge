@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // Use this checkout's packages in another project before (or without) publishing them to npm:
 //   bun scripts/use-local.ts ../my-other-project
-// It packs every package, points the project's @archlast-forge/* and create-archlast-forge dependencies at the tarballs in .pack/, and installs.
+// It packs every package, points the project's @archlast/forge-* and create-archlast-forge dependencies at the tarballs in .pack/, and installs.
 // Run it again after changing archlast-forge to pick the changes up.
 import { existsSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
@@ -19,7 +19,7 @@ run(["bun", "scripts/pack.ts"], ROOT);
 
 const overrides: Record<string, string> = {};
 for (const f of readdirSync(join(ROOT, ".pack")).filter((f) => f.endsWith(".tgz"))) {
-  const name = f.replace(/-\d+\.\d+\.\d+.*\.tgz$/, "").replace(/^archlast-forge-/, "@archlast-forge/");
+  const name = f.replace(/-\d+\.\d+\.\d+.*\.tgz$/, "").replace(/^archlast-forge-/, "@archlast/forge-");
   overrides[name] = `file:${join(ROOT, ".pack", f)}`;
 }
 // forge/ has its own package.json in a project made by archlast-forge.

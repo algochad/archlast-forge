@@ -1,5 +1,5 @@
-import { anyApi } from "@archlast-forge/runtime";
-import { startServer } from "@archlast-forge/runtime/server";
+import { anyApi } from "@archlast/forge-runtime";
+import { startServer } from "@archlast/forge-runtime/server";
 import { expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";

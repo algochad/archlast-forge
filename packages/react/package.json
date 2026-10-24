@@ -1,5 +1,5 @@
 {
-  "name": "@archlast-forge/react",
+  "name": "@archlast/forge-react",
   "version": "0.1.0",
   "description": "React hooks for archlast-forge: live queries, mutations, auth.",
   "license": "MIT",
@@ -32,8 +32,8 @@
     "expect-type": "1"
   },
   "dependencies": {
-    "@archlast-forge/client": "workspace:*",
-    "@archlast-forge/runtime": "workspace:*",
+    "@archlast/forge-client": "workspace:*",
+    "@archlast/forge-runtime": "workspace:*",
     "@tanstack/react-query": "5.104.5"
   },
   "peerDependencies": {

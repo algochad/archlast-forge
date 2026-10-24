@@ -19,11 +19,11 @@ describe("scaffold", () => {
     scaffold({ dir, mode: "framework", services: [], version: "1.2.3" });
     const pkg = JSON.parse(read(dir, "package.json"));
     expect(pkg.name).toBe("my-chat");
-    expect(pkg.dependencies["@archlast-forge/framework"]).toBe("^1.2.3");
+    expect(pkg.dependencies["@archlast/forge-framework"]).toBe("^1.2.3");
     expect(pkg.dependencies.react).toBe("^19.3.1");
     expect(pkg.scripts.dev).toBe("archlast-forge dev");
     expect(JSON.parse(read(dir, "archlast-forge.json"))).toEqual({ mode: "framework", services: [] });
-    expect(read(dir, "forge/package.json")).toContain('"@archlast-forge/runtime": "^1.2.3"');
+    expect(read(dir, "forge/package.json")).toContain('"@archlast/forge-runtime": "^1.2.3"');
     for (const f of ["app/root.tsx", "app/routes/index.tsx", "app/routes/chat.tsx", "app/routes/sign-in.tsx", "app/styles.css", "public/favicon.svg", "forge/schema.ts", "forge/messages.ts", "Dockerfile", ".dockerignore", "compose.yaml", ".env", ".env.example", ".gitignore", "README.md", "tsconfig.json"])
       expect(existsSync(join(dir, f)), f).toBe(true);
     expect(existsSync(join(dir, "Caddyfile"))).toBe(false);
@@ -40,7 +40,7 @@ describe("scaffold", () => {
     expect(Object.keys((Bun.YAML.parse(read(dir, "compose.yaml")) as any).services)).toEqual(["app", "postgres", "redis", "rustfs", "rustfs-init"]);
     expect(read(dir, "forge/files.ts")).toContain("generateUploadUrl"); // storage is there, so is a way to use it
     expect(read(dir, ".env")).toMatch(/POSTGRES_PASSWORD=[0-9a-f]{32}/);
-    expect(JSON.parse(read(dir, "package.json")).devDependencies["@archlast-forge/cli"]).toBe("^1.2.3");
+    expect(JSON.parse(read(dir, "package.json")).devDependencies["@archlast/forge-cli"]).toBe("^1.2.3");
   });
 
   test("the upload example comes only with storage", () => {

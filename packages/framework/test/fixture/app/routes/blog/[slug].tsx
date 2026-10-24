@@ -1,4 +1,4 @@
-import { data, useLoaderData, type LoaderArgs } from "@archlast-forge/framework";
+import { data, useLoaderData, type LoaderArgs } from "@archlast/forge-framework";
 
 export const loader = async ({ params }: LoaderArgs) => {
   if (params.slug === "missing") throw data("No such post", { status: 404 });

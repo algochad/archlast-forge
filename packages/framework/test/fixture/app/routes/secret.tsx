@@ -1,4 +1,4 @@
-import { redirect, type LoaderArgs } from "@archlast-forge/framework";
+import { redirect, type LoaderArgs } from "@archlast/forge-framework";
 
 export const loader = async ({ ctx }: LoaderArgs) => {
   const viewer = await ctx.viewer();

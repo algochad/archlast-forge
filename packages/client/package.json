@@ -1,5 +1,5 @@
 {
-  "name": "@archlast-forge/client",
+  "name": "@archlast/forge-client",
   "version": "0.1.0",
   "description": "Framework-agnostic client for archlast-forge: calls and live queries over HTTP and WebSocket.",
   "license": "MIT",
@@ -31,7 +31,7 @@
     "@types/bun": "1.4.3"
   },
   "dependencies": {
-    "@archlast-forge/runtime": "workspace:*",
+    "@archlast/forge-runtime": "workspace:*",
     "@tanstack/query-core": "5.104.5",
     "better-auth": "1.7.12"
   }

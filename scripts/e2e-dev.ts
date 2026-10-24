@@ -51,7 +51,7 @@ async function framework() {
     await until("a changed page", async () => (await (await fetch(`${p.base}/`)).text()).includes("Edited while running"));
     check("editing a page rebuilds it", true);
 
-    writeFileSync(join(p.dir, "forge/extra.ts"), `import { query } from "@archlast-forge/runtime";\nexport const answer = query({ handler: () => 42 });\n`);
+    writeFileSync(join(p.dir, "forge/extra.ts"), `import { query } from "@archlast/forge-runtime";\nexport const answer = query({ handler: () => 42 });\n`);
     await until("a new function", async () => (await json(await fetch(`${p.base}/rpc/extra:answer`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).result === 42);
     check("adding a backend function makes it callable", true);
     await until("regenerated types", async () => readFileSync(join(p.dir, "forge/_generated/api.ts"), "utf8").includes("extra"));

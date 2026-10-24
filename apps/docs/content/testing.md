@@ -1,9 +1,9 @@
 # Testing
 
-`@archlast-forge/runtime/testing` runs your functions against an in-memory database, without a server:
+`@archlast/forge-runtime/testing` runs your functions against an in-memory database, without a server:
 
 ```ts
-import { createTestBackend } from "@archlast-forge/runtime/testing";
+import { createTestBackend } from "@archlast/forge-runtime/testing";
 import { expect, test } from "bun:test";
 import { api, internal } from "../forge/_generated/api";
 

@@ -4,7 +4,7 @@ Expose plain HTTP routes for things that aren't function calls: webhooks, a publ
 
 ```ts
 // forge/http.ts
-import { httpAction, httpRouter } from "@archlast-forge/runtime";
+import { httpAction, httpRouter } from "@archlast/forge-runtime";
 import { api, internal } from "./_generated/api";
 
 const http = httpRouter();

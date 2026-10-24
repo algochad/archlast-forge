@@ -8,7 +8,7 @@ import {
   type OptionalArgs,
   type PaginationOptions,
   type PaginationResult,
-} from "@archlast-forge/runtime";
+} from "@archlast/forge-runtime";
 import type { QueryClient } from "@tanstack/query-core";
 import { createAuthClient } from "better-auth/client";
 

@@ -88,8 +88,8 @@ async function smoke(mode: "framework" | "backend") {
   writeFileSync(join(creator, "package.json"), "{}");
   run(["bun", "add", packed.find((p) => p.name === "create-archlast-forge")!.tarball], creator);
   run(["bun", join(creator, "node_modules", "create-archlast-forge", "src", "index.ts"), app, "--mode", mode, "--yes", "--no-install", "--no-git"], ROOT);
-  // Resolve every @archlast-forge package (direct or transitive) to the local tarballs.
-  const overrides = Object.fromEntries(packed.filter((p) => p.name.startsWith("@archlast-forge/") || p.name === "create-archlast-forge").map((p) => [p.name, `file:${p.tarball}`]));
+  // Resolve every @archlast/forge-* package (direct or transitive) to the local tarballs.
+  const overrides = Object.fromEntries(packed.filter((p) => p.name.startsWith("@archlast/forge-") || p.name === "create-archlast-forge").map((p) => [p.name, `file:${p.tarball}`]));
   for (const file of [join(app, "package.json"), join(app, "forge", "package.json")]) {
     const pkg = JSON.parse(readFileSync(file, "utf8"));
     for (const field of ["dependencies", "devDependencies"]) for (const name of Object.keys(pkg[field] ?? {})) if (overrides[name]) pkg[field][name] = overrides[name];

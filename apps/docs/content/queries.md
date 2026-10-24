@@ -86,7 +86,7 @@ References are not enforced: deleting a document does not delete or change the d
 ## Pagination
 
 ```ts
-import { paginationOptsValidator, query } from "@archlast-forge/runtime";
+import { paginationOptsValidator, query } from "@archlast/forge-runtime";
 
 export const page = query({
   args: { listId: v.id("lists"), paginationOpts: paginationOptsValidator },

@@ -1,4 +1,4 @@
-import { startServer, type AppHost, type RunningServer } from "@archlast-forge/runtime/server";
+import { startServer, type AppHost, type RunningServer } from "@archlast/forge-runtime/server";
 import { watch } from "node:fs";
 import { basename } from "node:path";
 import { fail, loadDashboard } from "./common";

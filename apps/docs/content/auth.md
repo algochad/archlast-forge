@@ -5,7 +5,7 @@
 Email and password sign-in works out of the box. To customize it, add `forge/auth.ts`:
 
 ```ts
-import { defineAuth } from "@archlast-forge/runtime";
+import { defineAuth } from "@archlast/forge-runtime";
 
 export default defineAuth({
   emailAndPassword: { enabled: true, requireEmailVerification: false },

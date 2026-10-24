@@ -1,7 +1,7 @@
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { startServer, type RunningServer } from "@archlast-forge/runtime/server";
+import { startServer, type RunningServer } from "@archlast/forge-runtime/server";
 import { buildApp } from "../src/build";
 import { createApp } from "../src/server";
 

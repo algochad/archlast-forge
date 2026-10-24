@@ -1,4 +1,4 @@
-import { useLoaderData, type LoaderArgs } from "@archlast-forge/framework";
+import { useLoaderData, type LoaderArgs } from "@archlast/forge-framework";
 
 export const loader = async ({ request }: LoaderArgs) => ({ text: new URL(request.url).searchParams.get("q") ?? "" });
 

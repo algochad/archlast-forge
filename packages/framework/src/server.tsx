@@ -1,6 +1,6 @@
-import { ArchlastForgeClient, queryKey } from "@archlast-forge/client";
-import { getFunctionName, isForgeError } from "@archlast-forge/runtime";
-import type { AppEnv, AppHost } from "@archlast-forge/runtime/server";
+import { ArchlastForgeClient, queryKey } from "@archlast/forge-client";
+import { getFunctionName, isForgeError } from "@archlast/forge-runtime";
+import type { AppEnv, AppHost } from "@archlast/forge-runtime/server";
 import { dehydrate, QueryClient } from "@tanstack/react-query";
 import { existsSync, statSync } from "node:fs";
 import { join, resolve, sep } from "node:path";

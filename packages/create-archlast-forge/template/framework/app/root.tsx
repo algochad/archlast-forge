@@ -1,5 +1,5 @@
-import { isRouteErrorResponse, Link, NavLink, Outlet, useNavigate, useRouteError, useViewer } from "@archlast-forge/framework";
-import { useAuth } from "@archlast-forge/react";
+import { isRouteErrorResponse, Link, NavLink, Outlet, useNavigate, useRouteError, useViewer } from "@archlast/forge-framework";
+import { useAuth } from "@archlast/forge-react";
 import type { ReactNode } from "react";
 import "./styles.css";
 

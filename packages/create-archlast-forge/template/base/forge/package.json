@@ -3,6 +3,6 @@
   "private": true,
   "type": "module",
   "dependencies": {
-    "@archlast-forge/runtime": "^__VERSION__"
+    "@archlast/forge-runtime": "^__VERSION__"
   }
 }

@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import type { RunningServer } from "@archlast-forge/runtime/server";
+import type { RunningServer } from "@archlast/forge-runtime/server";
 import { readBuild } from "../src/build";
 import { fixture, signUp, startFixture, stateOf } from "./helpers";
 

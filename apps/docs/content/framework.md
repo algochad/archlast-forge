@@ -39,7 +39,7 @@ A page is a React component:
 
 ```tsx
 // app/routes/blog/[slug].tsx
-import { useLoaderData, type LoaderArgs } from "@archlast-forge/framework";
+import { useLoaderData, type LoaderArgs } from "@archlast/forge-framework";
 import { api } from "../../../forge/_generated/api";
 
 export const loader = async ({ params, ctx }: LoaderArgs) => ({
@@ -66,7 +66,7 @@ A route module may export:
 
 `app/root.tsx` is the one route that always renders. It exports `Layout` (the `<html>` document, also used for error pages), a default component with the chrome and an `<Outlet />`, and optionally `ErrorBoundary`.
 
-Link with `Link` and `NavLink` from `@archlast-forge/framework`; navigation happens in the browser, loading only the next page's code. Also exported: `useNavigate`, `useParams`, `useLocation`, `useSearchParams`, `useNavigation`, `useRevalidator`, `redirect`, `data`.
+Link with `Link` and `NavLink` from `@archlast/forge-framework`; navigation happens in the browser, loading only the next page's code. Also exported: `useNavigate`, `useParams`, `useLocation`, `useSearchParams`, `useNavigation`, `useRevalidator`, `redirect`, `data`.
 
 ## Loaders and live data
 
@@ -88,7 +88,7 @@ export const loader = async ({ ctx }: LoaderArgs) => {
 - A loader returns JSON: dates arrive as strings. Return `null` rather than `undefined` when there is nothing.
 - Mutations are not loaders' job. Call them from event handlers with `useMutation`.
 
-`useViewer()` gives components the signed-in user. It is part of the server-rendered HTML, so a header can say "Hi Ada" with no flash, and it follows sign-in and sign-out without a reload. Sign in with `useAuth()` from `@archlast-forge/react`, then `navigate()` to the next page; its loader sees the new session.
+`useViewer()` gives components the signed-in user. It is part of the server-rendered HTML, so a header can say "Hi Ada" with no flash, and it follows sign-in and sign-out without a reload. Sign in with `useAuth()` from `@archlast/forge-react`, then `navigate()` to the next page; its loader sees the new session.
 
 ## The page's head
 

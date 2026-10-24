@@ -1,4 +1,4 @@
-import { ForgeError, mutation, paginationOptsValidator, query, v } from "@archlast-forge/runtime";
+import { ForgeError, mutation, paginationOptsValidator, query, v } from "@archlast/forge-runtime";
 
 /** Newest first, paginated: the client loads more as you scroll. */
 export const list = query({

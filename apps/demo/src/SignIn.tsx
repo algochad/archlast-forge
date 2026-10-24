@@ -1,4 +1,4 @@
-import { useAuth } from '@archlast-forge/react'
+import { useAuth } from '@archlast/forge-react'
 import { useState, type FormEvent } from 'react'
 import { Icon, Logo, type IconName } from './icons'
 

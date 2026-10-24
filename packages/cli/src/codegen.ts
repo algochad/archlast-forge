@@ -1,4 +1,4 @@
-import { listModules } from "@archlast-forge/runtime/server";
+import { listModules } from "@archlast/forge-runtime/server";
 import { existsSync, mkdirSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
@@ -28,7 +28,7 @@ export async function codegen(forgeDir: string) {
   });
   const api =
     HEADER +
-    `import { anyApi, type ModuleRefs } from "@archlast-forge/runtime";\n` +
+    `import { anyApi, type ModuleRefs } from "@archlast/forge-runtime";\n` +
     `import type {} from "./dataModel";\n` +
     imports.join("") +
     `\n/** Public functions, callable from clients. */\nexport const api: {\n${render(tree, "public")}} = anyApi;\n` +
@@ -36,8 +36,8 @@ export async function codegen(forgeDir: string) {
   const dataModel =
     HEADER +
     `import type schema from "../schema";\n\n` +
-    `declare module "@archlast-forge/runtime" {\n  interface Register {\n    schema: typeof schema;\n  }\n}\n\n` +
-    `export type { Doc, Id, TableNames } from "@archlast-forge/runtime";\n`;
+    `declare module "@archlast/forge-runtime" {\n  interface Register {\n    schema: typeof schema;\n  }\n}\n\n` +
+    `export type { Doc, Id, TableNames } from "@archlast/forge-runtime";\n`;
   const out = join(forgeDir, "_generated");
   mkdirSync(out, { recursive: true });
   // Skip unchanged files so watchers don't loop.

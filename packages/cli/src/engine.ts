@@ -2,7 +2,7 @@
 // (its own filesystem), installs its dependencies there for Linux, and serves it.
 import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
-import type { AppHost } from "@archlast-forge/runtime/server";
+import type { AppHost } from "@archlast/forge-runtime/server";
 import { loadFramework } from "./app";
 import { fail, generate } from "./common";
 import { loadProjectConfig } from "./project";
@@ -38,13 +38,13 @@ export function sync(files?: string[]) {
 
 /**
  * Installs forge/package.json's dependencies inside the container (native packages build for Linux).
- * @archlast-forge/* and workspace: entries are left out: the engine provides the runtime itself.
+ * @archlast/forge-* and workspace: entries are left out: the engine provides the runtime itself.
  */
 export function installDeps() {
   const pkgFile = join(SRC, "package.json");
   const pkg = existsSync(pkgFile) ? JSON.parse(readFileSync(pkgFile, "utf8")) : {};
   const keep = (deps: Record<string, string> = {}) =>
-    Object.fromEntries(Object.entries(deps).filter(([name, spec]) => !name.startsWith("@archlast-forge/") && !String(spec).startsWith("workspace:")));
+    Object.fromEntries(Object.entries(deps).filter(([name, spec]) => !name.startsWith("@archlast/forge-") && !String(spec).startsWith("workspace:")));
   const manifest = { name: "forge-app", private: true, type: "module", dependencies: keep(pkg.dependencies), trustedDependencies: pkg.trustedDependencies };
   writeFileSync(join(APP, "package.json"), JSON.stringify(manifest, null, 2));
   const args = ["install", ...(pkg.trustedDependencies ? [] : ["--ignore-scripts"])];
@@ -52,20 +52,20 @@ export function installDeps() {
   let proc = Bun.spawnSync([process.execPath, ...args], { cwd: APP, stdout: "inherit", stderr: "inherit" });
   const lock = ["bun.lock", "bun.lockb"].map((f) => join(APP, f)).find(existsSync);
   if (proc.exitCode !== 0 && lock) {
-    // The lockfile came from the host, where forge/package.json also listed @archlast-forge packages (possibly from a local path) that this copy leaves out.
+    // The lockfile came from the host, where forge/package.json also listed @archlast/forge-* packages (possibly from a local path) that this copy leaves out.
     console.log("! the copied lockfile didn't fit; installing again without it");
     rmSync(lock);
     proc = Bun.spawnSync([process.execPath, ...args], { cwd: APP, stdout: "inherit", stderr: "inherit" });
   }
   if (proc.exitCode !== 0) throw new Error(`bun install failed (exit ${proc.exitCode}). Fix forge/package.json; native packages may need "trustedDependencies".`);
-  const link = join(APP, "node_modules", "@archlast-forge", "runtime");
+  const link = join(APP, "node_modules", "@archlast", "forge-runtime");
   mkdirSync(dirname(link), { recursive: true });
   rmSync(link, { recursive: true, force: true });
   symlinkSync(ENGINE_RUNTIME, link);
 }
 
 /** Packages the engine provides itself, so an app and the engine always share one copy of each. */
-const provided = (name: string) => name.startsWith("@archlast-forge/") || name === "react" || name === "react-dom";
+const provided = (name: string) => name.startsWith("@archlast/forge-") || name === "react" || name === "react-dom";
 
 /**
  * A full-stack app: copy app/ and public/ in, install the dependencies the engine doesn't provide, link the ones it does
@@ -88,7 +88,7 @@ async function prepareApp() {
     rmSync(at, { recursive: true, force: true });
     symlinkSync(target, at);
   };
-  for (const name of ["framework", "react", "client", "runtime"]) link(join(ENGINE_PACKAGES, name), `@archlast-forge/${name}`);
+  for (const name of ["framework", "react", "client", "runtime"]) link(join(ENGINE_PACKAGES, name), `@archlast/forge-${name}`);
   for (const name of ["react", "react-dom"]) link(dirname(realpathSync(Bun.resolveSync(`${name}/package.json`, join(ENGINE_PACKAGES, "framework")))), name);
 
   await generate(APP);
@@ -109,7 +109,7 @@ export async function prepare() {
 export async function engineServe(dev: boolean) {
   if (!existsSync(join(SRC, "schema.ts"))) fail(`No schema.ts in ${SRC}. Mount your forge/ directory there.`);
   sync();
-  if (!existsSync(join(APP, "node_modules", "@archlast-forge", "runtime"))) installDeps();
+  if (!existsSync(join(APP, "node_modules", "@archlast", "forge-runtime"))) installDeps();
   const env = { ...process.env, DATA_DIR: process.env.DATA_DIR ?? "/data" };
 
   let app: AppHost | undefined;

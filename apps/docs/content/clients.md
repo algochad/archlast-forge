@@ -1,11 +1,11 @@
 # Clients: React, Vue, Svelte
 
-All clients share `ArchlastForgeClient` from `@archlast-forge/client`. It sends calls over HTTP (batched) and subscriptions over one WebSocket, deduplicates identical subscriptions, reconnects with backoff, and refetches after reconnecting. Clients can only call public functions: the types reject `internal` references.
+All clients share `ArchlastForgeClient` from `@archlast/forge-client`. It sends calls over HTTP (batched) and subscriptions over one WebSocket, deduplicates identical subscriptions, reconnects with backoff, and refetches after reconnecting. Clients can only call public functions: the types reject `internal` references.
 
 ## React
 
 ```tsx
-import { ArchlastForgeClient, ArchlastForgeProvider, useMutation, usePaginatedQuery, useQuery } from "@archlast-forge/react";
+import { ArchlastForgeClient, ArchlastForgeProvider, useMutation, usePaginatedQuery, useQuery } from "@archlast/forge-react";
 
 const client = new ArchlastForgeClient(); // same origin, or { url: "https://api.example.com" }
 <ArchlastForgeProvider client={client}><App /></ArchlastForgeProvider>;
@@ -28,7 +28,7 @@ const add = useMutation(api.todos.add).withOptimisticUpdate((store, { listId, ti
 ## Vue
 
 ```ts
-import { ArchlastForgeClient, archlastForge, useMutation, useQuery } from "@archlast-forge/vue";
+import { ArchlastForgeClient, archlastForge, useMutation, useQuery } from "@archlast/forge-vue";
 app.use(archlastForge(new ArchlastForgeClient()));
 
 const { data: todos, error } = useQuery(api.todos.listByList, () => ({ listId: props.listId })); // refs; re-subscribes when args change
@@ -39,7 +39,7 @@ const add = useMutation(api.todos.add);
 
 ```svelte
 <script>
-  import { ArchlastForgeClient, query } from "@archlast-forge/svelte";
+  import { ArchlastForgeClient, query } from "@archlast/forge-svelte";
   const client = new ArchlastForgeClient();
   const todos = query(client, api.todos.listByList, { listId });
 </script>

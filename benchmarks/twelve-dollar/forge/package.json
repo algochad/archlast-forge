@@ -1,12 +1,12 @@
 {
-  "name": "@archlast-forge/bench-twelve-dollar",
+  "name": "@archlast/forge-bench-twelve-dollar",
   "private": true,
   "type": "module",
   "dependencies": {
-    "@archlast-forge/runtime": "workspace:*"
+    "@archlast/forge-runtime": "workspace:*"
   },
   "devDependencies": {
-    "@archlast-forge/cli": "workspace:*",
+    "@archlast/forge-cli": "workspace:*",
     "@types/node": "24"
   }
 }

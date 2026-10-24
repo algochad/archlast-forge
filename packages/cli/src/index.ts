@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-import { ops } from "@archlast-forge/runtime/server";
+import { ops } from "@archlast/forge-runtime/server";
 import { watch } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs } from "node:util";

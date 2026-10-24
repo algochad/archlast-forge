@@ -10,12 +10,12 @@ import {
   type PublicAction,
   type PublicMutation,
   type PublicQuery,
-} from "@archlast-forge/client";
-import { getFunctionName, type FunctionArgs, type FunctionReference, type FunctionReturn, type Id, type OptionalArgs } from "@archlast-forge/runtime";
+} from "@archlast/forge-client";
+import { getFunctionName, type FunctionArgs, type FunctionReference, type FunctionReturn, type Id, type OptionalArgs } from "@archlast/forge-runtime";
 import { QueryClient, QueryClientProvider, skipToken, useQueryClient, useQuery as useTanstackQuery } from "@tanstack/react-query";
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 
-export { ArchlastForgeClient, ForgeError, type ClientOptions, type QueryUpdate } from "@archlast-forge/client";
+export { ArchlastForgeClient, ForgeError, type ClientOptions, type QueryUpdate } from "@archlast/forge-client";
 
 const ClientContext = createContext<ArchlastForgeClient | null>(null);
 

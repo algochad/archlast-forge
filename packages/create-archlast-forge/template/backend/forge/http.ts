@@ -1,4 +1,4 @@
-import { httpAction, httpRouter } from "@archlast-forge/runtime";
+import { httpAction, httpRouter } from "@archlast/forge-runtime";
 
 // Plain HTTP routes, served under /http: this one answers GET /http/hello.
 // Use them for webhooks and public APIs; everything else should be a query or mutation.

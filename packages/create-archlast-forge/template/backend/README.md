@@ -18,7 +18,7 @@ bun run up       # the production stack from compose.yaml
 Your frontend, whatever it is, talks to this server:
 
 ```ts
-import { ArchlastForgeClient } from "@archlast-forge/client";
+import { ArchlastForgeClient } from "@archlast/forge-client";
 import { api } from "./forge/_generated/api";
 
 const client = new ArchlastForgeClient({ url: "http://localhost:3000" });
@@ -26,7 +26,7 @@ const page = await client.query(api.messages.list, { paginationOpts: { numItems:
 client.watch(api.messages.list, { paginationOpts: { numItems: 20, cursor: null } }, (update) => console.log(update)); // live
 ```
 
-React, Vue and Svelte bindings are `@archlast-forge/react`, `@archlast-forge/vue` and `@archlast-forge/svelte`. Add your frontend's origin to `TRUSTED_ORIGINS` so its cookies and requests are accepted.
+React, Vue and Svelte bindings are `@archlast/forge-react`, `@archlast/forge-vue` and `@archlast/forge-svelte`. Add your frontend's origin to `TRUSTED_ORIGINS` so its cookies and requests are accepted.
 
 ## Deploy
 

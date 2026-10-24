@@ -1,5 +1,5 @@
 {
-  "name": "@archlast-forge/vue",
+  "name": "@archlast/forge-vue",
   "version": "0.1.0",
   "description": "Vue bindings for archlast-forge.",
   "license": "MIT",
@@ -28,8 +28,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@archlast-forge/client": "workspace:*",
-    "@archlast-forge/runtime": "workspace:*"
+    "@archlast/forge-client": "workspace:*",
+    "@archlast/forge-runtime": "workspace:*"
   },
   "peerDependencies": {
     "vue": "3"

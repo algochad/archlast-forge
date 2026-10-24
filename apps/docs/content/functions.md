@@ -9,7 +9,7 @@ Every export made with these helpers is a function. Its name is `<file path>:<ex
 | `action` | via `ctx.runQuery` | via `ctx.runMutation` | no | yes | no transaction |
 
 ```ts
-import { action, mutation, query, v } from "@archlast-forge/runtime";
+import { action, mutation, query, v } from "@archlast/forge-runtime";
 import { api, internal } from "./_generated/api";
 
 export const listByList = query({

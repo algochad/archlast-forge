@@ -1,4 +1,4 @@
-import { Link, Outlet, useViewer } from "@archlast-forge/framework";
+import { Link, Outlet, useViewer } from "@archlast/forge-framework";
 import type { ReactNode } from "react";
 import "./styles.css";
 

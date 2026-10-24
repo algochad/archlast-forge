@@ -4,7 +4,7 @@
 //   POST /posts           -> feed.create
 //   POST /posts/:id/like  -> feed.like
 // There is no response or query caching in here: every call reads SQLite while it runs.
-import { ForgeError, mutation, query, v, type Doc } from "@archlast-forge/runtime";
+import { ForgeError, mutation, query, v, type Doc } from "@archlast/forge-runtime";
 
 type Joined = Doc<"posts"> & { author: Doc<"users"> | null; likeCount: number };
 

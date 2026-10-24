@@ -1,7 +1,7 @@
-import { ArchlastForgeClient, updateError, type PublicQuery } from "@archlast-forge/client";
-import type { FunctionArgs, FunctionReturn } from "@archlast-forge/runtime";
+import { ArchlastForgeClient, updateError, type PublicQuery } from "@archlast/forge-client";
+import type { FunctionArgs, FunctionReturn } from "@archlast/forge-runtime";
 
-export { ArchlastForgeClient, ForgeError } from "@archlast-forge/client";
+export { ArchlastForgeClient, ForgeError } from "@archlast/forge-client";
 
 /** The Svelte store contract, so no dependency on svelte itself: works with `$store` in Svelte 4 and 5. */
 export interface Readable<T> {

@@ -1,8 +1,8 @@
-import { ArchlastForgeClient, updateError, type PublicAction, type PublicMutation, type PublicQuery } from "@archlast-forge/client";
-import { getFunctionName, type FunctionArgs, type FunctionReturn, type OptionalArgs } from "@archlast-forge/runtime";
+import { ArchlastForgeClient, updateError, type PublicAction, type PublicMutation, type PublicQuery } from "@archlast/forge-client";
+import { getFunctionName, type FunctionArgs, type FunctionReturn, type OptionalArgs } from "@archlast/forge-runtime";
 import { getCurrentScope, inject, onScopeDispose, ref, shallowRef, toValue, watch, type App, type MaybeRefOrGetter, type Ref } from "vue";
 
-export { ArchlastForgeClient, ForgeError } from "@archlast-forge/client";
+export { ArchlastForgeClient, ForgeError } from "@archlast/forge-client";
 
 const KEY = Symbol("archlast-forge");
 

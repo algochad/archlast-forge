@@ -1,4 +1,4 @@
-import { ForgeError, mutation, paginationOptsValidator, query, v } from "@archlast-forge/runtime";
+import { ForgeError, mutation, paginationOptsValidator, query, v } from "@archlast/forge-runtime";
 
 /** Newest first; the sidebar loads more as needed. */
 export const page = query({

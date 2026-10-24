@@ -1,5 +1,5 @@
 {
-  "name": "@archlast-forge/demo",
+  "name": "@archlast/forge-demo",
   "private": true,
   "version": "0.0.0",
   "type": "module",
@@ -13,12 +13,12 @@
   },
   "dependencies": {
     "@fontsource-variable/space-grotesk": "5.3.0",
-    "@archlast-forge/react": "workspace:*",
+    "@archlast/forge-react": "workspace:*",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"
   },
   "devDependencies": {
-    "@archlast-forge/cli": "workspace:*",
+    "@archlast/forge-cli": "workspace:*",
     "@types/node": "^24.19.2",
     "@types/react": "^19.3.0",
     "@types/react-dom": "^19.3.0",

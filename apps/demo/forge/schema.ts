@@ -1,4 +1,4 @@
-import { defineSchema, defineTable, v } from "@archlast-forge/runtime";
+import { defineSchema, defineTable, v } from "@archlast/forge-runtime";
 
 // `users` (and Better Auth's sessions/accounts/verifications) are built in.
 export default defineSchema({

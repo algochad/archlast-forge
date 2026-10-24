@@ -1,5 +1,5 @@
-import type { PublicQuery } from "@archlast-forge/client";
-import type { FunctionReturn, OptionalArgs } from "@archlast-forge/runtime";
+import type { PublicQuery } from "@archlast/forge-client";
+import type { FunctionReturn, OptionalArgs } from "@archlast/forge-runtime";
 import { createContext as createRouterContext } from "react-router";
 
 /** The signed-in user, as pages see them. */

@@ -4,16 +4,16 @@ import { join } from "node:path";
 import { fail } from "./common";
 import { c, task } from "./ui";
 
-type Server = typeof import("@archlast-forge/framework/server");
-type Build = typeof import("@archlast-forge/framework/build");
+type Server = typeof import("@archlast/forge-framework/server");
+type Build = typeof import("@archlast/forge-framework/build");
 type Parts = { server: Server; build: Build };
 
 /**
- * Loads @archlast-forge/framework/<part> from the project. Inside the engine image the project's copy is a link to the engine's own,
+ * Loads @archlast/forge-framework/<part> from the project. Inside the engine image the project's copy is a link to the engine's own,
  * and a checkout of this repository finds it next to the CLI.
  */
 export async function loadFramework<P extends keyof Parts>(root: string, part: P): Promise<Parts[P]> {
-  const spec = `@archlast-forge/framework/${part}`;
+  const spec = `@archlast/forge-framework/${part}`;
   const sibling = new URL(`../../framework/src/${part === "server" ? "server.tsx" : "build.ts"}`, import.meta.url).pathname;
   for (const from of [() => Bun.resolveSync(spec, root), () => sibling]) {
     try {
@@ -23,7 +23,7 @@ export async function loadFramework<P extends keyof Parts>(root: string, part: P
       // try the next place
     }
   }
-  return fail(`This is a full-stack project, which needs @archlast-forge/framework. Install it with:\n  bun add @archlast-forge/framework`);
+  return fail(`This is a full-stack project, which needs @archlast/forge-framework. Install it with:\n  bun add @archlast/forge-framework`);
 }
 
 const kb = (bytes: number) => `${(bytes / 1024).toFixed(bytes < 10240 ? 1 : 0)} kB`;

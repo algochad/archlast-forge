@@ -24,11 +24,14 @@ jobs:
         run: bun scripts/pack.ts --smoke
       - name: Publish to npm
         env:
-          NPM_CONFIG_TOKEN: ${{ secrets.NPM_TOKEN }}
+          NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
+          # npm itself publishes: `bun publish` doesn't send the token for new packages.
+          test -n "$NPM_TOKEN" || { echo "Add the NPM_TOKEN repository secret (a granular token with read and write on all packages)"; exit 1; }
+          echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > ~/.npmrc
           # 0.2.0-rc.1 and the like are published under the "next" tag, so `latest` only moves for real releases.
           TAG=latest; case "$GITHUB_REF_NAME" in *-*) TAG=next;; esac
-          for f in .pack/*.tgz; do bun publish "$f" --access public --tag $TAG; done
+          for f in .pack/*.tgz; do npm publish "$f" --access public --tag $TAG; done
 
   engine-image:
     runs-on: ubuntu-latest

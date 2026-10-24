@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { cpSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import type { RunningServer } from "@archlast-forge/runtime/server";
+import type { RunningServer } from "@archlast/forge-runtime/server";
 import { fixture, startFixture } from "./helpers";
 
 // Inside the package, so the copy resolves the same node_modules as the fixture.

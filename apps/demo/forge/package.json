@@ -1,5 +1,5 @@
 {
-  "name": "@archlast-forge/demo-forge",
+  "name": "@archlast/forge-demo-forge",
   "private": true,
   "type": "module",
   "scripts": {
@@ -7,11 +7,11 @@
     "typecheck": "bun check"
   },
   "dependencies": {
-    "@archlast-forge/runtime": "workspace:*",
+    "@archlast/forge-runtime": "workspace:*",
     "date-fns": "4"
   },
   "devDependencies": {
-    "@archlast-forge/cli": "workspace:*",
+    "@archlast/forge-cli": "workspace:*",
     "@types/node": "24"
   }
 }

@@ -1,5 +1,5 @@
-import { redirect, useViewer, type LoaderArgs } from "@archlast-forge/framework";
-import { ForgeError, useMutation, usePaginatedQuery } from "@archlast-forge/react";
+import { redirect, useViewer, type LoaderArgs } from "@archlast/forge-framework";
+import { ForgeError, useMutation, usePaginatedQuery } from "@archlast/forge-react";
 import { useEffect, useRef, useState, type FormEvent } from "react";
 import { api } from "../../forge/_generated/api";
 

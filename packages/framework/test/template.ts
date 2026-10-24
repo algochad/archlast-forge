@@ -22,11 +22,11 @@ export function templateProject(name: string, mode: Mode = "framework", services
   mkdirSync(TMP, { recursive: true });
   scaffold({ dir, mode, services });
   // Tests sign users up in quick succession; Better Auth's per-path limit (3 per 10 s) is for production traffic.
-  writeFileSync(join(dir, "forge", "auth.ts"), `import { defineAuth } from "@archlast-forge/runtime";\nexport default defineAuth({ emailAndPassword: { enabled: true }, rateLimit: { enabled: false } });\n`);
+  writeFileSync(join(dir, "forge", "auth.ts"), `import { defineAuth } from "@archlast/forge-runtime";\nexport default defineAuth({ emailAndPassword: { enabled: true }, rateLimit: { enabled: false } });\n`);
   const own = join(PACKAGES, "framework", "node_modules");
   for (const pkg of ["framework", "react", "client", "runtime"]) {
-    link(join(PACKAGES, pkg), join(dir, "node_modules", "@archlast-forge", pkg));
-    link(join(PACKAGES, "runtime"), join(dir, "forge", "node_modules", "@archlast-forge", "runtime"));
+    link(join(PACKAGES, pkg), join(dir, "node_modules", "@archlast", `forge-${pkg}`));
+    link(join(PACKAGES, "runtime"), join(dir, "forge", "node_modules", "@archlast", "forge-runtime"));
   }
   for (const dep of ["react", "react-dom"]) link(realpathSync(join(own, dep)), join(dir, "node_modules", dep));
   for (const dep of ["react", "react-dom"]) if (existsSync(join(own, "@types", dep))) link(realpathSync(join(own, "@types", dep)), join(dir, "node_modules", "@types", dep));

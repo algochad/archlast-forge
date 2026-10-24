@@ -1,4 +1,4 @@
-import { useAction, useMutation, usePaginatedQuery, useQuery, useUploadFile } from '@archlast-forge/react'
+import { useAction, useMutation, usePaginatedQuery, useQuery, useUploadFile } from '@archlast/forge-react'
 import { Component, useEffect, useState, type ReactNode } from 'react'
 import { api } from '../forge/_generated/api'
 import type { Id } from '../forge/_generated/dataModel'

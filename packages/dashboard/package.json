@@ -1,5 +1,5 @@
 {
-  "name": "@archlast-forge/dashboard",
+  "name": "@archlast/forge-dashboard",
   "version": "0.1.0",
   "description": "The archlast-forge admin dashboard.",
   "license": "MIT",

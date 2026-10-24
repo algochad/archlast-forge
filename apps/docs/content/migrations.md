@@ -14,7 +14,7 @@ Documents are JSON, so adding or changing a field needs no database migration. B
 
 ```ts
 // forge/migrations.ts
-import { migration } from "@archlast-forge/runtime";
+import { migration } from "@archlast/forge-runtime";
 
 export const addPriority = migration({
   table: "todos",

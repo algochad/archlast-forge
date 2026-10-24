@@ -1,4 +1,4 @@
-// Server entry: Bun-only. User code in forge/ should import from "@archlast-forge/runtime" instead.
+// Server entry: Bun-only. User code in forge/ should import from "@archlast/forge-runtime" instead.
 export { startServer, type AppEnv, type AppHost, type RunningServer, type ServerOptions } from "./server";
 export { loadConfig, ConfigError, type Config } from "./config";
 export * as ops from "./cli-ops";

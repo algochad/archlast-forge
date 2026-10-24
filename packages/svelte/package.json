@@ -1,5 +1,5 @@
 {
-  "name": "@archlast-forge/svelte",
+  "name": "@archlast/forge-svelte",
   "version": "0.1.0",
   "description": "Svelte bindings for archlast-forge.",
   "license": "MIT",
@@ -28,8 +28,8 @@
     "test": "bun test"
   },
   "dependencies": {
-    "@archlast-forge/client": "workspace:*",
-    "@archlast-forge/runtime": "workspace:*"
+    "@archlast/forge-client": "workspace:*",
+    "@archlast/forge-runtime": "workspace:*"
   },
   "devDependencies": {
     "@types/bun": "1.4.3"

@@ -45,7 +45,7 @@ export function createProject(name: string, mode: string, services: string[], po
   must(["bun", "add", join(PACK, tarballs.find((t) => t.startsWith("create-archlast-forge"))!)], creator);
   must(["bun", join(creator, "node_modules/create-archlast-forge/src/index.ts"), dir, "--mode", mode, "--services", services.join(",") || "none", "--yes", "--no-install", "--no-git"], ROOT);
 
-  const overrides = Object.fromEntries(tarballs.map((t) => [t.replace(/-\d+\.\d+\.\d+.*\.tgz$/, "").replace(/^archlast-forge-/, "@archlast-forge/"), `file:${join(PACK, t)}`]));
+  const overrides = Object.fromEntries(tarballs.map((t) => [t.replace(/-\d+\.\d+\.\d+.*\.tgz$/, "").replace(/^archlast-forge-/, "@archlast/forge-"), `file:${join(PACK, t)}`]));
   for (const file of [join(dir, "package.json"), join(dir, "forge", "package.json")]) {
     const pkg = JSON.parse(readFileSync(file, "utf8"));
     for (const field of ["dependencies", "devDependencies"]) for (const dep of Object.keys(pkg[field] ?? {})) if (overrides[dep]) pkg[field][dep] = overrides[dep];

@@ -1,5 +1,5 @@
-import { redirect, useNavigate, type LoaderArgs } from "@archlast-forge/framework";
-import { useAuth } from "@archlast-forge/react";
+import { redirect, useNavigate, type LoaderArgs } from "@archlast/forge-framework";
+import { useAuth } from "@archlast/forge-react";
 import { useState, type FormEvent } from "react";
 
 export const loader = async ({ ctx }: LoaderArgs) => {

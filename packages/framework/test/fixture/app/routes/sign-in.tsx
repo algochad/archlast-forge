@@ -1,5 +1,5 @@
-import { useAuth } from "@archlast-forge/react";
-import { useNavigate } from "@archlast-forge/framework";
+import { useAuth } from "@archlast/forge-react";
+import { useNavigate } from "@archlast/forge-framework";
 import { useState, type FormEvent } from "react";
 
 export default function SignIn() {

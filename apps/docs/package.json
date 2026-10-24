@@ -1,5 +1,5 @@
 {
-  "name": "@archlast-forge/docs",
+  "name": "@archlast/forge-docs",
   "private": true,
   "type": "module",
   "scripts": {

@@ -1,5 +1,5 @@
-import { startServer, type RunningServer } from "@archlast-forge/runtime/server";
-import { anyApi } from "@archlast-forge/runtime";
+import { startServer, type RunningServer } from "@archlast/forge-runtime/server";
+import { anyApi } from "@archlast/forge-runtime";
 import { QueryClient } from "@tanstack/query-core";
 import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";

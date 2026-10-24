@@ -1,5 +1,5 @@
 // Compile-time only (checked by `bun check`): hook signatures come from function references.
-import type { FunctionReference, Id, PaginationOptions, PaginationResult } from "@archlast-forge/runtime";
+import type { FunctionReference, Id, PaginationOptions, PaginationResult } from "@archlast/forge-runtime";
 import { expectTypeOf } from "expect-type";
 import { useAction, useMutation, usePaginatedQuery, useQuery, useUploadFile } from "../src/index";
 

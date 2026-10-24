@@ -2,7 +2,7 @@
 
 ```ts
 // forge/schema.ts
-import { defineSchema, defineTable, v } from "@archlast-forge/runtime";
+import { defineSchema, defineTable, v } from "@archlast/forge-runtime";
 
 export default defineSchema({
   lists: defineTable({ name: v.string() }),

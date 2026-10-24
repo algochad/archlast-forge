@@ -1,7 +1,7 @@
-import { anyApi } from "@archlast-forge/runtime";
-import { useQuery } from "@archlast-forge/react";
+import { anyApi } from "@archlast/forge-runtime";
+import { useQuery } from "@archlast/forge-react";
 import { useState } from "react";
-import type { LoaderArgs } from "@archlast-forge/framework";
+import type { LoaderArgs } from "@archlast/forge-framework";
 
 const api = anyApi;
 

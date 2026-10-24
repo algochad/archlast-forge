@@ -19,7 +19,7 @@ You can retry failed jobs from the dashboard.
 
 ```ts
 // forge/crons.ts
-import { cronJobs } from "@archlast-forge/runtime";
+import { cronJobs } from "@archlast/forge-runtime";
 import { internal } from "./_generated/api";
 
 const crons = cronJobs();

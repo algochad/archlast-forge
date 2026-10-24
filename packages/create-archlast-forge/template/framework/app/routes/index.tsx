@@ -1,4 +1,4 @@
-import { Link, useViewer } from "@archlast-forge/framework";
+import { Link, useViewer } from "@archlast/forge-framework";
 
 export default function Home() {
   const viewer = useViewer();

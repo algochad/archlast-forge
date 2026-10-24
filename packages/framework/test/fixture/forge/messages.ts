@@ -1,4 +1,4 @@
-import { ForgeError, mutation, query, v } from "@archlast-forge/runtime";
+import { ForgeError, mutation, query, v } from "@archlast/forge-runtime";
 
 export const list = query({ handler: (ctx) => ctx.db.query("messages").order("desc").take(20) });
 
