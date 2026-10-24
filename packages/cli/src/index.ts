@@ -99,6 +99,8 @@ function useDocker() {
 function devEnv(dir: string) {
   const env = devSecrets({ ...process.env }, join(process.env.DATA_DIR ?? join(dir, "data")));
   env.DATA_DIR ??= join(dir, "data");
+  // The app's own address is trusted, and a proxy in front of it (code-server's port forwarding) is worked out from that one.
+  env.TRUSTED_ORIGINS ||= `http://localhost:${port}`;
   trustProxyOrigins(env);
   return env;
 }

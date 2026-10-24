@@ -7,8 +7,8 @@ import { join } from "node:path";
 import { call, check, createProject, json, sh, signUp, type Project } from "./lib/e2e";
 
 /** `archlast-forge dev` running in a project, with its output collected. */
-function startDev(p: Project, args: string[] = []) {
-  const proc = Bun.spawn(["bunx", "archlast-forge", "dev", "--port", String(p.port), ...args], { cwd: p.dir, env: { ...process.env, FORCE_COLOR: "" }, stdout: "pipe", stderr: "pipe" });
+function startDev(p: Project, args: string[] = [], env: Record<string, string> = {}) {
+  const proc = Bun.spawn(["bunx", "archlast-forge", "dev", "--port", String(p.port), ...args], { cwd: p.dir, env: { ...process.env, FORCE_COLOR: "", ...env }, stdout: "pipe", stderr: "pipe" });
   let output = "";
   for (const stream of [proc.stdout, proc.stderr]) void (async () => { for await (const chunk of stream) output += new TextDecoder().decode(chunk); })();
   return {
@@ -37,9 +37,12 @@ const edit = (file: string, from: string, to: string) => {
 async function framework() {
   console.log("\nFull-stack app: `archlast-forge dev`");
   const p = createProject("e2e-dev-fullstack", "framework", [], 3201, 9201);
-  const dev = startDev(p);
+  // Behind code-server's port forwarding the browser's origin is not localhost; signing in must still work.
+  const dev = startDev(p, [], { VSCODE_PROXY_URI: "https://{{port}}.proxy.test/" });
   try {
     await dev.ready();
+    const behindProxy = await fetch(`${p.base}/api/auth/sign-up/email`, { method: "POST", headers: { "content-type": "application/json", origin: `https://${p.port}.proxy.test` }, body: JSON.stringify({ email: "proxy@example.com", password: "correct horse battery", name: "Proxy" }) });
+    check("signing up works through a port-forwarding proxy's origin", behindProxy.ok, `${behindProxy.status} ${await behindProxy.text()}`);
     check("the banner says where everything is", /full-stack app/.test(dev.output()) && dev.output().includes(`${p.base}/_dashboard`) && /Admin key/.test(dev.output()), dev.output());
     const home = await (await fetch(`${p.base}/`)).text();
     check("the home page is rendered, with the reload script", home.includes("Realtime. Full-stack. One deploy.") && home.includes("/_app/__dev.js"));
