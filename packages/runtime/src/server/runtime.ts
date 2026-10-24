@@ -2,7 +2,7 @@ import type { Subprocess } from "bun";
 import type { FunctionKind, UserIdentity } from "../functions";
 import { serializeError, type CallHeaders, type CallResult, type ErrorKind, type LogEntry } from "./executor";
 import type { Manifest } from "./project";
-import type { Batch, HostMessage, RuntimeMessage, SerializedRequest, SerializedResponse } from "./protocol";
+import type { Batch, HostMessage, HttpRequestMessage, HttpResponseMessage, RuntimeMessage, SerializedRequest, SerializedResponse } from "./protocol";
 import { startCore, type RuntimeCore } from "./runtime-core";
 
 // Next to this module: child.ts in the repo, child.js in the published build.
@@ -351,6 +351,11 @@ export class FunctionRuntime {
 
   auth(req: SerializedRequest) {
     return this.send({ t: "auth", req }, 30_000) as Promise<SerializedResponse>;
+  }
+
+  http(req: HttpRequestMessage, headers: CallHeaders, requestId: string) {
+    const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
+    return this.send({ t: "http", req, headers, requestId }, t.actionMs + HARD_TIMEOUT_GRACE_MS) as Promise<HttpResponseMessage>;
   }
 
   admin<T = unknown>(op: string, args: Record<string, unknown>, actor: string) {

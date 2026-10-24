@@ -33,6 +33,16 @@ Answers to questions the build prompt and architecture doc left open, and the ch
 - **Code or dependency changes restart only the function runtime** (user decision). HTTP and WebSocket stay up. The RPC handler is rebuilt after each load and sockets use whichever is current, so they see the new functions, and every subscription re-runs.
 - **No RPC framework** (user decision; tRPC was removed). Each public function is `POST /rpc/<name>` (`/rpc/todos:add`, JSON arguments in the body, `{ result }` or `{ error: { message, code, data?, requestId } }` back with the matching HTTP status); queries also answer `GET /rpc/<name>?args=<json>`. POST requires `content-type: application/json`, which a cross-site form can't send without a preflight. Live queries use one WebSocket at `/rpc` with `{ type: "subscribe", id, name, args }` and `{ type: "unsubscribe", id }`; the server answers `{ type: "data", id, data }` (the first message is the current result) or `{ type: "error", id, error }`. The client reconnects with jittered exponential backoff and subscribes again, so a reconnect refetches. Arguments are validated in the function runtime. The dashboard API is plain JSON too: `GET /_admin/<op>?input=<json>` and `POST /_admin/<op>`. Not carried over from tRPC: request batching (each call is its own HTTP request).
 
+## HTTP endpoints
+
+- **`forge/http.ts`** default-exports `httpRouter()`, as `crons.ts` does with `cronJobs()`. `http.route({ method, path | pathPrefix, handler: httpAction(...) })` mirrors Convex.
+- **Served under `/http`**, on the same origin as everything else (`path: "/hello"` answers at `/http/hello`, and the handler sees `/hello`). Convex uses a separate domain; a single server has no such thing, and a fixed prefix can't shadow `/rpc`, `/api/auth`, `/_admin` or `/_dashboard`.
+- **A handler is an action** with a `Request` and a `Response`: the action context, the action timeout, and no database handle of its own (it calls mutations). It runs in the function runtime like auth requests do, so `forge/` code reloads and the single-process inline mode work unchanged.
+- **Bodies are bytes both ways.** The IPC channel uses structured clone, so `ArrayBuffer`s cross as they are. Bodies are buffered, not streamed.
+- **No CORS, no request id from the handler.** Routes answer their own `OPTIONS`. The server adds only `x-request-id`.
+- **Errors** use the same rules as function calls (`toPublicError`): `ForgeError` and validation errors reach the caller, anything else is a 500 "Server error (request id)".
+- Not done: streaming bodies, `HEAD` routes, tracing spans for HTTP calls (they are logged and counted in metrics like function calls), a route list in the dashboard, and support in `createTestBackend`.
+
 ## Auth
 
 - **Better Auth by default** (user decision), through an adapter over the document store. `users`, `sessions`, `accounts` and `verifications` are added to every schema and visible in the dashboard. Writes to them publish topics like any other write. They aren't validated against the schema, so Better Auth plugins can add fields.

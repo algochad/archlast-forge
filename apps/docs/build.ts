@@ -13,6 +13,7 @@ const ORDER = [
   ["auth", "Authentication"],
   ["storage", "File storage"],
   ["scheduling", "Scheduling and crons"],
+  ["http", "HTTP endpoints"],
   ["errors", "Errors"],
   ["migrations", "Migrations and data"],
   ["testing", "Testing"],

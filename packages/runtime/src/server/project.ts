@@ -1,10 +1,10 @@
 import { existsSync } from "node:fs";
 import { join, relative } from "node:path";
-import type { AuthOptions, CronJob, FunctionKind, RegisteredFunction } from "../functions";
+import type { AuthOptions, CronJob, FunctionKind, HttpRoute, RegisteredFunction } from "../functions";
 import type { SchemaDefinition } from "../schema";
 import type { TablesSpec } from "./docstore";
 
-const SPECIAL = new Set(["schema", "auth", "crons"]);
+const SPECIAL = new Set(["schema", "auth", "crons", "http"]);
 
 /** Function modules in a forge/ dir. `name` is the path without extension: "todos", "admin/users". */
 export function listModules(forgeDir: string): { name: string; file: string }[] {
@@ -43,6 +43,7 @@ export interface Project {
   functions: Map<string, RegisteredFunction>;
   authOptions: AuthOptions;
   crons: CronJob[];
+  http: HttpRoute[];
 }
 
 export async function loadProject(forgeDir: string): Promise<Project> {
@@ -71,7 +72,9 @@ export async function loadProject(forgeDir: string): Promise<Project> {
     const fn = functions.get(job.fn);
     if (!fn || fn.kind === "query") throw new Error(`Cron "${job.name}" targets ${fn ? "a query" : "unknown function"} "${job.fn}"`);
   }
-  return { tables, functions, authOptions, crons };
+  const router = await optional("http");
+  if (router && !Array.isArray(router.routes)) throw new Error("forge/http.ts must default-export httpRouter()");
+  return { tables, functions, authOptions, crons, http: router?.routes ?? [] };
 }
 
 export const tableSpecs = (tables: TablesSpec) =>

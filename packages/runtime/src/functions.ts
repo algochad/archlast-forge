@@ -387,3 +387,45 @@ export function cronJobs() {
     },
   };
 }
+
+// ---- HTTP endpoints ----
+
+export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
+const HTTP_METHODS: readonly string[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
+
+/** A handler for a raw HTTP request. It gets the action context, so it can call queries, mutations and actions. */
+export interface HttpAction {
+  kind: "httpAction";
+  handler: (ctx: ActionCtx, request: Request) => Response | Promise<Response>;
+}
+
+export function httpAction(handler: HttpAction["handler"]): HttpAction {
+  return { kind: "httpAction", handler };
+}
+
+export interface HttpRoute {
+  method: HttpMethod;
+  /** Exact path, e.g. "/stripe/webhook". */
+  path?: string;
+  /** Every path under it, e.g. "/files/". Exact paths win, then the longest prefix. */
+  pathPrefix?: string;
+  handler: HttpAction;
+}
+
+/** `forge/http.ts` default-exports one of these. Routes are served under `/http`: `path: "/hello"` answers at `/http/hello`. */
+export function httpRouter() {
+  const routes: HttpRoute[] = [];
+  return {
+    routes,
+    route(spec: HttpRoute) {
+      const { method, path, pathPrefix, handler } = spec;
+      if (!HTTP_METHODS.includes(method)) throw new Error(`HTTP route method must be one of ${HTTP_METHODS.join(", ")}, got "${method}"`);
+      if ((path === undefined) === (pathPrefix === undefined)) throw new Error("An HTTP route needs exactly one of path and pathPrefix");
+      if (path !== undefined && !path.startsWith("/")) throw new Error(`HTTP route path must start with "/", got "${path}"`);
+      if (pathPrefix !== undefined && !(pathPrefix.startsWith("/") && pathPrefix.endsWith("/"))) throw new Error(`HTTP route pathPrefix must start and end with "/", got "${pathPrefix}"`);
+      if (handler?.kind !== "httpAction") throw new Error(`HTTP route ${method} ${path ?? pathPrefix} needs a handler made with httpAction()`);
+      if (routes.some((r) => r.method === method && r.path === path && r.pathPrefix === pathPrefix)) throw new Error(`Duplicate HTTP route ${method} ${path ?? pathPrefix}`);
+      routes.push(spec);
+    },
+  };
+}

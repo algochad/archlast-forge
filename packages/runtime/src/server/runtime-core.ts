@@ -10,7 +10,8 @@ import { createSqliteDb } from "./db/sqlite";
 import type { Db } from "./db/types";
 import { Executor, logContext, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
-import type { HostMessage, RuntimeMessage, SerializedResponse } from "./protocol";
+import { matchRoute, routeName } from "./http";
+import type { HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
 import { S3Storage } from "./storage";
 import { migrateSystem } from "./system";
@@ -151,6 +152,14 @@ export async function startCore(opts: {
         const { method, url, headers, body } = msg.req;
         const res = await auth.handler(new Request(url, { method, headers, body }));
         return { status: res.status, headers: [...res.headers], body: await res.text() } satisfies SerializedResponse;
+      }
+      case "http": {
+        const { method, url, headers, body } = msg.req;
+        const found = matchRoute(project.http, method, new URL(url).pathname);
+        const answer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({ status, headers: [["content-type", "text/plain"], ...extra], body: new TextEncoder().encode(status === 404 ? "Not found" : "Method not allowed").buffer as ArrayBuffer });
+        if (!("route" in found)) return answer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
+        const res = await exec.runHttp(routeName(found.route), found.route.handler, new Request(url, { method, headers, body }), msg.headers, msg.requestId);
+        return { status: res.status, headers: [...res.headers].filter(([k]) => k !== "content-length"), body: await res.arrayBuffer() } satisfies HttpResponseMessage;
       }
       case "admin":
         if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });

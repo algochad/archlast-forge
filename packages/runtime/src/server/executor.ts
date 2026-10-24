@@ -1,7 +1,7 @@
 import { AsyncLocalStorage } from "node:async_hooks";
 import { SnapshotMoved, type ReadCache } from "./read-cache";
 import { isForgeError, TimeoutError } from "../errors";
-import { getFunctionName, type FunctionKind, type RegisteredFunction, type UserIdentity } from "../functions";
+import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, type RegisteredFunction, type UserIdentity } from "../functions";
 import { validate, validateFields, ValidationError } from "../values";
 import type { Limits } from "./config";
 import { isRetryableConflict, type Db, type DbTx } from "./db/types";
@@ -212,6 +212,17 @@ export class Executor {
     const json = JSON.stringify(result.value) ?? "null";
     if (json.length > this.limits.maxResultBytes) throw new Error(`${name} returned ${json.length} bytes; the limit is ${this.limits.maxResultBytes} (MAX_RESULT_BYTES)`);
     return { ...result, json };
+  }
+
+  /** Runs an HTTP action. The caller is resolved from the request's cookie or authorization header, and is anonymous without one. */
+  async runHttp(name: string, action: HttpAction, req: Request, headers: CallHeaders, requestId?: string): Promise<Response> {
+    const identity = await this.identityOf(headers);
+    const auth = { getUserIdentity: async () => identity };
+    const res = await this.logged(name, requestId, undefined, () =>
+      withTimeout(Promise.resolve(action.handler(this.actionCtx(auth, identity, requestId) as unknown as ActionCtx, req)), this.limits.actionTimeoutMs, name),
+    );
+    if (!(res instanceof Response)) throw new Error(`${name} must return a Response`);
+    return res;
   }
 
   async invokeMutation(fn: RegisteredFunction, args: unknown, store: DocStore, tx: DbTx, after: AfterCommit, identity: UserIdentity | null) {

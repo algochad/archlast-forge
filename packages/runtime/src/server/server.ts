@@ -263,6 +263,22 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (srv.upgrade(req, { data })) return;
         return new Response("WebSocket upgrade failed", { status: 400 });
       }
+      // HTTP actions (forge/http.ts). Before the OPTIONS branch below, so a route can answer its own preflight and set its own headers.
+      if (path === "/http" || path.startsWith("/http/")) {
+        const retry = await limited(req, srv);
+        if (retry) return withId(tooMany(retry));
+        await loading;
+        const body = req.method === "GET" ? undefined : await req.arrayBuffer();
+        const routed = new URL(req.url);
+        routed.pathname = path.slice("/http".length) || "/"; // the handler sees the path it registered
+        try {
+          const r = await runtime.http({ method: req.method, url: routed.href, headers: [...req.headers], body }, pickAuthHeaders((n) => req.headers.get(n)), requestId);
+          // A body on a 204 or 304 is an error in a Response.
+          return withId(new Response(r.body.byteLength ? r.body : null, { status: r.status, headers: r.headers }));
+        } catch (e) {
+          return withId(errorResponse(toPublicError(e, requestId, dev, { path })));
+        }
+      }
       if (req.method === "OPTIONS")
         return cors(
           req,
