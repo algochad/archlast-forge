@@ -1,3 +1,4 @@
+import { loadEnv } from "../src/server/runtime-core";
 import { afterEach, expect, test } from "bun:test";
 import { existsSync } from "node:fs";
 import { join } from "node:path";
@@ -97,4 +98,30 @@ test("environment variables are stored and loaded for functions", async () => {
   await ops.removeEnv(db, "REMINDER_URL");
   expect(await ops.listEnv(db)).toEqual([]);
   await db.close();
+});
+
+test("changing or removing a variable takes effect on the next load, but never touches one the process already had", async () => {
+  const db = await ops.openDb({ DATA_DIR: tempDir() });
+  process.env.ALREADY_SET_BY_THE_PROCESS = "from the process";
+  try {
+    await ops.setEnv(db, "STORED_VAR", "one");
+    await ops.setEnv(db, "ALREADY_SET_BY_THE_PROCESS", "from the store");
+    await loadEnv(db);
+    expect(process.env.STORED_VAR).toBe("one");
+    expect(process.env.ALREADY_SET_BY_THE_PROCESS).toBe("from the process"); // the process environment wins
+
+    await ops.setEnv(db, "STORED_VAR", "two");
+    await loadEnv(db);
+    expect(process.env.STORED_VAR).toBe("two");
+
+    await ops.removeEnv(db, "STORED_VAR");
+    await loadEnv(db);
+    expect(process.env.STORED_VAR).toBeUndefined();
+    await ops.removeEnv(db, "ALREADY_SET_BY_THE_PROCESS");
+    await loadEnv(db);
+    expect(process.env.ALREADY_SET_BY_THE_PROCESS).toBe("from the process"); // not the store's to remove
+  } finally {
+    delete process.env.ALREADY_SET_BY_THE_PROCESS;
+    await db.close();
+  }
 });

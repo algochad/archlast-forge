@@ -1,23 +1,13 @@
 # HTTP endpoints
 
-Expose plain HTTP routes for things that aren't function calls: webhooks, a public JSON API, a file download. Declare them in `forge/http.ts`.
+Some things can't be a function call: a webhook from a payment provider, a JSON API for people who don't use your client, a download link, a health check. For those, declare plain HTTP routes in `forge/http.ts`. Each route has a method, a path and a handler that takes a standard `Request` and returns a standard `Response`.
 
 ```ts
 // forge/http.ts
 import { httpAction, httpRouter } from "@archlast/forge-runtime";
-import { api, internal } from "./_generated/api";
+import { api } from "./_generated/api";
 
 const http = httpRouter();
-
-http.route({
-  method: "POST",
-  path: "/stripe/webhook",
-  handler: httpAction(async (ctx, request) => {
-    const body = await request.text(); // the exact bytes, for signature checks
-    await ctx.runMutation(internal.billing.record, { body, signature: request.headers.get("stripe-signature") });
-    return new Response(null, { status: 200 });
-  }),
-});
 
 http.route({
   method: "GET",
@@ -28,20 +18,352 @@ http.route({
 export default http;
 ```
 
-Routes are served under `/http`: the first route above answers at `https://your-app.example/http/stripe/webhook`. The handler sees the path it registered, without the prefix.
+That route answers at `https://your-app.example/http/lists`. Like `crons.ts` and `auth.ts`, `forge/http.ts` is a special module: its default export is read by the engine, and it does not appear in `api`.
 
-## Handlers
+## Where routes are served
 
-A handler takes `(ctx, request)` and returns a standard `Response`. `ctx` is the same as an action's: `runQuery`, `runMutation`, `runAction`, `storage`, `scheduler` and `auth`. Use mutations to write data; a handler has no database access of its own.
+Every route lives under the fixed prefix `/http`. A route registered as `path: "/lists"` answers at `/http/lists`, and the handler sees `/lists` (without the prefix) in `request.url`. The prefix keeps your routes from shadowing `/rpc`, `/api/auth`, `/_admin`, `/_dashboard` and the other paths the engine owns. It's the same origin as everything else, so there is no separate domain to configure.
 
-- **Methods:** `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`.
-- **Paths:** `path` matches exactly. `pathPrefix` (starts and ends with `/`) matches everything below it. An exact path beats a prefix, and the longest prefix wins.
-- **Unknown path:** 404. A known path under another method: 405 with an `Allow` header.
-- **Who's calling:** `ctx.auth.getUserIdentity()` resolves the signed-in user from the request's cookie or `authorization` header, as in any function. Webhooks and other callers with neither header are anonymous, so verify their own signature or token yourself.
-- **CORS:** none is added. Answer preflights with an `OPTIONS` route and set the headers you want.
-- **Bodies** are bytes in both directions, so binary uploads and downloads work. They are buffered, not streamed, and a request is limited to `MAX_REQUEST_BYTES`.
-- **Errors:** a `ForgeError` becomes a 400 with its data. Any other error becomes a 500 saying only "Server error" with a request id outside dev, and the full error is logged under that id. To control the status and body yourself, return a `Response` instead of throwing.
+If you need a path without `/http` (for example `/.well-known/…` or a bare `/webhook`), put a reverse proxy in front and rewrite it. The engine does not offer a way to register routes at the root.
 
-## Limits
+## Declaring routes
 
-A handler gets the action timeout (`ACTION_TIMEOUT_MS`, 10 minutes by default), so keep it short: a webhook sender usually gives up long before. Calls are rate limited per client IP like function calls, count in the call log and `/metrics` as `http <METHOD> <route>`, and appear in the dashboard's logs.
+```ts
+http.route({ method, path, handler });        // an exact path
+http.route({ method, pathPrefix, handler });  // everything below a prefix
+```
+
+| Field | Rule |
+|---|---|
+| `method` | One of `GET`, `POST`, `PUT`, `PATCH`, `DELETE`, `OPTIONS`. `HEAD` is not supported (a `HEAD` request gets 405). |
+| `path` | Starts with `/`. Matches that path exactly. A trailing slash is a different path: `/lists/` does not match `/lists`. |
+| `pathPrefix` | Starts and ends with `/`, for example `/files/`. Matches every path that starts with it. `/files` (no slash) does not match `/files/`. |
+| `handler` | Made with `httpAction(...)`. A bare function is rejected. |
+
+A route needs exactly one of `path` and `pathPrefix`. Mistakes fail when `forge/http.ts` loads, with a message that names the route: a bad method, a path that doesn't start with `/`, a prefix that doesn't start and end with `/`, a missing `httpAction`, or the same method and path registered twice.
+
+### No path parameters
+
+Paths are literal: `/orders/:id` would only match a request for the text `:id`. Register `pathPrefix: "/orders/"` and read the rest yourself with `new URL(request.url).pathname.slice("/orders/".length)`.
+
+### Which route wins
+
+1. A route whose `path` equals the request path and whose method matches.
+2. Otherwise, the matching `pathPrefix` route with the longest prefix.
+3. If the path matches a route under other methods only, the answer is **405** with an `Allow` header listing the methods that exist for it.
+4. If nothing matches, **404** with the body `Not found`.
+
+```ts
+http.route({ method: "GET", pathPrefix: "/files/", handler: httpAction(async () => new Response("any file")) });
+http.route({ method: "GET", path: "/files/special", handler: httpAction(async () => new Response("exact")) });
+// GET /http/files/special -> "exact"
+// GET /http/files/a/b.txt -> "any file"
+// POST /http/files/special -> 405, Allow: GET
+```
+
+## What a handler receives
+
+A handler is an **action** with a `Request` and a `Response`. It gets the action context, the action timeout and no database handle of its own.
+
+```ts
+httpAction(async (ctx, request) => { /* ... */ return new Response(...); })
+```
+
+`ctx` is the same object an action gets:
+
+| Member | Use |
+|---|---|
+| `ctx.runQuery(ref, args)` | Run a public or internal query. |
+| `ctx.runMutation(ref, args)` | Run a mutation in its own transaction. |
+| `ctx.runAction(ref, args)` | Run an action. |
+| `ctx.auth.getUserIdentity()` | The signed-in user, or `null`. See [authentication](#who-is-calling). |
+| `ctx.storage` | `getUrl`, `generateUploadUrl` and `delete`, each as its own transaction. See [storage](storage.html). |
+| `ctx.scheduler` | `runAfter`, `runAt`, `cancel`. See [scheduling](scheduling.html). |
+
+Everything you call runs **as the caller**: `ctx.runMutation` sees the same `ctx.auth` identity the handler does. Each call is a separate transaction, so two `runMutation` calls in one handler are not atomic together. Put the whole write in one mutation when it must be all-or-nothing.
+
+`request` is a standard `Request`. `request.url` is the full URL, with the `/http` prefix removed from the path and the query string intact:
+
+```ts
+const url = new URL(request.url);
+url.pathname;                    // "/lists"
+url.searchParams.get("limit");   // "20"
+request.method;                  // "GET"
+request.headers.get("origin");
+```
+
+### Bodies are bytes
+
+Request and response bodies travel as bytes in both directions, so binary uploads and downloads work and a signature computed over the raw body can be checked.
+
+```ts
+await request.text();         // the exact bytes as UTF-8
+await request.arrayBuffer();  // for binary
+await request.json();         // parsed; throws on invalid JSON
+```
+
+Bodies are **buffered, not streamed**: the engine reads the whole request before your handler runs, and sends the whole response after it returns. There is no way to stream a large download or an event stream through a handler; hand out a presigned storage URL for big files (see [the redirect example](#download-through-a-presigned-url)). A request body over `MAX_REQUEST_BYTES` (8 MiB by default) is refused with 413 before your code runs.
+
+### The response
+
+Return a `Response`. Anything else (a string, `undefined`) is a server error: the call fails with 500 and is logged.
+
+- **Status and headers** pass through as you set them. Several `set-cookie` headers survive intact. `content-length` is recomputed.
+- **204 and 304** are sent without a body.
+- **Content type.** `Response.json(...)`, a `Blob` with a type and `new Response("text")` all reach the client with the type the platform gives them (`text/plain;charset=utf-8` for a string). A binary body without a `content-type` is sent as `application/octet-stream`; set one if the browser should show it. On `0.1.0` the implicit type of a string body was lost, so set `content-type` yourself if you are on that version.
+- **`x-request-id`** is added to every response. If the caller sent an `x-request-id` of 1 to 64 characters (letters, digits, `.`, `_`, `-`), that value is reused; otherwise one is generated. It's the id to look up in [the logs](dashboard.html#logs).
+- **Redirects** work: `Response.redirect(url, 302)` reaches the client with its `Location`.
+
+## Who is calling
+
+The engine reads the `cookie` and `authorization` headers of the request and resolves the caller before your handler starts. `await ctx.auth.getUserIdentity()` gives the same `{ userId, sessionId, email, name }` that a function would see, or `null`.
+
+- **Browsers on your own origin** send the Better Auth session cookie automatically, so a route that checks `ctx.auth` works for signed-in users of your app.
+- **A bare `Authorization: Bearer …` header does nothing by default.** Better Auth only reads it when you add its `bearer()` plugin in `forge/auth.ts` (see [authentication](auth.html#bearer-tokens-for-non-browser-callers)).
+- **Webhooks and other server-to-server callers** send neither, so they are anonymous. Authenticate them yourself: a signature over the body, or a shared secret in a header (see the example below).
+
+```ts
+http.route({
+  method: "GET",
+  path: "/me",
+  handler: httpAction(async (ctx) => {
+    const me = await ctx.auth.getUserIdentity();
+    if (!me) return Response.json({ error: "Sign in" }, { status: 401 });
+    return Response.json({ id: me.userId, email: me.email });
+  }),
+});
+```
+
+## CORS
+
+The engine adds **no CORS headers to `/http` routes**, and it does not answer their preflight requests for you. `TRUSTED_ORIGINS` does not apply here; it covers `/rpc` and `/api/auth` only. A route answers its own `OPTIONS` request, and runs before the engine's own preflight handling. Without an `OPTIONS` route for a path, a browser's preflight gets 405 and the real request is never sent.
+
+A small helper keeps this tidy:
+
+```ts
+const ALLOWED_ORIGINS = new Set(["https://app.example.com", "http://localhost:5173"]);
+
+function corsHeaders(request: Request, extra: Record<string, string> = {}) {
+  const headers = new Headers(extra);
+  const origin = request.headers.get("origin");
+  if (origin && ALLOWED_ORIGINS.has(origin)) {
+    headers.set("access-control-allow-origin", origin);
+    headers.set("vary", "origin"); // the answer depends on who asks
+  }
+  return headers;
+}
+
+// One OPTIONS route covers every path under /api/.
+http.route({
+  method: "OPTIONS",
+  pathPrefix: "/api/",
+  handler: httpAction(async (_ctx, request) =>
+    new Response(null, {
+      status: 204,
+      headers: corsHeaders(request, {
+        "access-control-allow-methods": "GET, OPTIONS",
+        "access-control-allow-headers": "content-type, authorization",
+        "access-control-max-age": "600",
+      }),
+    }),
+  ),
+});
+```
+
+Only origins in your list get `access-control-allow-origin`; others get none, and the browser blocks the response. If browsers must send the session cookie cross-origin, also set `access-control-allow-credentials: true` and never combine it with `*`. A frontend on another *site* needs a cookie with `SameSite=None`, which is a Better Auth setting; see [authentication](auth.html#cookies-origins-and-cors).
+
+## Errors
+
+| What happens in the handler | What the caller gets |
+|---|---|
+| You return a `Response` with any status | Exactly that. Use this when you control the body (a webhook expects a bare `200` or `401`). |
+| You throw a `ForgeError` | **400**, JSON `{ "error": { "message", "code": "BAD_REQUEST", "data", "requestId" } }`. `data` is what you passed to `ForgeError`. |
+| A function you call fails argument validation | **400** with the validation message, for example `args.text must be a string, got 5`. |
+| A malformed document id (`ctx.storage.getUrl("garbage")`) | **400**, `Invalid id "garbage"`. Check ids that come from URLs before using them. |
+| You throw anything else | **500**. Outside dev the message is `Server error (request <id>)`; the real error is logged under that id. In dev you see the real message. |
+| The handler runs past `ACTION_TIMEOUT_MS` | **408**, code `TIMEOUT`. |
+| Too many calls are waiting for the function runtime | **503** with `Retry-After: 1` (`MAX_PENDING_CALLS`, see [limits](limits.html)). |
+| Returned something that isn't a `Response` | **500**, logged. |
+
+The JSON error shape is the same one `/rpc` uses, so error-handling code can be shared. Responses you build yourself are not wrapped: a `401` you return is exactly your body.
+
+## Limits, rate limiting and metrics
+
+- **Time:** the action timeout (`ACTION_TIMEOUT_MS`, 10 minutes by default). A webhook sender usually gives up in seconds, so acknowledge fast and do slow work with `ctx.scheduler.runAfter(0, internal.x.y, args)`.
+- **Body size:** `MAX_REQUEST_BYTES`, 8 MiB. Over that, the request is refused with 413 before your code.
+- **Rate limit:** `/http` is limited per client IP like function calls (`RATE_LIMIT_PER_MINUTE`, 1200 by default, off in dev). Over the limit the answer is `429 {"message":"Too many requests"}` with `Retry-After`. A provider that sends many webhooks from a small set of IPs can hit it; raise the limit. Behind your own reverse proxy, set `TRUST_PROXY=1` so the limit counts real client IPs and not the proxy's.
+- **Logs and metrics:** a handler call is logged and counted under `http <METHOD> <route>`, where the route is the pattern you registered and not the path the caller used: `http POST /webhooks/acme`, `http GET /download/*` for a prefix. They show up in the dashboard's Logs and Metrics, and in `/metrics` as `forge_function_calls_total{function="http GET /health"}` (with the duration histogram next to it). A call counts as ok when the handler returns a `Response`, whatever its status; it counts as failed when the handler throws or times out. Requests that match no route (404, 405) and requests refused by the rate limit are not counted.
+- **Not supported:** streaming or server-sent events through a handler, `HEAD` routes, WebSockets, a route list in the dashboard, tracing spans for HTTP calls, and `createTestBackend` (see [testing](testing.html); use a real server and `fetch`).
+
+## Examples
+
+These were run against a development server. `internal.webhooks.record` is an `internalMutation` in `forge/webhooks.ts`.
+
+### Health endpoint
+
+The engine already answers `/health` (the process is up) and `/ready` (the function runtime has loaded). A route of your own can check what those don't: that your code runs and the database answers.
+
+```ts
+http.route({
+  method: "GET",
+  path: "/health",
+  handler: httpAction(async (ctx) => {
+    await ctx.runQuery(api.lists.count); // throws, so the route answers 500, if the database is down
+    return Response.json({ ok: true, time: Date.now() });
+  }),
+});
+```
+
+### Webhook with signature verification
+
+Providers sign the exact bytes they send, so read the body as text and don't re-serialize it. Compare in constant time. Providers retry, so make the write idempotent.
+
+```ts
+// forge/http.ts
+import { timingSafeEqual } from "node:crypto";
+import { httpAction, httpRouter } from "@archlast/forge-runtime";
+import { internal } from "./_generated/api";
+
+const http = httpRouter();
+
+const hex = (bytes: ArrayBuffer) => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+async function sign(secret: string, body: string) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(body)));
+}
+
+const same = (a: string, b: string) => {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+};
+
+http.route({
+  method: "POST",
+  path: "/webhooks/acme",
+  handler: httpAction(async (ctx, request) => {
+    const secret = process.env.ACME_WEBHOOK_SECRET;
+    if (!secret) return new Response("Webhook not configured", { status: 503 });
+
+    const body = await request.text(); // the exact bytes that were signed
+    const given = request.headers.get("x-acme-signature") ?? "";
+    if (!same(given, await sign(secret, body))) return new Response("Bad signature", { status: 401 });
+
+    const event = JSON.parse(body) as { id: string; type: string };
+    const { duplicate } = await ctx.runMutation(internal.webhooks.record, { source: "acme", eventId: event.id, payload: body });
+    if (!duplicate) await ctx.scheduler.runAfter(0, internal.webhooks.handleEvent, { source: "acme", eventId: event.id });
+    return Response.json({ received: true, duplicate });
+  }),
+});
+
+export default http;
+```
+
+```ts
+// forge/webhooks.ts
+import { internalMutation, v } from "@archlast/forge-runtime";
+
+export const record = internalMutation({
+  args: { source: v.string(), eventId: v.string(), payload: v.string() },
+  handler: async (ctx, args) => {
+    const seen = await ctx.db
+      .query("events")
+      .withIndex("by_event", (q) => q.eq("source", args.source).eq("eventId", args.eventId))
+      .first();
+    if (seen) return { duplicate: true };
+    await ctx.db.insert("events", args);
+    return { duplicate: false };
+  },
+});
+```
+
+Set the secret with `archlast-forge env set ACME_WEBHOOK_SECRET whsec_…` (it becomes `process.env.ACME_WEBHOOK_SECRET` in your functions; see [configuration](configuration.html)). Try it:
+
+```bash
+BODY='{"id":"evt_1","type":"invoice.paid"}'
+SIG=$(printf '%s' "$BODY" | openssl dgst -sha256 -hmac whsec_… | awk '{print $2}')
+curl -X POST localhost:3000/http/webhooks/acme -H "x-acme-signature: $SIG" -d "$BODY"
+# {"received":true,"duplicate":false}   (the same request again: "duplicate":true)
+# a wrong signature: 401
+```
+
+`process.env` and `Bun` are typed in `forge/` (the starter includes `@types/bun`); a project created before `0.1.1` needs `bun add -d @types/bun` in `forge/` and `"types": ["bun"]` in `forge/tsconfig.json`. The code runs either way.
+
+### A public JSON API
+
+Combine the CORS helper above with a route that pages through a query.
+
+```ts
+http.route({
+  method: "GET",
+  path: "/api/messages",
+  handler: httpAction(async (ctx, request) => {
+    const url = new URL(request.url);
+    const numItems = Math.min(Number(url.searchParams.get("limit") ?? 20) || 20, 100);
+    const page = await ctx.runQuery(api.messages.list, { paginationOpts: { numItems, cursor: url.searchParams.get("cursor") } });
+    return Response.json(
+      { messages: page.page, next: page.isDone ? null : page.continueCursor },
+      { headers: corsHeaders(request, { "cache-control": "public, max-age=10" }) },
+    );
+  }),
+});
+```
+
+```bash
+curl -i 'localhost:3000/http/api/messages?limit=1' -H 'origin: http://localhost:5173'
+# access-control-allow-origin: http://localhost:5173
+# vary: origin
+curl -i -X OPTIONS localhost:3000/http/api/messages -H 'origin: http://localhost:5173' -H 'access-control-request-method: GET'
+# 204, access-control-allow-methods: GET, OPTIONS, access-control-max-age: 600
+```
+
+Cap what callers may ask for (`limit` above) since nothing else does. Validation that a function's `args` gives you doesn't apply to query-string values you read yourself.
+
+### Download through a presigned URL
+
+File bytes should not pass through a handler (bodies are buffered). Check access in the handler, then send the browser to a short-lived storage URL.
+
+```ts
+import type { Id } from "./_generated/dataModel";
+
+http.route({
+  method: "GET",
+  pathPrefix: "/download/",
+  handler: httpAction(async (ctx, request) => {
+    if (!(await ctx.auth.getUserIdentity())) return new Response("Sign in", { status: 401 });
+    const id = decodeURIComponent(new URL(request.url).pathname.slice("/download/".length));
+    const url = await ctx.storage.getUrl(id as Id<"_storage">);
+    if (!url) return new Response("No such file", { status: 404 });
+    return Response.redirect(url, 302);
+  }),
+});
+```
+
+`GET /http/download/_storage:…` answers 302 with a `Location` pointing at storage. The presigned URL is valid for one hour (see [storage](storage.html#downloads-and-public-access)). A `getUrl` for an id that doesn't exist returns `null` (404 above), while a string that isn't an id at all fails with 400.
+
+### Binary in, binary out
+
+```ts
+http.route({
+  method: "PUT",
+  path: "/blob",
+  handler: httpAction(async (_ctx, request) => {
+    const bytes = await request.arrayBuffer();
+    return new Response(bytes, { headers: { "content-type": "application/octet-stream", "x-size": String(bytes.byteLength) } });
+  }),
+});
+```
+
+A 1000-byte random file sent with `curl -X PUT --data-binary @file` comes back byte for byte.
+
+## Testing a route
+
+Start the engine (`archlast-forge dev`) and call the route with any HTTP client. In a test, start a server and use `fetch`:
+
+```ts
+const res = await fetch("http://localhost:3000/http/webhooks/acme", { method: "POST", headers: { "x-acme-signature": sig }, body });
+expect(res.status).toBe(200);
+```
+
+`createTestBackend` doesn't run HTTP routes; see [testing](testing.html).

@@ -1,0 +1,255 @@
+# How it works
+
+This page is the mental model. Read it once and the rest of the docs get easier: you will know which process runs your code, what a transaction covers, why a query re-ran, and where a bug is likely to be. Every claim here comes from the engine's source; where a page elsewhere has the details, this one links to it.
+
+## The short version
+
+1. You write **functions** in `forge/`. They are the only code that touches your data.
+2. A client calls a function over HTTP, or **subscribes** to a query over a WebSocket.
+3. The engine runs the function **inside a transaction** and, for a query, records every **topic** it read (a table, an index range, a document).
+4. When a mutation commits, the engine publishes the topics it wrote. Every subscribed query that read one of those topics runs again, and the client gets the new result only if it changed.
+
+Everything else (auth, storage, scheduling, the dashboard, the React framework) is built around that loop.
+
+## The pieces
+
+One archlast-forge deployment is a **server process** plus a **function runtime**, a **database**, and optionally Redis and S3-compatible storage.
+
+```
+ browsers, mobile apps, scripts
+        |   HTTP  POST /rpc/<function>        WebSocket /rpc (live queries)
+        v
++--------------------------------------- engine ----------------------------------------+
+|  SERVER PROCESS                                                                         |
+|    HTTP + WebSocket, rate limits, request ids                                           |
+|    query cache  <--  invalidated by topics                                              |
+|    subscriptions (which query read which topics)  <--  bus (topics, after commit)       |
+|    pages (full-stack mode), dashboard, /health, /metrics                                |
+|        |                                                                                |
+|        |  one message per call: { name, kind, args, auth headers }                      |
+|        v                                                                                |
+|  FUNCTION RUNTIME                                                                       |
+|    your forge/ modules, validators, transactions                                        |
+|    Better Auth, scheduler and crons, storage URLs                                       |
++----------------|------------------------------|-----------------------|----------------+
+                 v                              v                       v
+        SQLite file or PostgreSQL        Redis (optional)       S3-compatible storage
+        (documents, auth, jobs, logs)    (bus, cache, limits)   (file bytes, optional)
+```
+
+### Server process and function runtime
+
+The **server process** owns everything about the network: HTTP and WebSocket connections, rate limiting, the query cache, the bus and the table of live subscriptions. It never runs your code.
+
+The **function runtime** owns everything about your app: it loads the modules in `forge/`, opens the database, runs migrations, runs each function in a transaction, hosts Better Auth and runs the scheduler. The two sides talk through one message protocol (`{ t: "call" }`, `{ t: "publish" }`, `{ t: "auth" }`, `{ t: "http" }` and a few more). Messages sent in the same turn of the event loop travel as one batch.
+
+`RUNTIME_MODE` decides how the function runtime is hosted:
+
+| Mode | The runtime is | Used when | Why |
+|---|---|---|---|
+| `process` | a child process (`child.ts`) that the server can restart on its own | `archlast-forge dev`, and whenever `RUNTIME_WORKERS` is above 1 | A code change restarts only your functions. HTTP and WebSocket connections stay up, and every subscription re-runs against the new code. A function stuck in a synchronous loop can be killed and respawned without taking the server with it. |
+| `inline` | the same code, running inside the server process | production with one worker (the default) | No message hop per call. The decisions file measures about twice the throughput on one core. |
+
+Both modes run the same `runtime-core.ts`, so behaviour is identical; only the hosting differs. The price of `inline`: a function that never yields blocks the server too. A watchdog thread then kills the whole process after the call's timeout plus 5 seconds, so run it under something that restarts it (the engine container's restart policy does). `inline` is refused in development, because it cannot reload code.
+
+With `RUNTIME_WORKERS=n`, the server keeps `n` runtime processes and sends calls round-robin; only the first one runs the scheduler, migrations and the schema check.
+
+### Database
+
+Every table is the same three columns: `(_id, _creationTime, doc)`, with `doc` stored as JSON (TEXT in SQLite, JSONB in PostgreSQL). The schema is enforced when you write, not by the database, so changing a field never migrates anything (see [Migrations](migrations.html)). Ids look like `notes:3f9a...` (the table name, a colon and 32 hex characters), which is how `db.get(id)` knows which table to read and how `v.id("notes")` rejects an id from another table.
+
+| | SQLite (default) | PostgreSQL (`DATABASE_URL`) |
+|---|---|---|
+| Driver | `bun:sqlite`, WAL mode | Bun's SQL client with a connection pool |
+| Writes | One serialized write connection. Writes that queue up while one runs share a single SQLite transaction, each in its own savepoint ("group commit"), so each sees the ones before it and fails alone | `SERIALIZABLE`, retried on conflicts |
+| Reads | Four read-only connections | `REPEATABLE READ READ ONLY` |
+| Servers | One process | Many (`REPLICAS`, which also needs Redis) |
+
+SQLite is `bun:sqlite` only. The decisions file records that the Turso driver was tried and dropped: "At 2,000 users it used about 1.7x the runtime CPU of `bun:sqlite`, had a worse latency tail, hung the process when write transactions overlapped on separate connections ... and has no FTS5."
+
+### Redis, storage and the bus
+
+- **Redis is optional.** With one server, topics travel through an in-process bus and the cache lives in memory. With `REDIS_URL`, the bus becomes Redis pub/sub (one channel per topic), so a write on server A wakes subscriptions held by server B. Redis also shares the query cache and the rate-limit counters across servers. Several servers require both Redis and PostgreSQL; startup refuses `REPLICAS > 1` otherwise.
+- **Storage is optional.** Set `S3_ENDPOINT` and `S3_BUCKET` and `ctx.storage` works. File bytes never pass through the engine: functions hand out presigned URLs and browsers upload and download directly ([File storage](storage.html)).
+
+## What runs where
+
+| Code | Runs in | Can touch |
+|---|---|---|
+| `forge/*.ts` functions, `schema.ts`, `crons.ts`, `auth.ts`, `http.ts` | the function runtime, on the server | the database, `process.env`, the network, server-only packages from `forge/package.json` |
+| `app/routes/*.tsx` (full-stack mode) | the server for the first request (server rendering and loaders), then the browser | only the public `api` from `forge/_generated`; never `forge/` code itself |
+| `src/` (a frontend in backend mode) | the browser (or wherever you run your client) | the same: only `forge/_generated` |
+| `forge/_generated/` | everywhere: it holds only types and a reference object | nothing; it is committed and regenerated by `archlast-forge codegen` |
+
+The rule that makes this safe: **`app/` and `src/` may import only from `forge/_generated`**, and codegen fails on anything else. `api` is a typed reference object (`api.notes.list`), not the function itself, so no server code ever reaches a bundle. Functions made with `internalQuery`, `internalMutation` and `internalAction` are left out of `api` and out of the client router, so their names never reach a client; calling one returns "Unknown function".
+
+Server-only dependencies go in `forge/package.json` (`bun add --cwd forge zod`). The CLI installs them with `--ignore-scripts` unless the manifest lists `trustedDependencies`.
+
+## The life of a call
+
+### A query
+
+`POST /rpc/notes:list` with a JSON body of arguments (queries also answer `GET /rpc/notes:list?args=<json>`).
+
+1. **The server** checks the rate limit, finds `notes:list` in the manifest (public functions only), requires `content-type: application/json` on a POST, and reads the raw arguments.
+2. **The query cache** is consulted, keyed by function and arguments (and by caller, if the query reads `ctx.auth`). A hit returns the stored bytes. An identical call already running is shared instead of started twice.
+3. On a miss, the server sends `{ t: "call", name, kind: "query", args, headers }` to the function runtime.
+4. **The runtime** resolves the caller once from the `cookie` or `authorization` header (Better Auth), before any transaction starts. It validates the arguments against the function's `args`, then opens a read-only transaction: one snapshot of the database.
+5. Your handler runs. Every `ctx.db` read adds a topic to the transaction's read set.
+6. The result is checked against `returns` if you gave one, serialized, and size-checked (8 MiB by default).
+7. The runtime answers with the value, the topics it read, and whether it touched `ctx.auth`. The server caches the result only if no write to one of those topics landed while the query ran, and only if it did not read `ctx.auth` for the first time (per-user results are cached per user from then on).
+8. The client receives `{ "result": ... }`.
+
+### A mutation
+
+`POST /rpc/notes:create`.
+
+1. Same entry as a query, but mutations never go through the cache.
+2. The runtime validates the arguments and opens a **write transaction**.
+3. Your handler runs. Each `insert`, `patch`, `replace` and `delete` validates the document against the table's schema (a Zod schema compiled from the validators in `schema.ts`), writes the row, and adds topics to a write set. Scheduling a function (`ctx.scheduler.runAfter`) inserts a job row in the same transaction.
+4. If the handler throws, or its return value fails `returns`, the transaction rolls back, nothing is published, and the caller gets the error.
+5. If it returns, the transaction **commits**. Only then does the runtime tell the server which topics changed (`{ t: "publish", topics }`), and only then do after-commit tasks run (the deletion of a storage object, for instance).
+6. The server publishes the topics on the bus. The caller gets `{ "result": ... }`.
+
+A write publishes more than you might expect. Inserting a note with `ownerId = X` and `updatedAt = 5` publishes:
+
+```
+notes                                          the table (full scans and searches read this)
+notes:by_id:["notes:<id>"]                     the document
+notes:by_owner_updated:["X"]                   each prefix of each index on the table
+notes:by_owner_updated:["X",5]
+```
+
+A `patch` or `replace` publishes this set for both the old and the new version of the document, so a query that watched the range the document left is woken up as well as one that watches the range it entered.
+
+### An action
+
+Actions are for anything that talks to the outside world: `fetch`, sending email, calling a payment API. They run in the function runtime with **no transaction** and no `ctx.db`. They read and write only by calling queries and mutations (`ctx.runQuery`, `ctx.runMutation`), and each of those calls is its own transaction. An action that calls two mutations is two commits; if the second fails, the first stays.
+
+Actions are **at-most-once with no retries**. The decisions file: "Actions are at-most-once with no retries (user decision). Scheduled mutations are exactly-once: the job row is claimed inside the mutation's own transaction." If the process dies halfway through a scheduled action, the job stays `running` until a lease sweep fails it (the action timeout plus 60 seconds). Make the side effect idempotent, or record progress with mutations, if you need more.
+
+### A subscription
+
+A client opens one WebSocket at `/rpc` and sends `{ type: "subscribe", id, name, args }`. This is a real exchange against the notes app from the [tutorial](tutorial.html):
+
+```
+-> {"type":"subscribe","id":"1","name":"notes:list","args":{}}
+<- {"type":"data","id":"1","data":{"value":[{"_id":"notes:d853...","title":"First", ...}]}}
+   ...another client calls notes:create...
+<- {"type":"data","id":"1","data":{"value":[{"_id":"notes:f189...","title":"Live", ...}, {"_id":"notes:d853...", ...}]}}
+```
+
+What the server does:
+
+1. It runs the query exactly as for an HTTP call (through the cache) and sends the **first message: the current result**.
+2. It subscribes to the topics the run reported. For `notes:list` as one signed-in user, the list the dashboard shows under Settings, Live subscriptions is exactly one topic:
+
+   ```
+   notes:by_owner_updated:["users:7ec5..."]
+   ```
+
+   and for `notes:get` with an id it is `notes:by_id:["notes:d853..."]`.
+3. When a matching topic arrives on the bus, the subscription is marked dirty. Events are debounced by about 50 ms, so a burst of writes re-runs the query once.
+4. The query runs again. Its read set can change with the data, so topics are re-recorded on every run.
+5. The new result is hashed. If it equals the last one sent, **nothing is sent**; otherwise a new `data` message goes out.
+
+Identical `(function, args)` pairs on one client share a single server subscription. If the connection drops, the client reconnects with jittered exponential backoff and subscribes again; each subscription's first message is a fresh result, so a reconnect refetches rather than replays. WebSockets carry cookies only on the handshake, so the client reconnects when the session changes (after sign-in or sign-out).
+
+## Reactivity in more detail
+
+A subscription is correct if it re-runs whenever **anything its last run could have read** might have changed. The read set is recorded by the database layer, not by you:
+
+| Your code reads | Topic recorded |
+|---|---|
+| `db.get(id)` | `table:by_id:[id]` |
+| `withIndex("by_owner", q => q.eq("ownerId", x))` | `table:by_owner:["x"]` |
+| the same with a range (`gt`, `lt`...) or a page from `paginate` | the equality prefix, `table:by_owner:["x"]` (or just `table` when there is none) |
+| a query with no index, or `withIndex` with no equality | `table` |
+| `withSearchIndex(...)` | `table` (search depends on the whole table) |
+| `include` joins | the joined documents' topics too |
+
+Three consequences worth knowing:
+
+- **Narrow reads wake less.** `withIndex("by_owner_updated", q => q.eq("ownerId", me))` is woken only by writes to that owner's notes. A bare `db.query("notes").collect()` is woken by every write to the table. A search is too, so keep search results small and let the narrowing be a `filterFields` equality.
+- **`filter` does not narrow.** It runs while scanning the index range, so the query is woken by changes anywhere in that range, including documents the filter skipped.
+- **Publishing happens only after commit.** A mutation that throws, times out or fails its `returns` check publishes nothing, so no client ever sees a half-done change. Because queries run in their own snapshot, a result is always one consistent view; two separate queries do not share one.
+
+A write that lands while a query is running could be published before the new subscription listens for it. The engine handles this: a run that overlapped a write to something it read is marked not clean, is not cached, and is run again. See [Reactivity](reactivity.html) and [Caching](caching.html) for the full rules.
+
+## Transactions, retries and timeouts
+
+- **A query** is one read-only snapshot. It cannot write, and it times out at `FUNCTION_TIMEOUT_MS` (10 seconds).
+- **A mutation** is one transaction with the same timeout. After a timeout the transaction handle refuses further use, so a handler that is still running cannot write afterwards.
+- **Serialization conflicts** (PostgreSQL) are retried automatically, up to ten attempts, with jittered backoff. That is safe only because mutations are deterministic from the engine's point of view: no network, no randomness that matters across attempts. Put those in actions. On SQLite there is one writer, so conflicts do not occur; the same rule keeps your code portable between the two.
+- **An action** has no transaction and runs for up to `ACTION_TIMEOUT_MS` (10 minutes).
+- **Limits.** Results over 8 MiB and documents over 1 MiB fail the call. See [Limits and security](limits.html) for all of them, including what happens to a function that never yields.
+
+## Identity
+
+Who is calling is decided once per request, in the function runtime, from the `cookie` or `authorization` header, before the transaction begins. `ctx.auth.getUserIdentity()` returns `{ userId, sessionId, email, name }` or `null`. Better Auth owns sign-up, sign-in and sessions (`/api/auth/*`); its `users`, `sessions`, `accounts` and `verifications` tables are part of every schema, and writes to them publish topics like any other write. Authorization is code you write: the first line of most functions is a check, as in the tutorial's `requireUser`.
+
+A query that calls `getUserIdentity` is cached per user, and the session is read on every call, so a revoked session stops working immediately.
+
+## Pages in full-stack mode
+
+The server process hands the engine's unclaimed requests to the app host. For a page request it:
+
+1. matches the URL to file routes (`app/routes`) and runs the matched **loaders** in-process, as the visitor. `ctx.query(api.notes.list)` runs the query (through the query cache, as a private copy) and stores the result in a TanStack Query cache under the same key `useQuery` uses;
+2. renders the page to HTML with React (`renderToReadableStream`, waiting until it is complete, so status codes and redirects are right);
+3. embeds `window.__FORGE__` in the document: loader data, the query cache, the signed-in viewer and sanitized errors;
+4. sends it. The browser hydrates, `useQuery(api.notes.list)` finds its data already in the cache, and opens the live subscription, whose first message replaces the cached value with the same current one.
+
+Later navigations run the same loaders in the browser, which calls `POST /rpc/...` directly. Details are in [Full-stack apps](framework.html).
+
+## The two project modes
+
+A project's mode is recorded in `archlast-forge.json` (`mode` and `services`). Both modes run the same engine and the same `forge/` folder.
+
+- **`framework`**: the engine also serves a React app from `app/`. In development everything runs in one process on your machine; Docker runs only services you chose. In production the app and the engine are one container image.
+- **`backend`**: the engine alone, plus the services you selected, as a Docker Compose stack. Clients connect to its HTTP and WebSocket endpoints. In development the engine runs in Docker with `forge/` mounted, or in your own process with `--no-docker`.
+
+A project without `archlast-forge.json` is a backend with no services, which is how projects from before modes existed keep working.
+
+## Why it is built this way
+
+These are settled decisions, with the reasons from `docs/decisions.md`. Look there before proposing to change one.
+
+- **Documents as JSON, validated on write.** "There are no per-field columns, so a schema change never migrates data." The cost is that data can drift from the schema; `archlast-forge migrate` reports mismatches and production startup refuses them.
+- **The function runtime is a child process, not a Worker,** "because Bun documents Worker termination as experimental." In production the single-worker default runs inline for speed.
+- **Code changes restart only the function runtime.** "HTTP and WebSocket stay up." Open connections see the new functions after the reload.
+- **No RPC framework.** tRPC was removed. The protocol is plain JSON over HTTP plus one WebSocket, so any language can call it, and the dashboard API is plain JSON too. Not carried over: request batching.
+- **Errors are sanitized.** "Only `ForgeError` and argument validation errors reach callers. Other errors become 'Server error (request id)' outside dev," with the full error in the log under that id.
+- **Actions never retry.** At-most-once is the guarantee you can reason about; retrying side effects is a decision for your code.
+- **Everything in one pass.** Dashboard, PostgreSQL, Redis, storage, scheduler and crons are all in the first release, rather than staged.
+- **Self-hosted, one deployment per app.** "Hosting many customers' projects (tenant isolation, metering, a control plane) is out of scope for now."
+- **The router is React Router's data router.** File routes, the build, server rendering, the live cache and the viewer are ours; matching, nested layouts, loaders, redirects and error boundaries are React Router's, "which has the edge cases covered."
+- **Not done in full-stack mode:** streaming and static generation, route actions (a server-handled POST on a page URL would need CSRF protection), per-route CSS on demand, hot module replacement (a save reloads the page).
+
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| **Engine** | The server process plus the function runtime: the thing you deploy. |
+| **`forge/`** | Your backend folder: `schema.ts`, function modules, and the special modules `crons.ts`, `auth.ts` and `http.ts`. |
+| **Function** | An export made with `query`, `mutation`, `action`, or an `internal*` variant. Its name is `<file>:<export>`, for example `notes:list`. |
+| **Query** | A read-only function that can be subscribed to. |
+| **Mutation** | A function that reads and writes in one transaction. |
+| **Action** | A function that can call the outside world; no transaction, at most once. |
+| **Internal function** | A function clients cannot call: for the scheduler, crons, migrations, other functions and the dashboard. |
+| **Validator (`v`)** | Plain data describing a type, used for table fields, arguments and return values, and compiled to Zod at runtime. |
+| **Index / search index** | A declared ordering over fields, or a full-text index over one string field. Index reads are what make narrow subscriptions possible. |
+| **`Id<"notes">`** | A string of the form `notes:<32 hex>`, typed by table. |
+| **Topic** | A string naming something that can change: `table`, `table:index:[values]`, `table:by_id:[id]`. |
+| **Read set / write set** | The topics a query read, and the topics a mutation wrote. |
+| **Bus** | What carries published topics to subscriptions: in-process, or Redis between servers. |
+| **Subscription** | A live query on a WebSocket, re-run whenever a topic in its read set is published. |
+| **Query cache** | Results stored by function and arguments (and caller), evicted by topics. |
+| **Function runtime** | The part of the engine that runs your modules, owns the database and hosts auth and the scheduler. |
+| **Viewer** | The signed-in user as full-stack pages see it (`useViewer()`), present in the server-rendered HTML. |
+| **Loader** | A route's data function. Runs on the server first, then in the browser; `ctx.query` fills the live cache. |
+| **Codegen** | `archlast-forge codegen`: writes `forge/_generated` (`api`, `internal`, `dataModel`) and checks what your frontend imports. |
+| **Mode** | `framework` (full-stack app) or `backend`; recorded in `archlast-forge.json`. |
+| **Service** | A container next to the engine: PostgreSQL, Redis, S3 storage (RustFS) or Caddy (HTTPS). |
+| **Dashboard** | The admin UI at `/_dashboard`: data, functions, logs, metrics, cache, jobs, files, users, audit. |
+
+Next: [Getting started](getting-started.html) to create a project, or the [tutorial](tutorial.html) to build one.

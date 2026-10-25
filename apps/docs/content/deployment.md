@@ -1,5 +1,16 @@
 # Deployment
 
+archlast-forge is self-hosted: one deployment per app, on a machine you control. The unit you deploy is one container image (the engine plus your code), and usually a few containers around it (database, cache, storage, a proxy). This page covers the ways to run it, how it behaves when started, stopped and overloaded, and how to watch it.
+
+| Way to run it | Good for | Status |
+|---|---|---|
+| [The stack](#the-stack): `archlast-forge up`, or `docker compose up -d --build` | a VPS or any Docker host | exercised by the project's Docker end-to-end test |
+| [The image on its own](#the-image-on-its-own): `build`, then `start --image` or `docker run` | your own orchestrator | exercised for the image; `start --image` is a thin wrapper over `docker run` |
+| [Without Docker](#without-docker): `build --no-docker`, `start --no-docker` | a machine with Bun, under systemd | exercised in development and by the packed-install smoke test |
+| [Fly.io](#flyio), [Kubernetes](#kubernetes) | managed platforms | guidance, not tested |
+
+The settings are environment variables; this page names the ones that matter in production, and [Configuration](configuration.html) lists all of them.
+
 ## The stack
 
 A project made with `archlast-forge init` carries its own deployment: `compose.yaml` runs your app and the services you chose (PostgreSQL, Redis, S3 storage, Caddy for HTTPS) as one stack.
@@ -10,30 +21,256 @@ archlast-forge logs
 archlast-forge down    # data stays in Docker volumes
 ```
 
-`up` creates `.env` with fresh secrets the first time. Copy the project and `.env` to a server and run `archlast-forge up`, or `docker compose up -d --build` where the CLI isn't installed. [Backends](backend.html) covers the stack in detail: what each service does, HTTPS, backups and upgrades. For a full-stack app, the same image also carries the pages.
+`up` creates `.env` with fresh secrets the first time. Copy the project and its `.env` to a server and run `archlast-forge up` there, or `docker compose up -d --build` where the CLI isn't installed. [Backends](backend.html) covers the stack file by file: every service, every variable, HTTPS, backups, upgrades and secret rotation. A full-stack app uses the same stack, and the same image also carries its pages ([Full-stack apps](framework.html#production)).
 
-The rest of this page is what is underneath: the image on its own, and the settings you can change.
+The Docker end-to-end test (`bun run e2e`) is the record of what has been run: a full-stack app on SQLite and on PostgreSQL, a backend with PostgreSQL, Redis and storage, each brought up with `archlast-forge up`, exercised, restarted and torn down; and a full-stack app behind Caddy on `localhost`, over HTTPS.
 
-## Build and run
+## The image on its own
 
 ```bash
 archlast-forge build --tag my-app:1.0
 archlast-forge start --image my-app:1.0 --env-file .env.production --port 3000
 ```
 
-The image is the engine plus your `forge/` code and its dependencies (installed for Linux). It's a normal container: run it with Docker Compose, Kubernetes, Fly, or anything else.
+`build` runs `docker build` on the project's `Dockerfile` with the engine image as its base (`ghcr.io/algochad/archlast-forge-engine:<cli version>`, pulled if missing; `ARCHLAST_ENGINE_IMAGE` overrides it). The result is the engine plus your `forge/` code and its dependencies, installed for Linux, and for a full-stack app the built pages. It is a normal container: run it with Docker Compose, Kubernetes, Fly or anything else that runs images. The default tag is `<project>:latest`. A project from before `init` existed (no `Dockerfile`) gets a generated one around `forge/`.
 
-- The volume at `/data` holds SQLite and needs to persist.
-- `GET /health` is liveness; `GET /ready` is readiness (503 while starting, or after a failed load).
-- `SIGTERM` stops accepting work, drains in-flight requests, and closes WebSockets with code 1012, so clients reconnect elsewhere.
+`start --image` runs the container detached as `archlast-forge-<project>-<hash>` with `--restart unless-stopped`, port `--port` mapped to 3000, a named volume for `/data`, and the environment from `--env-file` (default: `forge/.env`, not the project's root `.env`). `archlast-forge stop` stops it. The equivalent by hand:
 
-## Minimal production `.env`
+```bash
+docker run -d --name my-app --restart unless-stopped \
+  -p 3000:3000 -v my-app-data:/data --env-file .env.production my-app:1.0
+```
+
+What the image contains and expects:
+
+- It listens on `PORT` (3000), writes SQLite and local state under `DATA_DIR` (`/data`, declared as a volume), and runs as root.
+- `NODE_ENV=production`, so the engine starts in production mode: it refuses to start without `BETTER_AUTH_SECRET`, and without an `https://` `BETTER_AUTH_URL` unless `ALLOW_INSECURE_HTTP=1`.
+- It has a Docker `HEALTHCHECK` on `GET /health` (every 10 s, 3 s timeout, 30 s start period). That reports the process is alive. Use `/ready` for load balancers (below).
+- It does not contain `.env` files (the project's `.dockerignore` excludes them), so every secret arrives at run time.
+
+A minimal production environment file:
 
 ```
 BETTER_AUTH_SECRET=<openssl rand -hex 32>
 BETTER_AUTH_URL=https://api.example.com
+ADMIN_KEY=<openssl rand -hex 24>
+TRUST_PROXY=1
+# if browsers on other origins call the API with cookies:
 TRUSTED_ORIGINS=https://app.example.com
 ```
+
+## Without Docker
+
+Production needs Bun (1.4.3 or newer) and your project:
+
+```bash
+bun install
+archlast-forge build --no-docker          # full-stack apps: the bundles in .forge/build
+archlast-forge start --no-docker --port 3000
+```
+
+A backend has nothing to build: `build --no-docker` prints `Nothing to build without Docker: a backend runs straight from forge/ (archlast-forge start --no-docker).` and exits 0. `start --no-docker` runs the engine in the CLI's process, serving the API, the WebSocket and (for a full-stack app) the pages. Bun loads the `.env` in the current directory, so secrets can live there; real environment variables win over it. A full-stack app without a build fails with ``No production build in …/.forge/build. Run `archlast-forge build --no-docker` first.``
+
+A systemd unit (guidance; adjust paths and user):
+
+```ini
+[Unit]
+Description=my-app
+After=network-online.target postgresql.service
+
+[Service]
+WorkingDirectory=/srv/my-app
+EnvironmentFile=/srv/my-app/.env.production
+ExecStart=/usr/local/bin/bun x archlast-forge start --no-docker --port 3000
+Restart=always
+User=app
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target
+```
+
+Set `DATA_DIR` to a directory on a disk that persists. Without it, `start --no-docker` uses `forge/data/`, the same place `dev` does (before `0.1.1` it used `./data`, a different database). Put a TLS proxy in front. `SIGTERM` and `SIGINT` stop the process cleanly (below); `SIGHUP` reloads the function runtime without dropping connections.
+
+## Other platforms
+
+### A VPS with Docker
+
+This is the tested path. Install Docker with Compose v2, copy the project and its `.env`, choose Caddy at `init` (or add it to `compose.yaml`), point DNS at the machine, and run `archlast-forge up`. Details and the checklist are in [Backends](backend.html#on-a-server). Updating is the same command: `up` rebuilds the image and recreates the containers whose image changed.
+
+### Fly.io
+
+Guidance, not tested. A single machine with a volume fits SQLite; scaling out needs PostgreSQL and Redis (`DATABASE_URL`, `REDIS_URL`) because a volume belongs to one machine.
+
+```toml
+# fly.toml
+app = "my-app"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  BETTER_AUTH_URL = "https://my-app.fly.dev"
+  TRUST_PROXY = "1"
+
+[mounts]
+  source = "data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3000
+  force_https = true
+  auto_stop_machines = "off"
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    method = "GET"
+    path = "/ready"
+    interval = "10s"
+    timeout = "3s"
+    grace_period = "30s"
+```
+
+```bash
+fly volumes create data --size 1
+fly secrets set BETTER_AUTH_SECRET=$(openssl rand -hex 32) ADMIN_KEY=$(openssl rand -hex 24)
+fly deploy
+```
+
+The build pulls the engine image from GHCR, so the builder needs to reach it. Keep one machine while you use SQLite.
+
+### Kubernetes
+
+A sketch, not tested. One `Deployment` with PostgreSQL and Redis outside the pod (or one replica with a PVC on `/data` and SQLite), secrets from a `Secret`, probes on the two endpoints, and a grace period longer than the engine's drain:
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata: { name: my-app }
+spec:
+  replicas: 2                       # more than 1 needs DATABASE_URL (Postgres) and REDIS_URL
+  selector: { matchLabels: { app: my-app } }
+  template:
+    metadata: { labels: { app: my-app } }
+    spec:
+      terminationGracePeriodSeconds: 30
+      containers:
+        - name: app
+          image: registry.example.com/my-app:1.0
+          ports: [{ containerPort: 3000 }]
+          env:
+            - { name: REPLICAS, value: "2" }
+            - { name: BETTER_AUTH_URL, value: "https://app.example.com" }
+            - { name: TRUST_PROXY, value: "1" }
+          envFrom: [{ secretRef: { name: my-app-secrets } }]   # BETTER_AUTH_SECRET, ADMIN_KEY, DATABASE_URL, REDIS_URL
+          readinessProbe: { httpGet: { path: /ready, port: 3000 }, periodSeconds: 5 }
+          livenessProbe: { httpGet: { path: /health, port: 3000 }, periodSeconds: 10, failureThreshold: 6 }
+```
+
+The ingress must pass WebSocket upgrades on `/rpc` and keep idle connections open longer than `IDLE_TIMEOUT_SECONDS`. Sessions are cookies, so no sticky routing is needed.
+
+## Environment for production
+
+| Variable | Set it to | Why |
+|---|---|---|
+| `BETTER_AUTH_SECRET` | 32 random bytes, hex | required; signs sessions |
+| `BETTER_AUTH_URL` | the public `https://` address | required to be https unless `ALLOW_INSECURE_HTTP=1`; sessions and callbacks use it |
+| `ADMIN_KEY` | a long random value | owner access to the dashboard, `/metrics` and the CLI's data commands |
+| `TRUST_PROXY` | `1` behind a proxy | client IPs for rate limits come from `X-Forwarded-For` |
+| `TRUSTED_ORIGINS` | the other browser origins you serve | CORS and Better Auth origin checks |
+| `DATABASE_URL`, `REDIS_URL` | your PostgreSQL and Redis | needed for more than one server |
+| `S3_*` | your S3-compatible storage | file storage; `S3_PUBLIC_ENDPOINT` is where browsers reach it |
+| `DASHBOARD` | `off` unless you use it | it is off outside development by default; the stack's compose file turns it on |
+| `METRICS_TOKEN` | a separate bearer token | otherwise `/metrics` uses `ADMIN_KEY` |
+| `RATE_LIMIT_PER_MINUTE`, `MAX_REQUEST_BYTES`, `FUNCTION_TIMEOUT_MS` | tuned to your traffic | see [Limits](limits.html) |
+| `LOG_FORMAT` | `json` (the default in production) | one JSON object per line |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | your collector | traces |
+
+Bad combinations fail at startup with a message, rather than running half configured. Each of these is real output of `archlast-forge start --no-docker` with the variable set:
+
+```
+✗ REPLICAS > 1 requires REDIS_URL, or mutations won't reach subscribers on other servers
+✗ BETTER_AUTH_URL must be https:// outside dev (got "http://x.test"). Set ALLOW_INSECURE_HTTP=1 only for local testing.
+✗ BETTER_AUTH_SECRET is required outside dev
+✗ DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite), got "mysql:"
+✗ Set both S3_ENDPOINT and S3_BUCKET, or neither
+✗ RUNTIME_MODE must be "process" or "inline", got "thread"
+```
+
+## Health, readiness and shutdown
+
+| Endpoint | Answer |
+|---|---|
+| `GET /health` | `200 {"ok":true}` whenever the process is serving. Use it for liveness. |
+| `GET /ready` | `200 {"ready":true}` once your functions are loaded; `503 {"ready":false,"error":…}` while starting, when loading failed, and while shutting down. Use it for readiness and load balancers. |
+
+During development a broken module in `forge/` shows up here: `503` with `{"ready":false,"error":"Failed to load forge/messages.ts: 2 errors building …"}`, and the engine keeps retrying (with a delay) until the file is fixed, then returns to `200`. In production a function module that fails to load at startup stops the process, so the container exits and your restart policy shows the error in the logs.
+
+The server starts listening before your functions have loaded. Calls that arrive in that window wait for the load rather than fail, and `/ready` is `503`.
+
+### Shutdown
+
+`SIGTERM` (or `SIGINT`) starts a graceful stop, and the log says `SIGTERM: draining connections…`:
+
+1. The server marks itself shutting down: `/ready` turns `503`, and new requests get `503 {"message":"Server is shutting down"}` with `retry-after: 1`. `/health`, `/metrics` and the CLI endpoint still answer.
+2. Every WebSocket is closed with code 1012 (service restart). The clients reconnect, to another server behind a load balancer or to this one when it is back, and refetch their queries.
+3. In-flight HTTP requests are given up to 10 seconds, then the server closes what is left.
+4. The app host and the function runtime stop, the Redis connections close, and pending trace spans are flushed.
+
+A second signal exits at once with status 1. `docker stop` waits 10 seconds by default and then kills the container, which is about the length of the drain alone; give the app 30 (`stop_grace_period: 30s` in Compose, `terminationGracePeriodSeconds` in Kubernetes, `TimeoutStopSec` in systemd, `docker stop -t 30`). The CLI's own stops use 15 seconds.
+
+## Zero-downtime considerations
+
+- **One container:** restarting it (a deploy, a crash) is a few seconds in which requests are refused or answered `503`. WebSocket clients reconnect with backoff and refetch, so a user sees a pause, not an error. Scheduled functions that came due in the gap run when it is back. A cron's next run is computed at startup, so cron runs that fall inside the gap are skipped, not made up.
+- **Several servers behind a load balancer** (PostgreSQL and Redis required): roll them one at a time. A stopping server fails `/ready`, so the balancer stops sending it requests, and its WebSockets reconnect to the others. Old and new code share the database during the roll, so make function changes compatible both ways: add before you remove, and don't rename arguments in a single step. A client that calls a function the older server doesn't have gets `404 Unknown function`.
+- **Schema changes:** documents are stored as JSON, so adding a field or table needs no migration step; indexes are created at startup (in PostgreSQL concurrently, under an advisory lock, so replicas can start together). Outside development, startup checks stored documents against the schema and refuses to start on a mismatch (`SCHEMA_CHECK`); write a [data migration](migrations.html) first, or make the new field optional.
+- **Full-stack apps:** a deploy replaces the build's hashed files. A browser tab opened before the deploy keeps working on the code it already loaded, but a client-side navigation that needs a chunk it has not loaded asks for a file that no longer exists and fails until the page is reloaded. This is not handled for you. Keep the old assets available for a while at your proxy if it matters, and note that HTML is never cached, so a reload always gets the new build.
+- **Not provided:** automatic blue/green. Compose recreates the container; do blue/green at your proxy or orchestrator.
+
+## TLS and proxies
+
+Outside development the engine requires `BETTER_AUTH_URL` to be `https://`, so session cookies carry the `Secure` flag. The engine itself speaks plain HTTP: terminate TLS in front of it. The stack does that with Caddy (certificates renew by themselves once DNS points at the machine). Any proxy works if it:
+
+- passes WebSocket upgrades on `/rpc`;
+- keeps idle upstream connections for less than `IDLE_TIMEOUT_SECONDS` (default 75; nginx and cloud load balancers reuse upstream connections for 60 s or more, so closing sooner makes them hit a socket the engine just closed);
+- sets the client address in `X-Forwarded-For`.
+
+**`TRUST_PROXY=1`** makes the engine take the client IP for rate limits from `X-Forwarded-For`; without it every visitor shares the proxy's address and one noisy client can rate-limit everyone. The engine uses the **last** address in the header, the one your proxy added for the connection it received. Anything the client put in front of it is ignored, so a client cannot pick its own address. A proxy that replaces the header (Caddy's default) leaves a single entry and works the same. Enable `TRUST_PROXY` only when every request really comes through your proxy, and only one proxy deep: with two proxies in a row the last entry is the first proxy's address. (Before `0.1.1` the engine used the first address, which a client could choose.)
+
+An nginx server block (guidance, not tested here):
+
+```nginx
+map $http_upgrade $connection_upgrade { default upgrade; "" close; }
+
+server {
+  listen 443 ssl http2;
+  server_name app.example.com;
+  # ssl_certificate ...;
+
+  location / {
+    proxy_pass http://127.0.0.1:3000;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Upgrade $http_upgrade;
+    proxy_set_header Connection $connection_upgrade;
+    proxy_set_header X-Forwarded-For $remote_addr;
+    proxy_set_header X-Forwarded-Proto $scheme;
+    proxy_read_timeout 1h;            # WebSocket connections are long-lived
+    client_max_body_size 8m;          # MAX_REQUEST_BYTES is 8 MiB by default
+  }
+}
+```
+
+The stack's Caddyfile is the tested equivalent:
+
+```
+{$DOMAIN:localhost} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}
+```
+
+Behind a proxy that rewrites paths, don't: `/rpc`, `/api/auth`, `/http`, `/_app`, `/_admin`, `/_dashboard`, `/health`, `/ready` and `/metrics` must reach the engine under those names. If a frontend lives on another origin, either route `/rpc`, `/api/auth` and `/http` to the engine from that origin, or list it in `TRUSTED_ORIGINS` ([CORS](backend.html#cors-and-trusted-origins)).
 
 ## Scaling out
 
@@ -45,16 +282,93 @@ REDIS_URL=redis://…           # cross-server reactivity, cache, rate limits
 REPLICAS=3                    # declares intent; startup fails if the above are missing
 ```
 
-Put the servers behind a load balancer that supports WebSockets. Sticky sessions aren't needed. `RUNTIME_WORKERS` runs several function-runtime processes per server, for CPU-heavy functions.
+- **PostgreSQL** holds the data. Writes run serializable and retry conflicts with jittered backoff; indexes are built concurrently. Back it up with `pg_dump`.
+- **Redis** carries the topics that tell other servers a table changed (each server then re-runs the subscriptions it owns), the shared query cache, and rate-limit counters (including Better Auth's). It holds nothing durable.
+- **`REPLICAS`** only declares how many servers you run; it makes startup fail fast when the pieces are missing. It does not start anything.
+- **A load balancer** that supports WebSockets. Sticky sessions aren't needed.
+- **Schedulers:** every server polls for due jobs; a job is claimed in the database, so mutations run once, and an action's claim becomes a lease that expires after the action timeout plus 60 s if its server dies.
+- **`RUNTIME_WORKERS`** runs several function-runtime processes per server, for CPU-heavy functions, and switches `RUNTIME_MODE` to `process`. It is separate from scaling out.
+- The scale-out path is covered by startup checks and the Redis/PostgreSQL integration tests (`bun run test:all`), not by an end-to-end run of several app containers; see [Backends](backend.html#scaling-the-stack) for what was and wasn't run.
 
-## The local database
+### The local database
 
 Without `DATABASE_URL` the engine stores data in a SQLite file (`bun:sqlite`, WAL mode) at `DATA_DIR/app.db`, on the volume at `/data`.
 
-- **One server.** The file belongs to one engine; `REPLICAS > 1` and several servers need Postgres. `RUNTIME_WORKERS > 1` works, but the processes share one write lock, so it helps CPU-heavy functions more than write-heavy ones.
-- **Backups:** `archlast-forge backup app.db` takes a consistent copy while the engine runs.
-- **Capacity:** one core serves roughly 600 requests per second of the [$12 challenge](https://github.com/arjaythedev/twelve-dollar-server-challenge) mix, and held 2,000 simulated users with p95 between 50 and 400 ms across runs (this was measured on a shared VM; expect run-to-run swings). Past that, add runtime processes or move to Postgres.
+- **One server.** The file belongs to one engine; `REPLICAS > 1` and several servers need PostgreSQL. `RUNTIME_WORKERS > 1` works, but the processes share one write lock, so it helps CPU-heavy functions more than write-heavy ones.
+- **Backups:** `archlast-forge backup app.db` takes a consistent copy while the engine runs. Against a Docker stack, run it inside the container ([Backends](backend.html#backups-and-restores)).
+- **Capacity:** one core serves roughly 600 requests per second of the [$12 challenge](https://github.com/arjaythedev/twelve-dollar-server-challenge) mix, and held 2,000 simulated users with p95 between 50 and 400 ms across runs (measured on a shared VM; expect run-to-run swings). Past that, add runtime processes or move to PostgreSQL.
+
+## Logs and metrics
+
+### Logs
+
+- **Server logs** go to stdout and stderr, one JSON object per line in production (`{"time":…,"level":"warn","msg":…,"requestId":…}`), readable text in development (`LOG_FORMAT=pretty|json` overrides). Collect them with your platform (`docker logs`, `archlast-forge logs`, journald).
+- **Request ids:** every response carries `x-request-id`. A request may bring its own (letters, digits, `.`, `_` and `-`, at most 64 characters); otherwise one is generated. A "Server error (request <id>)" shown to a visitor is that id: search the logs for it to find the real error and stack.
+- **Function logs** (`console.log` in your functions, and one entry per call) are batched into the database and shown in the dashboard's log view, with live streaming. They are kept for `LOG_RETENTION_DAYS` (7).
+- Page renders log failures as `render failed (request <id>): …`, and loader errors with the stack and the route.
+
+### Prometheus
+
+`GET /metrics` returns the Prometheus text format. It needs `Authorization: Bearer <token>`, where the token is `METRICS_TOKEN` or, when that is not set, `ADMIN_KEY`; without a configured token it answers 404 outside development. Abridged output from a running engine (the per-function series repeat for each function):
+
+```
+forge_function_calls_total{function="posts:list"} 1
+forge_function_errors_total{function="posts:list"} 0
+forge_function_duration_ms_bucket{function="posts:list",le="5"} 1     # buckets 5 to 10000 ms, +Inf, _sum, _count
+forge_cache_hits_total / _misses_total / _coalesced_total / _skipped_total{function=…}
+forge_cache_invalidated_entries_total 0
+forge_cache_evictions_total 0
+forge_cache_entries 0
+forge_cache_bytes 0
+forge_subscriptions 0
+forge_websocket_connections 0
+forge_runtime_workers 1
+forge_process_resident_bytes 60526592
+```
+
+HTTP routes count as functions named `http <METHOD> <route>`. Counters reset when the process restarts, and each server reports on its own; scrape every replica.
+
+```yaml
+# prometheus.yml
+scrape_configs:
+  - job_name: archlast-forge
+    metrics_path: /metrics
+    authorization: { type: Bearer, credentials_file: /etc/prometheus/forge-token }
+    static_configs: [{ targets: ["app:3000"] }]
+```
+
+Queries worth alerting on (standard PromQL over the series above; the thresholds are yours):
+
+```promql
+sum(rate(forge_function_errors_total[5m])) / sum(rate(forge_function_calls_total[5m])) > 0.02
+histogram_quantile(0.95, sum by (le) (rate(forge_function_duration_ms_bucket[5m]))) > 500
+forge_process_resident_bytes > 1.5e9
+```
+
+### Tracing
+
+With `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for the full URL) set, each function call through `/rpc` is a span, exported over OTLP/HTTP as JSON to `<endpoint>/v1/traces` every two seconds (batches of up to 1,000). `OTEL_SERVICE_NAME` names the service (default `archlast-forge`). Spans are `SERVER` kind, named after the function, with the attributes `forge.function` and `forge.request_id`; an incoming W3C `traceparent` header is continued, so a call joins its caller's trace. There is no OpenTelemetry SDK in the process, and no child spans inside the function runtime, no spans for page renders or `/http` routes (those are logged and counted in metrics). A failing exporter logs `trace export failed` as a warning and drops the batch.
+
+```yaml
+    environment:
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+      OTEL_SERVICE_NAME: "my-app"
+```
+
+### The dashboard
+
+At `/_dashboard` (when `DASHBOARD=on`): live logs, the call log, scheduled jobs and crons, connection and subscription charts (sampled every 30 s into the database), cache statistics, and your data. Sign in with the admin key or a dashboard account. See [Dashboard](dashboard.html).
+
+## Backups and monitoring
+
+Back up the database on a schedule (`pg_dump`, or the SQLite backup) and the storage volume, keep `.env` somewhere safe, and test a restore; the commands are in [Backends](backend.html#backups-and-restores). Monitor:
+
+- `GET /ready` from outside, expecting 200 (a failed deploy and a lost database both show up here);
+- the error ratio and p95 from `/metrics`, as above;
+- disk space on the volumes (SQLite's WAL grows until a checkpoint, PostgreSQL and RustFS grow with data);
+- `forge_websocket_connections` and `forge_process_resident_bytes` for capacity;
+- certificate expiry, if your proxy doesn't renew by itself.
 
 ## Serving the frontend
 
-A full-stack app needs nothing here: the engine serves its pages. For a backend with a separate frontend, host the built frontend anywhere. Either put it on the same origin behind a reverse proxy that forwards `/rpc` (with WebSocket upgrades) and `/api` to the engine, or serve it from another origin listed in `TRUSTED_ORIGINS` and create the client with `{ url }`.
+A full-stack app needs nothing here: the engine serves its pages. For a backend with a separate frontend, host the built frontend anywhere. Either put it on the same origin behind a reverse proxy that forwards `/rpc` (with WebSocket upgrades), `/api/auth` and `/http` to the engine, or serve it from another origin listed in `TRUSTED_ORIGINS` and create the client with `{ url }`. Cookies are `SameSite=Lax`, so a separate origin works for subdomains of one site, not across unrelated sites.

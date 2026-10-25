@@ -1,32 +1,80 @@
 # Caching
 
-Query results are cached, so a query that many clients ask for runs once instead of once per client. Nothing to configure and nothing to change in your functions.
+There are two caches, and neither needs code from you.
 
-A cached result is never stale. It is evicted the moment a mutation commits a write that touches anything the query read (the same [topics](reactivity.html) that drive live updates), and a query that is woken by a write never reuses a result computed before that write.
+- The **query cache** keeps the results of whole query calls, so a query that many clients ask for runs once instead of once per client.
+- The **read cache** sits inside the function runtime and keeps rows read from SQLite, so queries that do run read less from disk.
 
-## What is cached
+A cached result is never stale with respect to the database. It is evicted when a mutation commits a write that touches anything the query read (the same [topics](reactivity.html#topics) that drive live updates), and a query that is woken by a write never reuses a result computed before that write. What the cache can't know about is anything that isn't the database. See [Gotchas](#gotchas).
 
-- **Key:** the function, its arguments, and for queries that read `ctx.auth`, the signed-in user. Each user gets their own entry, and a signed-out caller gets another. The first time a query reads `ctx.auth` it runs uncached; from then on it is keyed by user. A revoked or expired session stops matching straight away, because who is calling is resolved on every request.
-- **Shared runs:** if identical calls arrive while one is already running, they share its result instead of each running the function. A call that arrives after a write the running one overlapped runs again.
-- **Not cached:** mutations and actions, failed queries, and results larger than a quarter of `CACHE_MAX_MB`.
-- **Reloads:** changing your `forge/` code (or reloading the runtime) empties the cache, since the old code's results are no longer right.
+## The query cache
 
-Queries are expected to depend only on their arguments, the caller and the database. A query that also reads the clock or calls something external can serve a result up to `CACHE_TTL_MS` old.
+### When it is used
 
-## Where it lives
+The query cache answers calls that come in through the server:
 
-In memory by default, limited by `CACHE_MAX_MB`; the least recently used entries go first. With `REDIS_URL` the cache is shared by every server, and writes on any server evict entries on all of them.
+- `POST /rpc/<query>` and `GET /rpc/<query>?args=…`
+- live subscriptions over the WebSocket (every re-run goes through the cache)
+- `ctx.query` in the loaders of a [full-stack app](framework.html), which get a private copy of the result
 
-| Setting | Default | |
+It does not apply to mutations and actions, to `ctx.runQuery` inside an action (that calls the function directly), or to HTTP actions. It is on in dev and in production. `CACHE_TTL_MS=0` turns it off.
+
+### What is cached
+
+- **Key.** The function name plus its arguments. For an HTTP call the key uses the arguments *as the client wrote them*, so `{}`, `{ }` and an empty body are three entries. For a subscription or a page loader it uses the re-serialized arguments. The same query called over HTTP and over the WebSocket therefore has two entries. In practice every client of one app serializes arguments the same way, so this only shows in tests and with `curl`.
+- **Per-user queries.** A query that calls `ctx.auth.getUserIdentity()` has a result that belongs to the caller. The first time a query reads `ctx.auth`, the engine notes it and from then on keys that function by the caller's identity (user id, email, name). Each signed-in user gets their own entry, whatever number of devices or sessions they have, and signed-out callers share one. (Before `0.1.1` the session id was part of the key, so every session had its own entry.) The very first run of such a query is not cached (it shows up as `skipped`). The caller is resolved on every request, so a revoked or expired session stops matching at once.
+- **Not cached:** results of failed queries, results where a write to something the query read landed while it was running, and results that are too large (see [Size](#size-and-memory)).
+- **Shared runs (coalescing).** If an identical call arrives while one is already running, it waits and shares the result instead of running the function again. If a write overlapped the running call, the waiting call runs again, because only a run that no write overlapped is sure to include the write that woke it.
+- **Reloads.** Changing your `forge/` code, or reloading the runtime, empties the cache and forgets which queries are per-user, since the old code's results are wrong.
+
+### Invalidation
+
+Every cache entry is tagged with the topics its query read. A mutation that commits publishes the topics it wrote, and each server evicts every entry tagged with one of them.
+
+- In one process the eviction is synchronous: the next read after a commit can't see the old entry.
+- With Redis, the eviction is asynchronous, but a server holds back its own cache reads until its pending evictions have landed.
+- Invalidation is by topic, not by function. Writing one todo evicts `todos:byList` for that list, not for the others.
+- A query tracked at the table (a bare `collect()`) is evicted by every write to that table.
+
+TTL is a second, independent limit. An entry lives at most `CACHE_TTL_MS` (60 s by default), measured from when it was stored, and is dropped when read after that. TTL protects you from anything invalidation can't see.
+
+## Settings
+
+| Variable | Default | |
 |---|---|---|
-| `CACHE_TTL_MS` | `60000` | longest an entry lives. `0` turns the cache off. |
-| `CACHE_MAX_MB` | `64` | in-process memory limit |
+| `CACHE_TTL_MS` | `60000` | Longest an entry lives, in milliseconds. `0` turns the query cache off: every call runs, nothing is shared. |
+| `CACHE_MAX_MB` | `64` | Memory for the in-process cache, at least `1`. Ignored when `REDIS_URL` is set. |
+| `REDIS_URL` | unset | Shares the cache between servers. |
 
-## Measuring it
+There are no per-function settings. To keep a query out of the cache, make it depend on something the cache can't share (see below), or give it an argument that changes.
 
-The dashboard has a **Cache** page: hit rate, entries and memory, hits and function runs over time (across all servers), and for each function its hits, shared runs, runs, average time for each, and an estimate of the time saved. Admins can clear the cache there; that is recorded in the audit log. The Overview page shows the hit rate.
+### Size and memory
 
-The same numbers are on `/metrics`:
+The in-process cache is an LRU. When it holds more than `CACHE_MAX_MB` of estimated memory, or more than 10,000 entries, the least recently used entries go first. An entry's size is estimated as three bytes per character of its JSON, plus its key, plus 200 bytes of bookkeeping. One entry bigger than a quarter of `CACHE_MAX_MB` isn't kept at all, because it would flush everything else; at the default that is a result of about 5.3 MiB of JSON. Such calls show up as `skipped`. Queries are limited to 8 MiB of result anyway (`MAX_RESULT_BYTES`).
+
+### Redis
+
+With `REDIS_URL` the cache lives in Redis, under keys that start with `archlast-forge:cache:`, with one tag set per topic. Every server reads and fills the same entries, and a write on any server evicts them for all. Redis applies its own memory limits (`maxmemory` and its eviction policy), so `CACHE_MAX_MB` doesn't apply, and the entry and byte counts aren't available: the dashboard and `/metrics` leave them out. While caching is on, the servers also use an all-topics Redis channel to evict (see [Reactivity](reactivity.html#several-servers)). Startup fails if Redis is set and unreachable.
+
+## The read cache
+
+Inside the function runtime, `read-cache` keeps the rows of document reads by SQL statement and parameters, so repeated reads (the same `ctx.db.get`, the same index range) skip SQLite. It is **exact**: it never returns a row that a committed write has changed.
+
+It is on only when this process is the only writer of the database: SQLite (no `DATABASE_URL`) with a single function runtime (`RUNTIME_WORKERS=1`, the default). With Postgres, or with several runtime processes, it is off, because another writer could change rows behind it. Don't write to the SQLite file from anywhere else while the server runs (use the CLI, which talks to the running server, and the dashboard).
+
+How it stays correct:
+
+- A table with uncommitted writes can't be read from or stored in the cache until those writes commit or roll back.
+- Entries are tagged with the same topics as the query cache and dropped when a commit writes them. A write to one post drops that post's cached `include` count, not every count.
+- A read transaction only uses an entry if its table wasn't invalidated after the transaction's snapshot. A read-only query that already used cached rows re-runs instead of mixing them with a newer snapshot.
+
+It holds up to 20,000 entries or 32 MiB, and doesn't keep a single result larger than 4 MiB. These limits aren't configurable and it has no metrics of its own; you see its effect as lower function times. You never configure or clear it.
+
+## Measuring
+
+The dashboard's **Cache** page shows the hit rate, entries and memory, hits and function runs over time (across all servers), and for each function: hits, shared runs, runs, average time for each, an estimate of the time saved, and a **per user** badge on functions cached per session. Admins can clear the cache there; the action is recorded in the audit log. The Overview page shows the hit rate.
+
+The same numbers are on `/metrics` (send `Authorization: Bearer <METRICS_TOKEN or ADMIN_KEY>`):
 
 | Metric | |
 |---|---|
@@ -38,4 +86,28 @@ The same numbers are on `/metrics`:
 | `forge_cache_evictions_total` | entries evicted to stay within memory |
 | `forge_cache_entries`, `forge_cache_bytes` | what is cached now (in-process cache only) |
 
-The hit rate is `(hits + coalesced) / (hits + coalesced + misses)`. Calls answered from the cache don't appear in the function call logs or `forge_function_*` metrics, since no function ran.
+The hit rate is `(hits + coalesced) / (hits + coalesced + misses)`. Calls answered from the cache don't run a function, so they don't appear in the function call logs or in `forge_function_*` metrics. The counters are per server and reset when it restarts; the dashboard adds up all servers.
+
+A healthy cache for a read-heavy app has a high hit rate on shared queries (a feed, a product list) and a low one on per-user queries. A function with many `skipped` runs is either too big, written to constantly while it runs, or reads `ctx.auth` (one skip for its first run only).
+
+## What is safe to cache
+
+Every query is cached, so every query has to be safe. A query is safe when its result depends only on:
+
+- its arguments,
+- who is calling (`ctx.auth`), and
+- the database.
+
+Examples of what is fine: a list filtered by an argument, a count, `ctx.db.get`, a lookup that depends on the viewer.
+
+## Gotchas
+
+- **The clock.** A query that returns `Date.now()`, or compares to it (`dueAt < Date.now()`), is cached for up to `CACHE_TTL_MS` and serves that old time. Pass the time in as an argument, rounded to something coarse (`Math.floor(Date.now() / 60_000) * 60_000`), or compute it on the client. Real behaviour: a query returning `{ at: Date.now() }` returned the same `at` on every call for the next minute.
+- **External state.** A query can't `fetch` another service and expect fresh answers either. Put that in an action, and store the result in a table that a query reads.
+- **Randomness.** `Math.random()` in a query gives every caller the same "random" value until the entry is evicted.
+- **Environment variables.** Changing one doesn't evict anything. Clear the cache from the dashboard, or wait for the TTL.
+- **Writes from outside the engine.** Rows changed by a tool that bypasses the server publish nothing, so the cache and subscriptions don't know. Use the dashboard, the CLI, or a mutation.
+- **Per-user cost.** A query that reads `ctx.auth` is cached per user, so a feed that reads it to hide a few items gets no sharing across users. If the shared part is large, split it: a public query for the shared list, a small per-user one for the part that depends on the viewer.
+- **Arguments that never repeat** (a timestamp, a random id, a search box's every keystroke) fill the cache with entries that are never read again. They are harmless, since old entries are evicted when the cache is full, but they cost memory and give a low hit rate.
+- **Mutations aren't cached.** A mutation that only reads still runs, and it can be slower than the equivalent query. Make read-only calls queries.
+- **Memory.** With many sessions and large per-user results, 64 MB can hold few entries. Watch `forge_cache_evictions_total` and raise `CACHE_MAX_MB` if it grows.

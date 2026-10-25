@@ -1,6 +1,6 @@
 import { ArchlastForgeClient, updateError, type PublicAction, type PublicMutation, type PublicQuery } from "@archlast/forge-client";
 import { getFunctionName, type FunctionArgs, type FunctionReturn, type OptionalArgs } from "@archlast/forge-runtime";
-import { getCurrentScope, inject, onScopeDispose, ref, shallowRef, toValue, watch, type App, type MaybeRefOrGetter, type Ref } from "vue";
+import { computed, getCurrentScope, inject, onScopeDispose, ref, shallowRef, toValue, watch, type App, type MaybeRefOrGetter, type Ref } from "vue";
 
 export { ArchlastForgeClient, ForgeError } from "@archlast/forge-client";
 
@@ -41,7 +41,7 @@ export function useQuery<R extends PublicQuery>(query: R, args: MaybeRefOrGetter
     { immediate: true },
   );
   if (getCurrentScope()) onScopeDispose(() => stop?.());
-  return { data, error, isLoading: () => data.value === undefined && !error.value };
+  return { data, error, isLoading: computed(() => data.value === undefined && !error.value) };
 }
 
 export function useMutation<R extends PublicMutation>(mutation: R) {

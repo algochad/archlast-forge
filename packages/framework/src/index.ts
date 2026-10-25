@@ -8,6 +8,7 @@ export {
   Outlet,
   redirect,
   useLocation,
+  useMatches,
   useNavigate,
   useNavigation,
   useParams,

@@ -1,0 +1,136 @@
+# archlast-forge
+
+archlast-forge is a self-hosted reactive backend for TypeScript apps, in the style of Convex, with an optional full-stack React framework on top. You describe your data and write your server logic as typed functions in a `forge/` folder. Clients call those functions with end-to-end types, and **live queries** push a new result whenever the data they read changes. Everything runs on [Bun](https://bun.sh), on your own machine or server.
+
+```ts
+// forge/notes.ts: a query. It runs on the server, inside a read-only transaction.
+export const list = query({
+  args: {},
+  handler: async (ctx) => {
+    const me = await ctx.auth.getUserIdentity();
+    if (!me) throw new ForgeError("Sign in to use notes");
+    return ctx.db.query("notes").withIndex("by_owner_updated", (q) => q.eq("ownerId", me.userId)).order("desc").take(100);
+  },
+});
+```
+
+```tsx
+// app/routes/notes/index.tsx: a component. `notes` is undefined once, then re-renders on every change.
+const notes = useQuery(api.notes.list);
+```
+
+Add a note in one browser window and it appears in every other window that has the list open, with no polling and no code that says "refresh". The [tutorial](tutorial.html) builds exactly this, step by step.
+
+## Who it is for
+
+- Teams that want a Convex-like development model (schema, queries, mutations, actions, live results, scheduled jobs) but need to run the backend themselves: on a single VPS, in their own cloud account, behind their own firewall, or on a laptop.
+- Apps where data changes under the user's eyes: dashboards, chat, collaborative tools, admin panels, anything that polls today.
+- Developers who like their backend to be one deployable thing. A small app is one container with a SQLite file; a larger one adds PostgreSQL, Redis and S3-compatible storage.
+
+It is **not** a hosting platform. One deployment serves one app. There is no control plane for many tenants, no billing, no per-customer isolation. That is a deliberate scope decision (see [How it works](concepts.html#why-it-is-built-this-way)).
+
+## What you get
+
+| Feature | What it means | Where to read more |
+|---|---|---|
+| **Data** | Tables of JSON documents, validated by a schema you write with `v`. Indexes with equality and range reads, full-text search, ordering, keyset pagination, counts and aggregates, joins by following `v.id(...)` references. SQLite (via `bun:sqlite`) or PostgreSQL. | [Schema](schema.html), [Reading data](queries.html) |
+| **Functions** | `query`, `mutation` and `action`, plus `internal*` variants that clients can't call. Arguments and return values are validated. Mutations are transactions. | [Functions](functions.html) |
+| **Reactivity** | Live queries over one WebSocket. The engine records what each query read and re-runs only the queries a write could affect. | [Reactivity](reactivity.html), [Caching](caching.html) |
+| **Auth** | [Better Auth](https://www.better-auth.com) is built in: email and password out of the box, plugins and social providers through `forge/auth.ts`. `ctx.auth.getUserIdentity()` in every function. | [Authentication](auth.html) |
+| **Storage** | File uploads straight from the browser to any S3-compatible service (RustFS, AWS S3) through presigned URLs. File bytes never pass through the engine. | [File storage](storage.html) |
+| **Scheduling** | `ctx.scheduler.runAfter` and `runAt` from mutations and actions; `crons.ts` for recurring jobs, evaluated in UTC. Scheduled mutations run exactly once. | [Scheduling](scheduling.html) |
+| **HTTP endpoints** | Plain `Request` to `Response` routes under `/http`, for webhooks and public APIs. | [HTTP endpoints](http.html) |
+| **Dashboard** | A web UI at `/_dashboard`: browse and edit data, run functions, watch logs, metrics, cache statistics, scheduled jobs, files, users and an audit log. | [Dashboard](dashboard.html) |
+| **Full-stack framework** | Server-rendered React with file-based routes, loaders that preload live data, and sign-in state in the first HTML. Built on React Router's data router. | [Full-stack apps](framework.html) |
+| **Clients** | A plain TypeScript client, plus React, Vue and Svelte bindings. The wire protocol is plain JSON over HTTP and WebSocket, so any language can speak it. | [Clients](clients.html) |
+| **CLI** | `archlast-forge` for `dev`, `build`, `up`, data export and import, backups, environment variables and dashboard accounts. | [CLI reference](cli.html) |
+| **Operations** | Health and readiness endpoints, Prometheus metrics, JSON logs, OpenTelemetry spans, rate limiting, timeouts, request-size limits. | [Deployment](deployment.html), [Configuration](configuration.html), [Limits](limits.html) |
+
+## Two project modes
+
+You choose one when you create a project (`bun create archlast-forge`). Both use the same `forge/` folder and the same engine; they differ in what else is in the project.
+
+| | Full-stack app (`framework`) | Backend (`backend`) |
+|---|---|---|
+| You write | `forge/` and React pages in `app/` | `forge/` only |
+| Frontend | Rendered by the engine, in the same process | Anything: React, Vue, Svelte, a mobile app, a script |
+| `bun run dev` | Everything on your machine, with rebuild and reload in about 0.2 s | The engine in Docker with `forge/` mounted (or `--no-docker`) |
+| Default services | None: SQLite needs nothing | PostgreSQL, Redis, S3 storage |
+| Production | One container: `bun run up` | A stack of containers: `bun run up` |
+| Read | [Full-stack apps](framework.html) | [Backends](backend.html) |
+
+If the app is a website, start with the full-stack mode. If you already have a frontend, or several clients share the data, use the backend mode. You can add services to either later.
+
+## How it compares
+
+**Hosted Convex.** The programming model is deliberately close: `defineSchema`, `defineTable`, `query`, `mutation`, `action`, `v`, `ctx.db`, `withIndex`, `paginate`, `ctx.scheduler`, `httpRouter`, `useQuery` and `useMutation` with optimistic updates. If you know Convex, the code here will look familiar. The differences are about where it runs and what it promises:
+
+- You run it. There is no hosted offering, no cloud dashboard, no managed upgrades. You are responsible for backups, TLS and updates ([Deployment](deployment.html)).
+- One deployment serves one app. Scaling out means PostgreSQL plus Redis and several servers (`REPLICAS`); a single SQLite server has one writer, which is plenty for many apps but is a ceiling.
+- Documents are stored as JSON and validated on write, so a schema change never migrates data, but stored documents can drift from the schema. `archlast-forge migrate` reports them, and production startup refuses to run on a mismatch ([Migrations](migrations.html)).
+- Index queries take equality on a prefix of an index's fields, then one range on the next field. `filter` takes any function but scans.
+- Actions run at most once and are never retried. Scheduled mutations run exactly once.
+- It is young. Versions move in lockstep and the API may still change before 1.0.
+
+**Firebase and similar hosted backends.** Firebase clients read and write the database directly, protected by security rules. Here, clients never touch the database: every read and write goes through a function you wrote, and that function decides who may do what with ordinary TypeScript. There is no rules language to learn, and also no way to expose a table to clients without writing a function for it. Queries are real transactions with indexes, ordering and joins, rather than document-at-a-time reads. Firebase gives you a global hosted service; this gives you a server you control.
+
+**A backend you write yourself** (an Express or Hono server with a database and a WebSocket layer). You get the freedom, but you also write the part that knows which subscribers a write affects. That part is what the engine provides.
+
+## Requirements
+
+- [Bun](https://bun.sh) 1.4.3 or later. archlast-forge uses Bun's SQLite, Redis, S3 and HTTP server directly; there is no Node.js build.
+- Docker, only for services (PostgreSQL, Redis, storage), for backend-mode development, and for `up`. A full-stack app with SQLite runs without it.
+
+## Map of the docs
+
+**Start here**
+
+- [How it works](concepts.html): the mental model. Processes, the life of a query and a mutation, how live queries stay current, glossary.
+- [Getting started](getting-started.html): create, run and change a project in each mode.
+- [Tutorial: a notes app](tutorial.html): a complete app with auth, search, optimistic updates and deployment.
+
+**Building an app**
+
+- [Full-stack apps](framework.html): routes, loaders, the page head, styles, errors.
+- [Backends](backend.html): the backend project, its stack and how frontends connect.
+- [Schema and validators](schema.html): tables, `v`, indexes, search indexes.
+- [Functions](functions.html): queries, mutations, actions, internal functions.
+- [Reading data](queries.html): indexes, filters, aggregates, joins, pagination, search.
+- [Reactivity](reactivity.html): topics, read sets, what makes a query re-run.
+- [Caching](caching.html): the shared query cache and its statistics.
+- [Authentication](auth.html): sign-in, identities, plugins.
+- [File storage](storage.html): presigned uploads and downloads.
+- [HTTP endpoints](http.html): `forge/http.ts` routes.
+- [Scheduling and crons](scheduling.html): delayed functions and recurring jobs.
+- [Errors](errors.html): what callers see, `ForgeError`, request ids.
+- [Migrations and data](migrations.html): index changes, data migrations, export and import.
+- [Testing](testing.html): testing functions against an in-memory backend.
+- [Clients: React, Vue, Svelte](clients.html): hooks, optimistic updates, the plain client.
+- [Recipes](recipes.html): worked answers to common tasks.
+
+**Running it**
+
+- [CLI reference](cli.html): every command and flag.
+- [Deployment](deployment.html): `up`, Docker, HTTPS, backups, upgrades, scaling out.
+- [Configuration](configuration.html): every environment variable.
+- [Dashboard](dashboard.html): the admin UI, roles and accounts.
+- [Limits and security](limits.html): timeouts, size limits, rate limits and the production checklist.
+
+**Reference**
+
+- [API reference](reference.html): the exports of each package.
+- [Troubleshooting](troubleshooting.html): error messages and what to do about them.
+
+## Packages
+
+| Package | What it is |
+|---|---|
+| `create-archlast-forge` | The scaffolder behind `bun create archlast-forge` |
+| `@archlast/forge-cli` | The `archlast-forge` command |
+| `@archlast/forge-runtime` | The engine, and the `v`, `query`, `mutation` helpers your `forge/` code imports |
+| `@archlast/forge-client` | The TypeScript client (HTTP, WebSocket, auth) |
+| `@archlast/forge-react`, `-vue`, `-svelte` | Framework bindings |
+| `@archlast/forge-framework` | The full-stack React framework |
+| `@archlast/forge-dashboard` | The admin UI the engine serves |
+
+The source is at [github.com/algochad/archlast-forge](https://github.com/algochad/archlast-forge) under the MIT license. Start with [Getting started](getting-started.html), or read [How it works](concepts.html) first if you want the model before the commands.

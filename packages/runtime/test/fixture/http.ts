@@ -25,6 +25,7 @@ http.route({ method: "GET", path: "/lists", handler: httpAction(async (ctx) => j
 http.route({ method: "GET", path: "/whoami", handler: httpAction(async (ctx) => json(await ctx.auth.getUserIdentity())) });
 http.route({ method: "GET", pathPrefix: "/files/", handler: httpAction(async (_ctx, req) => new Response(`prefix:${new URL(req.url).pathname}`)) });
 http.route({ method: "GET", path: "/files/special", handler: httpAction(async () => new Response("exact")) });
+http.route({ method: "GET", path: "/plain", handler: httpAction(async () => new Response("just text")) });
 http.route({ method: "GET", path: "/nothing", handler: httpAction(async () => new Response(null, { status: 204 })) });
 http.route({
   method: "GET",

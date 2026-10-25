@@ -1,54 +1,305 @@
 # Backends
 
-A backend is `forge/` plus a stack of containers: the engine, and the database, cache and storage it uses. You write your schema and functions; any frontend (React, Vue, Svelte, mobile, a script) talks to it.
+A backend is `forge/` plus a stack of containers: the engine, and the database, cache and storage it uses. You write your schema and functions; any frontend (React, Vue, Svelte, a mobile app, a script) talks to it over HTTP and a WebSocket. If you also want server-rendered pages from the same container, use a [full-stack app](framework.html) instead; the two modes share the engine, the CLI and the stack described here.
 
 ```bash
 bun create archlast-forge api --mode backend
 cd api && bun install && bun run dev
 ```
 
+`--mode backend` with no `--services` starts you with PostgreSQL, Redis and S3 storage. Pass `--services none` for the engine alone on SQLite, or any mix of `postgres`, `redis`, `s3` and `caddy`.
+
+## What you get
+
+`archlast-forge init` writes the project:
+
+```
+api/
+  forge/
+    schema.ts            tables
+    messages.ts          queries and a mutation (a starter)
+    http.ts              plain HTTP routes, served under /http
+    files.ts             upload URL and download URL functions (only with s3)
+    package.json         server-side dependencies (@archlast/forge-runtime, ...)
+    tsconfig.json
+  archlast-forge.json    { "mode": "backend", "services": ["postgres", "redis", "s3"] }
+  compose.yaml           the production stack
+  Dockerfile             your forge/ on the engine image
+  .dockerignore
+  .env                   secrets, generated for you, mode 0600, ignored by git
+  .env.example           the same keys, empty
+  Caddyfile              only with caddy
+  package.json           scripts: dev, codegen, typecheck, up, down, logs
+  .gitignore, README.md
+```
+
+| File | Role |
+|---|---|
+| `archlast-forge.json` | `mode` and `services`. `dev` starts the services listed here. `up` runs whatever `compose.yaml` says. A project without this file behaves as a backend with no services. |
+| `compose.yaml` | The production stack. It is yours after `init`: edit it, and `archlast-forge up` runs what you wrote. |
+| `Dockerfile` | `FROM ${ENGINE_IMAGE}`, `COPY . /src`, `engine prepare`. See [The image](#the-image). |
+| `.env` | Read by Docker Compose for `${...}` substitution. Never overwritten by `up`. |
+| `Caddyfile` | The proxy's configuration, mounted read-only into the Caddy container. |
+
+`archlast-forge.json` is validated whenever the CLI loads it, with messages that name the file and say what to change, such as `…/archlast-forge.json: unknown service "mysql"; choose from postgres, redis, s3, caddy`.
+
 ## Develop
 
-`bun run dev` starts the engine in Docker with `forge/` mounted and the services listed in `archlast-forge.json`. Saving a file restarts your functions; open WebSockets stay connected. Ctrl-C stops the engine and the services; their data stays in Docker volumes.
+`bun run dev` (`archlast-forge dev`) starts the engine in Docker with `forge/` mounted read-only, plus the services in `archlast-forge.json`:
 
-- API and WebSocket: http://localhost:3000
-- Dashboard: http://localhost:3000/_dashboard (the admin key is printed)
+```
+  archlast-forge 0.1.0  ·  backend  · engine in Docker
 
-Call it from a frontend:
+  ➜  API        http://localhost:3000
+  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  Admin key  …
+  ➜  Container  archlast-forge-api-<hash>-dev
+```
+
+- The engine copies `forge/` into its own filesystem, installs the dependencies from `forge/package.json` for Linux, and watches the mount. Saving a file restarts only your functions; open WebSockets stay connected and subscriptions re-run. The host keeps `forge/_generated` current.
+- PostgreSQL, Redis and RustFS run as sibling containers on a per-project network, and the engine is given their addresses. Data lives in named volumes, so it survives Ctrl-C. `dev` waits until PostgreSQL and Redis accept connections before starting the engine.
+- The S3 service publishes port 9000 on the host in this mode, so only one project at a time can use storage in dev. Set `S3_ENDPOINT` yourself for more.
+- Ctrl-C stops the engine and the services `dev` started.
+- `--with postgres,redis,s3` overrides the services; `--port 4000` changes the host port; `--run "vite"` starts a command alongside, stopped with the CLI.
+- Without Docker (`--no-docker`, `ARCHLAST_NO_DOCKER=1`, or when Docker is not installed) the engine runs in your terminal on SQLite, and `dev` says so: `! Not starting postgres, redis, s3 without Docker; using SQLite. Set DATABASE_URL, REDIS_URL or S3_* yourself to use others.` Point it at services by exporting those variables first.
+
+One gotcha without Docker: Bun loads `.env` from the directory you run the CLI in, so `BETTER_AUTH_URL`, `ADMIN_KEY` and the rest of the stack's `.env` apply to `dev --no-docker`. With the Caddy variant that makes the auth URL `https://localhost`: the session cookie came back as `__Secure-better-auth.session_token=…; Secure` while the engine was serving plain http. With the default `.env` the auth URL is `http://localhost:3000` whatever `--port` says. Run `dev --no-docker` with the variables you want in the environment, or without a `.env`.
+
+## Calling the backend
+
+From any JavaScript or TypeScript frontend, with the generated `api`:
 
 ```ts
 import { ArchlastForgeClient } from "@archlast/forge-client";
 import { api } from "./forge/_generated/api";
 
 const client = new ArchlastForgeClient({ url: "http://localhost:3000" });
-const messages = await client.query(api.messages.list, { paginationOpts: { numItems: 20, cursor: null } });
+const page = await client.query(api.messages.list, { paginationOpts: { numItems: 20, cursor: null } });
 const stop = client.watch(api.messages.list, { paginationOpts: { numItems: 20, cursor: null } }, (update) => console.log(update)); // live
 ```
 
-Add your frontend's origin to `TRUSTED_ORIGINS` so its cookies and requests are accepted. Plain HTTP routes (webhooks, a public API) go in `forge/http.ts` and are served under `/http`; see [HTTP endpoints](http.html).
+React, Vue and Svelte have wrappers (`@archlast/forge-react`, `-vue`, `-svelte`); see [Clients](clients.html). The types of `api` are derived from your `forge/` sources, so a frontend in the same repository imports it directly; anything else can call functions by name over HTTP.
+
+Any language can use plain HTTP. These calls ran against a backend started with `archlast-forge dev --no-docker`:
+
+```bash
+# sign up; the session cookie is saved to jar.txt
+curl -s -c jar.txt -X POST localhost:3000/api/auth/sign-up/email \
+  -H 'content-type: application/json' -H 'origin: http://localhost:3000' \
+  -d '{"email":"ada@example.com","password":"correct horse battery","name":"Ada"}'
+
+# a mutation: POST with JSON arguments; the answer is {"result": ...}
+curl -s -b jar.txt -X POST localhost:3000/rpc/messages:send \
+  -H 'content-type: application/json' -d '{"body":"hello from curl"}'
+# {"result":"messages:f40120d9053841b98150d1d7d2c023bf"}
+
+# a query: GET with ?args=<json>, or POST
+curl -s -b jar.txt -G localhost:3000/rpc/messages:list \
+  --data-urlencode 'args={"paginationOpts":{"numItems":5,"cursor":null}}'
+
+# a failure: {"error": {"message", "code", "data"?, "requestId"}} with the matching status
+curl -s -X POST localhost:3000/rpc/messages:send -H 'content-type: application/json' -d '{"body":"x"}'
+# {"error":{"message":"Sign in to post","code":"BAD_REQUEST","data":"Sign in to post","requestId":"…"}}
+```
+
+Better Auth checks the `Origin` of requests that carry one: an origin it doesn't trust gets `403 {"message":"Invalid origin","code":"INVALID_ORIGIN"}`. Its own address (`BETTER_AUTH_URL`) and everything in `TRUSTED_ORIGINS` are trusted. The full wire protocol, with the WebSocket messages, is in [Clients](clients.html#calling-the-engine-without-the-client). Mobile apps (React Native and others) can use `ArchlastForgeClient`, which needs only `fetch` and `WebSocket`. The client does not add headers for you, and the server reads a session from the `cookie` or `authorization` header, so how a native app obtains and attaches a session token is a Better Auth question (see [Authentication](auth.html)); A native app has not been tested here.
+
+### CORS and trusted origins
+
+The easiest setup is same-origin: serve your frontend and the backend from one host, with your reverse proxy sending `/rpc`, `/api/auth` and `/http` to the engine (WebSocket upgrades included). Cookies then need no CORS and are first-party.
+
+For a frontend on another origin:
+
+- List the exact origin (scheme, host and port, no trailing slash) in `TRUSTED_ORIGINS`, comma separated. For `/rpc/*`, `/api/auth/*` and every `OPTIONS` request outside `/http`, the engine then answers with `access-control-allow-origin: <that origin>`, `access-control-allow-credentials: true` and `vary: origin`. Preflights get `204` with `access-control-allow-methods: GET, POST, OPTIONS` and `access-control-allow-headers: content-type, authorization, x-request-id`. An origin that is not listed gets a `204` with the methods and headers but no `access-control-allow-origin`, so the browser blocks it. Better Auth uses the same list to accept sign-ins.
+- Sessions are cookies with `SameSite=Lax` (Better Auth's default). A frontend on a different site (another registrable domain) will not have them sent on `fetch` or on the WebSocket handshake. Subdomains of one domain (`app.example.com` and `api.example.com`) are the same site and work. For a different site, proxy the backend through the frontend's origin.
+- `/http/*` routes get no CORS headers from the engine. Answer your own `OPTIONS` and set headers in the route if a browser should call it (see [HTTP endpoints](http.html)).
+- **The stack does not pass `TRUSTED_ORIGINS` through unless it knows about it.** `compose.yaml` lists the app's environment explicitly, and a `TRUSTED_ORIGINS` line in `.env` is only used if the file references it. With Caddy the file sets `TRUSTED_ORIGINS: "https://${DOMAIN}"`; without Caddy it sets nothing. To add a frontend, edit the app's `environment`:
+
+  ```yaml
+      TRUSTED_ORIGINS: "https://${DOMAIN},https://app.example.com"   # with Caddy
+      TRUSTED_ORIGINS: "${TRUSTED_ORIGINS:-}"                          # without: set it in .env
+  ```
+
+  In development (`dev`), `TRUSTED_ORIGINS` in your shell is passed on, and replaces the default `http://localhost:<port>`: `TRUSTED_ORIGINS=http://localhost:3000,http://localhost:5173 archlast-forge dev`.
+
+### Webhooks and public HTTP routes
+
+Callers that are not your frontend (a payment provider, a CI hook) use routes in `forge/http.ts`, served under `/http`. This one verifies an HMAC signature over the exact bytes, then records the event through an internal mutation, once per event id. It ran against a real engine: a valid signature answered `204`, a wrong one `401 Bad signature`, and sending the same event twice stored one document.
+
+```ts
+// forge/http.ts
+import { httpAction, httpRouter } from "@archlast/forge-runtime";
+import { internal } from "./_generated/api";
+
+const http = httpRouter();
+
+const hex = (s: string) => Uint8Array.from(s.match(/../g) ?? [], (b) => parseInt(b, 16));
+
+http.route({
+  method: "POST",
+  path: "/webhooks/payments",
+  handler: httpAction(async (ctx, request) => {
+    const body = await request.text();
+    const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(process.env.WEBHOOK_SECRET), { name: "HMAC", hash: "SHA-256" }, false, ["verify"]);
+    const valid = await crypto.subtle.verify("HMAC", key, hex(request.headers.get("x-signature") ?? ""), new TextEncoder().encode(body));
+    if (!valid) return new Response("Bad signature", { status: 401 });
+    const event = JSON.parse(body) as { id: string; amount: number };
+    await ctx.runMutation(internal.payments.record, { eventId: event.id, amount: event.amount });
+    return new Response(null, { status: 204 });
+  }),
+});
+
+export default http;
+```
+
+```ts
+// forge/payments.ts
+import { internalMutation, v } from "@archlast/forge-runtime";
+
+export const record = internalMutation({
+  args: { eventId: v.string(), amount: v.number() },
+  handler: async (ctx, a) => {
+    const seen = await ctx.db.query("payments").withIndex("by_event", (q) => q.eq("eventId", a.eventId)).first();
+    if (!seen) await ctx.db.insert("payments", a);
+  },
+});
+```
+
+The schema has `payments: defineTable({ eventId: v.string(), amount: v.number() }).index("by_event", ["eventId"])`. Notes:
+
+- The public URL is `https://your-domain/http/webhooks/payments`. The rate limit applies to it like any call, per client IP, so with a proxy in front make sure `TRUST_PROXY=1` is set, or every webhook shares the proxy's address.
+- Store the secret with `archlast-forge env set WEBHOOK_SECRET …` (stored in the database, loaded into functions) or pass it through `compose.yaml`. The process environment wins over stored variables. A restart is not needed for `env set`: the CLI reloads the running engine.
+- `process.env` and `Bun` are typed in the starter's `forge/` (it includes `@types/bun`). A project created before `0.1.1` needs `bun add -d @types/bun` in `forge/` and `"types": ["bun"]` in `forge/tsconfig.json`.
+- Retries are the sender's job; make the handler idempotent as above. Handlers are actions, which are at-most-once; see [HTTP endpoints](http.html) for their rules.
 
 ## The stack
 
-`archlast-forge init` writes the files that run it:
+This is the `app` service of a project made with every service (`--services postgres,redis,s3,caddy`), as `archlast-forge init` writes it. Services you don't pick are left out, along with their lines in `app`:
 
-| File | |
-|---|---|
-| `archlast-forge.json` | `{ "mode": "backend", "services": ["postgres", "redis", "s3"] }`: what `dev` starts |
-| `compose.yaml` | the production stack: your app and the services, wired together |
-| `Dockerfile` | your `forge/` on the engine image |
-| `.env` | secrets, generated for you; ignored by git. `.env.example` lists the keys |
-| `Caddyfile` | with Caddy: the HTTPS proxy's configuration |
+```yaml
+name: api
 
-`compose.yaml` is yours to edit; archlast-forge only runs it.
+services:
+  app:
+    build:
+      context: .
+      args:
+        ENGINE_IMAGE: ${ENGINE_IMAGE:-ghcr.io/algochad/archlast-forge-engine:0.1.0}
+    image: api:latest
+    restart: unless-stopped
+    environment:
+      BETTER_AUTH_SECRET: "${BETTER_AUTH_SECRET:?missing: run `archlast-forge up`, which creates .env}"
+      ADMIN_KEY: "${ADMIN_KEY:?missing: run `archlast-forge up`, which creates .env}"
+      BETTER_AUTH_URL: "${BETTER_AUTH_URL:-http://localhost:3000}"
+      ALLOW_INSECURE_HTTP: "${ALLOW_INSECURE_HTTP:-}"
+      DASHBOARD: "${DASHBOARD:-on}"
+      TRUST_PROXY: "1"
+      TRUSTED_ORIGINS: "https://${DOMAIN}"
+      DATABASE_URL: "postgres://forge:${POSTGRES_PASSWORD}@postgres:5432/forge"
+      REDIS_URL: "redis://redis:6379"
+      S3_ENDPOINT: "http://rustfs:9000"
+      S3_PUBLIC_ENDPOINT: "${S3_PUBLIC_ENDPOINT}"
+      S3_BUCKET: "forge"
+      S3_REGION: "us-east-1"
+      S3_ACCESS_KEY_ID: "${S3_ACCESS_KEY}"
+      S3_SECRET_ACCESS_KEY: "${S3_SECRET_KEY}"
+    volumes:
+      - app-data:/data
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      rustfs-init:
+        condition: service_completed_successfully
 
-| Service | What it is for | How the app finds it |
+  # postgres, redis, rustfs, rustfs-init and caddy follow; they are described below
+```
+
+Without Caddy, the `app` service also has `ports: ["${PORT:-3000}:3000"]` and the `TRUST_PROXY` and `TRUSTED_ORIGINS` lines are absent.
+
+### The `app` service
+
+- **`build`** builds the project's `Dockerfile`. `image: api:latest` names the result; `archlast-forge build --tag` and `start --image` use the same kind of image. The build argument `ENGINE_IMAGE` picks the engine image to build on: `archlast-forge up` sets it from the CLI's version (or from `ARCHLAST_ENGINE_IMAGE`, see [Upgrades](#upgrades)); plain `docker compose` uses the default written in the file.
+- **`restart: unless-stopped`** brings it back after a crash or a reboot.
+- **`ports`** (no Caddy) publishes the app on the host. With Caddy there is no `ports` entry: only Caddy is reachable from outside.
+- **`volumes: app-data:/data`** is `DATA_DIR`. With PostgreSQL it holds little; without it, the SQLite database `app.db` lives here and the volume is your data.
+- **`depends_on`** makes the app wait for healthy PostgreSQL and Redis and for the bucket to exist.
+- The image sets `NODE_ENV=production`, `DATA_DIR=/data`, `PORT=3000` and `ARCHLAST_ENGINE=1`, exposes 3000, and has a health check (`GET /health` every 10 s, 30 s start period) that `up --wait` uses.
+
+Every environment variable the file sets for `app`:
+
+| Variable | Value in the file | Why |
 |---|---|---|
-| PostgreSQL 17 | the database, instead of a SQLite file | `DATABASE_URL` |
-| Redis 7 | reactivity across servers, the query cache, rate limits | `REDIS_URL` |
-| RustFS | S3-compatible file storage, with an `forge` bucket | `S3_ENDPOINT`, `S3_PUBLIC_ENDPOINT`, `S3_BUCKET`, keys |
-| Caddy 2 | HTTPS with certificates that renew themselves, and compression | in front of the app |
+| `BETTER_AUTH_SECRET` | from `.env`, required | signs sessions; changing it signs everybody out |
+| `ADMIN_KEY` | from `.env`, required | opens the dashboard, `/metrics` and the CLI's data commands (`/_cli`) |
+| `BETTER_AUTH_URL` | `.env`, default `http://localhost:3000` | the public address; outside development it must be `https://` unless `ALLOW_INSECURE_HTTP` is set |
+| `ALLOW_INSECURE_HTTP` | `.env`, empty by default | `1` lets plain http through; the starter `.env` sets it without Caddy so a local `up` works |
+| `DASHBOARD` | `.env`, default `on` | `off` hides `/_dashboard` and `/_admin` |
+| `TRUST_PROXY` | `"1"` with Caddy | use `X-Forwarded-For` for client IPs (rate limits) |
+| `TRUSTED_ORIGINS` | `https://${DOMAIN}` with Caddy | browser origins allowed with credentials |
+| `DATABASE_URL` | `postgres://forge:${POSTGRES_PASSWORD}@postgres:5432/forge` | selects PostgreSQL; without it the engine uses SQLite in `/data` |
+| `REDIS_URL` | `redis://redis:6379` | shared bus, query cache and rate limits |
+| `S3_ENDPOINT` | `http://rustfs:9000` | where the engine talks to storage, inside the network |
+| `S3_PUBLIC_ENDPOINT` | `.env` | where browsers reach storage; upload and download URLs are signed for it |
+| `S3_BUCKET`, `S3_REGION` | `forge`, `us-east-1` | the bucket `rustfs-init` creates |
+| `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | `S3_ACCESS_KEY`, `S3_SECRET_KEY` from `.env` | storage credentials |
 
-The dashboard is on in the stack, behind the admin key and a login limit; set `DASHBOARD=off` in `.env` to hide it. The database and Redis are not published to the network; only the app (or Caddy) is. Storage publishes one port, because browsers upload and download through presigned URLs. Choosing storage adds `forge/files.ts` with `generateUploadUrl` and `url` to build on.
+Everything else the engine reads (cache size, timeouts, `RUNTIME_WORKERS`, `REPLICAS`, `METRICS_TOKEN`, OTLP) is not in the file. Add it to the `environment` block when you need it; the full list is in [Configuration](configuration.html).
+
+### The services
+
+| Service | Image | Role |
+|---|---|---|
+| `postgres` | `postgres:17-alpine` | the database. User, database and name `forge`; password from `.env`. Volume `postgres-data`. Health check `pg_isready`. Not published. |
+| `redis` | `redis:7-alpine` | cross-server reactivity, the query cache, rate limits. Runs `redis-server --appendonly yes`, volume `redis-data`. No password, not published; keep it that way. It holds only cache, pub/sub and counters. |
+| `rustfs` | `rustfs/rustfs:latest` | S3-compatible file storage on volume `rustfs-data`, root credentials from `.env`, CORS `*`. Without Caddy it publishes `${S3_PORT:-9000}:9000`, because browsers upload and download directly through presigned URLs. |
+| `rustfs-init` | `amazon/aws-cli` | runs once: creates the `forge` bucket (retrying for 60 s while RustFS starts; "BucketAlready" counts as success), then exits. `app` waits for it. |
+| `caddy` | `caddy:2-alpine` | HTTPS with certificates that renew themselves, compression, ports 80, 443 and 443/udp, config from `./Caddyfile`, state in `caddy-data` and `caddy-config`. |
+
+The Caddyfile is short:
+
+```
+{$DOMAIN:localhost} {
+	encode zstd gzip
+	reverse_proxy app:3000
+}
+
+s3.{$DOMAIN:localhost} {
+	reverse_proxy rustfs:9000
+}
+```
+
+and the matching `.env` lines are `BETTER_AUTH_URL=https://${DOMAIN}`, `DOMAIN=localhost`, `S3_PUBLIC_ENDPOINT=https://s3.${DOMAIN}`. Compose substitutes `${DOMAIN}` inside `.env` values. With `DOMAIN=localhost`, Caddy uses its own certificate authority, which your browser does not trust until you trust Caddy's root; set a real domain for real certificates.
+
+`PostgreSQL` and `Redis` are never published. The dashboard is on in the stack, behind the admin key and a login limit. Choosing storage adds `forge/files.ts` (`generateUploadUrl` and `url`) to build on.
+
+### The `.env` file
+
+```
+BETTER_AUTH_SECRET=<64 hex characters>     # signs sessions
+ADMIN_KEY=<48 hex characters>              # dashboard and CLI data commands
+BETTER_AUTH_URL=https://${DOMAIN}          # or http://localhost:3000 without Caddy
+DOMAIN=localhost                           # with Caddy
+POSTGRES_PASSWORD=<32 hex characters>
+S3_ACCESS_KEY=forge<12 hex characters>
+S3_SECRET_KEY=<40 hex characters>
+S3_PUBLIC_ENDPOINT=https://s3.${DOMAIN}    # or http://localhost:9000; then also S3_PORT=9000
+```
+
+Without Caddy it also has `ALLOW_INSECURE_HTTP=1` and `PORT=3000`. `up` creates it once, with mode 0600, and never overwrites it: it holds the keys to your data, so keep it out of git and back it up somewhere safe. Losing `POSTGRES_PASSWORD` or the S3 keys does not lose data but locks you out of it until you reset them.
+
+### The image
+
+```dockerfile
+ARG ENGINE_IMAGE=ghcr.io/algochad/archlast-forge-engine:0.1.0
+FROM ${ENGINE_IMAGE}
+COPY . /src
+RUN bun /engine/packages/cli/src/index.ts engine prepare
+ENV NODE_ENV=production
+```
+
+`engine prepare` copies your project into the image, installs `forge/package.json`'s dependencies for Linux (leaving out `@archlast/forge-*`, which the engine provides), and, in a full-stack app, builds the pages. `.dockerignore` keeps `node_modules`, `.env*`, `data` and `.forge` out of the build context, so secrets never enter the image. The container runs as root, and the container's entry point is the CLI (`engine serve`).
 
 ## Run it
 
@@ -60,23 +311,173 @@ archlast-forge down            # stop; data stays in volumes
 archlast-forge down --volumes  # stop and delete the data
 ```
 
-`up` creates `.env` with fresh secrets the first time, and never overwrites it. It starts the app on http://localhost:3000. `docker compose up -d --build` does the same job on a server that does not have the CLI.
+`up` creates `.env` if there is none, makes sure the engine image is available (pulls it or builds it in a checkout of this repository), runs `docker compose build`, then `docker compose up -d --no-build --wait --wait-timeout 240`, and prints where things are (each step line ends with its duration):
+
+```
+✓ Created .env with fresh secrets (keep it out of git; it holds the keys to your data)
+✓ Building the app image
+✓ Starting the app and postgres, redis, s3
+
+  ● up
+
+  ➜  App        http://localhost:3000
+  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  Admin key  ADMIN_KEY in .env
+  ➜  Logs       archlast-forge logs
+  ➜  Stop       archlast-forge down
+```
+
+If a step fails, `up` prints the end of the build output or the app's last log lines and exits 1. With the Caddy variant the printed address has `${DOMAIN}` filled in from `.env` (on `0.1.0` it showed the literal `https://${DOMAIN}`). `docker compose up -d --build` does the same job on a server without the CLI (it needs `.env` to exist already). What the project's end-to-end test covers in Docker: `up` for a backend with PostgreSQL, Redis and storage; all four containers running; the `/http` route answering; sign-up, a mutation and a live query through PostgreSQL; the app connected to Redis; a presigned upload and download; data surviving a restart; `down --volumes`; and, for a full-stack app behind Caddy on `localhost`, HTTPS, compression, the HTTP-to-HTTPS redirect and a `Secure` session cookie.
 
 ## On a server
 
-1. Copy the project to the server, with `.env` (not through git).
-2. Choose Caddy when you create the project, or add it to `compose.yaml`. In `.env`, set `DOMAIN` and point the DNS records for `DOMAIN` and `s3.DOMAIN` at the server. `BETTER_AUTH_URL` becomes `https://DOMAIN`.
+1. Copy the project to the server, with `.env` (not through git), or create the project there.
+2. Choose Caddy when you create the project, or add it to `compose.yaml` (below). In `.env`, set `DOMAIN` and point the DNS records for `DOMAIN` and `s3.DOMAIN` at the server. `BETTER_AUTH_URL` is `https://DOMAIN`. Open ports 80 and 443 (and 443/udp for HTTP/3).
 3. `archlast-forge up` (or `docker compose up -d --build`).
 
-Without Caddy, put your own HTTPS proxy in front: outside development the engine refuses to start unless `BETTER_AUTH_URL` is `https://`. `.env` sets `ALLOW_INSECURE_HTTP=1` so a local `up` works; remove it once the address is https. Behind a proxy, set `TRUST_PROXY=1` so rate limits use the visitor's address (the Caddy setup does).
+Without Caddy, put your own HTTPS proxy in front: outside development the engine refuses to start unless `BETTER_AUTH_URL` is `https://`. The starter `.env` sets `ALLOW_INSECURE_HTTP=1` so a local `up` works; remove it once the address is https. Behind a proxy, add `TRUST_PROXY: "1"` to the app's environment so rate limits use the visitor's address (the Caddy variant has it). Bind the app to the loopback interface when a proxy on the same host fronts it: `ports: ["127.0.0.1:3000:3000"]`. For real certificates through Caddy I verified only `localhost`; issuing certificates for a public domain needs the domain's DNS to point at the machine and is not something I tested.
 
-## Backups and upgrades
+To add Caddy to a project made without it: copy the `caddy` service and the two volumes from above, create the `Caddyfile`, remove `ports` from `app`, add `TRUST_PROXY: "1"` and `TRUSTED_ORIGINS: "https://${DOMAIN}"`, and add `DOMAIN` and the https values of `BETTER_AUTH_URL` (and `S3_PUBLIC_ENDPOINT`) to `.env`.
 
-- PostgreSQL: `docker compose exec -T postgres pg_dump -U forge forge > backup.sql`
-- Without PostgreSQL, SQLite: `archlast-forge backup app.db` takes a consistent copy while the stack runs.
-- Upgrade archlast-forge by updating the `@archlast/forge-*` packages and running `up` again: the image builds on the engine image of the CLI's version. To build on another engine image, set `ARCHLAST_ENGINE_IMAGE` for the CLI, or `ENGINE_IMAGE` in `.env` for plain `docker compose`.
-- Storage and Postgres images are named in `compose.yaml`; pin the versions you have tested.
+## Scaling the stack
+
+One app container is where to start: SQLite or PostgreSQL, in-process everything. To run several, the engine needs shared state: PostgreSQL for data and Redis for the bus, cache and rate limits. Startup checks enforce it when you declare the intent with `REPLICAS`:
+
+```
+✗ REPLICAS > 1 requires REDIS_URL, or mutations won't reach subscribers on other servers
+✗ REPLICAS > 1 requires a Postgres DATABASE_URL; bun:sqlite is single-server
+```
+
+(both messages are real output of `archlast-forge start --no-docker` with `REPLICAS=2`.) With a stack that has PostgreSQL, Redis and Caddy, the change is:
+
+```yaml
+  app:
+    environment:
+      REPLICAS: "2"          # declares the intent, so a missing Redis or Postgres fails at start
+      # ... the rest unchanged
+    deploy:
+      replicas: 2
+```
+
+or leave `deploy` out and run `docker compose up -d --scale app=2`. Things to know:
+
+- Always set `REPLICAS` to match. It is only a declaration; nothing counts the containers. Two containers on one SQLite volume is not supported.
+- The app cannot publish a fixed host port in two containers, so scale only the Caddy variant (no `ports` on `app`), or put your own load balancer in front.
+- `reverse_proxy app:3000` names the `app` service, which Docker's DNS answers with every replica's address. To have Caddy keep re-resolving that name and spread requests over all of them, Caddy's dynamic upstreams are the tool (`reverse_proxy { dynamic a app 3000 }`), and active health checks (`health_uri /ready`) let it drop a replica that is starting or draining. Both are from Caddy's documentation and have not been tested with this stack.
+- Sticky sessions are not needed. WebSocket subscriptions are per connection, and a mutation on one server reaches subscribers on the others through Redis.
+- Migrations take advisory locks in PostgreSQL, and cron and scheduled-function runs are inserted under deterministic ids and claimed in the database, so starting replicas together does not duplicate them (from reading the code).
+- `RUNTIME_WORKERS` is a different knob: function-runtime processes inside one server.
+
+Two app replicas behind Caddy have not been tested, and the project's end-to-end test does not run them either. The checks above come from the config validation, the code, and Caddy's documentation. Try it with a staging copy before relying on it, and look at `GET /ready` and `/metrics` on each replica. See [Deployment](deployment.html#scaling-out) for the load balancer side.
+
+## Backups and restores
+
+What holds state: PostgreSQL (or the SQLite file in `app-data`), the `rustfs-data` volume (uploaded files), and `.env`. Redis holds nothing you need to keep.
+
+**PostgreSQL**, with standard tools:
+
+```bash
+docker compose exec -T postgres pg_dump -U forge -Fc forge > forge.dump
+# restore into an empty or existing database
+docker compose exec -T postgres pg_restore -U forge -d forge --clean --if-exists < forge.dump
+```
+
+**SQLite** (a project without PostgreSQL): `archlast-forge backup` writes a consistent copy with `VACUUM INTO` while the engine runs. The file path is opened by the engine process, so against a stack that means inside the container. Run the command there and copy the file out:
+
+```bash
+docker compose exec app bun /engine/packages/cli/src/index.ts backup /data/backup.db --dir /app/forge
+docker compose cp app:/data/backup.db ./backup.db
+```
+
+(This is how the CLI itself runs data commands in a container it started: `docker exec … --dir /app/forge`. The commands are tested against a container started by the CLI; these two lines are not covered by a test against a compose stack.)
+
+From `0.1.1` you do not have to type these: run from the project folder, `archlast-forge backup`, `export`, `import`, `env`, `admin` and `migrate` find the stack's app container (`docker compose ps -q app`) and run inside it, copying files in and out with `docker cp`, the way they do for a container started by `archlast-forge dev`. That works behind Caddy too, where the app's port is not published. On `0.1.0` they posted to `http://localhost:<PORT>/_cli` and, when nothing answered, quietly opened a local database in `forge/data`, which is not your stack's data. So on `0.1.0`, and on a server that doesn't have the CLI, run the commands inside the container yourself, as above:
+
+```bash
+docker compose exec app bun /engine/packages/cli/src/index.ts admin add you@example.com --role owner --dir /app/forge
+```
+
+(Again derived from the code, not run against a stack.) The dashboard also manages accounts and shows data, and does not have this problem.
+
+**JSON export** is portable between engines: `archlast-forge export dump.jsonl` and `import dump.jsonl [--replace]` (see [CLI](cli.html#export)). It validates against the schema on import and refuses non-empty tables without `--replace`.
+
+**Files** in RustFS: back up the volume.
+
+```bash
+docker run --rm -v api_rustfs-data:/data -v "$PWD":/backup alpine tar czf /backup/rustfs.tgz -C /data .
+```
+
+The volume is named `<compose name>_rustfs-data`. This one is guidance and is not covered by a test.
+
+Test a restore into a scratch copy of the stack (`docker compose -p restore-test ...`) before you need it.
+
+## Upgrades
+
+1. Take a backup.
+2. Update the packages: `bun update @archlast/forge-cli @archlast/forge-runtime @archlast/forge-react ...` (they release in lockstep), and `bun install`.
+3. `archlast-forge up`. The CLI builds the app image on the engine image of its own version (`ghcr.io/algochad/archlast-forge-engine:<version>`) and recreates the containers whose configuration or image changed. Documents are stored as JSON, so a schema change needs no database migration; documents that no longer match the schema are reported at start (`SCHEMA_CHECK` on in production refuses to start) and fixed with [data migrations](migrations.html).
+
+To build on another engine image, set `ARCHLAST_ENGINE_IMAGE` for the CLI, or `ENGINE_IMAGE` in the environment of `docker compose`. Plain `docker compose up --build` uses the default written in `compose.yaml` and the `Dockerfile` when the project was created, so after upgrading edit those two lines, or set `ENGINE_IMAGE` in `.env`.
+
+Pin the third-party images in `compose.yaml` to versions you have tested: `postgres:17-alpine` follows 17.x, but `rustfs/rustfs:latest` and `amazon/aws-cli` move without you. A major PostgreSQL upgrade needs a dump and restore; do not just change the tag.
+
+## Rotating secrets
+
+| Secret | How |
+|---|---|
+| `BETTER_AUTH_SECRET` | Edit `.env`, then `docker compose up -d` (or `archlast-forge up`). Everyone is signed out. |
+| `ADMIN_KEY` | Edit `.env` and recreate the app. Update anything that scrapes `/metrics` with it. Dashboard accounts are separate (`admin add`). |
+| `POSTGRES_PASSWORD` | Changing `.env` alone does nothing to an existing database: the image reads the variable only when it creates the data directory. Run `ALTER USER forge PASSWORD '…'` inside PostgreSQL first, then update `.env`, then recreate `app`. |
+| `S3_ACCESS_KEY`, `S3_SECRET_KEY` | They are RustFS's root credentials and the engine's keys, from the same two variables. Change `.env`, recreate `rustfs`, `rustfs-init` and `app`. Presigned URLs issued before the change stop working. Not tested. |
+
+## Customizing the compose file
+
+The file is yours. Common edits:
+
+```yaml
+# Change the published port: set PORT in .env, or edit the mapping.
+    ports:
+      - "127.0.0.1:8080:3000"
+
+# Pin an image, and give the app a longer shutdown window.
+  postgres:
+    image: postgres:17.2-alpine
+  app:
+    stop_grace_period: 30s        # the engine drains for up to 10 s, then stops its runtime
+
+# Add a service of your own, reachable from the app as http://worker:4000
+  worker:
+    build: ./worker
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: "postgres://forge:${POSTGRES_PASSWORD}@postgres:5432/forge"
+    depends_on:
+      postgres: { condition: service_healthy }
+
+# Pass more engine settings through.
+  app:
+    environment:
+      RATE_LIMIT_PER_MINUTE: "600"
+      METRICS_TOKEN: "${METRICS_TOKEN}"
+      OTEL_EXPORTER_OTLP_ENDPOINT: "http://otel-collector:4318"
+```
+
+Keep `volumes: app-data:/data` on the app (and the `volumes:` entries at the bottom of the file). Rename nothing the CLI looks for: `archlast-forge up` runs `docker compose --project-directory <project> -f compose.yaml`, so any valid Compose file works.
+
+## Production checklist
+
+- [ ] `BETTER_AUTH_URL` is `https://…`, and `ALLOW_INSECURE_HTTP` is gone from `.env`.
+- [ ] `.env` is not in git or the image, and a copy is somewhere safe.
+- [ ] HTTPS is terminated by Caddy or your proxy, and `TRUST_PROXY=1` is set so rate limits see the visitor, with a proxy that overwrites `X-Forwarded-For` (the engine uses its first address).
+- [ ] `TRUSTED_ORIGINS` lists exactly the frontends that need it, and the compose file passes it through.
+- [ ] `DASHBOARD=off` unless you use the dashboard in production; if on, the admin key and accounts are strong.
+- [ ] PostgreSQL and Redis are not published to the network; only Caddy (80, 443) or your proxy is.
+- [ ] Backups run on a schedule, and a restore has been tried.
+- [ ] Images are pinned. `restart: unless-stopped` is set (it is by default).
+- [ ] `GET /ready` is what your monitor or load balancer checks; `/metrics` is scraped with a token ([Deployment](deployment.html#logs-and-metrics)).
+- [ ] Disk space for the volumes is monitored; the SQLite WAL and Postgres data grow.
+- [ ] `S3_PUBLIC_ENDPOINT` is an address browsers can reach, over https when the app is.
 
 ## Without Docker
 
-`archlast-forge dev --no-docker` runs the engine in your terminal, on SQLite or on the services you point it at with `DATABASE_URL`, `REDIS_URL` and the `S3_*` variables. `archlast-forge start --no-docker` is the production equivalent.
+`archlast-forge dev --no-docker` runs the engine in your terminal, on SQLite or on the services you point it at with `DATABASE_URL`, `REDIS_URL` and the `S3_*` variables. `archlast-forge start --no-docker` is the production equivalent; see [Deployment](deployment.html#without-docker).

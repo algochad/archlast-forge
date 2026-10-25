@@ -1,0 +1,1026 @@
+# Recipes
+
+Short, complete answers to things nearly every app needs. Each recipe says which mode it targets, shows the code, and explains the one or two decisions that matter. The code was written against a project made with `bun create archlast-forge my-app --mode framework`: React pages in `app/routes`, the backend in `forge/`. Every function was called over HTTP against a running engine and the project type-checks with `tsc --noEmit`; the React pages were rendered on the server and type-checked, but not clicked through in a browser.
+
+- **Full-stack app:** needs `app/routes`. The backend half also works in a backend project.
+- **Any mode:** only `forge/` code. Call it from any client, including `curl`.
+
+Contents: [setup](#setup) · [auth-gated pages](#auth-gated-pages-and-functions) · [row ownership](#per-user-data-row-ownership) · [infinite scroll](#pagination-with-infinite-scroll) · [optimistic updates](#optimistic-updates) · [search](#full-text-search-with-debounce) · [uploads](#file-upload-with-a-preview) · [avatars](#avatars-and-images-in-queries) · [webhooks](#a-webhook-endpoint-with-a-signature-check) · [cron cleanup](#a-cron-cleanup-job) · [email](#send-an-email-from-a-scheduled-action) · [rate limits](#rate-limit-a-mutation-per-user) · [soft delete](#soft-delete) · [counters](#counters-without-races) · [unique values](#unique-values) · [workflows](#multi-step-workflows) · [admin-only](#admin-only-functions) · [feature flags](#feature-flags) · [seed data](#import-seed-data) · [testing](#test-a-function) · [deploying](#deploy-a-change-safely)
+
+## Setup
+
+Two helpers used by most recipes. A folder or file whose name starts with `_` in `forge/` is not a function module, so these export plain functions that clients can never call.
+
+```ts
+// forge/_lib/auth.ts
+import { ForgeError, type Id } from "@archlast/forge-runtime";
+
+type Identity = { userId: Id<"users">; email: string; name: string; sessionId: string };
+type WithAuth = { auth: { getUserIdentity(): Promise<Identity | null> } };
+
+/** The signed-in user, or a ForgeError the client can show. */
+export async function requireUser(ctx: WithAuth): Promise<Identity> {
+  const me = await ctx.auth.getUserIdentity();
+  if (!me) throw new ForgeError("Sign in first");
+  return me;
+}
+
+/** A signed-in user whose email is listed in the ADMIN_EMAILS variable (comma separated). */
+export async function requireAdmin(ctx: WithAuth): Promise<Identity> {
+  const me = await requireUser(ctx);
+  const admins = (process.env.ADMIN_EMAILS ?? "").split(",").map((e) => e.trim().toLowerCase()).filter(Boolean);
+  if (!admins.includes(me.email.toLowerCase())) throw new ForgeError("Admins only");
+  return me;
+}
+```
+
+A `ForgeError` reaches the client as HTTP 400 with `{"error":{"message":"Sign in first","code":"BAD_REQUEST","data":"Sign in first",…}}`; see [Errors](errors.html).
+
+`process.env` is typed in `forge/` (the starter includes `@types/bun`; a project created before `0.1.1` needs `bun add -d @types/bun` in `forge/` and `"types": ["bun"]` in `forge/tsconfig.json`).
+
+The schema used across the recipes, in one place, so you can copy what you need:
+
+```ts
+// forge/schema.ts
+import { defineSchema, defineTable, v } from "@archlast/forge-runtime";
+
+// `users` and Better Auth's tables are built in.
+export default defineSchema({
+  notes: defineTable({
+    ownerId: v.id("users"),
+    title: v.string(),
+    body: v.string(),
+    deleted: v.boolean(),
+    deletedAt: v.optional(v.number()),
+    attachmentId: v.optional(v.id("_storage")),
+  })
+    .index("by_owner", ["ownerId", "deleted"])
+    .searchIndex("search_body", { searchField: "body", filterFields: ["ownerId", "deleted"] }),
+
+  profiles: defineTable({ userId: v.id("users"), avatarId: v.optional(v.id("_storage")) }).index("by_user", ["userId"]),
+  counters: defineTable({ name: v.string(), value: v.number() }).index("by_name", ["name"]),
+  handles: defineTable({ handle: v.string(), userId: v.id("users") }).index("by_handle", ["handle"]).index("by_user", ["userId"]),
+  calls: defineTable({ userId: v.id("users"), at: v.number() }).index("by_user_time", ["userId", "at"]),
+  webhookEvents: defineTable({ eventId: v.string(), type: v.string(), payload: v.string() }).index("by_event", ["eventId"]),
+  outbox: defineTable({ to: v.string(), subject: v.string(), text: v.string(), status: v.string(), error: v.optional(v.string()) }).index("by_status", ["status"]),
+  orders: defineTable({ userId: v.id("users"), total: v.number(), status: v.string() }).index("by_user", ["userId"]),
+  flags: defineTable({ name: v.string(), enabled: v.boolean() }).index("by_name", ["name"]),
+});
+```
+
+There is no `v.literal`, so a status is a `v.string()` that your code keeps within a set.
+
+## Auth-gated pages and functions
+
+**Mode: full-stack app.** Gate pages with a layout route and gate data in the functions. Both are needed: the redirect is for the visitor's convenience, and the function check is what protects the data, because anyone can call a function without going through your pages.
+
+A folder in parentheses groups routes without adding to the URL, and a `_layout.tsx` inside it wraps everything beside it. Its loader runs before any page in the folder:
+
+```tsx
+// app/routes/(app)/_layout.tsx
+import { Outlet, redirect, type LoaderArgs } from "@archlast/forge-framework";
+
+export const loader = async ({ ctx, request }: LoaderArgs) => {
+  if (!(await ctx.viewer())) {
+    const here = new URL(request.url);
+    throw redirect(`/sign-in?next=${encodeURIComponent(here.pathname + here.search)}`);
+  }
+  return null;
+};
+
+export default function SignedIn() {
+  return <Outlet />;
+}
+```
+
+`app/routes/(app)/notes.tsx` is served at `/notes`. For a visitor who is not signed in, the first request is a real `302` to `/sign-in?next=%2Fnotes`. Send them back after sign-in, but only to a path on your own site:
+
+```tsx
+// app/routes/sign-in.tsx (the changed lines)
+import { redirect, useNavigate, useSearchParams, type LoaderArgs } from "@archlast/forge-framework";
+
+export default function SignIn() {
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const next = params.get("next");
+  // "//evil.example" and "https://…" would send the visitor to another site.
+  const after = next?.startsWith("/") && !next.startsWith("//") ? next : "/notes";
+  // …after signing in:  await navigate(after);
+}
+```
+
+On the function side, call `requireUser(ctx)` first (see [Setup](#setup)). A call without a session gets the `Sign in first` error whatever the page did.
+
+## Per-user data (row ownership)
+
+**Mode: any.** The rule: the owner of a row is taken from the session, never from an argument, and every read and write goes through it. Put `ownerId` first in the index, so a user's rows are one index range.
+
+```ts
+// forge/notes.ts
+import { ForgeError, mutation, paginationOptsValidator, query, v } from "@archlast/forge-runtime";
+import { requireUser } from "./_lib/auth";
+
+export const list = query({
+  args: { paginationOpts: paginationOptsValidator },
+  handler: async (ctx, { paginationOpts }) => {
+    const me = await requireUser(ctx);
+    return ctx.db
+      .query("notes")
+      .withIndex("by_owner", (q) => q.eq("ownerId", me.userId).eq("deleted", false))
+      .order("desc")
+      .paginate(paginationOpts);
+  },
+});
+
+export const create = mutation({
+  args: { title: v.string(), body: v.string() },
+  handler: async (ctx, { title, body }) => {
+    const me = await requireUser(ctx);
+    return ctx.db.insert("notes", { ownerId: me.userId, title, body, deleted: false });
+  },
+});
+
+export const update = mutation({
+  args: { id: v.id("notes"), title: v.string(), body: v.string() },
+  handler: async (ctx, { id, title, body }) => {
+    const me = await requireUser(ctx);
+    const note = await ctx.db.get(id);
+    // One answer for "missing" and "not yours", so ids can't be probed.
+    if (!note || note.ownerId !== me.userId || note.deleted) throw new ForgeError("No such note");
+    await ctx.db.patch(id, { title, body });
+  },
+});
+```
+
+With two accounts, Bob sees `{"page":[],"isDone":true,…}` for his list and `No such note` when he tries to update Ann's note by id. Queries that read `ctx.auth` are cached per user, never shared; see [Caching](caching.html).
+
+## Pagination with infinite scroll
+
+**Mode: full-stack app.** The query is the `list` above. `usePaginatedQuery` keeps every loaded item live; `loadMore(n)` widens the window. An `IntersectionObserver` on a sentinel row at the end of the list calls it when the row nears the viewport.
+
+```tsx
+// app/routes/(app)/notes.tsx
+import type { LoaderArgs } from "@archlast/forge-framework";
+import { useMutation, usePaginatedQuery } from "@archlast/forge-react";
+import { useEffect, useRef, useState, type FormEvent } from "react";
+import { api } from "../../../forge/_generated/api";
+
+const PAGE = 20;
+
+// The first page is fetched on the server, so the list is in the HTML; the live query takes over in the browser.
+export const loader = async ({ ctx }: LoaderArgs) => {
+  await ctx.query(api.notes.list, { paginationOpts: { numItems: PAGE, cursor: null } });
+  return null;
+};
+
+export default function Notes() {
+  const { results, status, loadMore } = usePaginatedQuery(api.notes.list, {}, { initialNumItems: PAGE });
+  const create = useMutation(api.notes.create);
+  const remove = useMutation(api.notes.remove);
+  const restore = useMutation(api.notes.restore);
+  const [title, setTitle] = useState("");
+  const [undo, setUndo] = useState<{ id: (typeof results)[number]["_id"]; title: string }>();
+
+  const sentinel = useRef<HTMLLIElement>(null);
+  useEffect(() => {
+    const el = sentinel.current;
+    if (!el || status !== "CanLoadMore") return;
+    const watcher = new IntersectionObserver((entries) => entries[0]?.isIntersecting && loadMore(PAGE), { rootMargin: "300px" });
+    watcher.observe(el);
+    return () => watcher.disconnect();
+  }, [status, loadMore]);
+
+  async function add(e: FormEvent) {
+    e.preventDefault();
+    if (!title.trim()) return;
+    await create({ title: title.trim(), body: "" });
+    setTitle("");
+  }
+
+  return (
+    <main className="container">
+      <title>Notes</title>
+      <h1>Notes</h1>
+      <form onSubmit={add}>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} placeholder="New note" aria-label="Title" />
+        <button className="btn primary" disabled={!title.trim()}>Add</button>
+      </form>
+      {undo && (
+        <p role="status">
+          Deleted “{undo.title}”. <button onClick={() => restore({ id: undo.id }).then(() => setUndo(undefined))}>Undo</button>
+        </p>
+      )}
+      <ul>
+        {results.map((note) => (
+          <li key={note._id}>
+            {note.title} <button onClick={() => remove({ id: note._id }).then(() => setUndo({ id: note._id, title: note.title }))}>Delete</button>
+          </li>
+        ))}
+        <li ref={sentinel} aria-hidden>{status === "LoadingMore" || status === "LoadingFirstPage" ? "Loading…" : ""}</li>
+      </ul>
+      {status === "Exhausted" && results.length === 0 && <p>No notes yet.</p>}
+    </main>
+  );
+}
+```
+
+`status` is `"LoadingFirstPage"`, `"CanLoadMore"`, `"LoadingMore"` or `"Exhausted"`. The observer is only attached while more can be loaded. The loader must ask for the same function and the same first page (`numItems: PAGE, cursor: null`) as the component, or the server-rendered data is not reused. This page also uses the [soft delete](#soft-delete) functions below.
+
+## Optimistic updates
+
+**Mode: full-stack app (React).** `withOptimisticUpdate` changes the locally cached result of a query when the mutation starts, so the UI moves before the server answers. If the mutation fails, the old values are restored; either way the live result replaces the guess.
+
+```tsx
+// app/routes/counter.tsx
+import type { LoaderArgs } from "@archlast/forge-framework";
+import { useMutation, useQuery } from "@archlast/forge-react";
+import { api } from "../../forge/_generated/api";
+
+export const loader = async ({ ctx }: LoaderArgs) => {
+  await ctx.query(api.counters.get, { name: "visits" });
+  return null;
+};
+
+export default function Counter() {
+  const visits = useQuery(api.counters.get, { name: "visits" });
+  const bump = useMutation(api.counters.increment).withOptimisticUpdate((store, { name, by = 1 }) => {
+    const current = store.getQuery(api.counters.get, { name });
+    if (current !== undefined) store.setQuery(api.counters.get, { name }, current + by);
+  });
+
+  return (
+    <main className="container">
+      <title>Counter</title>
+      <h1>{visits ?? "…"}</h1>
+      <button className="btn primary" onClick={() => bump({ name: "visits" })}>+1</button>
+    </main>
+  );
+}
+```
+
+The update only touches queries this page is subscribed to, with exactly the arguments you name (`{ name }`). It must compute the same shape the query returns. For a list, add a placeholder row with a temporary `_id`; the real row replaces it when the live result arrives. Optimistic updates for `usePaginatedQuery` lists are awkward, because the list is several windows; for those, let the live update do the work, which is usually fast enough.
+
+## Full-text search with debounce
+
+**Mode: full-stack app.** The search index is on the table (`search_body` in the schema above), and the query filters by owner:
+
+```ts
+// forge/notes.ts
+export const search = query({
+  args: { text: v.string() },
+  handler: async (ctx, { text }) => {
+    const me = await requireUser(ctx);
+    if (!text.trim()) return [];
+    return ctx.db
+      .query("notes")
+      .withSearchIndex("search_body", (q) => q.search("body", text).eq("ownerId", me.userId).eq("deleted", false))
+      .take(20);
+  },
+});
+```
+
+Every term must match, and the last one matches as a prefix: `oat mil` finds "hello oat milk". On the page, wait until the person stops typing before asking, and pass `"skip"` while the box is empty so no subscription is opened:
+
+```tsx
+// app/routes/(app)/search.tsx
+import { useQuery } from "@archlast/forge-react";
+import { useEffect, useState } from "react";
+import { api } from "../../../forge/_generated/api";
+
+function useDebounced<T>(value: T, ms: number): T {
+  const [debounced, setDebounced] = useState(value);
+  useEffect(() => {
+    const timer = setTimeout(() => setDebounced(value), ms);
+    return () => clearTimeout(timer);
+  }, [value, ms]);
+  return debounced;
+}
+
+export default function Search() {
+  const [text, setText] = useState("");
+  const term = useDebounced(text.trim(), 250);
+  const hits = useQuery(api.notes.search, term ? { text: term } : "skip");
+
+  return (
+    <main className="container">
+      <title>Search</title>
+      <h1>Search</h1>
+      <input type="search" value={text} onChange={(e) => setText(e.target.value)} placeholder="Search your notes" aria-label="Search" />
+      {term && hits === undefined && <p>Searching…</p>}
+      {hits?.length === 0 && <p>Nothing matches “{term}”.</p>}
+      <ul>
+        {hits?.map((note) => (
+          <li key={note._id}><strong>{note.title}</strong> {note.body}</li>
+        ))}
+      </ul>
+    </main>
+  );
+}
+```
+
+The results are live: a new matching note appears without another request. A search read depends on the whole table, so the query re-runs on any write to `notes`; keep it to screens that need it.
+
+## File upload with a preview
+
+**Mode: full-stack app, with storage configured** (`S3_ENDPOINT` and `S3_BUCKET`; `archlast-forge dev --with s3` starts one locally). Uploads are two steps: ask the backend for an upload URL, then `PUT` the file straight to storage. The bytes never pass through the engine.
+
+```ts
+// forge/profile.ts
+import { mutation, query, v } from "@archlast/forge-runtime";
+import { requireUser } from "./_lib/auth";
+
+export const generateUploadUrl = mutation({
+  args: { contentType: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    await requireUser(ctx);
+    return ctx.storage.generateUploadUrl(args); // { uploadUrl, storageId }
+  },
+});
+
+export const setAvatar = mutation({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, { storageId }) => {
+    const me = await requireUser(ctx);
+    const profile = await ctx.db.query("profiles").withIndex("by_user", (q) => q.eq("userId", me.userId)).unique();
+    if (!profile) return void (await ctx.db.insert("profiles", { userId: me.userId, avatarId: storageId }));
+    if (profile.avatarId) await ctx.storage.delete(profile.avatarId); // the old file goes once this commits
+    await ctx.db.patch(profile._id, { avatarId: storageId });
+  },
+});
+
+export const me = query({
+  args: {},
+  handler: async (ctx) => {
+    const me = await requireUser(ctx);
+    const profile = await ctx.db.query("profiles").withIndex("by_user", (q) => q.eq("userId", me.userId)).unique();
+    return { name: me.name, avatarUrl: profile?.avatarId ? await ctx.storage.getUrl(profile.avatarId) : null };
+  },
+});
+```
+
+On the page, show the picked file at once with an object URL, and upload in the background:
+
+```tsx
+// app/routes/(app)/profile.tsx
+import { useMutation, useQuery, useUploadFile } from "@archlast/forge-react";
+import { useEffect, useState, type ChangeEvent } from "react";
+import { api } from "../../../forge/_generated/api";
+
+const MAX_BYTES = 2 * 1024 * 1024;
+
+export default function Profile() {
+  const me = useQuery(api.profile.me);
+  const upload = useUploadFile(api.profile.generateUploadUrl);
+  const setAvatar = useMutation(api.profile.setAvatar);
+  const [preview, setPreview] = useState<string>();
+  const [error, setError] = useState<string>();
+  const [busy, setBusy] = useState(false);
+
+  // Released when replaced or when the page goes.
+  useEffect(() => () => void (preview && URL.revokeObjectURL(preview)), [preview]);
+
+  async function pick(e: ChangeEvent<HTMLInputElement>) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) return setError("Pick an image");
+    if (file.size > MAX_BYTES) return setError("Images can be up to 2 MB");
+    setError(undefined);
+    setPreview(URL.createObjectURL(file));
+    setBusy(true);
+    try {
+      const storageId = await upload(file);
+      await setAvatar({ storageId });
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Upload failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <main className="container">
+      <title>Profile</title>
+      <h1>{me?.name ?? "Profile"}</h1>
+      {(preview ?? me?.avatarUrl) && (
+        <img src={preview ?? me?.avatarUrl ?? undefined} alt="Your avatar" width={96} height={96} style={{ borderRadius: "50%", objectFit: "cover" }} />
+      )}
+      <input type="file" accept="image/*" onChange={pick} disabled={busy} aria-label="Avatar" />
+      {busy && <p>Uploading…</p>}
+      {error && <p role="alert">{error}</p>}
+    </main>
+  );
+}
+```
+
+Things that make or break uploads:
+
+- The browser must reach the storage address. Set `S3_PUBLIC_ENDPOINT` to the address browsers use. With it set to `https://files.example.com`, `generateUploadUrl` returns `https://files.example.com/forge/<uuid>?X-Amz-Algorithm=…` (verified against a configured endpoint; the upload itself needs a real bucket).
+- The bucket needs CORS that allows `PUT` from your site's origin.
+- The size and type checks above are for the user's benefit. The server does not check them: `generateUploadUrl` signs for any size. If a hard limit matters, enforce it in the bucket's policy or at the proxy in front of storage.
+- A file that is uploaded but never attached stays in storage, with a `_storage` row created when the URL was issued. The dashboard's Files page lists such files and deletes them.
+
+## Avatars and images in queries
+
+**Mode: any.** Store the `_storage` id in the document and turn it into a URL in the query, as `me` does above. `ctx.storage.getUrl(id)` signs a download URL locally (no network call), valid for an hour, so it is cheap to call for each row in a list:
+
+```ts
+const notes = await ctx.db.query("notes").withIndex("by_owner", (q) => q.eq("ownerId", me.userId).eq("deleted", false)).take(20);
+return Promise.all(notes.map(async (n) => ({ ...n, imageUrl: n.attachmentId ? await ctx.storage.getUrl(n.attachmentId) : null })));
+```
+
+The URL changes on every call, but a cached query result keeps the one it computed until the next write or `CACHE_TTL_MS`, both far shorter than an hour. In the page, `<img src={url}>` is all you need. Delete the file together with its owner row: `ctx.storage.delete(id)` removes the metadata in your transaction and the object after it commits.
+
+## A webhook endpoint with a signature check
+
+**Mode: any.** Anyone on the internet can call `/http/webhooks/acme`, so the handler proves the call is from the sender before doing anything. The pattern most providers use is an HMAC of `<timestamp>.<body>` with a shared secret. Verify the exact bytes, compare in constant time, reject old timestamps, and record the event id so a retry is harmless.
+
+```ts
+// forge/http.ts
+import { httpAction, httpRouter } from "@archlast/forge-runtime";
+import { internal } from "./_generated/api";
+
+const http = httpRouter();
+
+const hex = (bytes: ArrayBuffer) => [...new Uint8Array(bytes)].map((b) => b.toString(16).padStart(2, "0")).join("");
+
+async function sign(secret: string, payload: string) {
+  const key = await crypto.subtle.importKey("raw", new TextEncoder().encode(secret), { name: "HMAC", hash: "SHA-256" }, false, ["sign"]);
+  return hex(await crypto.subtle.sign("HMAC", key, new TextEncoder().encode(payload)));
+}
+
+/** Constant-time string comparison. */
+function same(a: string, b: string) {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  return diff === 0;
+}
+
+http.route({
+  method: "POST",
+  path: "/webhooks/acme",
+  handler: httpAction(async (ctx, request) => {
+    const secret = process.env.ACME_WEBHOOK_SECRET;
+    if (!secret) return new Response("Webhook secret not configured", { status: 500 });
+    const body = await request.text(); // the exact bytes that were signed
+    const given = request.headers.get("x-acme-signature") ?? "";
+    const timestamp = request.headers.get("x-acme-timestamp") ?? "";
+    if (!same(given, await sign(secret, `${timestamp}.${body}`))) return new Response("Bad signature", { status: 401 });
+    if (Math.abs(Date.now() / 1000 - Number(timestamp)) > 300) return new Response("Stale timestamp", { status: 400 });
+    let event: { id: string; type: string };
+    try {
+      event = JSON.parse(body);
+    } catch {
+      return new Response("Bad JSON", { status: 400 });
+    }
+    const fresh = await ctx.runMutation(internal.webhooks.record, { eventId: event.id, type: event.type, payload: body });
+    return Response.json({ received: true, duplicate: !fresh });
+  }),
+});
+
+export default http;
+```
+
+```ts
+// forge/webhooks.ts
+import { internalMutation, v } from "@archlast/forge-runtime";
+
+export const record = internalMutation({
+  args: { eventId: v.string(), type: v.string(), payload: v.string() },
+  handler: async (ctx, { eventId, type, payload }) => {
+    const seen = await ctx.db.query("webhookEvents").withIndex("by_event", (q) => q.eq("eventId", eventId)).unique();
+    if (seen) return false;
+    await ctx.db.insert("webhookEvents", { eventId, type, payload });
+    return true;
+  },
+});
+```
+
+Set the secret with `archlast-forge env set ACME_WEBHOOK_SECRET whsec_…`. Tested with `curl`: a correct signature answers `{"received":true,"duplicate":false}`, the same request again `duplicate: true`, a wrong signature `401`, a signature over an old timestamp `400`, and `GET` on the path `405` with `Allow: POST`. Real providers differ in header names and in how the signed string is built (Stripe's `t=…,v1=…` format, GitHub's `sha256=` prefix), so copy the formula from your provider's documentation. Answer quickly and do the slow work in a scheduled function: senders time out and retry. See [HTTP endpoints](http.html).
+
+## A cron cleanup job
+
+**Mode: any.** Put the delete in an `internalMutation` so clients cannot call it, work in batches so one run stays well inside the ten-second limit, and register it in `forge/crons.ts`.
+
+```ts
+// forge/maintenance.ts
+import { internalMutation } from "@archlast/forge-runtime";
+
+const DAY = 24 * 60 * 60 * 1000;
+const BATCH = 500;
+
+/** Deletes rate-limit rows older than a day. Returns how many it removed. */
+export const pruneCalls = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const old = await ctx.db.query("calls").withIndex("by_creation_time", (q) => q.lt("_creationTime", Date.now() - DAY)).take(BATCH);
+    for (const row of old) await ctx.db.delete(row._id);
+    return old.length;
+  },
+});
+
+/** Empties the trash: notes soft-deleted more than 30 days ago. */
+export const purgeTrash = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    const cutoff = Date.now() - 30 * DAY;
+    const old = await ctx.db.query("notes").filter((n) => n.deleted && (n.deletedAt ?? 0) < cutoff).take(BATCH);
+    for (const note of old) await ctx.db.delete(note._id);
+    return old.length;
+  },
+});
+```
+
+```ts
+// forge/crons.ts
+import { cronJobs } from "@archlast/forge-runtime";
+import { internal } from "./_generated/api";
+
+const crons = cronJobs();
+crons.interval("prune rate-limit rows", { hours: 1 }, internal.maintenance.pruneCalls);
+crons.cron("empty the trash", "0 3 * * *", internal.maintenance.purgeTrash); // 03:00 UTC every day
+export default crons;
+```
+
+Cron expressions are evaluated in UTC. Check the registered jobs and their next run on the dashboard's Scheduled page. In testing, the prune job on a three-second interval removed old rows and left a `success` entry per run on the Scheduled page. A batch that returns exactly `BATCH` means there is more; a backlog clears over the next runs. The `filter` in `purgeTrash` scans the table in creation order, which is fine for a table that is mostly live; on a big one, add an index on `deleted` and range over it, because a scan stops at 100,000 documents.
+
+## Send an email from a scheduled action
+
+**Mode: any.** Sending mail is network I/O, so it belongs in an action. Queue the email in a mutation (which commits with whatever else the user did, or not at all) and schedule an action to send it. Actions run at most once and are never retried, so the action records the outcome and you can re-queue failures yourself.
+
+```ts
+// forge/email.ts
+import { internalAction, internalMutation, mutation, v } from "@archlast/forge-runtime";
+import { internal } from "./_generated/api";
+import { requireUser } from "./_lib/auth";
+
+export const queue = mutation({
+  args: { subject: v.string(), text: v.string() },
+  handler: async (ctx, { subject, text }) => {
+    const me = await requireUser(ctx);
+    const id = await ctx.db.insert("outbox", { to: me.email, subject, text, status: "queued" });
+    await ctx.scheduler.runAfter(0, internal.email.send, { id });
+    return id;
+  },
+});
+
+export const claim = internalMutation({
+  args: { id: v.id("outbox") },
+  handler: async (ctx, { id }) => {
+    const row = await ctx.db.get(id);
+    return row && row.status === "queued" ? row : null;
+  },
+});
+
+export const finish = internalMutation({
+  args: { id: v.id("outbox"), status: v.string(), error: v.optional(v.string()) },
+  handler: (ctx, { id, status, error }) => ctx.db.patch(id, { status, error }),
+});
+
+export const send = internalAction({
+  args: { id: v.id("outbox") },
+  handler: async (ctx, { id }): Promise<void> => {
+    const mail = await ctx.runMutation(internal.email.claim, { id });
+    if (!mail) return;
+    try {
+      const res = await fetch(process.env.EMAIL_API_URL ?? "https://api.mail.example/v1/send", {
+        method: "POST",
+        headers: { authorization: `Bearer ${process.env.EMAIL_API_KEY}`, "content-type": "application/json" },
+        body: JSON.stringify({ from: "app@example.com", to: mail.to, subject: mail.subject, text: mail.text }),
+        signal: AbortSignal.timeout(15_000),
+      });
+      if (!res.ok) throw new Error(`Email API answered ${res.status}`);
+      await ctx.runMutation(internal.email.finish, { id, status: "sent" });
+    } catch (e) {
+      await ctx.runMutation(internal.email.finish, { id, status: "failed", error: (e as Error).message });
+    }
+  },
+});
+```
+
+Point it at your provider with `EMAIL_API_URL` and `EMAIL_API_KEY` (`archlast-forge env set …`) and adapt the body to its API. Run against a local listener, the request arrived once with the `Authorization: Bearer` header and the JSON body. Scheduled functions run without a user: `ctx.auth.getUserIdentity()` is `null` inside them, so pass everything they need as arguments (here the row id, from which the address is read). Add a short cron that re-queues `failed` rows if you want retries; do not retry blindly if the provider may have accepted the request.
+
+## Rate limit a mutation per user
+
+**Mode: any.** The engine's [per-IP limit](limits.html#rate-limiting) stops floods. For "5 posts a minute per user", count recent actions in a table inside the mutation, which makes the check and the write one transaction. Index by user and time so the count is a small range read.
+
+```ts
+// forge/limited.ts
+import { ForgeError, mutation, v } from "@archlast/forge-runtime";
+import { requireUser } from "./_lib/auth";
+
+const WINDOW_MS = 60_000;
+const MAX_PER_WINDOW = 5;
+
+export const post = mutation({
+  args: { text: v.string() },
+  handler: async (ctx, { text }) => {
+    const me = await requireUser(ctx);
+    const now = Date.now();
+    const recent = await ctx.db
+      .query("calls")
+      .withIndex("by_user_time", (q) => q.eq("userId", me.userId).gte("at", now - WINDOW_MS))
+      .collect();
+    if (recent.length >= MAX_PER_WINDOW) {
+      const retryAfter = Math.ceil((recent[0]!.at + WINDOW_MS - now) / 1000);
+      throw new ForgeError({ code: "RATE_LIMITED", retryAfter });
+    }
+    await ctx.db.insert("calls", { userId: me.userId, at: now });
+    return ctx.db.insert("messages", { body: text, authorId: me.userId, authorName: me.name });
+  },
+});
+```
+
+The sixth call within a minute fails with `{"code":"RATE_LIMITED","retryAfter":60}` in `error.data`. On the client:
+
+```ts
+import { ForgeError } from "@archlast/forge-react";
+
+try {
+  await post({ text });
+} catch (e) {
+  if (e instanceof ForgeError && (e.data as { code?: string }).code === "RATE_LIMITED") showToast(`Slow down: try again in ${(e.data as { retryAfter: number }).retryAfter}s`);
+}
+```
+
+Rows pile up, so prune them with the cron in [the cleanup recipe](#a-cron-cleanup-job). If a failed call should still count, record the attempt before throwing in a separate mutation, since a thrown error rolls back the transaction it was in.
+
+## Soft delete
+
+**Mode: any.** Keep the row, mark it, and make every query say which rows it wants. Make the flag a `boolean` that is part of the index (`["ownerId", "deleted"]`), not an optional timestamp: an index over a field that is sometimes missing can skip those documents.
+
+```ts
+// forge/notes.ts
+export const remove = mutation({
+  args: { id: v.id("notes") },
+  handler: async (ctx, { id }) => {
+    const me = await requireUser(ctx);
+    const note = await ctx.db.get(id);
+    if (!note || note.ownerId !== me.userId) throw new ForgeError("No such note");
+    await ctx.db.patch(id, { deleted: true, deletedAt: Date.now() });
+  },
+});
+
+export const restore = mutation({
+  args: { id: v.id("notes") },
+  handler: async (ctx, { id }) => {
+    const me = await requireUser(ctx);
+    const note = await ctx.db.get(id);
+    if (!note || note.ownerId !== me.userId) throw new ForgeError("No such note");
+    await ctx.db.patch(id, { deleted: false, deletedAt: undefined }); // undefined removes the field
+  },
+});
+
+export const trash = query({
+  args: {},
+  handler: async (ctx) => {
+    const me = await requireUser(ctx);
+    return ctx.db.query("notes").withIndex("by_owner", (q) => q.eq("ownerId", me.userId).eq("deleted", true)).order("desc").take(50);
+  },
+});
+```
+
+Live lists drop a deleted note and show it again after a restore, with no extra code. Every other query on the table (including search, as above) must filter on `deleted`; a single forgotten filter shows deleted rows. Permanent removal is the `purgeTrash` cron from the cleanup recipe.
+
+## Counters without races
+
+**Mode: any.** Read, add, write inside one mutation. A mutation runs against a consistent view and its writes are serialized, so two clicks never read the same old value. On SQLite there is one writer, so mutations queue; on Postgres they run `SERIALIZABLE` and a conflicting one is retried (up to ten times) against the new value.
+
+```ts
+// forge/counters.ts
+import { mutation, query, v } from "@archlast/forge-runtime";
+
+export const get = query({
+  args: { name: v.string() },
+  handler: async (ctx, { name }) => (await ctx.db.query("counters").withIndex("by_name", (q) => q.eq("name", name)).unique())?.value ?? 0,
+});
+
+export const increment = mutation({
+  args: { name: v.string(), by: v.optional(v.number()) },
+  handler: async (ctx, { name, by = 1 }) => {
+    const row = await ctx.db.query("counters").withIndex("by_name", (q) => q.eq("name", name)).unique();
+    if (!row) {
+      await ctx.db.insert("counters", { name, value: by });
+      return by;
+    }
+    await ctx.db.patch(row._id, { value: row.value + by });
+    return row.value + by;
+  },
+});
+```
+
+Thirty parallel `increment` requests against SQLite ended at exactly `30`. Two cautions. The first `increment` of a name inserts the row; create the counters you know about up front (see [seed data](#import-seed-data)) so that call is always an update. And one hot counter is one row, so it is limited to the write rate of a single row. If what you want is "how many of X", skip the stored counter and use `await ctx.db.query("likes").withIndex("by_post", q => q.eq("postId", id)).count()`, which is a single `COUNT` and stays correct on its own.
+
+## Unique values
+
+**Mode: any.** There are no unique indexes. Enforce uniqueness the same way as a counter: check, then insert, in one mutation. Look the value up through an index and normalize it first (lowercase it) so `Cool_Cat` and `cool_cat` are the same handle.
+
+```ts
+// forge/handles.ts
+import { ForgeError, mutation, v } from "@archlast/forge-runtime";
+import { requireUser } from "./_lib/auth";
+
+export const claim = mutation({
+  args: { handle: v.string() },
+  handler: async (ctx, { handle }) => {
+    const me = await requireUser(ctx);
+    const wanted = handle.trim().toLowerCase();
+    if (!/^[a-z0-9_]{3,20}$/.test(wanted)) throw new ForgeError("Use 3 to 20 letters, digits or underscores");
+    const taken = await ctx.db.query("handles").withIndex("by_handle", (q) => q.eq("handle", wanted)).unique();
+    if (taken) throw new ForgeError(taken.userId === me.userId ? "You already have that handle" : "That handle is taken");
+    const mine = await ctx.db.query("handles").withIndex("by_user", (q) => q.eq("userId", me.userId)).unique();
+    if (mine) await ctx.db.patch(mine._id, { handle: wanted });
+    else await ctx.db.insert("handles", { handle: wanted, userId: me.userId });
+    return wanted;
+  },
+});
+```
+
+Test: Ann and Bob each sent five simultaneous claims for the same handle on SQLite. Exactly one call returned `"cool_cat"`; the other nine failed with `That handle is taken` or `You already have that handle`. `.unique()` throws if it ever finds two rows, which would tell you the invariant broke. The same applies to emails in your own tables, slugs, and invite codes. Better Auth already makes user emails unique.
+
+## Multi-step workflows
+
+**Mode: any.** A workflow is a chain: each step does one thing, records its result, and schedules the next. Scheduling from a mutation is transactional (the next step exists only if the step committed), scheduled mutations run exactly once, and actions run at most once. So: do the state change in mutations, the outside world in actions, and make every step safe to run twice by checking the current status first.
+
+```ts
+// forge/orders.ts
+import { internalAction, internalMutation, mutation, query, v } from "@archlast/forge-runtime";
+import { internal } from "./_generated/api";
+import { requireUser } from "./_lib/auth";
+
+export const place = mutation({
+  args: { total: v.number() },
+  handler: async (ctx, { total }) => {
+    const me = await requireUser(ctx);
+    const id = await ctx.db.insert("orders", { userId: me.userId, total, status: "placed" });
+    await ctx.scheduler.runAfter(0, internal.orders.charge, { id });
+    return id;
+  },
+});
+
+export const mine = query({
+  args: {},
+  handler: async (ctx) => {
+    const me = await requireUser(ctx);
+    return ctx.db.query("orders").withIndex("by_user", (q) => q.eq("userId", me.userId)).order("desc").take(20);
+  },
+});
+
+export const get = internalMutation({
+  args: { id: v.id("orders") },
+  handler: (ctx, { id }) => ctx.db.get(id),
+});
+
+/** Moves an order on, but only from the status the step expects, so a repeated step does nothing. */
+export const advance = internalMutation({
+  args: { id: v.id("orders"), from: v.string(), to: v.string(), next: v.optional(v.string()) },
+  handler: async (ctx, { id, from, to, next }) => {
+    const order = await ctx.db.get(id);
+    if (!order || order.status !== from) return false;
+    await ctx.db.patch(id, { status: to });
+    if (next === "ship") await ctx.scheduler.runAfter(0, internal.orders.ship, { id });
+    return true;
+  },
+});
+
+export const charge = internalAction({
+  args: { id: v.id("orders") },
+  handler: async (ctx, { id }): Promise<void> => {
+    const order = await ctx.runMutation(internal.orders.get, { id });
+    if (!order || order.status !== "placed") return;
+    try {
+      const res = await fetch(process.env.PAYMENT_API_URL ?? "https://pay.example/v1/charges", {
+        method: "POST",
+        headers: { "content-type": "application/json", "idempotency-key": id }, // lets the provider drop a duplicate
+        body: JSON.stringify({ amount: order.total }),
+        signal: AbortSignal.timeout(20_000),
+      });
+      if (!res.ok) throw new Error(`Payment API answered ${res.status}`);
+      await ctx.runMutation(internal.orders.advance, { id, from: "placed", to: "charged", next: "ship" });
+    } catch {
+      await ctx.runMutation(internal.orders.advance, { id, from: "placed", to: "failed" });
+    }
+  },
+});
+
+export const ship = internalAction({
+  args: { id: v.id("orders") },
+  handler: async (ctx, { id }): Promise<void> => {
+    await ctx.runMutation(internal.orders.advance, { id, from: "charged", to: "shipped" });
+  },
+});
+```
+
+Against a local listener, `place` ended as `shipped` a moment later; pointing the payment URL at a closed port ended as `failed`. The pieces that matter:
+
+- The `from` check in `advance` is a compare-and-set. A step that runs twice, or an order that was changed by hand, is left alone.
+- An action that dies mid-way (the server stops) is marked failed by the scheduler once its lease expires (the action timeout plus a minute); the order would be stuck in `placed`. A cron that looks for orders in an old non-final status finds those.
+- Retrying a failed order is a decision for the code, not the engine: the dashboard's Scheduled page can retry a failed job, but a payment retry must send the same idempotency key.
+- To watch it, query `orders.mine` from the page: status changes arrive live.
+
+## Admin-only functions
+
+**Mode: any.** The dashboard's roles are for the dashboard. For admin features inside your app, define who an admin is in one place and check it in each function. The simplest definition is a list of emails in a variable, as in `requireAdmin` from [Setup](#setup):
+
+```ts
+// forge/admin.ts
+import { ForgeError, mutation, query, v } from "@archlast/forge-runtime";
+import { requireAdmin } from "./_lib/auth";
+
+export const stats = query({
+  args: {},
+  handler: async (ctx) => {
+    await requireAdmin(ctx);
+    return {
+      users: await ctx.db.query("users").count(),
+      notes: await ctx.db.query("notes").count(),
+      messages: await ctx.db.query("messages").count(),
+    };
+  },
+});
+
+export const removeMessage = mutation({
+  args: { id: v.id("messages") },
+  handler: async (ctx, { id }) => {
+    await requireAdmin(ctx);
+    if (!(await ctx.db.get(id))) throw new ForgeError("No such message");
+    await ctx.db.delete(id);
+  },
+});
+```
+
+```bash
+archlast-forge env set ADMIN_EMAILS "ann@example.com,bob@example.com"
+```
+
+Before the variable existed, the call failed with `Admins only`; after it, Ann got the counts and Bob still got `Admins only`. If admins change often or need roles, keep a `role` field in your own `profiles` table and read that instead. Either way, hide the admin pages with a loader too, but do not rely on it. Functions that only the server should run (migrations, maintenance) are not admin functions: make them `internal*`.
+
+## Feature flags
+
+**Mode: any.** There are two good places for a flag, depending on how fast it must change.
+
+**A variable**, for flags that change with a deploy or rarely. Read it per call:
+
+```ts
+// forge/flags.ts
+import { query } from "@archlast/forge-runtime";
+
+const flag = (name: string) => ["on", "1", "true"].includes((process.env[name] ?? "").toLowerCase());
+
+export const all = query({
+  args: {},
+  handler: () => ({ newEditor: flag("FEATURE_NEW_EDITOR"), betaBanner: flag("FEATURE_BETA_BANNER") }),
+});
+```
+
+```bash
+archlast-forge env set FEATURE_NEW_EDITOR on
+```
+
+Variables set this way live in the `_env` table and are loaded into `process.env`. In development the function runtime is a child process that the engine restarts, and it sees the new value. **In production, where functions run inside the server process, a changed or removed value needs a restart of the process**; a brand new variable is picked up by a reload. A variable in the process environment (`.env`, `compose.yaml`) overrides the one in `_env`. See [Configuration](configuration.html#variables-for-your-functions). Because the result of `flags:all` is cached, it can be up to `CACHE_TTL_MS` old, unless a reload empties the cache.
+
+**A table**, for flags you flip while the app runs and want clients to see at once:
+
+```ts
+// forge/liveFlags.ts
+import { internalMutation, query, v } from "@archlast/forge-runtime";
+
+export const all = query({
+  args: {},
+  handler: async (ctx) => Object.fromEntries((await ctx.db.query("flags").collect()).map((f) => [f.name, f.enabled])),
+});
+
+export const set = internalMutation({
+  args: { name: v.string(), enabled: v.boolean() },
+  handler: async (ctx, { name, enabled }) => {
+    const flag = await ctx.db.query("flags").withIndex("by_name", (q) => q.eq("name", name)).unique();
+    if (flag) await ctx.db.patch(flag._id, { enabled });
+    else await ctx.db.insert("flags", { name, enabled });
+  },
+});
+```
+
+`useQuery(api.liveFlags.all)` in a component re-renders the moment a flag changes. Flip one from the dashboard's Functions page (it can run internal functions) or edit the `flags` table on the Data page. A flag that is missing counts as off, so a new flag needs no migration.
+
+## Import seed data
+
+**Mode: any.** Two ways, for two jobs.
+
+**An idempotent function**, for defaults that should exist in every environment. It adds only what is missing, so it is safe to run on every deploy:
+
+```ts
+// forge/seed.ts
+import { internalMutation } from "@archlast/forge-runtime";
+
+const FLAGS = { newEditor: false, betaBanner: false };
+
+export const run = internalMutation({
+  args: {},
+  handler: async (ctx) => {
+    let added = 0;
+    for (const [name, enabled] of Object.entries(FLAGS)) {
+      const have = await ctx.db.query("flags").withIndex("by_name", (q) => q.eq("name", name)).unique();
+      if (!have) {
+        await ctx.db.insert("flags", { name, enabled });
+        added++;
+      }
+    }
+    return { added };
+  },
+});
+```
+
+Run it from the dashboard's Functions page. Called twice, it answered `{"added":1}` and then `{"added":0}`.
+
+**A JSON Lines file**, for bulk data. Each line is `{ "table", "_id", "_creationTime", "doc" }`, and `_id` is `<table>:<32 hex characters>`:
+
+```json
+{"table":"counters","_id":"counters:00000000000000000000000000000001","_creationTime":1790000000000,"doc":{"name":"signups","value":0}}
+{"table":"counters","_id":"counters:00000000000000000000000000000002","_creationTime":1790000000001,"doc":{"name":"launch","value":5}}
+```
+
+```bash
+archlast-forge import seed.jsonl             # into empty tables
+archlast-forge import seed.jsonl --replace   # clears the tables named in the file first
+```
+
+Every document is validated against the schema. A table that already has documents is refused (`Table "counters" already has 1 documents; pass --replace to clear it first`), a bad line is reported with its number (`Line 1 of seed.jsonl isn't valid JSON`), and a field error names the field (`counters.name must be a string, got 1`). `--replace` clears only the tables that appear in the file. Imports reach live subscribers, because they run inside the server. `archlast-forge export out.jsonl` writes the same format, so the easiest way to make a seed file is to export a database you set up by hand. See [Migrations and data](migrations.html).
+
+## Test a function
+
+**Mode: any.** `createTestBackend` runs your real functions against an in-memory database, with no server. `withIdentity` creates a user and returns a caller signed in as them, so ownership rules are testable. `finishScheduledFunctions` runs scheduled jobs, including the chain of a workflow, as if time had passed.
+
+```ts
+// test/notes.test.ts
+import { createTestBackend } from "@archlast/forge-runtime/testing";
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { api } from "../forge/_generated/api";
+
+let t: Awaited<ReturnType<typeof createTestBackend>>;
+beforeAll(async () => (t = await createTestBackend("forge")));
+afterAll(() => t.close());
+
+test("a note belongs to its owner", async () => {
+  const ann = await t.withIdentity({ email: "ann@example.com", name: "Ann" });
+  const bob = await t.withIdentity({ email: "bob@example.com", name: "Bob" });
+
+  const id = await ann.mutation(api.notes.create, { title: "Plan", body: "ship it" });
+  const page = await ann.query(api.notes.list, { paginationOpts: { numItems: 10, cursor: null } });
+  expect(page.page.map((n) => n.title)).toEqual(["Plan"]);
+
+  expect((await bob.query(api.notes.list, { paginationOpts: { numItems: 10, cursor: null } })).page).toEqual([]);
+  await expect(bob.mutation(api.notes.update, { id, title: "x", body: "y" })).rejects.toThrow("No such note");
+});
+
+test("signed-out callers are refused", async () => {
+  await expect(t.mutation(api.notes.create, { title: "a", body: "b" })).rejects.toThrow("Sign in first");
+});
+
+test("an order moves through its steps", async () => {
+  const ann = await t.withIdentity({ email: "ann2@example.com", name: "Ann" });
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = (async () => new Response("{}")) as unknown as typeof fetch; // the payment provider
+  try {
+    const id = await ann.mutation(api.orders.place, { total: 500 });
+    await t.finishScheduledFunctions();
+    await t.run(async (ctx) => expect((await ctx.db.get(id))?.status).toBe("shipped"));
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+```
+
+Run it with `bun test`. The three tests above passed in about a second. Notes: tests in one file share the backend, so give each test its own users and data (as above), or create a backend per test; stub `fetch` for actions that call out, and restore it; use `t.run` to read or seed tables directly, and to assert on state that no function exposes. The folder `test/` is not part of the app's `tsconfig.json` (`include` lists `app`), so add it if you want the editor to check it. See [Testing](testing.html).
+
+## Deploy a change safely
+
+**Mode: any (a stack made by `init`, or any container).** The risk in a deploy is not the code; it is stored data that no longer matches the new schema. The engine protects you: outside dev it validates every stored document at startup and refuses to serve if some do not match (`SCHEMA_CHECK`). The recipe is to find out before the deploy, not at it.
+
+1. **Check types and tests.** `bun run typecheck` regenerates `forge/_generated` and runs `tsc`. Adding a required field to a table makes `tsc` fail at every insert that omits it, which is exactly the list of places to update.
+2. **Make schema changes additive.** To add a required field, do it in three deploys: add it as `v.optional(...)`; deploy and run a data migration that fills it; make it required. A removed field or a type change needs the same care, because old documents carry it.
+
+   ```ts
+   // forge/migrations.ts
+   import { migration } from "@archlast/forge-runtime";
+
+   export const addPriority = migration({
+     table: "notes",
+     migrateOne: (_ctx, note) => (note.priority === undefined ? { priority: 0 } : undefined),
+   });
+   ```
+
+3. **Ask the database what it thinks.** Run `archlast-forge migrate` against the data you are about to deploy to (a restored backup, or production from the machine that runs it, with `ADMIN_KEY` set). It syncs tables and indexes and lists documents that do not match the schema, with the field:
+
+   ```
+   ✓ migrated 14 tables
+     ✗ notes:67d2…: notes.priority is not in the validator
+   ✗ 2 documents don't match the schema; write a migration and run `archlast-forge migrate --run-migrations`
+   ```
+
+   `archlast-forge migrate --status` lists data migrations (`pending`, `running`, `done`, with counts) and `--run-migrations` runs the pending ones; they work in batches, one transaction each, and resume where a failure stopped.
+4. **Back up.** `archlast-forge backup before-deploy.db` takes a consistent copy of SQLite while the engine runs; for Postgres use `pg_dump`.
+5. **Deploy.** `archlast-forge up` rebuilds the image, replaces the container and waits until it reports healthy. A single container restarts, so expect a few seconds when requests fail and clients reconnect on their own. Behind a load balancer with several servers, replace them one at a time: on `SIGTERM` a server turns `/ready` unhealthy, drains for up to ten seconds and closes its sockets so clients move to another one.
+6. **Watch.** `archlast-forge logs app` for the startup line; `GET /ready`; the dashboard's Logs and Metrics pages for errors after the deploy.
+7. **Roll back by redeploying the previous version**, which only works if the data still matches it. That is why step 2 matters, and why step 4 exists. If the new version already wrote data the old schema rejects, restore the backup (`archlast-forge import` for a JSON Lines export, or put the SQLite copy back).
+
+If startup fails the schema check, the log lists up to ten documents and the message tells you to fix them with a migration or set `SCHEMA_CHECK=off`. Use that switch to get the app back up while you write the migration, not as a habit. More in [Troubleshooting](troubleshooting.html).

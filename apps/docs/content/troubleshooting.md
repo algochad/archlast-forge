@@ -1,0 +1,435 @@
+# Troubleshooting
+
+Find the message or symptom, read the cause, apply the fix. The messages here are copied from a running engine or from the source; where a symptom has several causes, they are listed with the most common first. [Reading the logs](#reading-the-logs-and-the-dashboard) comes first in practice: nearly every question is answered by the log line that carries the request id.
+
+- [Install and tooling](#install-and-tooling)
+- [Starting the engine](#starting-the-engine)
+- [Docker and the stack](#docker-and-the-stack)
+- [Calls fail](#calls-fail)
+- [Sign-in, origins and cookies](#sign-in-origins-and-cookies)
+- [Pages and the build](#pages-and-the-build)
+- [Live queries](#live-queries)
+- [Storage, databases and Redis](#storage-databases-and-redis)
+- [Performance and memory](#performance-and-memory)
+- [Reading the logs and the dashboard](#reading-the-logs-and-the-dashboard)
+- [FAQ](#faq)
+
+## Install and tooling
+
+### `bun: command not found`, or errors that mention an old Bun
+
+The CLI is a Bun program and every package declares `"engines": { "bun": ">=1.4.3" }`. It does not run on Node.js. Check with `bun --version`; install or switch with [mise](https://mise.jdx.dev) (`mise use bun@1.4.3`) or Bun's own installer. In a container the engine image carries its own Bun, so this only affects your machine.
+
+### `bun install failed in …/forge (exit 1)`
+
+```
+error: GET https://registry.npmjs.org/no-such-package-xyz-123 - 404
+error: no-such-package-xyz-123@^1.0.0 failed to resolve
+✗ bun install failed in /home/me/app/forge (exit 1). Fix forge/package.json; native packages may need "trustedDependencies".
+```
+
+`forge/package.json` lists dependencies for your backend functions, and the CLI installs them (in the engine image too). The lines above the `✗` are Bun's own: a misspelled name or version, a private registry without credentials, or no network. Fix the file and save it; `dev` retries. Native packages that need an install script are skipped by default (`--ignore-scripts`); list them under `"trustedDependencies"` in `forge/package.json` to let only those run scripts.
+
+### `forge/x.ts imports "pkg", which is not installed`
+
+```
+✗ forge/dep.ts imports "nanoid-not-installed", which is not installed. Add it to …/forge/package.json: bun add --cwd …/forge nanoid-not-installed
+```
+
+A function file imports a package that is not in `forge/package.json`. The root `package.json` is not enough: the backend installs from `forge/`. Run the `bun add --cwd forge <name>` command from the message. Until it loads, every call fails (see [`No function`](#no-function-x-or-unknown-function-x)).
+
+### `Cannot find name 'process'` from `tsc`
+
+`forge/` has Bun's types in projects created with `0.1.1` or later. In an older project, run `bun add -d @types/bun` inside `forge/` and add `"types": ["bun"]` to `forge/tsconfig.json`. (The root `tsconfig.json` is for the browser code in `app/`, which has no `process`.)
+
+### Types are out of date, or `api.x.y` doesn't exist
+
+`forge/_generated` (`api`, `internal`, `dataModel`) is written by codegen. `archlast-forge dev` regenerates it whenever a file in `forge/` changes, but `tsc` on its own does not. After editing functions without `dev` running, or after pulling someone else's change, run:
+
+```bash
+archlast-forge codegen      # or: bun run typecheck, which runs codegen and then tsc
+```
+
+Commit `forge/_generated`; CI should run codegen and fail on a diff. If codegen itself fails, the message names the file. A function that calls `api.<its own module>.*` needs an explicit return type (`async (ctx, args): Promise<string> => …`), or TypeScript reports an implicit-`any` cycle.
+
+## Starting the engine
+
+### `BETTER_AUTH_SECRET is required outside dev`
+
+You started `start`, `up` or the image without a secret. Set `BETTER_AUTH_SECRET` (`openssl rand -hex 32`) in the environment, `.env` or `compose.yaml`. If it worked yesterday: Bun reads `.env` from the current directory, so running from another directory, or after a move or delete of `.env`, loses it. The full list of startup checks is in [Configuration](configuration.html#startup-checks).
+
+### `BETTER_AUTH_URL must be https:// outside dev`
+
+```
+✗ BETTER_AUTH_URL must be https:// outside dev (got "http://localhost:3000"). Set ALLOW_INSECURE_HTTP=1 only for local testing.
+```
+
+Over http, session cookies are not marked `Secure`. Set `BETTER_AUTH_URL` to the public `https://` address (TLS ends at your proxy or Caddy), or for a trial on one machine set `ALLOW_INSECURE_HTTP=1`. The generated `.env` sets it for you; delete the line once you have HTTPS. If `BETTER_AUTH_URL` is unset the engine uses `http://localhost:<port>`, which is why this message mentions that address.
+
+### `REPLICAS > 1 requires REDIS_URL`, or `… requires a Postgres DATABASE_URL`
+
+`REPLICAS` tells the engine you run several servers. It starts nothing, but it refuses to start unless the pieces servers must share exist: Redis for the bus, cache and rate limits, and Postgres for the data. Add both, or remove `REPLICAS`.
+
+### `REDIS_URL is set but Redis is unreachable: Connection closed`
+
+The engine tried once, for three seconds, and gave up instead of hanging. Check the host and port from where the engine runs (inside Docker, `localhost` is the container itself; use the service name), the password in the URL, and that Redis is up.
+
+### `Stored documents don't match the schema`
+
+```
+✗ Stored documents don't match the schema (fix them with a migration, or set SCHEMA_CHECK=off):
+  notes:1fa5b6c6…: notes.priority is required
+```
+
+You changed `schema.ts` so that existing documents no longer fit (a new required field, a changed type, a removed field). Outside dev the engine validates everything at startup and refuses to serve rather than run on bad data. Fix: make the change in steps (add the field as optional, run a data migration that fills it, then make it required), described in [Migrations](migrations.html) and the [deploy recipe](recipes.html#deploy-a-change-safely). To get the app back up first, start it once with `SCHEMA_CHECK=off`. `archlast-forge migrate` lists up to fifty offending documents.
+
+### `Failed to start server. Is port 3000 in use?`
+
+Another process owns the port. Stop it, or pick another: `archlast-forge dev --port 3001`, or `PORT=3001` for `start`. Inside the engine image keep the container's `PORT` at 3000 and change the published port instead (`-p 3001:3000`, or `PORT=3001` in `.env`, which `compose.yaml` maps).
+
+### `ENOENT: no such file or directory, mkdir '/some/path'` on start
+
+`DATA_DIR` points somewhere the process cannot create. In a container it should be the mounted volume (`/data`). Without `DATA_DIR`, `dev` and `start --no-docker` both use `forge/data` (before `0.1.1`, `start` used `./data` in the current directory, which was a different database).
+
+### The app starts but every call says `No function "…"` (dev)
+
+When `forge/` fails to load, `dev` keeps the server up, and the page shows nothing wrong. The load error is in the terminal and at `GET /ready`:
+
+```json
+{"ready":false,"error":"forge/dep.ts imports \"nanoid-not-installed\", which is not installed. …"}
+```
+
+Fix the file named in it. If the runtime keeps crashing you will see `function runtime 0 exited (code 1); restarting it` repeating, each followed by `failed to restart: Failed to load forge/schema.ts: …` with the reason. Outside dev a load failure stops the process at startup.
+
+## Docker and the stack
+
+### `! Docker isn't available; running in this process`
+
+`archlast-forge dev` for a backend uses Docker to run the engine and falls back to running it in your terminal. A full-stack app runs on your machine anyway and uses Docker only for services; if its `archlast-forge.json` lists `postgres`, `redis` or `s3`, `dev` stops with `This project uses postgres, which run in Docker, and Docker isn't available`. Start Docker, or develop on SQLite with `archlast-forge dev --no-docker` (it then says which services it is skipping, and uses `DATABASE_URL`, `REDIS_URL` and `S3_*` if you set them yourself).
+
+`up` and `down` need Docker: `Docker isn't available. Install it and make sure it is running; the stack runs in containers.` Check `docker info`. `DOCKER=podman` switches the tool.
+
+### `Engine image ghcr.io/algochad/archlast-forge-engine:0.1.0 isn't available`
+
+```
+✗ Engine image … isn't available. Set ARCHLAST_ENGINE_IMAGE to one you can pull or build.
+```
+
+The CLI looks for an image tagged with its own version, then tries to pull it from GHCR. It fails when you are offline, behind a registry mirror, or running a version that was not published. Set `ARCHLAST_ENGINE_IMAGE` to an image you can pull; when working in this repository's source, `archlast-forge engine build` builds one. For plain `docker compose`, set `ENGINE_IMAGE` in `.env`. Keep the CLI and the `@archlast/forge-*` packages on the same version.
+
+### `The stack didn't become healthy`
+
+`up` waits (up to four minutes) for the app's health check, then prints the end of the app's log:
+
+```
+✗ The stack didn't become healthy. The app's last log lines are above; `archlast-forge logs` follows them.
+```
+
+Read the log; the cause is almost always the first `✗` line from the engine:
+
+```bash
+archlast-forge logs app          # follow the app container
+archlast-forge status            # which containers run, and which are restarting
+docker compose logs --tail 100 app postgres
+```
+
+Typical causes, in order of likelihood: a startup check (`BETTER_AUTH_URL must be https://` after you added a domain and removed `ALLOW_INSECURE_HTTP`; a missing `BETTER_AUTH_SECRET`); the schema check; Postgres or Redis not reachable (`Failed to connect`); the port taken on the host. A message `missing: run archlast-forge up, which creates .env` from compose means `.env` lacks a value `compose.yaml` requires. `The app image didn't build` shows the last 15 lines of the build, usually a failing `bun install` in `forge/` or a TypeScript or route error in the app (see [Pages and the build](#pages-and-the-build)).
+
+### Variables in `.env` seem ignored
+
+`compose.yaml` passes the app only the variables it lists under `environment:`. Putting `RATE_LIMIT_PER_MINUTE=50` in `.env` does nothing until you add `RATE_LIMIT_PER_MINUTE: "${RATE_LIMIT_PER_MINUTE:-}"` to that block. `.env` is also read by Bun when you run `start --no-docker` from the project root, where the rule is simply that the process environment wins.
+
+### Data vanished after `down`
+
+`archlast-forge down` keeps volumes; `down --volumes` deletes them. If a rebuild came up empty, check that the volume name (`<project>_app-data`) is the one you used before: renaming the `name:` in `compose.yaml` creates a new project and new volumes. Back up with `archlast-forge backup` before experiments.
+
+## Calls fail
+
+### `No function "x"` or `Unknown function "x"`
+
+Two spellings of one problem. A client calling `POST /rpc/x` gets `404` with `No function "notes:create"`; a loader, `ctx.runQuery`, the scheduler or a cron gets `Unknown function "x"`. Causes:
+
+- The name is wrong. Names are `<file path>:<export>`: `notes:create`, `admin/users:list`. Export it with `query`, `mutation` or `action`; a plain function is not a function.
+- It is an `internal*` function. Clients cannot call those, and the error is the same as for a missing one on purpose.
+- The generated client is stale: you removed or renamed a function; run `archlast-forge codegen`.
+- `forge/` failed to load. Everything is missing then; see the previous section.
+- A cron or scheduled job points at a function that no longer exists. Startup fails for a cron (`Cron "x" targets unknown function "y"`); a job already scheduled fails with `Unknown function` on the Scheduled page.
+
+### `args.title must be a string, got 1`
+
+Argument errors name the exact path and are meant for the caller (HTTP 400): `args.body is required`, `args.extra is not in the validator`. Objects reject extra keys. Fix the call or the validator.
+
+### `TIMEOUT`
+
+```json
+{"error":{"message":"notes:slow timed out after 10000 ms","code":"TIMEOUT","requestId":"…"}}
+```
+
+HTTP status 408. The function ran past `FUNCTION_TIMEOUT_MS` (queries and mutations, 10 s) or `ACTION_TIMEOUT_MS` (actions and HTTP handlers, 10 min). Find what waited: a query that scans a table (`filter` without an index range), an `await` on a slow service in a mutation (move it to an action), one big loop. The dashboard's Metrics page shows p95 per function. A message `Timed out after 15000 ms` without a function name means the process did not answer at all within the hard deadline, which means code that never yields (`while (true)`, a catastrophic regex): the runtime was killed and restarted, and in production's inline mode the whole server process exits and must be restarted by Docker. See [Limits](limits.html#timeouts-and-the-watchdog). The log line `The server's event loop has been blocked for over … ms` is that case.
+
+### `503` with `Server is busy, try again`
+
+More than `MAX_PENDING_CALLS` calls are waiting for the function runtime, so new ones are refused at once with `Retry-After: 1`. The server is saturated: look for one slow function dominating the Metrics page, add an index, raise capacity (`RUNTIME_WORKERS`, a bigger machine, Postgres and more servers). Clients should retry after the delay. A `503` that says `Server is shutting down` is a restart in progress.
+
+### `429 Too many requests`
+
+```
+HTTP/1.1 429 Too Many Requests
+retry-after: 60
+{"message":"Too many requests"}
+```
+
+The per-IP budget (`RATE_LIMIT_PER_MINUTE`, 1200 a minute) is used up. If real users hit it, you are probably behind a proxy and every visitor shares the proxy's address: set `TRUST_PROXY=1`, after making sure the proxy overwrites `X-Forwarded-For`. WebSocket messages and page views count too. Sign-in has its own limit: three attempts per ten seconds (`Too many requests. Please try again later.`). In dev, rate limiting is off.
+
+### `Server error (request abc-12)`
+
+Outside dev, any error that is not a `ForgeError` or an argument error reaches the caller with only a request id. The details are in the server log under that id:
+
+```bash
+docker compose logs app | grep abc-12      # or open the dashboard's Logs page and filter by request id
+```
+
+```json
+{"time":"2026-10-24T14:04:08.038Z","level":"error","msg":"secret detail: password=hunter2","requestId":"defae1e1-1","function":"zz:boom","stack":"Error: …"}
+```
+
+The same id is in the `x-request-id` header of every response and on the dashboard's Logs page. Things that become `Server error`: a bug in your function, a result above `MAX_RESULT_BYTES`, a missing `S3_*` setting (`Storage is not configured: set S3_ENDPOINT and S3_BUCKET`), and database errors. To see messages directly while debugging, reproduce it in dev, where they are returned as they are.
+
+### `415 Send application/json`
+
+A POST to `/rpc/<name>` without `Content-Type: application/json`. Add the header (`curl -H 'content-type: application/json'`). The check exists so that a cross-site form cannot call your functions.
+
+### `413`, or a WebSocket closing when sending something big
+
+The request body or message is above `MAX_REQUEST_BYTES` (8 MiB). Send big files straight to storage with an upload URL.
+
+### `database is locked`
+
+SQLite waits five seconds for the write lock and then fails with `database is locked`. Within the engine, writes are serialized, so this means another process holds the lock: a second engine on the same `app.db` (two containers sharing a volume, `dev` and `start` pointed at one `DATA_DIR`), or a tool with an open write transaction (a SQLite shell, an IDE plugin). Reproduced by holding `BEGIN IMMEDIATE` in a separate process: the engine's next write failed after five seconds. Close the other process. A SQLite file belongs to one engine; for several servers use Postgres. Use `archlast-forge backup` instead of copying the file while the engine runs.
+
+## Sign-in, origins and cookies
+
+### `Invalid origin`
+
+```json
+{"message":"Invalid origin","code":"INVALID_ORIGIN"}
+```
+
+HTTP 403 from the sign-in or sign-up request. The browser sent an `Origin` that is neither the app's own address (`BETTER_AUTH_URL`) nor listed in `TRUSTED_ORIGINS`. The usual causes:
+
+- **You opened the app on another host name.** `http://127.0.0.1:3000` is not `http://localhost:3000` to a browser. Use the address in `BETTER_AUTH_URL`, or add the other one.
+- **A reverse proxy or port-forwarding tool changed the address**, so the browser's origin (`https://3000.dev.example.com`) is not what the engine expects. `archlast-forge dev` handles code-server (`VSCODE_PROXY_URI`) by trusting the proxy's address for the app's port; for another tool, add the address:
+
+  ```bash
+  TRUSTED_ORIGINS=https://3000.dev.example.com archlast-forge dev
+  ```
+
+- **The frontend is on another origin.** List it in `TRUSTED_ORIGINS` and create the client with `{ url }`.
+- **Production behind a proxy with the wrong `BETTER_AUTH_URL`.** It must be the public address, with scheme and port as the browser sees them.
+
+Write origins exactly as browsers send them: scheme, host, port, no path, no trailing slash. In a test with `curl`, `origin: http://localhost:3661` answered 200, `http://127.0.0.1:3661` and `https://3661.dev.example.com` answered 403, and the latter turned to success with the code-server variable set.
+
+### Signed in, but the next request is anonymous
+
+The cookie did not stick or was not sent.
+
+- **http vs https.** When `BETTER_AUTH_URL` is `https://`, the session cookie is `Secure` and named `__Secure-better-auth.session_token`. A browser will not store or send it over plain `http://`. Browse the https address; with `ALLOW_INSECURE_HTTP=1` and an http address the cookie is a plain one.
+- **Different host name.** Cookies belong to a host. Signing in on `localhost` and calling the API on `127.0.0.1` sends no cookie.
+- **A proxy strips or rewrites `Set-Cookie`** or the `Host` header. Check the response of `POST /api/auth/sign-in/email` as the browser sees it.
+- **Cross-origin frontend.** Requests must use `credentials: "include"`, the origin must be in `TRUSTED_ORIGINS`, and the cookie is `SameSite=Lax`, so it travels on same-site requests only: put frontend and API on subdomains of one site.
+- **`BETTER_AUTH_SECRET` changed**, or you run servers with different secrets: every cookie is invalid. Use one secret everywhere.
+- **The session was revoked or the user banned** from the dashboard.
+
+After sign-in or sign-out, the client reconnects its WebSocket so live queries run as the new user.
+
+### The dashboard login fails
+
+`/_dashboard` is a `404` unless `DASHBOARD` is on (the stack's default, off for `start`). Sign in with an account made by `archlast-forge admin add` or with `ADMIN_KEY`. `Invalid admin key` means the key differs from the server's. A `403 Missing x-forge-admin header` comes from a script calling the admin API without that header on a non-`GET`.
+
+### `The server on port 3000 rejected the admin key`
+
+The CLI's data commands (`env`, `export`, `import`, `migrate`, `admin`) talk to the running server with `ADMIN_KEY`. In dev it reads the key from `forge/data/.dev-secrets.json`; for anything else set `ADMIN_KEY` in your shell or `.env` to the server's value. A server without `ADMIN_KEY` refuses them. `(no running server picked it up; it applies on next start)` after `env set` means the CLI found no way to reload that server, which is normal when its dashboard is off; restart it.
+
+## Pages and the build
+
+### `No production build in …/.forge/build`
+
+```
+✗ No production build in /app/.forge/build. Run `archlast-forge build --no-docker` first.
+```
+
+`start --no-docker` serves a built app. Build first, or use `archlast-forge up`, whose image builds the app for you. If the page says `The app isn't built yet` (503), the build failed or is still running.
+
+### Two routes answer one URL, or a route name is rejected
+
+```
+✗ app/routes/about/index.tsx and app/routes/about.tsx both answer /about. Keep one.
+✗ app/routes/post-[id].tsx: "post-[id]" mixes a dynamic part with other text. Name the whole segment [param], or use only plain characters.
+```
+
+Both are build errors. Delete or rename one of the files; name a dynamic folder or file `[id]`, not `post-[id]`. Anything starting with `_` is not a route. See [Full-stack apps](framework.html#routing).
+
+### `Frontend code must import only forge/_generated`
+
+```
+✗ Frontend code must import only forge/_generated:
+  app/routes/bad.tsx imports "../../forge/messages"
+```
+
+Pages and components may import `forge/_generated` (the `api` object and types) and nothing else from `forge/`: your function files import server-only code and secrets. Use `api.messages.list` instead of importing the function. Share types through `Doc<"messages">` and `Id<"messages">` from `forge/_generated`. Codegen and the build fail on a violation.
+
+### Blank page, or a page that doesn't become interactive
+
+The server rendered HTML but the browser's JavaScript didn't start. Open the browser console and the network tab.
+
+- **`/_app/…js` returns 404 or HTML.** A proxy rewrites or drops `/_app/` (it must be forwarded as is), or the page is from an older build than the files on the server. Rebuild and redeploy together.
+- **A hooks error mentioning two copies of React.** The app bundles a different React from the engine's. In the image React comes from the engine (19.3.x); don't override it, and build with `archlast-forge up`, not a hand-made image.
+- **A build error in dev** appears over the page and in the terminal; fix and it reloads.
+- **A Content-Security-Policy at your proxy** that blocks inline scripts. The engine sets no CSP itself, and the page carries its data in an inline script (`window.__FORGE__`) without a nonce, so a policy must allow inline scripts for the app's pages.
+
+### Hydration warnings
+
+React reports `Hydration failed` or `Text content did not match` when what the server rendered differs from what the browser renders first. This is React's behavior, and the usual causes are in your component:
+
+- Values that differ between server and browser: `Date.now()`, `Math.random()`, `new Date().toLocaleString()` (server time zone and locale versus the user's), `window.innerWidth`, `localStorage`.
+- Markup that browsers repair (a `<div>` inside a `<p>`).
+- Data that differs: a loader returned a value the component reads differently on the client. Loader data is JSON, so a `Date` arrives as a string.
+
+Fix: render the same thing on both sides first and set browser-only values in `useEffect`, or compute them once in the loader. A real `suppressHydrationWarning` is for single text nodes like a timestamp.
+
+### `Cannot find module` for `@archlast/forge-…`
+
+The package names are scoped: `@archlast/forge-runtime`, `-client`, `-react`, `-vue`, `-svelte`, `-framework`, `-dashboard`, `-cli`; the scaffolder is `create-archlast-forge`. The scope is `@archlast`; a different scope in an import, such as the project's own name, will not resolve.
+
+## Live queries
+
+### Subscriptions don't update
+
+A query should update when a write touches anything it read. If it doesn't:
+
+1. **The socket isn't connected.** Check the browser's network tab for the `/rpc` WebSocket; see the next item. There is no HTTP fallback: without the socket a `useQuery` shows only the data embedded in the page, and refetches nothing.
+2. **The query depends on something that is not the database**: `Date.now()`, `Math.random()`, a `fetch`, `process.env`. Reactivity follows reads of the database, so a result that changes with the clock updates only when something else it read changes. Pass the time as an argument, or compute it on the client.
+3. **The write happened on another server** and there is no `REDIS_URL`. Servers only notify each other through Redis; `REPLICAS > 1` refuses to start without it, but with several instances started separately, nothing warns you.
+4. **The client signed in or out** and the socket still uses the old session. The client reconnects on session change; a custom client must call `reconnect()`.
+5. **Stale cache.** Query results are cached, but evicted on writes. If you read data from outside the engine (a script writing to Postgres directly), the engine doesn't know: write through functions, or import with `archlast-forge import`, which reaches subscribers. Until then a stale result lives at most `CACHE_TTL_MS`.
+6. **The page is a different query.** `useQuery(api.x.y, { a: 1 })` and `{ a: "1" }` are different subscriptions.
+
+### WebSocket won't connect behind a proxy
+
+Symptom: pages load, mutations work, but data never goes live; the console shows failed `wss://…/rpc` connections. The proxy has to forward the upgrade: send `Upgrade: websocket` and `Connection: upgrade` upstream on `/rpc` over HTTP/1.1. Caddy's `reverse_proxy` does this by itself; nginx needs `proxy_http_version 1.1` and the two headers set explicitly; many cloud load balancers have a WebSocket option. Also check the proxy's idle timeout (the connection is silent between messages: raise it above a minute, and keep `IDLE_TIMEOUT_SECONDS` above the proxy's upstream keep-alive), that `/rpc` isn't behind HTTP-only caching or a WAF that blocks `GET` with `Upgrade`, and that the page isn't https with an `ws://` URL (the client derives `wss://` from the page).
+
+The client reconnects with backoff (a quarter of a second up to ten) and subscribes again; the first message after each reconnect is a fresh result. A WebSocket closed with code `1008` is rate limiting, `1012` a restarting server, `1003` a message that wasn't JSON.
+
+## Storage, databases and Redis
+
+### Uploads fail
+
+In order of likelihood:
+
+1. **`Storage is not configured: set S3_ENDPOINT and S3_BUCKET`** (visible in dev; `Server error` in production): the storage variables are missing, or only one of the two is set (`Set both S3_ENDPOINT and S3_BUCKET, or neither` at startup).
+2. **The browser can't reach the URL.** The upload URL is signed for `S3_PUBLIC_ENDPOINT`. If the engine reaches storage as `http://rustfs:9000` (a Docker name), browsers cannot, and the `PUT` fails with a network error. Set `S3_PUBLIC_ENDPOINT` to the address browsers use (`https://files.example.com`).
+3. **CORS.** The bucket must allow `PUT` and `GET` from your site's origin. The console shows a CORS error rather than an HTTP status.
+4. **Mixed content.** An https page cannot `PUT` to an `http://` endpoint.
+5. **The bucket doesn't exist.** Create it (the generated stack's init step creates `forge`). Check credentials and `S3_REGION`.
+6. **A signature error (403) after a long time.** Upload URLs are valid for an hour, download URLs for an hour; ask for a new one.
+
+### Postgres connection errors
+
+Copied from real runs of `start`:
+
+```
+✗ password authentication failed for user "forge"
+✗ database "nosuchdb" does not exist
+✗ Failed to connect
+```
+
+The first two come from Postgres: fix the credentials in `DATABASE_URL`, or create the database. `Failed to connect` carries no detail: the host does not resolve, nothing listens on that port, or a firewall drops it. From the engine's own network, run `pg_isready -h <host> -p <port>`. In a stack, use the service name (`postgres`), not `localhost`. `DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite)` means a different scheme.
+
+### The SQLite WAL file keeps growing
+
+SQLite in WAL mode appends to `app.db-wal` and folds it back into `app.db` at checkpoints. The engine checkpoints on a separate thread once the WAL passes 32 MiB and trims the file to 64 MiB after a checkpoint lets it restart. A WAL far beyond that means checkpoints can't finish, because something holds an old read transaction open: an external tool or script reading the database for a long time. Close it. Don't delete the `-wal` or `-shm` files while the engine runs; they hold committed data. A file copy of `app.db` alone can miss recent writes, so use `archlast-forge backup`.
+
+### Redis problems after startup
+
+Redis carries write notifications between servers, the shared cache and rate-limit counters. If it goes away, cross-server updates stop. Check `redis-cli ping` from the engine's network. To drop cached query results, clear the cache on the dashboard's Cache page.
+
+## Performance and memory
+
+### Everything is slow
+
+Check the dashboard's Metrics page for the slow function, then its query: a `filter` without `withIndex` scans the table. Add an index that starts with the field you compare by equality (`q.eq`), then order and range on the next fields. Look at the Cache page's hit rate; a query that reads `ctx.auth` is cached per user and so shared less. See [Reading data](queries.html).
+
+### High memory
+
+Where memory goes, in order of likelihood:
+
+- **The query cache**: `CACHE_MAX_MB` (64 by default). Lower it, or set `CACHE_TTL_MS=0` to turn it off. With Redis the cache is in Redis.
+- **Big results and documents**: every result is serialized to JSON in memory; page large lists, keep `MAX_RESULT_BYTES` reasonable.
+- **Many subscriptions**: each live query is held with its last result. `forge_subscriptions` and `forge_websocket_connections` on `/metrics` show the counts.
+- **Large request bodies**: `MAX_REQUEST_BYTES` buffers HTTP bodies in memory.
+- **Several runtime processes**: each `RUNTIME_WORKERS` process is a full copy of your code.
+- **A leak in a function**: a module-level array or map that grows with every call. Watch `forge_process_resident_bytes` over time.
+
+In `process` mode the runtime is a child process, so the server's memory and the functions' are separate; a crash from running out of memory restarts that child alone. In `inline` mode (production default) it is one process, and the container restarts it.
+
+### CPU is pinned on one core
+
+One function runtime is single-threaded. For CPU-heavy functions set `RUNTIME_WORKERS` above 1 (it switches to `process` mode); SQLite writes still share one lock. For more throughput use Postgres and more servers.
+
+## Reading the logs and the dashboard
+
+**In dev**, the terminal shows readable lines; function `console.log` output appears prefixed with the function name, e.g. `[notes:create] …`. A failed call prints `✗ message  requestId=… function=…`.
+
+**In production** (`LOG_FORMAT=json`), each line is one JSON object with `time`, `level`, `msg` and fields:
+
+```json
+{"time":"2026-10-24T14:04:13.321Z","level":"warn","msg":"zz:slow timed out after 1000 ms","requestId":"defae1e1-i","function":"zz:slow"}
+```
+
+Follow them with `archlast-forge logs app` (or `docker compose logs -f app`), and search by request id. Every response, including errors, carries the id in the `x-request-id` header; a client may send its own (1 to 64 characters of letters, digits, `_`, `.`, `-`) to follow a request from your own system.
+
+**The dashboard** (`/_dashboard`; on in dev and in the generated stack):
+
+- **Logs**: a live stream from this server and a history across all servers, filtered by function, level, time or request id. The history keeps `LOG_RETENTION_DAYS` days.
+- **Metrics**: calls, errors, p50 and p95 per function; subscriptions and connections over time.
+- **Cache**: hit rate and per-function counters.
+- **Scheduled**: crons with their next run, jobs with errors, retry and cancel.
+- **Settings**: the registered functions and tables, live subscriptions, and a button to reload the runtime. If your last deploy changed nothing visible, check here that the functions you expect are listed.
+
+**Health endpoints:** `GET /health` (liveness, `{"ok":true}`) and `GET /ready` (readiness; `503` with the load error while starting or shutting down). **`GET /metrics`** is Prometheus text, behind `Authorization: Bearer <METRICS_TOKEN or ADMIN_KEY>`.
+
+## FAQ
+
+### Why Bun?
+
+The engine is written for it. SQLite is `bun:sqlite`, and the build, the S3 and Redis clients, password hashing and the test runner come from the runtime, which keeps dependencies and moving parts down. Packages ship TypeScript source that Bun runs directly. The consequence is that the engine needs Bun (1.4.3 or newer) and does not run on Node.js. Your functions are TypeScript running on Bun; browsers get ordinary JavaScript.
+
+### SQLite or Postgres?
+
+Start with SQLite: no service to run, fast, and one file to back up (`archlast-forge backup`). It belongs to one engine process, so it is one server. Choose Postgres when you want several servers, a managed database, point-in-time recovery from your cloud, or your team's existing tools. The same functions and schema work on both, since documents are stored as JSON either way. Moving between them is an export and import.
+
+### Can I use my own auth, database or frontend?
+
+- **Auth:** Better Auth is built in. You configure it in `forge/auth.ts` (providers, plugins, session settings), and you can add fields to your own tables keyed by `userId`. Replacing it with a different auth system is not supported.
+- **Database:** SQLite or Postgres, with documents in tables defined by your schema. No MySQL or MongoDB. Nothing stops an action from talking to another database or API over the network, but those calls sit outside the engine's transactions and reactivity.
+- **Frontend:** any. A backend project has no pages; use the React, Vue or Svelte client, or the plain JSON protocol from any language ([Clients](clients.html)). A full-stack app is React with the engine's server rendering.
+
+### How do I upgrade?
+
+All `@archlast/forge-*` packages and `create-archlast-forge` share one version and move together. Update them all in `package.json` (and `forge/package.json`), `bun install`, run `archlast-forge codegen` and your type check and tests, then `archlast-forge up`: the image is built on the engine image of the CLI's version, so updating the CLI updates the engine. Take a backup first. The [deploy recipe](recipes.html#deploy-a-change-safely) has the checklist.
+
+### Is it production ready?
+
+It is version 0.1.0 and young: expect changes between 0.x releases, and test an upgrade before you roll it out. What exists: a Docker stack with Postgres, Redis and S3-compatible storage, health checks and graceful shutdown, a stored-data schema check at startup, rate limits, timeouts with a watchdog, structured logs, metrics and tracing, a dashboard with roles and an audit log, and end-to-end tests against real services. What to weigh: SQLite means one server; there is no hosted service, so you operate the database, backups and upgrades yourself; actions run at most once with no automatic retry; one deployment serves one app, with no multi-tenant isolation. [Limits and security](limits.html) has a checklist to go through before you open it to users.
+
+### How does it compare to Convex?
+
+The programming model is Convex's: a `schema.ts` with validators and indexes, `query`, `mutation` and `action` functions, `ctx.db`, scheduled functions and crons, file storage, and queries that stay live. Differences you will notice:
+
+- It is self-hosted only: one engine you run, on SQLite or Postgres. There is no hosted offering.
+- Its wire protocol is plain JSON over HTTP and a WebSocket, with its own client packages. Convex clients do not work with it, and it is not a drop-in replacement.
+- Auth is Better Auth, inside your database.
+- Validators are a smaller set (`v.string`, `number`, `boolean`, `null`, `id`, `array`, `object`, `union`, `optional`; no `v.literal` or `v.any`).
+- Index range queries take `eq` on a prefix and a range on the next field; `filter` takes a plain function.
+- Actions are at most once, and scheduled mutations exactly once.
+- A full-stack mode renders React on the server with file-based routes.

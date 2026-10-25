@@ -23,7 +23,7 @@ Answers to questions the build prompt and architecture doc left open, and the ch
 - **Topic granularity**: the table (for full scans and writes), `table:index:[values]` for each index-key prefix, and `table:by_id:[id]` for `db.get`. A write publishes the old and new values of every index prefix.
 - **Publish after commit only.** A failed mutation publishes nothing.
 - **Redis bus**: one pub/sub channel carries all topics, and each server filters locally (`shortcut:` comment in `bus.ts`).
-- **Query cache**: off in dev. Elsewhere it's keyed by (function, args), only for queries that didn't read `ctx.auth`. It's skipped when any invalidation arrives during the run (`shortcut:` comment in `subscriptions.ts`). Each server evicts on bus events, and reads wait for pending evictions.
+- **Query cache**: on by default (`CACHE_TTL_MS`, 60 s; 0 turns it off), in dev too. It's keyed by (function, args). A query seen reading `ctx.auth` is cached per caller: its key includes the identity, resolved fresh on each call, so a revoked session stops matching. It's skipped when any invalidation arrives during the run (`shortcut:` comment in `subscriptions.ts`). Each server evicts on bus events, and reads wait for pending evictions.
 
 ## Functions
 

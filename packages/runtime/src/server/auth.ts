@@ -81,6 +81,9 @@ async function find(store: DocStore, tables: TablesSpec, model: string, where: C
   return docs.slice(start, o.limit === undefined ? undefined : start + o.limit);
 }
 
+/** Set by the server on every auth request, replacing anything the client sent under this name. */
+export const CLIENT_IP_HEADER = "x-archlast-client-ip";
+
 /** Better Auth adapter over the document store: auth data lives in users/sessions/accounts/verifications. */
 function documentAdapter(exec: Executor, tables: TablesSpec) {
   const read = async <T>(fn: (s: DocStore) => Promise<T>) => (await exec.read(fn)).value;
@@ -96,6 +99,8 @@ function documentAdapter(exec: Executor, tables: TablesSpec) {
       disableIdGeneration: true,
       transaction: false,
       mapKeysTransformOutput: { _id: "id" },
+      // Better Auth reads the id of a row it just got back through this, to update it atomically (password reset, magic links, one-time codes).
+      mapKeysTransformInput: { id: "_id" },
       customTransformInput: ({ data }) => (data instanceof Date ? data.getTime() : data),
       customTransformOutput: ({ data, fieldAttributes }) => (fieldAttributes.type === "date" && typeof data === "number" ? new Date(data) : data),
     },
@@ -148,6 +153,9 @@ export function createAuth(exec: Executor, tables: TablesSpec, options: AuthOpti
       ...options.rateLimit,
       ...(redis && { customStorage: new RedisRateLimiter(redis, "archlast-forge:auth-rl:") }),
     },
+    // The address Better Auth rate limits is the one the server worked out (it honors TRUST_PROXY) and put in this header,
+    // not whatever X-Forwarded-For the client sent.
+    advanced: { ...options.advanced, ipAddress: { ...options.advanced?.ipAddress, ipAddressHeaders: [CLIENT_IP_HEADER] } },
     databaseHooks: {
       ...options.databaseHooks,
       session: {

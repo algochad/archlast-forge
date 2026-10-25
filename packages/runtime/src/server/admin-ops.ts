@@ -53,6 +53,24 @@ async function createSession(db: Db, adminId: string) {
   return token;
 }
 
+/** Credentials the dashboard never shows, by table: an admin has no need to read them, and a viewer is meant to be read-only. */
+const SECRET_FIELDS: Record<string, string[]> = { accounts: ["password", "accessToken", "refreshToken", "idToken"], sessions: ["token"], verifications: ["value"] };
+const HIDDEN = "[hidden]";
+
+/** A document as the dashboard may see it. */
+function redact<T extends { _id: string }>(doc: T): T {
+  const fields = SECRET_FIELDS[tableOf(doc._id)];
+  if (!fields) return doc;
+  const out: Record<string, unknown> = { ...doc };
+  for (const f of fields) if (out[f] !== undefined && out[f] !== null) out[f] = HIDDEN;
+  return out as T;
+}
+const redactOrNull = (doc: { _id: string } | null | undefined) => (doc ? redact(doc) : null);
+/** An edit that sends the placeholder back must not overwrite the real value. */
+const withoutHidden = (value: any) => Object.fromEntries(Object.entries(value ?? {}).filter(([, v]) => v !== HIDDEN));
+const restoreHidden = (value: any, existing: any) =>
+  Object.fromEntries(Object.entries(value ?? {}).map(([k, v]): [string, unknown] => [k, v === HIDDEN && existing ? existing[k] : v]).filter(([, v]) => v !== HIDDEN));
+
 export interface AdminInfo {
   email: string;
   role: AdminRole;
@@ -103,21 +121,23 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
         return db.query(`SELECT * FROM "_audit" ORDER BY "time" DESC LIMIT ?`, [Math.min(Number(args.limit) || 200, 1000)]);
 
       // -- data --
-      case "docs":
-        return (
+      case "docs": {
+        const page = (
           await exec.read(async (s) => {
             let q: any = s.query(args.table);
             if (args.index) q = q.withIndex(args.index, (b: any) => (args.eq ?? []).reduce((acc: any, [f, v]: [string, unknown]) => acc.eq(f, v), b));
             return q.order(args.order ?? "desc").paginate({ numItems: Math.min(Number(args.numItems) || 50, 500), cursor: args.cursor ?? null });
           })
         ).value;
+        return { ...page, page: page.page.map(redact) };
+      }
       // Many documents by id, for showing what a reference points at. Ids that aren't valid, or whose document is gone, come back null.
       case "docsByIds": {
         const ids = [...new Set((args.ids as unknown[]) ?? [])].filter((id): id is string => typeof id === "string").slice(0, 200);
         const known = ids.filter((id) => id.includes(":") && d.tables[tableOf(id)]);
         const docs = (await exec.read((s) => s.getMany(known))).value;
         const found = new Map(known.map((id, i) => [id, docs[i]]));
-        return Object.fromEntries(ids.map((id) => [id, found.get(id) ?? null]));
+        return Object.fromEntries(ids.map((id) => [id, redactOrNull(found.get(id))]));
       }
       // What points at a document: for each field in the schema that references its table, how many documents hold its id.
       case "references": {
@@ -146,11 +166,11 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
           ),
         );
       case "insertDoc":
-        return exec.mutate((s) => s.insert(args.table, args.value));
+        return exec.mutate((s) => s.insert(args.table, withoutHidden(args.value)));
       case "patchDoc":
-        return exec.mutate((s) => s.patch(args.id, args.value));
+        return exec.mutate((s) => s.patch(args.id, withoutHidden(args.value)));
       case "replaceDoc":
-        return exec.mutate((s) => s.replace(args.id, args.value));
+        return exec.mutate(async (s) => s.replace(args.id, restoreHidden(args.value, await s.get(args.id))));
       case "deleteDoc":
         return exec.mutate((s, _tx, after) => (String(args.id).startsWith("_storage:") ? exec.storage(s, after).delete(args.id) : s.delete(args.id)));
 

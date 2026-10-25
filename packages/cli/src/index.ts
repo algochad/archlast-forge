@@ -2,7 +2,7 @@
 import { ops } from "@archlast/forge-runtime/server";
 import { watch } from "node:fs";
 import { basename, join, resolve } from "node:path";
-import { parseArgs } from "node:util";
+import { parseArgs, type ParseArgsConfig } from "node:util";
 import { buildFramework, loadFramework } from "./app";
 import { devSecrets, fail, findForgeDir, generate, trustProxyOrigins, VERSION } from "./common";
 import { ensureDeps, findUp } from "./deps";
@@ -59,7 +59,16 @@ ${c.bold("Engine")}
 
 Options: --dir <forge dir>  --port <n>  --no-docker`;
 
-const { positionals, values } = parseArgs({
+/** A mistyped option is a one-line message, not a stack trace. */
+function parseCommandLine<T extends ParseArgsConfig>(config: T) {
+  try {
+    return parseArgs(config);
+  } catch (e) {
+    return fail(`${(e as Error).message.replace(/\.$/, "")}. Run \`archlast-forge --help\` to see the options.`);
+  }
+}
+
+const { positionals, values } = parseCommandLine({
   args: Bun.argv.slice(2),
   allowPositionals: true,
   options: {
@@ -81,8 +90,13 @@ const { positionals, values } = parseArgs({
     rebuild: { type: "boolean" },
     dev: { type: "boolean" },
     help: { type: "boolean", short: "h" },
+    version: { type: "boolean", short: "v" },
   },
 });
+if (values.version) {
+  console.log(VERSION);
+  process.exit(0);
+}
 const [command, ...rest] = positionals;
 const port = Number(values.port ?? process.env.PORT ?? 3000);
 const inContainer = process.env.ARCHLAST_ENGINE === "1";
@@ -101,6 +115,7 @@ function devEnv(dir: string) {
   env.DATA_DIR ??= join(dir, "data");
   // The app's own address is trusted, and a proxy in front of it (code-server's port forwarding) is worked out from that one.
   env.TRUSTED_ORIGINS ||= `http://localhost:${port}`;
+  env.BETTER_AUTH_URL = `http://localhost:${port}`; // a project's .env (made for the stack) must not point sessions at another address
   trustProxyOrigins(env);
   return env;
 }
@@ -136,7 +151,6 @@ async function devFramework(dir: string, cfg: ProjectConfig) {
   const began = performance.now();
   const root = projectRoot(dir);
   const env = devEnv(dir);
-  env.BETTER_AUTH_URL = `http://localhost:${port}`; // a stray .env must not point sessions at another port
   await ensureDeps(dir);
   ok(`codegen: ${(await generate(dir)).length} modules`);
 
@@ -153,6 +167,7 @@ async function devFramework(dir: string, cfg: ProjectConfig) {
     process.on("exit", dockerEngine.stopStartedServices); // Ctrl-C ends the session, so it ends its services too
   }
 
+  companion(); // --run "<cmd>"
   const { createApp } = await loadFramework(root, "server");
   const app = await createApp({ root, dev: true });
   const server = await serve({ forgeDir: dir, dev: true, env: { ...env, PORT: String(port) }, app, watchDir: dir, onChange: forgeChanged(dir) });
@@ -231,7 +246,8 @@ function watchSource(dir: string, onChange: (files: string[]) => Promise<void>) 
 /** Where data and config commands run: inside the running engine container, or in this process. */
 function engineTarget(dir: string) {
   if (!useDocker()) return null;
-  return dockerEngine.runningContainer(dir) ?? null;
+  // The app of a compose stack, then a single engine container.
+  return stack.appContainer(projectRoot(dir)) ?? dockerEngine.runningContainer(dir) ?? null;
 }
 
 /**
@@ -350,7 +366,8 @@ const commands: Record<string, () => Promise<unknown>> = {
       const root = projectRoot(dir);
       app = await (await loadFramework(root, "server")).createApp({ root, dev: false }).catch((e: Error) => fail(e.message.includes("No production build") ? `${e.message}` : e.message));
     }
-    const server = await serve({ forgeDir: dir, dev: false, env: { ...process.env, PORT: String(port) }, app });
+    // Next to forge/, where `dev` keeps it, unless DATA_DIR says otherwise.
+    const server = await serve({ forgeDir: dir, dev: false, env: { ...process.env, DATA_DIR: process.env.DATA_DIR ?? join(dir, "data"), PORT: String(port) }, app });
     ok(`archlast-forge on ${server.url}${app ? " (app and API)" : ""}`);
   },
   async stop() {

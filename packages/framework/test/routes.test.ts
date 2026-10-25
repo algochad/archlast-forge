@@ -53,6 +53,7 @@ test("mistakes fail with the file and a fix", () => {
   expect(() => scanRoutes(app(["routes/_x.tsx"]))).toThrow("has no routes");
   expect(() => scanRoutes(app(["routes/about.tsx", "routes/about/index.tsx"]))).toThrow("both answer /about");
   expect(() => scanRoutes(app(["routes/post-[id].tsx"]))).toThrow("mixes a dynamic part");
+  expect(() => scanRoutes(app(["routes/blog/[id].tsx", "routes/blog/[slug].tsx"]))).toThrow("the same URLs (/blog/:id and /blog/:slug: parameter names don't tell routes apart)");
   expect(() => scanRoutes(app(["routes/[...rest]/x.tsx"]))).toThrow("must be a file");
   expect(() => scanRoutes(app(["routes/a b.tsx"]))).toThrow("can't be part of a URL path");
 });

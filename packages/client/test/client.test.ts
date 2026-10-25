@@ -103,3 +103,19 @@ test.skipIf(!pg || !redis)("two servers: a mutation on one reaches subscribers o
     await s2.stop();
   }
 });
+
+test("a rate-limited call says so, and how long to wait", async () => {
+  const limited = await startServer({ forgeDir: fixture, dev: true, env: { ...process.env, PORT: "0", DATA_DIR: mkdtempSync(join(tmpdir(), "afx-client-")), ADMIN_KEY: "k", RATE_LIMIT_PER_MINUTE: "2" } });
+  const c = new ArchlastForgeClient({ url: limited.url });
+  try {
+    await c.query(api.todos.events);
+    await c.query(api.todos.events);
+    const err = (await c.query(api.todos.events).catch((e) => e)) as Error & { code?: string; retryAfter?: number };
+    expect(err.message).toBe("Too many requests");
+    expect(err.code).toBe("TOO_MANY_REQUESTS");
+    expect(err.retryAfter).toBeGreaterThan(0);
+  } finally {
+    c.close();
+    await limited.stop({ graceful: false });
+  }
+});

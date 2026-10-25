@@ -37,7 +37,16 @@ export function ensureEnv(root: string, services: StackService[]): boolean {
   return true;
 }
 
-const envValue = (root: string, key: string) => new RegExp(`^${key}=(.*)$`, "m").exec(existsSync(join(root, ".env")) ? readFileSync(join(root, ".env"), "utf8") : "")?.[1]?.trim();
+const rawEnvValue = (root: string, key: string) => new RegExp(`^${key}=(.*)$`, "m").exec(existsSync(join(root, ".env")) ? readFileSync(join(root, ".env"), "utf8") : "")?.[1]?.trim();
+/** A value from .env, with `${OTHER}` filled in from the same file the way compose does (BETTER_AUTH_URL=https://${DOMAIN}). */
+const envValue = (root: string, key: string) => rawEnvValue(root, key)?.replace(/\$\{(\w+)\}/g, (_, other) => rawEnvValue(root, other) ?? "");
+
+/** The running app container of the project's compose stack, for commands that have to run inside it. */
+export function appContainer(root: string): string | undefined {
+  if (!existsSync(composeFile(root)) || !dockerAvailable()) return undefined;
+  const p = Bun.spawnSync([DOCKER, "compose", "--project-directory", root, "-f", composeFile(root), "ps", "-q", "app"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...process.env, ENGINE_IMAGE: process.env.ENGINE_IMAGE ?? engineImage() } });
+  return p.exitCode === 0 ? p.stdout.toString().trim().split("\n")[0] || undefined : undefined;
+}
 
 /** Builds and starts the stack, and waits until the app reports healthy. */
 export async function up(root: string, services: StackService[], opts: { rebuild?: boolean } = {}) {

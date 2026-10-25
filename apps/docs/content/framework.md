@@ -1,26 +1,51 @@
 # Full-stack apps
 
-A full-stack app is React pages, server rendering and your backend in one project. The engine serves the pages, the API, authentication and the dashboard from one process, so there is one thing to run and one thing to deploy.
+A full-stack app is React pages, server rendering and your backend in one project. The engine serves the pages, the API, authentication and the dashboard from one process, so there is one thing to run and one thing to deploy. The pages use [React Router](https://reactrouter.com)'s data router for routing and loaders; archlast-forge adds file routes, the build, the live query cache, the signed-in viewer and the server around it.
 
 ```bash
 bun create archlast-forge my-app --mode framework
 cd my-app && bun install && bun run dev
 ```
 
+Open http://localhost:3000. The starter has a home page, a sign-in page and a live chat. The rest of this page explains how each part works and ends with examples you can copy. For the backend half (schema, functions, auth), see [Schema](schema.html), [Functions](functions.html) and [Authentication](auth.html). For a backend without pages, see [Backends](backend.html).
+
+## Project layout
+
 ```
-app/
-  root.tsx              the HTML document, and the header and footer around every page
-  routes/
-    index.tsx           /
-    chat.tsx            /chat
-    sign-in.tsx         /sign-in
-public/                 served as they are: /favicon.svg, /robots.txt
-forge/                  your backend
+my-app/
+  app/
+    root.tsx             the HTML document, and the header and footer around every page
+    styles.css           imported by root.tsx
+    env.d.ts             declares the file types you import (css, svg, png)
+    routes/
+      index.tsx          /
+      chat.tsx           /chat
+      sign-in.tsx        /sign-in
+  forge/                 your backend: schema.ts, functions, forge/package.json
+    _generated/          api, internal and dataModel types (committed)
+    data/                the SQLite database in development (ignored by git)
+  public/                served as they are: /favicon.svg, /robots.txt
+  .forge/                build output and generated entry files (ignored by git)
+  archlast-forge.json    { "mode": "framework", "services": [] }
+  package.json           the app's dependencies (react, @archlast/forge-framework, ...)
+  compose.yaml, Dockerfile, .env, .env.example, .dockerignore   the production stack
 ```
 
-## Routes
+Rules that follow from this layout:
 
-Every file in `app/routes` is a page. Its path is its name.
+- Code in `app/` runs in the browser and on the server. It may import from `forge/_generated` and from nothing else in `forge/`. `archlast-forge codegen` (and `dev`, and `build`) fails with the file and import named if you break this:
+
+  ```
+  ✗ Frontend code must import only forge/_generated:
+    app/routes/teapot.tsx imports "../../forge/posts"
+  ```
+
+- Packages used by `app/` go in the root `package.json` under `dependencies`. Packages used by your functions go in `forge/package.json`. In the production image only `dependencies` of the root manifest are installed for the app; `devDependencies` are not, and `react`, `react-dom` and the `@archlast/forge-*` packages come from the engine image.
+- `.forge/gen` holds three generated files (the route manifests for the browser and the server, and the browser entry). Do not edit them: every build rewrites them.
+
+## Routing
+
+Every file in `app/routes` with the extension `.tsx`, `.ts`, `.jsx` or `.js` is a page. Its path is its name.
 
 | File | URL |
 |---|---|
@@ -28,90 +53,605 @@ Every file in `app/routes` is a page. Its path is its name.
 | `about.tsx` | `/about` |
 | `blog/index.tsx` | `/blog` |
 | `blog/[slug].tsx` | `/blog/hello`, with `params.slug` |
-| `docs/[...path].tsx` | `/docs/a/b/c`, with `params["*"]` |
+| `users/[id]/posts.tsx` | `/users/7/posts`, with `params.id` |
+| `docs/[...path].tsx` | `/docs/a/b/c`, with `params["*"]` set to `a/b/c` |
 | `blog/_layout.tsx` | wraps everything under `/blog`; renders `<Outlet />` |
 | `(app)/_layout.tsx` | a layout that adds nothing to the URL, for grouping |
+| `(marketing)/pricing.tsx` | `/pricing`; the folder name is for you |
+| `feed.json.ts`, `sitemap.xml.tsx` | `/feed.json`, `/sitemap.xml` (a dot is allowed in a name) |
 | `_components/`, `_helpers.ts` | not routes: anything starting with `_` is yours |
 
-A file that mixes a parameter with other text (`post-[id].tsx`) or two files that answer the same URL are build errors with the file names in the message.
+What is skipped silently: names starting with `_` (the `_layout` file is the only underscore file with a meaning), names starting with `.`, files ending in `.test.*`, `.spec.*` or `.d.ts`, and files with other extensions (`.css`, `.md`, `.json`). Siblings are sorted by name; the order does not affect matching.
 
-A page is a React component:
+### Layouts and groups
+
+A folder with a `_layout.tsx` becomes a layout route: its component renders around every route in the folder, and its `loader` runs for all of them. A layout renders the page below it with `<Outlet />`. A `(group)` folder adds nothing to the URL; with a `_layout.tsx` it is a layout that has no path, and without one it only organises files. Folders nest, so `(app)/dashboard/_layout.tsx` is a layout inside the `(app)` layout.
+
+The route id of a file is its path under `app/` without the extension: `routes/blog/[slug]`, `routes/(app)/_layout`, `routes/blog/index`. The root is `root`. You need ids for `useRouteLoaderData("routes/blog/_layout")`, and they appear in server logs and in `window.__FORGE__.hydration.loaderData`.
+
+### Naming errors
+
+Bad names fail the build (and show over the page in development) with the file names in the message:
+
+| Mistake | Message |
+|---|---|
+| `post-[id].tsx` | `app/routes/post-[id].tsx: "post-[id]" mixes a dynamic part with other text. Name the whole segment [param], or use only plain characters.` |
+| `my page.tsx` | `app/routes/my page.tsx: "my page" can't be part of a URL path. Use letters, digits, - _ . ~` |
+| `[...rest]/x.tsx` | `app/routes/[...rest]: a splat ([...rest]) must be a file, because nothing can come after it` |
+| `about.tsx` and `(g)/about.tsx` (also `a.tsx` and `a/index.tsx`, or two `index.tsx`) | `app/routes/(g)/about.tsx and app/routes/about.tsx both answer /about. Keep one.` |
+| no `routes` folder | `No routes directory at …/app/routes. Create app/routes/index.tsx for the home page.` |
+| `routes` has no page | `…/app/routes has no routes. Create index.tsx for the home page.` |
+
+A parameter name is a letter or underscore followed by word characters: `[1id]` is rejected as above. Two parameter files at the same level (`[id].tsx` and `[slug].tsx`) are not reported as a conflict, because their paths (`/:id`, `/:slug`) differ as text; the router matches the first and the second never renders. Keep one dynamic file per level.
+
+## Route modules
+
+A route module may export:
+
+| Export | Purpose |
+|---|---|
+| `default` | The page: a React component. Without it the route renders its children (`<Outlet />`) only. |
+| `loader` | Runs before the page renders, on the server for the first request and in the browser afterwards. Gets `{ request, params, ctx }`. |
+| `ErrorBoundary` | Shown instead of this route when its loader or page fails, or a child's does and has no boundary of its own. |
+| `handle` | Passed through to the route unchanged. |
+| `shouldRevalidate` | Decides whether the loader runs again after a navigation or `revalidate()`. |
+
+`app/root.tsx` is the one route that always renders; it also exports `Layout`. Everything else is a plain function or component: a file may export helpers, but the exports above are the ones the framework reads. The type of a module is `RouteModule`, exported by `@archlast/forge-framework`.
+
+From `@archlast/forge-framework` you can import: `Link`, `NavLink`, `Navigate`, `Outlet`, `redirect`, `data`, `isRouteErrorResponse`, `useLoaderData`, `useRouteLoaderData`, `useParams`, `useLocation`, `useNavigate`, `useNavigation`, `useRevalidator`, `useRouteError`, `useSearchParams`, `useViewer`, the types `LoaderArgs`, `LoaderContext`, `Viewer` and `RouteModule`, plus `DefaultLayout` and `DefaultErrorBoundary`. React Router's `Form`, `useFetcher`, `useActionData`, `useSubmit`, `useMatches`, `Await` and `ScrollRestoration` are not exported, because the framework has no route actions and does not stream (see [Not supported](#not-supported)). Import router things from the framework package only: the production image supplies one copy of the router, and a second copy would not share its context.
+
+### `root.tsx`
 
 ```tsx
-// app/routes/blog/[slug].tsx
-import { useLoaderData, type LoaderArgs } from "@archlast/forge-framework";
+// app/root.tsx
+import { isRouteErrorResponse, Link, Outlet, useRouteError } from "@archlast/forge-framework";
+import type { ReactNode } from "react";
+import "./styles.css";
+
+// The <html> document. Also used around error pages, so it must not read loader data.
+export function Layout({ children }: { children: ReactNode }) {
+  return (
+    <html lang="en">
+      <head>
+        <meta charSet="utf-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1" />
+        <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
+      </head>
+      <body>{children}</body>
+    </html>
+  );
+}
+
+export default function Root() {
+  return (
+    <>
+      <header><Link to="/">Home</Link></header>
+      <Outlet />
+    </>
+  );
+}
+
+export function ErrorBoundary() {
+  const error = useRouteError();
+  const status = isRouteErrorResponse(error) ? error.status : 500;
+  return <main><h1>{status}</h1></main>;
+}
+```
+
+- `Layout` is the document. The server renders it around the page, and around the error page when something fails, so it is where `<head>`, `lang` and the body wrapper belong. Without `app/root.tsx` (or without a `Layout` in it) the framework uses `DefaultLayout`: `<html lang="en">` with charset and viewport meta tags.
+- The default export is the chrome around every page: a header, a footer, providers, and an `<Outlet />`. If it is missing the root renders only the outlet.
+- `ErrorBoundary` replaces the default export (inside `Layout`) when the error has no nearer boundary. Without one, `DefaultErrorBoundary` shows the status, a title (`Page not found` for 404, `Not allowed` for 401 and 403, `Something went wrong` otherwise) and a link home. In development it adds the stack trace.
+- Do not put a `<title>` in `root.tsx` if your pages set their own: React renders both, and the document would have two (see [The page's head](#the-pages-head)).
+- A root `loader` works like any other. It runs on every navigation unless you add `shouldRevalidate`.
+
+## Loaders
+
+```tsx
+import { data, redirect, useLoaderData, type LoaderArgs } from "@archlast/forge-framework";
 import { api } from "../../../forge/_generated/api";
 
-export const loader = async ({ params, ctx }: LoaderArgs) => ({
-  post: await ctx.query(api.posts.bySlug, { slug: params.slug! }),
-});
+export const loader = async ({ request, params, ctx }: LoaderArgs) => {
+  const post = await ctx.query(api.posts.bySlug, { slug: params.slug! });
+  if (!post) throw data(`There is no post called "${params.slug}".`, { status: 404 });
+  return { slug: params.slug! };
+};
+```
 
-export default function Post() {
-  const { post } = useLoaderData<typeof loader>();
+A loader gets:
+
+- `request`: a standard `Request` for the page URL. Read search parameters with `new URL(request.url).searchParams`. In the browser it is built by the router for the target URL; do not rely on its headers.
+- `params`: the route parameters, each `string | undefined` (hence the `!`). A splat is `params["*"]`.
+- `ctx`: `{ query, viewer }`, described below.
+
+### Server and browser
+
+The same function runs in two places. On the first request of a visit it runs in the engine's process, calling your functions in-process as the visitor. On later in-app navigations it runs in the browser, and `ctx` talks to the server over HTTP. The consequences:
+
+- **No secrets and no server-only code in a loader.** It is bundled for the browser. `process.env` has only `NODE_ENV`. Anything private belongs in a query, mutation or action in `forge/`.
+- **Authorization lives in the functions.** A loader that redirects anonymous visitors is a convenience for navigation. The check that protects data is `ctx.auth.getUserIdentity()` inside the function.
+- **All matched loaders run at the same time.** A layout's loader and its children's start together, so a layout that redirects does not stop a child's loader from starting (checked: a `console.log` in the dashboard's loader printed on an anonymous request that the layout redirected). Do not rely on a layout loader to keep a child loader from running.
+- **Return JSON.** On the first request the loader's result is serialized into the page as JSON, so a `Date` arrives in the browser as an ISO string, `undefined` fields disappear, and `Map`, `Set` and class instances do not survive. (After a client-side navigation the loader runs in the browser and its result is used as it is, so a value that does not survive JSON would make the page behave differently on first load and on navigation.) Return `null` rather than `undefined` when there is nothing. `useLoaderData<typeof loader>()` types what you returned, not what arrives, so treat dates as strings. Query results are already JSON values.
+
+### `ctx.query` and the live cache
+
+`ctx.query(api.x.y, args)` runs a public query as the signed-in user, returns the result, and puts it in the page's live cache. A component then reads the same query with `useQuery` and has the data on its first render, in the HTML the server sends; afterwards the query stays live over the WebSocket and replaces the seeded value with the same or a newer one.
+
+The cache entry is keyed by the function's name and its arguments. The rule is: **call `useQuery` with the same function and structurally equal arguments.** Property order does not matter, and omitted arguments equal `{}`. If the keys differ, the component starts with `undefined` and fills in once its own subscription answers; nothing breaks, you just lose the first-render data.
+
+For `usePaginatedQuery` the loader passes what it asks for first: the extra arguments, plus `paginationOpts: { numItems: <initialNumItems>, cursor: null }`.
+
+```tsx
+export const loader = async ({ ctx }: LoaderArgs) => {
+  await ctx.query(api.messages.list, { paginationOpts: { numItems: 30, cursor: null } });
+  return null;
+};
+// in the component: usePaginatedQuery(api.messages.list, {}, { initialNumItems: 30 })
+```
+
+Everything in the cache goes into the page twice, once rendered and once as JSON in `window.__FORGE__`, so seed what the first screen needs and nothing more. On the server the call goes through the query cache like any other query (see [Caching](caching.html)); in the browser it is one HTTP call (calls in the same tick are batched). Only public queries can be passed; the types reject `internal` references. Errors are covered under [Errors and status codes](#errors-and-status-codes).
+
+### `ctx.viewer()`
+
+`await ctx.viewer()` is the signed-in user, `{ userId, email, name }`, or `null`. On the server it reads the visitor's session (a request with neither a cookie nor an authorization header is `null` without any lookup) and is computed once per request. In the browser it asks the server every time (with Better Auth's cookie cache off), so it is right in the moment after a sign-in or sign-out, before the client's own session store has caught up. That is why a loader that redirects anonymous visitors does not bounce someone who just signed in.
+
+### Redirects and thrown responses
+
+- `throw redirect("/sign-in")` sends the visitor elsewhere: a real `302` with `Location` on the first request (the response is sent with `cache-control: no-store`), and a client-side navigation afterwards. `redirect(url, 303)` picks the status.
+- `throw data("No such post", { status: 404 })` renders the route's `ErrorBoundary` (or the nearest above it) with that status. `useRouteError()` gives you the response; `isRouteErrorResponse(error)` tells it from a crash, and `error.data` is what you passed.
+- Any other thrown error renders the boundary with status 500.
+
+Return values are plain data. To change data, call mutations from event handlers (below); loaders only read.
+
+### Revalidation
+
+After a navigation, React Router reruns a route's loader when its parameters changed, when its search parameters changed, or after a call to `revalidate()`. A layout whose parameters did not change keeps its data across child navigations. Because queries seeded with `ctx.query` are live, the data in the cache does not go stale: you rarely need to revalidate to refresh data, only to rerun a loader's checks. Two tools:
+
+```tsx
+import { useRevalidator, type RouteModule } from "@archlast/forge-framework";
+
+// Skip the loader when only the query string changed; the page's useQuery follows it live.
+export const shouldRevalidate: RouteModule["shouldRevalidate"] = ({ currentUrl, nextUrl, defaultShouldRevalidate }) =>
+  currentUrl.pathname === nextUrl.pathname ? false : defaultShouldRevalidate;
+
+function RefreshButton() {
+  const { revalidate, state } = useRevalidator(); // state: "idle" | "loading"
+  return <button onClick={() => void revalidate()} disabled={state === "loading"}>Refresh</button>;
+}
+```
+
+`shouldRevalidate` only decides about a route that is already on screen; a route that newly matches always runs its loader.
+
+### `handle`
+
+`export const handle = { crumb: "Posts" }` is attached to the route, and `useMatches()` (exported from `@archlast/forge-framework`, from `0.1.1`) returns every matched route with its `handle` and loader data, which is how breadcrumbs are built:
+
+```tsx
+import { Link, useMatches } from "@archlast/forge-framework";
+
+export function Breadcrumbs() {
+  const crumbs = useMatches().filter((m) => (m.handle as { crumb?: string } | undefined)?.crumb);
   return (
-    <article>
-      <title>{post.title}</title>
-      <h1>{post.title}</h1>
-    </article>
+    <nav aria-label="Breadcrumb">
+      {crumbs.map((m) => (
+        <Link key={m.id} to={m.pathname}>{(m.handle as { crumb: string }).crumb}</Link>
+      ))}
+    </nav>
   );
 }
 ```
 
-A route module may export:
+### `useRouteLoaderData`
 
-- `default`: the page.
-- `loader`: runs before the page renders.
-- `ErrorBoundary`: shown when this route's loader or page fails.
-- `handle`, `shouldRevalidate`: as in React Router, which does the routing underneath.
+`useRouteLoaderData("routes/blog/_layout")` reads another route's loader data by route id, from a child or from the root. It is `undefined` when that route is not on the page.
 
-`app/root.tsx` is the one route that always renders. It exports `Layout` (the `<html>` document, also used for error pages), a default component with the chrome and an `<Outlet />`, and optionally `ErrorBoundary`.
+## The viewer and sign-in
 
-Link with `Link` and `NavLink` from `@archlast/forge-framework`; navigation happens in the browser, loading only the next page's code. Also exported: `useNavigate`, `useParams`, `useLocation`, `useSearchParams`, `useNavigation`, `useRevalidator`, `redirect`, `data`.
+`useViewer()` gives components the signed-in user (`Viewer | null`). It is part of the server-rendered HTML (`window.__FORGE__.viewer`), so a header can say "Hi Ada" with no flash, and it follows sign-in and sign-out without a reload.
 
-## Loaders and live data
-
-A loader runs on the server for the first request and in the browser for later navigations, with the same code. It gets `{ request, params, ctx }`.
-
-`ctx.query(api.x.y, args)` runs a query as the signed-in user and **keeps the result in the page's live cache**. The component then reads it with `useQuery(api.x.y, args)` and has it on the first render, in the server's HTML; afterwards the query stays live over the WebSocket. Use the same function and arguments in both places. For a paginated list, the loader passes what `usePaginatedQuery` asks for first: `{ paginationOpts: { numItems: 30, cursor: null } }`.
+Sign in with the Better Auth client that `useAuth()` returns from `@archlast/forge-react`, then navigate; the next page's loader sees the new session. This is the sign-in page of a dashboard that sends visitors back to where they were going:
 
 ```tsx
-export const loader = async ({ ctx }: LoaderArgs) => {
-  if (!(await ctx.viewer())) throw redirect("/sign-in");
-  await ctx.query(api.messages.list, { paginationOpts: { numItems: 30, cursor: null } });
+// app/routes/sign-in.tsx
+import { redirect, useNavigate, useSearchParams, type LoaderArgs } from "@archlast/forge-framework";
+import { useAuth } from "@archlast/forge-react";
+import { useState, type FormEvent } from "react";
+
+/** Only paths on this site: "//evil.example" and "https://…" are not. */
+const safeNext = (next: string | null) => (next && next.startsWith("/") && !next.startsWith("//") ? next : "/dashboard");
+
+export const loader = async ({ request, ctx }: LoaderArgs) => {
+  if (await ctx.viewer()) throw redirect(safeNext(new URL(request.url).searchParams.get("next")));
   return null;
 };
+
+export default function SignIn() {
+  const auth = useAuth();
+  const navigate = useNavigate();
+  const [params] = useSearchParams();
+  const [error, setError] = useState<string>();
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    const res = await auth.signIn.email({ email: String(form.get("email")), password: String(form.get("password")) });
+    if (res.error) return setError(res.error.message ?? "That didn't work");
+    await navigate(safeNext(params.get("next")), { replace: true });
+  }
+
+  return (
+    <form onSubmit={submit}>
+      <title>Sign in</title>
+      <input name="email" type="email" required />
+      <input name="password" type="password" required />
+      {error && <p role="alert">{error}</p>}
+      <button>Sign in</button>
+    </form>
+  );
+}
 ```
 
-- `ctx.viewer()` is the signed-in user or `null`. In the browser it asks the server, so it is right in the moment after a sign-in or sign-out.
-- `throw redirect("/sign-in")` sends the visitor elsewhere (a real 302 for the first request).
-- `throw data("No such post", { status: 404 })` renders the route's `ErrorBoundary` with that status.
-- A loader returns JSON: dates arrive as strings. Return `null` rather than `undefined` when there is nothing.
-- Mutations are not loaders' job. Call them from event handlers with `useMutation`.
+Sign out with `await auth.signOut(); await navigate("/")`. Sign-up is `auth.signUp.email({ email, password, name })`; the starter's sign-in page does both. Social providers, email verification and other Better Auth features are configured in `forge/auth.ts` (see [Authentication](auth.html)). Cookies are `HttpOnly`; the page never sees the token, only the viewer.
 
-`useViewer()` gives components the signed-in user. It is part of the server-rendered HTML, so a header can say "Hi Ada" with no flash, and it follows sign-in and sign-out without a reload. Sign in with `useAuth()` from `@archlast/forge-react`, then `navigate()` to the next page; its loader sees the new session.
+## Mutations and forms
+
+There are no route actions. Call mutations from event handlers with `useMutation` from `@archlast/forge-react`, handle `ForgeError` yourself, and let live queries update the screen:
+
+```tsx
+const add = useMutation(api.tasks.add);
+<form onSubmit={async (e) => { e.preventDefault(); await add({ title }); setTitle(""); }}>
+```
+
+Because every query on screen is live, there is nothing to revalidate after a mutation. For optimistic updates see [Clients](clients.html). `<form method="post">` to a page URL does nothing: the engine answers only `GET` and `HEAD` for pages.
+
+## Navigation
+
+- `Link` and `NavLink` navigate in the browser, loading only the next page's code. `NavLink` adds `class="active"` and `aria-current="page"` to the link of the current page; pass `end` on `/` so it is not active everywhere.
+- `useNavigate()` returns a function: `navigate("/chat")`, `navigate(-1)`, `navigate("/x", { replace: true })`. It returns a promise that settles when the navigation (and its loaders) finish.
+- `useNavigation()` tells you a navigation is in flight: `state` is `"idle"` or `"loading"` while the next route's code and loaders run, and `navigation.location` is where it is heading. Use it for a pending bar:
+
+  ```tsx
+  export default function Root() {
+    const navigation = useNavigation();
+    return (
+      <div style={{ opacity: navigation.state === "loading" ? 0.6 : 1, transition: "opacity .15s" }}>
+        <Outlet />
+      </div>
+    );
+  }
+  ```
+
+- `useSearchParams()` reads and sets the query string: `setParams({ q: "bun" }, { replace: true })`. Changing it reruns loaders unless `shouldRevalidate` says otherwise.
+- `useParams()` and `useLocation()` are what you expect. `Navigate` redirects while rendering: `<Navigate to="/sign-in" replace />`.
+- `Link`'s `prefetch` prop does nothing in this setup. Route code loads when the navigation starts. The server does preload the code of the routes it renders (see [Production](#production)).
+- Scroll position is not managed; if you want a new page to start at the top, call `window.scrollTo(0, 0)` in an effect keyed on `useLocation().pathname`.
 
 ## The page's head
 
-Render `<title>`, `<meta>` and `<link>` inside a page and React moves them into `<head>`. Give every page its own `<title>`; do not also set one in `root.tsx`, or the document gets two.
+Render `<title>`, `<meta>` and `<link>` inside a page (or layout) and React moves them into `<head>`:
+
+```tsx
+<article>
+  <title>{post.title}</title>
+  <meta name="description" content={post.body.slice(0, 140)} />
+  <link rel="canonical" href={`https://example.com/blog/${post.slug}`} />
+  <h1>{post.title}</h1>
+</article>
+```
+
+Rendered on the server, this is in the HTML (`<title>Hello world number 1</title><meta name="description" …/>` inside `<head>`), so crawlers and link previews see it. Give every page its own `<title>`. A `<title>` in a layout or `root.tsx` is not a default that pages override: both are rendered, and the document gets two. Put a title in a layout only if no page below it sets one.
 
 ## Styles, images and files
 
-- `import "./styles.css"` from `root.tsx` (or any route). All CSS is built into one file that is linked in `<head>`, so there is no flash of unstyled content.
-- `import logo from "./logo.svg"` gives a hashed URL. Declare the file types you import in `app/env.d.ts`.
-- Files in `public/` are served at the root. Names that start with a dot are not, except `.well-known`.
+- `import "./styles.css"` from `root.tsx` or any route. All CSS, including CSS imported by lazily loaded routes, is built into one file that is linked in `<head>`, so there is no flash of unstyled content and no per-route stylesheet.
+- `import logo from "./logo.svg"` gives a hashed URL (`/_app/logo-n759mggn.svg`). Declare the file types you import in `app/env.d.ts` (`declare module "*.svg" { const src: string; export default src; }`). JSON imports work as in any bundler.
+- Files in `public/` are served at the root: `public/robots.txt` is `/robots.txt`. They are cached for an hour in production (`public, max-age=3600`) and not at all in development. Paths with a segment starting with a dot are refused, except `.well-known`. A file in `public/` is only looked up for paths that have a file extension.
+- Path aliases work: with `"paths": { "~/*": ["./app/*"] }` in `tsconfig.json`, `import { hi } from "~/lib/hi"` builds. (TypeScript 7 rejects `baseUrl`; use relative targets in `paths`.)
+- Tailwind, CSS modules and PostCSS are not set up. Plain CSS and anything Bun's bundler handles work; a preprocessor needs a build step of your own that writes a `.css` file.
 
-## Errors
+## Errors and status codes
 
-A failure in a loader or page renders the nearest `ErrorBoundary`, then the root's, inside your `Layout`, with the right status code. Unknown URLs are a 404 through the same path. Outside development, only what is meant for visitors is shown: a `ForgeError`'s message, and `Server error (request <id>)` for everything else, with the full error in the server log under that id.
+A failure in a loader or a page renders the nearest `ErrorBoundary`, then the root's, inside your `Layout`, with the right status code.
+
+| What happened | Status | What the visitor sees |
+|---|---|---|
+| URL matches no route | 404 | the root `ErrorBoundary` |
+| `throw data(x, { status: n })` | `n` | the boundary, with `error.data === x` |
+| loader or page throws a `ForgeError` (or a function call fails with a message meant for callers) | 500 | the boundary, with the error's message |
+| loader or page throws anything else | 500 | `Server error (request <id>)` in production; the real message and stack in development |
+| a loader redirects | 302 | the new page |
+| the build is broken (development) | 500 | the build error, over a dark page |
+| the page cannot be rendered at all (production) | 500 | plain text `Server error (request <id>)` |
+| over the rate limit | 429 | plain text `Too many requests`, with `retry-after` |
+
+The sanitizing is done on the server before the page renders, so the HTML never contains the original message. The full error is logged with the same request id (also in the `x-request-id` response header), which is how you find it:
+
+```
+Error: db password is hunter2
+    at loader6 (…/routes.server-apt9f8ne.js:489:18)
+    … (request 1a6cd5ed-1, route root)
+```
+
+A custom 404 and 500 are an `ErrorBoundary` that switches on the status:
+
+```tsx
+// app/root.tsx
+export function ErrorBoundary() {
+  const error = useRouteError();
+  const status = isRouteErrorResponse(error) ? error.status : 500;
+  const message =
+    status === 404 ? "That page doesn't exist."
+    : isRouteErrorResponse(error) ? String(error.data || error.statusText)
+    : error instanceof Error ? error.message  // already sanitized in production
+    : "Something went wrong.";
+  return (
+    <main>
+      <title>{status === 404 ? "Page not found" : "Something went wrong"}</title>
+      <h1>{status}</h1>
+      <p>{message}</p>
+      <Link to="/">Go home</Link>
+    </main>
+  );
+}
+```
+
+Add an `ErrorBoundary` to a route to keep the rest of the page alive: in `blog/[slug].tsx`, a missing post shows "That post is gone" inside the blog layout while the header and navigation stay. An error thrown while rendering in the browser (not in a loader) is caught by the same boundaries.
+
+## How a request becomes a page
+
+1. The engine gets a `GET` or `HEAD` request it has no route for. (Anything else it doesn't own is a plain 404.) A path with a file extension is first looked up in `public/`.
+2. It checks the rate limit, matches the URL, and runs the matched routes' loaders in parallel. `ctx.query` calls your functions in-process as the visitor and records each result.
+3. The sanitized errors are computed, the viewer is read, and the page is rendered with `renderToReadableStream`. The engine waits until the render is complete before sending, so the status code and headers are right and there are no half pages.
+4. The response is HTML with `cache-control: private, no-cache`, `vary: cookie`, `x-content-type-options: nosniff`, `referrer-policy: strict-origin-when-cross-origin` and an `x-request-id`. `<link rel="stylesheet">` and `<link rel="modulepreload">` tags for the matched routes' code are in `<head>`.
+5. A script defines `window.__FORGE__`:
+
+   | Key | Content |
+   |---|---|
+   | `dev` | `true` in development; the browser shows error details only then |
+   | `viewer` | the signed-in user or `null` |
+   | `queries` | the dehydrated live cache: every `ctx.query` result, with its key |
+   | `hydration` | `loaderData` by route id, `actionData` (always `null`) and the sanitized `errors` |
+
+   The JSON is escaped so it cannot break out of the `<script>` element.
+6. The browser loads `/_app/entry.client-<hash>.js`, rebuilds the router with the embedded data, loads the code of the routes on this page, and hydrates the whole document. Then it takes over navigation, and live queries connect over the WebSocket at `/rpc`.
+
+If `window.__FORGE__` is missing (the page was not rendered by the engine, for instance a cached copy of the HTML served by something else) the browser entry throws `This page wasn't rendered by archlast-forge: window.__FORGE__ is missing.`
+
+## Examples
+
+These routes are from a project built and run with the versions on npm; the backend functions they call are shown with them.
+
+### A blog with nested layouts
+
+```ts
+// forge/schema.ts (the posts table)
+posts: defineTable({ slug: v.string(), title: v.string(), body: v.string(), publishedAt: v.number() })
+  .index("by_slug", ["slug"])
+  .searchIndex("search_title", { searchField: "title" }),
+```
+
+```ts
+// forge/posts.ts
+import { mutation, paginationOptsValidator, query, v } from "@archlast/forge-runtime";
+
+export const list = query({
+  args: { paginationOpts: paginationOptsValidator },
+  handler: (ctx, { paginationOpts }) => ctx.db.query("posts").order("desc").paginate(paginationOpts),
+});
+
+export const bySlug = query({
+  args: { slug: v.string() },
+  handler: (ctx, { slug }) => ctx.db.query("posts").withIndex("by_slug", (q) => q.eq("slug", slug)).first(),
+});
+
+export const search = query({
+  args: { text: v.string() },
+  handler: (ctx, { text }) => (text.trim() ? ctx.db.query("posts").withSearchIndex("search_title", (q) => q.search("title", text)).take(20) : []),
+});
+```
+
+```tsx
+// app/routes/blog/_layout.tsx: navigation shared by everything under /blog
+import { NavLink, Outlet } from "@archlast/forge-framework";
+
+export default function BlogLayout() {
+  return (
+    <div className="container">
+      <nav aria-label="Blog">
+        <NavLink to="/blog" end>All posts</NavLink> · <NavLink to="/blog/search">Search</NavLink>
+      </nav>
+      <Outlet />
+    </div>
+  );
+}
+```
+
+```tsx
+// app/routes/blog/[slug].tsx: one post, with a 404 and its own error boundary
+import { data, useLoaderData, type LoaderArgs } from "@archlast/forge-framework";
+import { useQuery } from "@archlast/forge-react";
+import { api } from "../../../forge/_generated/api";
+
+export const loader = async ({ params, ctx }: LoaderArgs) => {
+  const post = await ctx.query(api.posts.bySlug, { slug: params.slug! });
+  if (!post) throw data(`There is no post called "${params.slug}".`, { status: 404 });
+  return { slug: params.slug! };
+};
+
+export default function Post() {
+  const { slug } = useLoaderData<typeof loader>();
+  const post = useQuery(api.posts.bySlug, { slug }); // seeded by the loader: present on the first render
+  if (!post) return null;
+  return (
+    <article>
+      <title>{post.title}</title>
+      <meta name="description" content={post.body.slice(0, 140)} />
+      <h1>{post.title}</h1>
+      <p>{post.body}</p>
+    </article>
+  );
+}
+
+export function ErrorBoundary() {
+  return <p>That post is gone. <a href="/blog">Back to the blog</a></p>;
+}
+```
+
+`GET /blog/nope` answers `404` with the blog layout and "That post is gone" around it; `GET /blog/post-1` answers `200` with the title and description in `<head>`.
+
+### A paginated list with its first page preloaded
+
+```tsx
+// app/routes/blog/index.tsx
+import { Link, useViewer, type LoaderArgs } from "@archlast/forge-framework";
+import { usePaginatedQuery } from "@archlast/forge-react";
+import { api } from "../../../forge/_generated/api";
+
+const PAGE = 5;
+
+export const loader = async ({ ctx }: LoaderArgs) => {
+  await ctx.query(api.posts.list, { paginationOpts: { numItems: PAGE, cursor: null } });
+  return null;
+};
+
+export default function BlogIndex() {
+  const { results, status, loadMore } = usePaginatedQuery(api.posts.list, {}, { initialNumItems: PAGE });
+  const viewer = useViewer();
+  return (
+    <main>
+      <title>Blog</title>
+      <h1>Blog</h1>
+      {viewer && <p>Signed in as {viewer.name}</p>}
+      <ul>{results.map((p) => <li key={p._id}><Link to={`/blog/${p.slug}`}>{p.title}</Link></li>)}</ul>
+      {status === "CanLoadMore" && <button onClick={() => loadMore(PAGE)}>Older posts</button>}
+    </main>
+  );
+}
+```
+
+The loader's arguments match what `usePaginatedQuery` asks for first, so the five newest posts are in the server's HTML and in `window.__FORGE__.queries` (key `["archlast-forge","posts:list",{"paginationOpts":{"cursor":null,"numItems":5}}]`). "Older posts" widens one live window: every loaded post stays current. The page's code is also preloaded: its `<head>` has `modulepreload` links for the route's chunk and the shared chunks it imports, so the browser fetches them in parallel with the HTML's other resources. The framework does not prefetch the next page on hover.
+
+### A search page with search parameters
+
+```tsx
+// app/routes/blog/search.tsx
+import { Link, useSearchParams, type LoaderArgs, type RouteModule } from "@archlast/forge-framework";
+import { useQuery } from "@archlast/forge-react";
+import { api } from "../../../forge/_generated/api";
+
+export const loader = async ({ request, ctx }: LoaderArgs) => {
+  const text = new URL(request.url).searchParams.get("q") ?? "";
+  await ctx.query(api.posts.search, { text });
+  return null;
+};
+
+// Typing changes only ?q=. useQuery below follows it live, so the loader need not run again.
+export const shouldRevalidate: RouteModule["shouldRevalidate"] = ({ currentUrl, nextUrl, defaultShouldRevalidate }) =>
+  currentUrl.pathname === nextUrl.pathname ? false : defaultShouldRevalidate;
+
+export default function Search() {
+  const [params, setParams] = useSearchParams();
+  const text = params.get("q") ?? "";
+  const hits = useQuery(api.posts.search, { text }) ?? [];
+  return (
+    <main>
+      <title>{text ? `Search: ${text}` : "Search"}</title>
+      <input type="search" value={text} onChange={(e) => setParams(e.target.value ? { q: e.target.value } : {}, { replace: true })} />
+      <ul>{hits.map((p) => <li key={p._id}><Link to={`/blog/${p.slug}`}>{p.title}</Link></li>)}</ul>
+    </main>
+  );
+}
+```
+
+`/blog/search?q=hello` is rendered with its results and `<title>Search: hello</title>`, so it can be shared or crawled. `replace: true` keeps each keystroke from adding a history entry. Without `shouldRevalidate`, every keystroke would also rerun the loader, an HTTP call that repeats what the live query already does.
+
+### An auth-gated dashboard area
+
+```
+app/routes/
+  (app)/
+    _layout.tsx          the guard
+    dashboard/
+      index.tsx          /dashboard
+  sign-in.tsx            /sign-in (shown above)
+```
+
+```tsx
+// app/routes/(app)/_layout.tsx
+import { Outlet, redirect, type LoaderArgs } from "@archlast/forge-framework";
+
+export const loader = async ({ request, ctx }: LoaderArgs) => {
+  if (!(await ctx.viewer())) {
+    const url = new URL(request.url);
+    throw redirect(`/sign-in?next=${encodeURIComponent(url.pathname + url.search)}`);
+  }
+  return null;
+};
+
+export default function AppLayout() {
+  return <Outlet />;
+}
+```
+
+```tsx
+// app/routes/(app)/dashboard/index.tsx
+import { useViewer, type LoaderArgs } from "@archlast/forge-framework";
+import { useMutation, useQuery } from "@archlast/forge-react";
+import { useState } from "react";
+import { api } from "../../../../forge/_generated/api";
+
+export const loader = async ({ ctx }: LoaderArgs) => {
+  await ctx.query(api.tasks.mine);
+  return null;
+};
+
+export default function Dashboard() {
+  const viewer = useViewer();
+  const tasks = useQuery(api.tasks.mine) ?? [];
+  const add = useMutation(api.tasks.add);
+  const [title, setTitle] = useState("");
+  return (
+    <main className="container">
+      <title>Dashboard</title>
+      <h1>Hello, {viewer?.name}</h1>
+      <form onSubmit={async (e) => { e.preventDefault(); await add({ title }); setTitle(""); }}>
+        <input value={title} onChange={(e) => setTitle(e.target.value)} />
+        <button>Add</button>
+      </form>
+      <ul>{tasks.map((t) => <li key={t._id}>{t.title}</li>)}</ul>
+    </main>
+  );
+}
+```
+
+An anonymous `GET /dashboard` answers `302 Location: /sign-in?next=%2Fdashboard`. After signing in the visitor lands back on `/dashboard`, whose HTML already says "Hello, Ada" and lists the tasks. `tasks.mine` returns `[]` for anonymous callers and filters by `ctx.auth` for signed-in ones: the guard in the layout is for navigation, the filter in the function is for security (the child's loader runs even when the layout redirects).
+
+### A custom 404 and 500
+
+The `ErrorBoundary` in `root.tsx` above handles both. To test it: `GET /anything/here` is a `404` through the root boundary; `throw data("I am a teapot", { status: 418 })` in a loader answers `418` and renders the same boundary with `error.data === "I am a teapot"`; a loader that throws `new Error("db password is hunter2")` answers `500` and, outside development, shows only `Server error (request 1a6cd5ed-1)`.
 
 ## Development
 
-`archlast-forge dev` runs the engine and the app in one process on your machine.
+`archlast-forge dev` runs the engine and the app in one process on your machine, with the database in `forge/data`:
 
-- Saving a file rebuilds the app (about a fifth of a second) and the browser reloads. A new file in `routes/` is a new page, with no restart.
-- A build error appears over the page and in the terminal; fixing it reloads the page.
-- Editing `forge/` restarts only your functions and regenerates the types in `forge/_generated`, which rebuilds the app.
-- Services you chose (PostgreSQL, Redis, storage) run in Docker, with their ports on localhost, and stop when you do. Their data is kept.
+```
+✓ codegen: 3 modules
+✓ app built in 220 ms
+
+  archlast-forge 0.1.0  ·  full-stack app  · ready in 738 ms
+
+  ➜  App        http://localhost:3000
+  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  Admin key  d3b8…
+```
+
+- Saving a file in `app/` rebuilds the app (a fifth of a second for the starter) and the browser reloads, over a server-sent-events connection at `/_app/__events`. A new file in `routes/` is a new page, with no restart. A save that only touches `public/` reloads without a rebuild. The previous build is kept for a moment so a page that is still open can fetch its files.
+- A build error appears over the page (dark overlay; `Esc` dismisses it) and in the terminal, and fixing the file reloads the page. While the build is broken, every page request answers `500` with the error, instead of serving the last good build.
+- Editing a file in `forge/` regenerates `forge/_generated`, restarts only your functions (`✓ function runtime restarted (tasks.ts)`), and then rebuilds the app, because the generated types changed. Open WebSocket connections stay up and subscriptions re-run. Changing `forge/package.json` or the lockfile installs dependencies first.
+- Errors show details in development: the real message and the stack in the error page.
+- Services you chose (PostgreSQL, Redis, storage) run in Docker with their ports on localhost, and stop when you do; their data stays in Docker volumes. With `--no-docker` they are not started and the app uses SQLite (set `DATABASE_URL`, `REDIS_URL` or `S3_*` yourself to use others).
+- `--port <n>` changes the port. Development trusts `http://localhost:<port>` for sign-in. Setting `TRUSTED_ORIGINS` yourself replaces that default.
+
+See [CLI](cli.html#dev) for every flag. There is no hot module replacement: a save reloads the page, and component state is lost.
 
 ## Production
 
@@ -122,17 +662,91 @@ archlast-forge start --no-docker     # serve them here
 archlast-forge up                    # or: the image and its services, in Docker
 ```
 
-The browser bundle is split per route, hashed, and stored with gzip and brotli versions that the server hands out as they are, with a one-year `immutable` cache header. The page links the code of the routes it shows, so the browser fetches it in parallel with the page. The starter's first load is about 107 kB with brotli (124 kB with gzip): React, the router, live queries and sign-in. Each page adds a couple of kilobytes.
+`build --no-docker` prints what the browser will download:
 
-## How it works
+```
+→ Building the app
+✓ Building the app 1.4s
+  first load  entry.client.js 389 kB (108 kB compressed), entry.client.css 5.2 kB (1.5 kB compressed)
+  all code   14 files, 400 kB; each page loads only the routes it shows
+```
 
-For each request the engine matches the URL, runs the matched routes' loaders (calling your functions in-process, as the visitor), renders the page to HTML with React, and sends it with the loaders' data and the live cache embedded. The browser then hydrates the page and takes over navigation. Routing and data loading are [React Router](https://reactrouter.com)'s data router; the engine adds file routes, the build, the live cache, the viewer, and the server around them.
+What the build does:
 
-Paths the engine uses itself are not available to routes: `/rpc`, `/api/auth`, `/http`, `/_app`, `/_admin`, `/_dashboard`, `/health`, `/ready`, `/metrics`.
+- **Two bundles with `Bun.build`.** The browser bundle is split per route, hashed and minified, with `process.env.NODE_ENV` set to `"production"` and no source maps. The server bundle is one file with packages left external (they are loaded from `node_modules` at run time) and CSS ignored.
+- **Output** goes to `.forge/build/<version>/` (`client/`, `server/`, `manifest.json`), and `.forge/build/latest.json` points at the newest. Production builds delete older versions.
+- **Compression:** text assets of 1 kB or more (`.js`, `.css`, `.svg`, `.json`, `.html`, `.txt`, `.map`) are stored next to the original as `.gz` and `.br`, and the server sends them as they are when the request's `accept-encoding` allows it. No compression happens per request.
+- **Caching:** everything under `/_app/` is served with `cache-control: public, max-age=31536000, immutable`, `vary: accept-encoding` and `x-content-type-options: nosniff`; names carry content hashes, so a new build has new URLs. HTML is never cached.
+- **Preload:** for each matched route, the page's `<head>` gets `modulepreload` links for the route's chunk and every chunk it imports statically (from the build's metafile), and the stylesheet is linked in `<head>`.
+- **Size:** the starter's first load is about 108 kB with brotli (128 kB with gzip): React, the router, live queries and sign-in. Each page adds a couple of kilobytes.
 
-## Not included
+`start --no-docker` fails with ``No production build in …/.forge/build. Run `archlast-forge build --no-docker` first.`` if there is no build. Starting reads the build once; it does not watch for new ones, so restart after building. Bun loads the project's `.env` from the current directory, so `BETTER_AUTH_SECRET`, `ADMIN_KEY` and the rest are picked up from there (see [Configuration](configuration.html)); `BETTER_AUTH_URL` must be `https://` outside development unless `ALLOW_INSECURE_HTTP=1`.
 
-- Streaming responses, and static generation: every page is rendered per request.
-- Form actions: change data with mutations from event handlers.
-- Per-route CSS files loaded on demand: all CSS is one file.
-- In production the engine image supplies `react` and `react-dom` (19.3.x); a different 19.x on your machine is fine for development, but test against the image (`archlast-forge up`) before shipping.
+In Docker, `archlast-forge up` builds an image from the project's `Dockerfile`: the engine image, your files, `engine prepare` (installs the app's `dependencies`, links React and the framework from the engine so there is one copy, generates types, builds), and starts the stack from `compose.yaml`. Pages, API, WebSockets and the dashboard come from one container. [Deployment](deployment.html) covers the rest. Two things to know:
+
+- In production the engine image supplies `react` and `react-dom` (19.3.x). A different 19.x on your machine is fine for development, but test against the image (`archlast-forge up`) before shipping.
+- **A deploy invalidates the previous build's files.** A browser tab that was open before a deploy still runs the old code; a client-side navigation to a route whose chunk it has not loaded asks for a file that no longer exists and fails until the page is reloaded. Pages already loaded keep working. This is not handled for you; if it matters, your proxy can keep serving the old assets for a while, or you can prompt users to reload when a request fails.
+
+## Reserved paths
+
+These belong to the engine and are not available to routes: `/rpc`, `/api/auth`, `/http`, `/_app`, `/_admin`, `/_dashboard`, `/_cli` (POST), `/health`, `/ready`, `/metrics`. A route file named `health.tsx` would never be reached. Your `forge/http.ts` routes live under `/http` (see [HTTP endpoints](http.html)).
+
+`/_dashboard` and `/_admin` exist only when the dashboard is on (development, or `DASHBOARD=on`). Otherwise `/_admin/*` answers a plain 404 and `/_dashboard` falls through to your app, which renders its own 404 page.
+
+## Configuration
+
+The app has no config file of its own. The environment variables of the engine apply ([Configuration](configuration.html)). The ones you meet first:
+
+| Variable | Meaning for a full-stack app |
+|---|---|
+| `BETTER_AUTH_URL` | the public address of the app; sessions and cookies are tied to it |
+| `TRUSTED_ORIGINS` | other browser origins allowed to call the API with cookies |
+| `RATE_LIMIT_PER_MINUTE` | applies to page requests too (they count per client IP) |
+| `TRUST_PROXY` | use `X-Forwarded-For` for the client IP; set it behind a proxy |
+| `DASHBOARD` | `on` to serve `/_dashboard` in production |
+
+Nothing from `process.env` reaches the browser bundle except `NODE_ENV`. To give pages a value, return it from a query or a loader (a public setting) or read it in a function.
+
+## Without Docker
+
+`archlast-forge dev` already runs without Docker for projects that have no services. To run production on a machine with Bun: `bun install`, `archlast-forge build --no-docker`, `archlast-forge start --no-docker --port 3000`, with `.env` or the environment providing `BETTER_AUTH_SECRET`, `BETTER_AUTH_URL` and `ADMIN_KEY`. Put a TLS proxy in front, set `TRUST_PROXY=1`, and set `DATA_DIR` to a disk that persists (SQLite lives in `DATA_DIR/app.db`; `dev` uses `forge/data`, but `start --no-docker` defaults to `./data` in the directory you start it from). The process stops cleanly on `SIGTERM`. [Deployment](deployment.html) covers images, other platforms and scaling.
+
+## Internals
+
+The code is small enough to read (`packages/framework/src`):
+
+| File | What it does |
+|---|---|
+| `routes.ts` | scans `app/routes` into a route tree and throws the naming errors above |
+| `generate.ts` | writes `.forge/gen`: the browser manifest (routes imported lazily), the server manifest (imported up front) and the entry |
+| `build.ts` | the two `Bun.build` runs, the per-route preload lists, compression, versioned output |
+| `route-objects.tsx` | turns a manifest into React Router route objects; wraps loaders so they receive `ctx`; wraps the root in `Layout` |
+| `server.tsx` | `createApp`: the `AppHost` the engine calls for every request it doesn't own; static files, rendering, errors |
+| `client.tsx` | `startClient`: restores the cache, builds the browser router, hydrates the document |
+| `context.ts`, `providers.tsx`, `state.ts` | the loader context, the viewer store, and the shape of `window.__FORGE__` |
+| `dev.ts` | the file watcher, live reload events, the error overlay |
+
+The engine side is `AppHost` in `packages/runtime/src/server/server.ts`: `fetch(req, env)` where `env` offers `call` (run a public function as the caller), `identity`, `rateLimited`, `keepAlive` and the request id. The CLI loads the framework package from your project at run time (`packages/cli/src/app.ts`), so a backend project never installs React.
+
+## Not supported
+
+- **Streaming responses and static generation.** Every page is rendered per request, and the response is sent when the render is complete.
+- **Route actions and `Form`.** Change data with mutations from event handlers.
+- **Per-route CSS loaded on demand.** All CSS is one file.
+- **Hot module replacement.** A save reloads the page.
+- **Prefetching on hover or in the viewport**, and scroll restoration.
+- **Prefetching `handle`-based data on the server**: `useMatches` works in components, but nothing reads `handle` before the page renders.
+- **Server-only code in `app/`.** There is no `.server` file convention; everything in `app/` can reach the browser. Server code goes in `forge/`.
+- **Tracing spans for page renders.** Function calls made by loaders are traced like any other (see [Deployment](deployment.html#logs-and-metrics)).
+
+## Moving a Vite single-page app
+
+1. Create a full-stack project and copy your components into `app/` (not into `routes/`, unless a file is a page).
+2. Turn each client route into a file: `<Route path="/users/:id">` becomes `routes/users/[id].tsx`; a layout route becomes `_layout.tsx` with an `<Outlet />`; `*` becomes `[...path].tsx`.
+3. Move data fetching into loaders where you want the data in the first HTML, using `ctx.query` with the same function and arguments as the `useQuery` call. Components that already use `useQuery` keep working unchanged; they just show `undefined` first.
+4. Replace `react-router-dom` imports with `@archlast/forge-framework`. `useNavigate`, `Link`, `NavLink`, `useParams`, `useSearchParams` and `Outlet` have the same names.
+5. Replace `import.meta.env.VITE_*`: the build defines only `process.env.NODE_ENV`. Pass settings through a query or a loader.
+6. Move `index.html` into `root.tsx`'s `Layout`, and `public/` as it is. Move CSS imports to `root.tsx`.
+7. Guard code that touches `window` or `document` at render time: pages render on the server. Use effects, or check `typeof window`.
+8. Keep server-only code (database access, secrets, SDKs with keys) out of `app/`; put it in functions in `forge/` and call them with `useQuery`, `useMutation` and `useAction`.
+9. Drop the Vite dev server and the proxy to your API: the pages and the API are the same origin.

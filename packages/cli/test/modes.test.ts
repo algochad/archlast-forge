@@ -71,6 +71,16 @@ describe("the command", () => {
     for (const word of ["init [dir]", "dev", "up ", "down [--volumes]", "build [--tag", "--mode <framework|backend>"]) expect(out).toContain(word);
   });
 
+  test("a mistyped option is one line, and --version says the version", async () => {
+    const bad = await cli(["dev", "--prot", "3000"]);
+    expect(bad.code).toBe(1);
+    expect(bad.err).toContain("Unknown option '--prot'");
+    expect(bad.err).not.toContain("    at "); // no stack trace
+    const v = await cli(["--version"]);
+    expect(v.code).toBe(0);
+    expect(v.out.trim()).toMatch(/^\d+\.\d+\.\d+/);
+  });
+
   test("init hands over to the scaffolder, with its flags", async () => {
     const dir = fresh("from-init");
     const { out, code } = await cli(["init", dir, "--mode", "backend", "--services", "none", "--yes", "--no-install", "--no-git"]);

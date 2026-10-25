@@ -30,4 +30,4 @@ bun run up       # builds the image, starts the stack from compose.yaml, waits u
 bun run down
 ```
 
-`bun run build && bun run start` runs the production bundles on this machine without Docker. `compose.yaml` is yours to edit; secrets are in `.env`, which `up` creates and git ignores.
+`bun run build && bun run start` runs the production bundles on this machine without Docker. `compose.yaml` is yours to edit; secrets are in `.env`, which `init` created with fresh keys and git ignores (`up` makes one only if it's missing).

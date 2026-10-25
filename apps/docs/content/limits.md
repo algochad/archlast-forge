@@ -1,28 +1,192 @@
 # Limits and security
 
-| Limit | Default | What happens |
-|---|---|---|
-| Query and mutation time | 10 s | `TIMEOUT`; a mutation rolls back, and later database use by its handler is refused |
-| Action time | 10 min | `TIMEOUT` |
-| A call that blocks the process | timeout + 5 s | `RUNTIME_MODE=process`: the function-runtime process is killed and restarted, but only if it has answered nothing since the call went in (one that is merely behind keeps its work). `inline` (the production default): a watchdog thread kills the whole server process, so run it under something that restarts it (the engine container does) |
-| Calls waiting for the function runtime | 1000 (`MAX_PENDING_CALLS`) | the call is refused at once with `503` and `Retry-After: 1`, instead of queueing until it times out |
-| Result size | 8 MiB | the call fails |
-| Document size | 1 MiB | the write fails |
-| Request body / WebSocket message | 8 MiB | rejected |
-| Requests per IP | 1200 per minute | `429` with `Retry-After`; WebSocket closed with 1008 |
-| Subscriptions per connection | 200 | the extra subscription fails |
-| Slow WebSocket clients | 4 MiB buffered | disconnected; they reconnect and refetch |
-| Page requests (full-stack apps) | the same per-IP limit | `429` with `Retry-After`. A page is rendered per request, so it costs more than a file; built assets and `public/` files are not counted |
+This page has two halves. The first lists every limit the engine enforces, its default, the variable that changes it, and exactly what a caller sees when it is reached. The second is about security: what the engine protects for you, what it leaves to you, and a checklist to run before real users arrive.
 
-## Security checklist for production
+Defaults here are the ones in the engine's configuration; [Configuration](configuration.html) has the full variable list.
 
-- Set `BETTER_AUTH_SECRET` and an `https://` `BETTER_AUTH_URL`. Startup enforces both.
-- Keep the dashboard off, or behind your VPN, unless you need it. Use admin accounts rather than sharing `ADMIN_KEY`.
-- Make anything clients shouldn't call an `internal*` function.
-- Validate everything with `args`. Authorize in the function, with `ctx.auth.getUserIdentity()`.
-- Set `TRUST_PROXY=1` only behind a proxy you control, or clients can spoof their IP.
-- Server dependencies don't run install scripts unless listed in `trustedDependencies`.
+## Limits, and what happens when you hit them
 
-## Custom functions in the dashboard
+| Limit | Default | Variable | What happens |
+|---|---|---|---|
+| Query or mutation time | 10 s | `FUNCTION_TIMEOUT_MS` | The caller gets `TIMEOUT` (HTTP 408). A mutation rolls back. |
+| Action or HTTP handler time | 10 min | `ACTION_TIMEOUT_MS` | `TIMEOUT`. Work already done through `ctx.runMutation` stays committed. |
+| A call that never yields | timeout + 5 s | none | The runtime is restarted ([below](#timeouts-and-the-watchdog)). |
+| Calls waiting for the runtime | 1000 | `MAX_PENDING_CALLS` | `503`, `Retry-After: 1`. |
+| Result size | 8 MiB | `MAX_RESULT_BYTES` | The call fails as a server error. |
+| Document size | 1 MiB | `MAX_DOCUMENT_BYTES` | The write fails with a validation error. |
+| Request body, WebSocket message | 8 MiB | `MAX_REQUEST_BYTES` | `413`; the socket is closed. |
+| Requests per client IP | 1200 per minute | `RATE_LIMIT_PER_MINUTE` | `429` with `Retry-After`; a socket is closed with 1008. |
+| Subscriptions per connection | 200 | `MAX_SUBSCRIPTIONS_PER_CONNECTION` | The extra subscription is refused. |
+| Slow WebSocket reader | 4 MiB buffered | none | The socket is dropped; the client reconnects. |
+| Documents scanned by `filter` | 100,000 | none | The query fails. |
+| Idle keep-alive connection | 75 s | `IDLE_TIMEOUT_SECONDS` | The connection is closed. |
 
-The dashboard can run code its owner types in (see [Dashboard](dashboard.html#running-your-own-code)). That code runs in the function runtime with the server's environment and network access, which is far more than an admin can otherwise do. It is limited to the `owner` role, off in production unless `ALLOW_CUSTOM_FUNCTIONS=on`, subject to the same time and result limits as any query or mutation, and audited. Leave it off on deployments where owner sessions are shared widely, and keep `DASHBOARD` off on a server you don't need to inspect.
+Each is covered below with the response a client sees. All of them are checked in the engine, not by your code, so they hold however a function is written.
+
+### Timeouts and the watchdog
+
+There are two layers.
+
+1. **The soft timeout**, inside the function runtime. A query or mutation gets `FUNCTION_TIMEOUT_MS`; an action or an HTTP handler gets `ACTION_TIMEOUT_MS`. When it runs out, the call is abandoned and the caller gets:
+
+   ```json
+   { "error": { "message": "zz:slow timed out after 1000 ms", "code": "TIMEOUT", "requestId": "…" } }
+   ```
+
+   with HTTP status 408. Your handler may keep running in the background, but it can no longer use the database: the transaction handle of a finished call refuses further use, so a handler that was timed out cannot write afterwards. A mutation's transaction is rolled back. Timeouts are logged at `warn` level with the request id. The same limits apply to functions run from the dashboard.
+
+2. **The hard deadline**, in the server, for code that does not yield at all. A synchronous loop never returns control to the event loop, so no timer can fire inside it. The server waits the call's timeout plus five seconds and then acts:
+
+   - **`RUNTIME_MODE=process`** (dev, or `RUNTIME_WORKERS` above 1): the caller gets `Timed out after 6000 ms` (status 408), and the server logs `function runtime 0 didn't answer within 6000 ms; killing and restarting it`. The runtime process is killed and started again, and the calls waiting in it fail with `Function runtime was restarted because a call didn't finish in time`. It restarts only a process that has answered nothing since the call went in; a process that is merely busy keeps its other calls.
+   - **`RUNTIME_MODE=inline`** (the production default): the function runs in the server's own event loop, so the server itself cannot answer. A watchdog thread checks a heartbeat every second. When the loop has been blocked for the timeout plus five seconds it prints `The server's event loop has been blocked for over 6000 ms (a function that never yields?); exiting so it can be restarted` and kills the whole process with `SIGKILL`. In-flight requests get a closed connection. Run the engine under something that restarts it. The engine container does (`restart: unless-stopped` in the generated `compose.yaml`).
+
+   The numbers above are for a 1 s `FUNCTION_TIMEOUT_MS`; with the default 10 s, the deadline is 15 s.
+
+Calls that wait on slow I/O are not the problem the watchdog solves: an `await fetch(...)` that takes a minute in an action hits the soft timeout and is cut off cleanly. What the watchdog is for is a bug such as `while (true) {}`, an accidental catastrophic regex, or a loop over a huge array.
+
+Other timeouts: resolving the caller and Better Auth requests have a fixed 30 s deadline; dashboard operations 60 s, except running a custom function or a CLI command, which get the action timeout plus five seconds.
+
+### Overload
+
+The function runtime is single-threaded. When calls arrive faster than it can finish them they queue, and a queue that takes longer than the timeout to drain would make every call fail slowly. So the engine bounds the queue: once more than `MAX_PENDING_CALLS` calls are waiting for one runtime process (in `inline` mode, in flight in the process), new calls are refused at once, without running:
+
+```
+HTTP/1.1 503 Service Unavailable
+retry-after: 1
+
+{"error":{"message":"Server is busy, try again","code":"SERVICE_UNAVAILABLE","requestId":"…"}}
+```
+
+Refusing quickly is the point: a client can back off and retry, and the calls already queued still finish. A client should retry a `503` after the `Retry-After` delay, with jitter. If you see these in normal traffic, the server is too small for the load, or one function is too slow: look at the p95 latency per function on the dashboard's Metrics page, add an index, or move work into an action. `RUNTIME_WORKERS` adds runtime processes for CPU-heavy functions.
+
+During shutdown (after `SIGTERM`) new requests get `503` with `Server is shutting down` and `Retry-After: 1`, and `/ready` turns `503` so a load balancer stops sending traffic. In-flight requests are given up to 10 seconds to finish; WebSockets are closed with code 1012 so clients reconnect elsewhere.
+
+### Size limits
+
+- **Result size.** The JSON of a function's return value may be `MAX_RESULT_BYTES` (8 MiB). A larger result fails the call. Because that is a bug in the function rather than a caller mistake, a client sees `Server error (request <id>)` outside dev, and the log has `<name> returned <n> bytes; the limit is <limit> (MAX_RESULT_BYTES)`. Page large results with `paginate`.
+- **Document size.** A write whose JSON is above `MAX_DOCUMENT_BYTES` (1 MiB) is refused with an error that reaches the caller as a 400: `Document in "notes" is 1090 bytes; the limit is 500 (MAX_DOCUMENT_BYTES)`. Store large blobs in [file storage](storage.html) and keep the id.
+- **Request size.** A body above `MAX_REQUEST_BYTES` is rejected with `413 Request Entity Too Large` before your code runs. The same value caps one WebSocket message. HTTP endpoint bodies are buffered in memory, so keep this at a value you can afford several times over; upload large files straight to storage with a presigned URL, where the engine never sees the bytes.
+- **Scan size.** A query that uses `filter` without a narrow `withIndex` range stops after 100,000 documents with `filter() scanned 100000 documents of "x" without finishing; narrow the range with withIndex()`.
+- **Slow readers.** If a WebSocket client falls more than 4 MiB behind on the messages the server wants to send, the server closes the socket instead of buffering without bound. The client reconnects, resubscribes, and gets a fresh result for each query.
+
+### Subscriptions
+
+One connection may hold `MAX_SUBSCRIPTIONS_PER_CONNECTION` (200) live queries. The 201st is refused with a message on the socket, `{"type":"error","id":"…","error":{"code":"TOO_MANY_REQUESTS", "message":"At most 200 subscriptions per connection"}}`, and the others keep working. The client deduplicates identical subscriptions, so 200 is rarely reached by accident; if a list renders one `useQuery` per row, query once for the whole list instead.
+
+Each live query is re-run when a write touches something it read, so cost grows with subscribers times write rate. The query cache lets identical queries share one run. See [Reactivity](reactivity.html) and [Caching](caching.html).
+
+### Rate limiting
+
+The limiter is a **fixed window**: at most `RATE_LIMIT_PER_MINUTE` hits per key per 60-second window, per client IP. A client over its budget is answered at once, and the counter resets when the window ends. It is off in dev (`0` turns it off anywhere).
+
+What counts as a hit:
+
+| Request | Counted |
+|---|---|
+| `POST` and `GET /rpc/<function>` | yes |
+| `/api/auth/*` | yes |
+| `/http/*` (your HTTP endpoints) | yes |
+| A WebSocket upgrade on `/rpc` | yes |
+| Every message a connected WebSocket sends (subscribe and unsubscribe included) | yes, per message |
+| A page of a full-stack app | yes. Built files under `/_app` and files in `public/` are not counted |
+| `POST /_admin/login`, and `POST /_cli` | yes, in separate counters from the rest, with the same budget, so password guessing against the dashboard does not use up a visitor's allowance, and vice versa |
+| `OPTIONS` preflights, `/health`, `/ready`, `/metrics` | no |
+
+What the client sees:
+
+```
+HTTP/1.1 429 Too Many Requests
+retry-after: 60
+
+{"message":"Too many requests"}
+```
+
+`retry-after` is the seconds until the window resets. Note that this body is `{"message": …}`, not the `{"error": {…}}` shape of function errors. A page gets a plain `429` with the same header. A WebSocket that goes over budget is closed with code 1008 and the reason `Too many requests`.
+
+**Where the counters live.** Without `REDIS_URL` they are in the memory of each server process (a map that is pruned every minute), so with several servers each one allows the full budget. With `REDIS_URL` they are shared (`INCR` plus `EXPIRE` on a key per client), so the budget holds across servers. Redis counts are exact; memory counts reset on restart.
+
+**Whose IP.** By default the limiter uses the address of the TCP connection. Behind a reverse proxy that is the proxy's address, so every visitor shares one budget. Set `TRUST_PROXY=1` and it uses the **last** address in `X-Forwarded-For`: the one your proxy added for the connection it received. Anything the client put in front of it is ignored, so it cannot pick its own identity. That holds for one proxy in front of the engine; with two in a row, the last entry is the first proxy. Caddy's `reverse_proxy` and nginx (`$proxy_add_x_forwarded_for` or `$remote_addr`) both work. Without `TRUST_PROXY` the header is ignored by the engine's own limiter. (Before `0.1.1` the first address was used, which a client could choose.)
+
+**Sign-in has a second limiter.** Better Auth rate-limits its own endpoints outside dev. Sign-in is allowed 3 attempts per 10 seconds per address, after which it answers `429` with `{"message":"Too many requests. Please try again later."}` and an `x-retry-after` header. With `REDIS_URL` its counters are shared across servers. You can change its rules with `rateLimit` in `forge/auth.ts`. The address it limits is the one the engine worked out (the connection's, or the last `X-Forwarded-For` entry with `TRUST_PROXY`), so a client cannot dodge the rule by sending its own `X-Forwarded-For`. (Before `0.1.1` Better Auth read that header itself, and a client that reached the engine directly could vary it.)
+
+The limiter protects the engine from a single noisy client. It is not a defense against a distributed flood, which belongs at your proxy or CDN. And it is not per user: to limit what a signed-in user may do, write it into the function. See the [rate limiting recipe](recipes.html#rate-limit-a-mutation-per-user).
+
+## Security
+
+### Threat model
+
+archlast-forge is self-hosted, with one deployment per application. Multi-tenant hosting is out of scope: there is no isolation between apps in one engine. The model has these parties:
+
+- **Anonymous and signed-in visitors** are untrusted. They reach public functions, the auth endpoints, your HTTP routes and your pages. Everything they send is validated, and nothing they send is allowed to choose which function runs beyond the public ones.
+- **Admins** (dashboard accounts and the admin key) are trusted to see and change data. Their roles limit damage from mistakes (a `viewer` cannot write), not from malice: an `owner` can run arbitrary code if you let them.
+- **Your `forge/` code** is trusted completely. It runs inside the engine with the engine's environment, network and database. The engine cannot stop a function from reading `process.env` or calling any URL. Whatever you install into `forge/` runs with the same trust.
+- **The host and network** are yours: TLS, firewalls, backups, and the secrets in your environment.
+
+The main risks the engine does not remove are the ones only your code can: who is allowed to see or change which rows, and what a webhook sender may do.
+
+### What the engine protects
+
+**Authentication.** Sessions are Better Auth's: a signed cookie (`HttpOnly`, `SameSite=Lax`, and `Secure` with a `__Secure-` name prefix when `BETTER_AUTH_URL` is `https://`), validated against the stored session on every call, so a revoked or expired session stops working immediately. Banned users cannot start sessions. Admin accounts have Argon2 password hashes, roles (`owner`, `admin`, `viewer`) and 12-hour sessions stored as hashes.
+
+**Origin checks and CSRF.**
+
+- Better Auth rejects a state-changing request whose `Origin` is not the app's own address or in `TRUSTED_ORIGINS`: `403 {"message":"Invalid origin","code":"INVALID_ORIGIN"}`.
+- `POST /rpc/<function>` requires `Content-Type: application/json` and answers `415` otherwise. A cross-site HTML form can send a `POST` with no preflight, but cannot send that content type. Reads over `GET` are only for queries.
+- CORS headers (`Access-Control-Allow-Origin` with credentials) are sent only for origins in `TRUSTED_ORIGINS`. Other origins get no CORS headers, so browsers will not let their scripts read responses.
+- The admin API needs the custom header `x-forge-admin: 1` on every non-`GET` request (`403 Missing x-forge-admin header` otherwise). A header like that cannot be sent cross-site without a preflight, which the admin API never grants. The admin cookie `afx_admin` is `HttpOnly; SameSite=Strict; Path=/` and `Secure` under https.
+- Admin keys and bearer tokens are compared in constant time.
+
+**The WebSocket handshake checks `Origin`.** A browser sends the page's origin with a WebSocket handshake, and any page may open one to any host. The `/rpc` socket accepts a browser only from the engine's own address (`BETTER_AUTH_URL`), from an origin in `TRUSTED_ORIGINS`, or from the host that was asked for; anything else gets `403 Origin not allowed. Add it to TRUSTED_ORIGINS.` Clients that are not browsers send no `Origin` and are not affected. On top of that the session cookie is `SameSite=Lax`, which browsers do not send on cross-site connections. A page on a sibling subdomain of the same site is still the same site: do not host untrusted content on other subdomains of your app's registrable domain, and keep untrusted origins out of `TRUSTED_ORIGINS`. (Before `0.1.1` the handshake was not checked and relied on the cookie alone.)
+
+**Injection.** Document values are bound to SQL as parameters, never concatenated. Table, field and index names in SQL come from your `schema.ts`, which rejects any name that does not match `^[a-zA-Z][a-zA-Z0-9_]*$`. Arguments are validated against your `args` validators on every call; extra keys in an object are rejected.
+
+**Error hiding.** Only a `ForgeError` and argument-validation errors reach callers with their message. Any other error becomes `Server error (request <id>)` outside dev, with the full error and stack in the server log under that id. An internal function called from outside is indistinguishable from a function that does not exist (`No function "…"`).
+
+**Safe server rendering.** In a full-stack app the state embedded in the page (loader data, the query cache, the viewer, errors) is serialized with `<` escaped as `<` and the line separators U+2028 and U+2029 escaped. A message containing `</script><img src=x onerror=…>` therefore appears as text in the HTML and as `</script>…` inside the embedded JSON, and cannot close the script element. React escapes text in the page itself. Render user content as text; if you use `dangerouslySetInnerHTML`, sanitize it yourself. Errors rendered into pages are sanitized the same way as API errors.
+
+**The app host's file serving.** Requests under `/_app` and for files in `public/` are resolved against a fixed directory. A path containing `..`, an encoded `%2e%2e`, a NUL byte, or any segment that starts with a dot (other than `.well-known`) is refused with 404, and a resolved path must stay inside the directory. `/.env` and `/../package.json` are not reachable. Files are served with `X-Content-Type-Options: nosniff`; pages carry `Cache-Control: private, no-cache`, `Vary: cookie` and `Referrer-Policy: strict-origin-when-cross-origin`.
+
+**Production defaults that fail closed.** The engine refuses to start without `BETTER_AUTH_SECRET`, or with an `http://` `BETTER_AUTH_URL` (unless `ALLOW_INSECURE_HTTP`). The dashboard and custom functions are off, `/metrics` answers `404` without a token, and `/_cli` needs the admin key. The schema check refuses to serve data that no longer matches the schema.
+
+**Install scripts.** Dependencies in `forge/package.json` are installed with `--ignore-scripts` unless the manifest has `trustedDependencies`, and then only those may run scripts.
+
+### What you must do
+
+- **Authorize in every function.** Anything that reaches a public function is callable by anyone, signed in or not. Check `ctx.auth.getUserIdentity()`, and compare the owner of the row you touch with the caller. Never accept a user id as an argument and trust it. [Recipes](recipes.html#per-user-data-row-ownership) shows the pattern.
+- **Use `internal*` functions** for anything a client should not call: scheduled work, helpers for webhooks, admin tooling. Codegen leaves them out of `api` and the server answers as if they did not exist.
+- **Validate with `args`**, and bound them. A `v.string()` accepts a 5 MiB string; check lengths in the handler (or the document limit will catch it later).
+- **Say no in public error messages.** A `ForgeError` message goes to the browser. Do not put internals in it.
+- **Verify webhook senders.** Anonymous callers can reach your `/http/*` routes. Check a signature over the exact body, a timestamp, and deduplicate by event id. See [the webhook recipe](recipes.html#a-webhook-endpoint-with-a-signature-check).
+- **Protect secrets.** Generate `BETTER_AUTH_SECRET` and `ADMIN_KEY` randomly (32 and 24 bytes), keep `.env` out of git and out of the image (the generated `.dockerignore` already excludes it), and give each environment its own. Rotating `BETTER_AUTH_SECRET` signs everyone out. Remember that every function can read the whole environment.
+- **Terminate TLS.** The engine serves plain HTTP. Put it behind Caddy, nginx, a cloud load balancer or similar with HTTPS, set `BETTER_AUTH_URL` to the public `https://` address, add HSTS at the proxy, and set `TRUST_PROXY=1` only when that proxy overwrites `X-Forwarded-For`.
+- **List trusted origins narrowly.** Each entry in `TRUSTED_ORIGINS` can make credentialed calls as your users. Never use a wildcard, and leave it empty if the frontend is same-origin. The same goes for the CORS rule on your storage bucket: list your origins instead of `*`.
+- **Decide on the dashboard.** It is off by default in production. Behind the admin key it is a full data editor. If you turn it on, restrict it at the proxy (an IP allow-list or VPN), use named admin accounts with the least role that does the job, and keep the key for scripts. Every write is in the audit log.
+- **Leave custom functions off** (`ALLOW_CUSTOM_FUNCTIONS`) unless you need them. They give an owner session arbitrary code execution in the engine, with the environment and network. They are limited to the `owner` role and audited, but they are code execution.
+- **Add the headers the engine does not.** The engine sets no `Content-Security-Policy`, `Strict-Transport-Security` or `X-Frame-Options`. Add them at the proxy; a CSP also limits the damage of any script injection you introduce yourself.
+- **Mind your own functions.** A function that calls `fetch` with a user-supplied URL is an open proxy into your private network. Actions run at most once and are not retried; a handler that charges money should carry an idempotency key.
+- **Keep backups and test restoring them.** `archlast-forge backup` (SQLite) or `pg_dump`. See [Migrations and data](migrations.html).
+- **Update.** Upgrade the `@archlast/forge-*` packages and rebuild the image to pick up fixes; the latest minor version is the supported one.
+
+### Production security checklist
+
+Before you open to real users:
+
+1. `BETTER_AUTH_SECRET` is random, 32 or more characters, and set only in your secret store or `.env` (mode `0600`, not in git).
+2. `BETTER_AUTH_URL` is the public `https://` address, and `ALLOW_INSECURE_HTTP` is absent.
+3. TLS ends at a proxy that you control; the engine's port is not reachable from the internet except through it.
+4. `TRUST_PROXY=1` is set if, and only if, the proxy overwrites `X-Forwarded-For`. Check with a request that sends its own header.
+5. `TRUSTED_ORIGINS` lists only the browser origins that need it (or is empty).
+6. `DASHBOARD` is off, or restricted by IP or VPN; `ALLOW_CUSTOM_FUNCTIONS` is off; admin accounts are named and use the lowest role.
+7. `ADMIN_KEY` is random and not shared with people; `/metrics` is only reachable from your monitoring (it needs `METRICS_TOKEN` or the admin key either way).
+8. Every public function checks the caller and the row owner; helpers are `internal*`; arguments are validated with `args`.
+9. Webhook endpoints verify a signature and a timestamp.
+10. `RATE_LIMIT_PER_MINUTE` is set to something that fits your traffic; per-user limits exist for expensive mutations; Redis is configured if you run several servers.
+11. The storage bucket's CORS lists your origins, not `*`, and the bucket is not public.
+12. Postgres and Redis are not published to the internet.
+13. Logs are collected (`LOG_FORMAT=json`), with an alert on `level: "error"`, and a request id from a user can be found in them.
+14. The engine runs under a supervisor that restarts it (the container's restart policy), and a backup has been restored at least once.
+15. The schema check is on (the default), and you have a plan for [migrations](migrations.html).
+
+### Reporting a vulnerability
+
+Report vulnerabilities privately through GitHub: open the repository's **Security** tab and choose **Report a vulnerability**. Please do not open a public issue for one. You should get an answer within a few days, and fixes are released as a patch version. The latest minor version is the supported one. The policy is in `SECURITY.md` at the root of the repository.

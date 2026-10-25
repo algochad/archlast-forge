@@ -82,6 +82,21 @@ test("queries that read ctx.auth are cached per user and never leak between them
   expect(f.hits).toBeGreaterThanOrEqual(2);
 });
 
+test("two sessions of one user share cache entries", async () => {
+  const email = "cy@example.com";
+  const cookieOf = (res: Response) => res.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
+  const auth = (path: string, body: object) => fetch(`${srv.url}/api/auth/${path}`, { method: "POST", headers: { "content-type": "application/json", origin: srv.url }, body: JSON.stringify(body) });
+  const first = cookieOf(await auth("sign-up/email", { email, password: "correct horse battery", name: "Cy" }));
+  const second = cookieOf(await auth("sign-in/email", { email, password: "correct horse battery" })); // another device: another session
+  expect(second).not.toBe(first);
+  const who = async (cookie: string) => (await rpc("todos:whoami", {}, { headers: { cookie } }))?.name;
+  await who(first); // reveals the query reads ctx.auth
+  await who(first); // stored under this user
+  const before = fn(await cacheInfo(), "todos:whoami").hits;
+  expect(await who(second)).toBe("Cy");
+  expect(fn(await cacheInfo(), "todos:whoami").hits).toBe(before + 1); // a hit, not a second entry per session
+});
+
 test("clearing the cache empties it, and the dashboard action is audited", async () => {
   await rpc("todos:createList", { name: "x" }, { mutation: true });
   await rpc("todos:openCount", { listId: await rpc("todos:createList", { name: "y" }, { mutation: true }) });

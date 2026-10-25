@@ -1,23 +1,331 @@
 # Authentication
 
-[Better Auth](https://better-auth.com) is built in. Its data lives in your database as ordinary documents, in the `users`, `sessions`, `accounts` and `verifications` tables, so it's reactive and visible in the dashboard.
+[Better Auth](https://better-auth.com) runs inside the engine. Its data lives in your database as ordinary documents, in the `users`, `sessions`, `accounts` and `verifications` tables, so it is reactive, visible in the [dashboard](dashboard.html#users) and covered by your backups. Email and password sign-in works out of the box, with no setup.
 
-Email and password sign-in works out of the box. To customize it, add `forge/auth.ts`:
+```bash
+curl -X POST localhost:3000/api/auth/sign-up/email \
+  -H 'content-type: application/json' -H 'origin: http://localhost:3000' \
+  -d '{"email":"ada@example.com","password":"correct horse battery","name":"Ada"}'
+# 200, and a set-cookie: better-auth.session_token=...; HttpOnly; SameSite=Lax
+```
+
+Better Auth's HTTP API is served under `/api/auth/*`. In the browser you rarely call it by hand: the client wraps it (see [In the browser](#in-the-browser)).
+
+## Customizing with `forge/auth.ts`
+
+Add `forge/auth.ts` and default-export `defineAuth(options)`. The options are [Better Auth's options](https://better-auth.com/docs/reference/options), passed through unchanged, minus the ones the engine owns.
+
+```ts
+// forge/auth.ts
+import { defineAuth } from "@archlast/forge-runtime";
+
+export default defineAuth({
+  emailAndPassword: { enabled: true, minPasswordLength: 10 },
+  socialProviders: {
+    github: { clientId: process.env.GITHUB_CLIENT_ID!, clientSecret: process.env.GITHUB_CLIENT_SECRET! },
+  },
+  session: { expiresIn: 60 * 60 * 24 * 14, updateAge: 60 * 60 * 24 },
+});
+```
+
+**Once `forge/auth.ts` exists, nothing is on by default.** Without the file the engine behaves as if it said `{ emailAndPassword: { enabled: true } }`. With the file, you get exactly what you list: omit `emailAndPassword` and sign-up answers `EMAIL_PASSWORD_SIGN_UP_DISABLED`. Keep `emailAndPassword: { enabled: true }` unless you mean to remove it.
+
+The file reloads like any other `forge/` module: save it and the function runtime restarts.
+
+### What the engine sets for you
+
+| Option | How it is set |
+|---|---|
+| `database` | Always the engine's document-store adapter. You can't change it. |
+| `secret` | `BETTER_AUTH_SECRET`. |
+| `baseURL` | `BETTER_AUTH_URL`. Defaults to the server's own address in dev. |
+| `trustedOrigins` | Your array **plus** `TRUSTED_ORIGINS`. Only an array is honored; a function is ignored. |
+| `rateLimit` | `enabled` is on outside dev and off in dev. Your `rateLimit` options win, so `rateLimit: { enabled: true, window: 60, max: 5 }` turns it on in dev too. With `REDIS_URL`, counters are shared across servers; otherwise each process counts its own. |
+| `databaseHooks` | Yours, with one addition: `session.create.before` first refuses banned users, then calls yours. |
+
+Everything else is yours: `plugins`, `socialProviders`, `session`, `user`, `account`, `emailVerification`, `advanced`, `logger`, and so on. Option names are Better Auth's and follow its version (the engine pins one version), so check [their docs](https://better-auth.com/docs) for the full list.
+
+### Plugins
+
+```ts
+import { bearer } from "better-auth/plugins";
+
+export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [bearer()] });
+```
+
+`better-auth` is installed next to the runtime, so `better-auth/plugins` resolves from `forge/` without adding anything.
+
+- **Plugins that only add fields** to `users` or `sessions` work as is. The admin plugin adds `role` and `banned`; they land on the user document.
+- **Plugins that add tables** (two-factor, organization, passkey, and others) need the table in your `schema.ts`, with **every field the plugin writes**. A missing table fails with `Unknown table "twoFactors"`, and a missing field with `twoFactors.verified is not in the validator`, because tables you declare are validated strictly. For Better Auth's two-factor plugin, declaring `secret`, `backupCodes`, `userId`, `verified` and `failedVerificationCount` (the last two optional) made `/api/auth/two-factor/enable` work. Declare the fields for the version you pin, and expect to iterate.
+
+Table names `users`, `sessions`, `accounts` and `verifications` are reserved; `defineSchema` rejects them. Keep your own per-user data in a separate table keyed by `userId` (see [Roles and ownership](#roles-and-ownership)).
+
+### Hooks
+
+`databaseHooks` run on Better Auth's writes, which is where you reject or adjust new users:
+
+```ts
+export default defineAuth({
+  emailAndPassword: { enabled: true },
+  databaseHooks: {
+    user: {
+      create: {
+        // Return false to refuse, or { data } to change what is stored.
+        before: async (user) => (user.email.endsWith("@example.com") ? { data: { ...user, name: user.name.trim() } } : false),
+        after: async (user) => console.log("new user", user.id),
+      },
+    },
+  },
+});
+```
+
+A refused sign-up answers 400 `FAILED_TO_CREATE_USER`. Hooks run in the function runtime but outside any function call, so there is no `ctx`. Keep them to checks and small adjustments, and do app-level setup (creating a `profiles` row, say) in a mutation the user calls after signing up.
+
+## The tables
+
+| Table | Holds | Indexes |
+|---|---|---|
+| `users` | `name`, `email`, `emailVerified`, `image?`, `createdAt`, `updatedAt`, plus anything a plugin or `user.additionalFields` adds (`banned`, `role`, …) | `by_email` |
+| `sessions` | `userId`, `token`, `expiresAt`, `ipAddress?`, `userAgent?`, `createdAt`, `updatedAt` | `by_token`, `by_userId` |
+| `accounts` | `userId`, `accountId`, `providerId`, OAuth tokens (`accessToken?`, `refreshToken?`, `idToken?`, expiries, `scope?`), `password?` (a hash, for email sign-in), `createdAt`, `updatedAt` | `by_userId`, `by_accountId` |
+| `verifications` | `identifier`, `value`, `expiresAt`, `createdAt`, `updatedAt` (password reset and similar tokens) | `by_identifier` |
+
+Dates are stored as epoch milliseconds, and ids look like `users:0e1c8859…`. These tables are not validated against a fixed shape, so plugins and `additionalFields` can add fields. Writes to them publish topics like any other write, so a query on `users` is live.
+
+You can read them from your own functions with `ctx.db`, for example `ctx.db.query("users").withIndex("by_email", …)`. Don't write to them yourself; go through Better Auth, or ban and revoke from the dashboard. `accounts.password` and the OAuth tokens are sensitive: don't return those documents to clients.
+
+## Identity in functions
+
+```ts
+export const whoami = query({
+  handler: async (ctx) => ctx.auth.getUserIdentity(), // UserIdentity | null
+});
+```
+
+```ts
+interface UserIdentity {
+  userId: Id<"users">;
+  sessionId: string;   // the sessions document's id
+  email: string;
+  name: string;
+}
+```
+
+`getUserIdentity()` is available in queries, mutations, actions and [HTTP handlers](http.html#who-is-calling). It returns `null` for anonymous callers, and also for a cookie that is forged, expired or revoked. It carries only these four fields. For anything else (`emailVerified`, `image`, `role`), read the user: `await ctx.db.get(identity.userId)`.
+
+Remember that a query which reads `ctx.auth` is cached per user, not shared (see [caching](caching.html)).
+
+### How the caller is resolved
+
+The engine resolves the caller **once per request**, before the function's transaction starts, from the request's `cookie` and `authorization` headers. A request with neither is anonymous without any lookup.
+
+1. **The fast path.** When nothing could change what a session means (no `plugins`, no `secondaryStorage`, no `secrets` array), the engine checks the signature of the `better-auth.session_token` cookie itself (an HMAC with `BETTER_AUTH_SECRET`), then reads the session row by its token. The signature check is remembered per cookie value; the session row is read on every call, so a session you revoke stops working immediately. A session close to its refresh time (`updateAge`) is handed to Better Auth so that it extends the expiry.
+2. **Better Auth itself.** In every other case (any plugin, expiring sessions that need a refresh, bearer tokens), the engine calls Better Auth's `getSession` with the request's headers. It costs about a millisecond more per call.
+
+Both paths give the same answer; the fast path is an optimization you don't configure.
+
+- **Cookies** are the normal way. Better Auth sets `better-auth.session_token` (a signed cookie, `HttpOnly`, `SameSite=Lax`, valid for `session.expiresIn`: 7 days by default).
+- **An `Authorization` header does nothing by default.** `Authorization: Bearer <token>` is read only when you add Better Auth's `bearer()` plugin (see [below](#bearer-tokens-for-non-browser-callers)). Without it, the header is ignored and the caller is anonymous.
+
+## In the browser
+
+`@archlast/forge-react` gives you the Better Auth client and the current session:
+
+```tsx
+import { useAuth, useSession } from "@archlast/forge-react";
+
+function SignIn() {
+  const auth = useAuth(); // the Better Auth client: signIn, signUp, signOut, ...
+  async function submit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    const { error } = await auth.signIn.email({ email: String(form.get("email")), password: String(form.get("password")) });
+    if (error) alert(error.message); // e.g. "Invalid email or password"
+  }
+  return <form onSubmit={submit}>{/* email, password */}</form>;
+}
+
+function Header() {
+  const { data, isPending } = useSession(); // { data: { user, session } | null, isPending, error, refetch }
+  const auth = useAuth();
+  if (isPending) return null;
+  return data ? <button onClick={() => auth.signOut()}>Sign out {data.user.name}</button> : <a href="/sign-in">Sign in</a>;
+}
+```
+
+Every method returns `{ data, error }` rather than throwing. Besides `signIn.email`, `signUp.email` and `signOut`, the client has `signIn.social({ provider: "github" })`, `requestPasswordReset`, `resetPassword`, `sendVerificationEmail`, `changePassword`, `updateUser`, `listSessions`, `revokeSession` and whatever your plugins add. They are Better Auth's own, so [its client docs](https://better-auth.com/docs/basic-usage) apply.
+
+Outside React, `client.auth` is the same object (`new ArchlastForgeClient().auth`), and `client.onSessionChange((user) => …)` fires with the user or `null` whenever the browser learns the session: after sign-in, sign-out or a reload. Vue has `useSession()` and Svelte has `session(client)`; see [clients](clients.html).
+
+The session lives in the cookie, so a page reload keeps you signed in. `useSession()` is `isPending: true` on the server and during hydration, then fills in in the browser.
+
+### Live queries and sign-in
+
+A WebSocket carries cookies only on its handshake. The client therefore **reconnects its socket whenever the session id changes**, so live queries run as the new user after sign-in and as anonymous after sign-out. You don't call anything; it happens in the session listener. Subscriptions start again and each one's first message is a fresh result.
+
+The socket keeps the cookie it was opened with. If a session is revoked while the socket stays open, subscribed queries run as anonymous the next time they re-run, because identity is resolved again on each run; the client is not told to reconnect until the browser sees the session change.
+
+## Protecting functions and pages
+
+Authorize in the function. Hiding a button in the UI protects nothing, because anyone can call `/rpc/<name>`.
+
+```ts
+import { ForgeError, mutation, type MutationCtx, type QueryCtx } from "@archlast/forge-runtime";
+
+export async function requireUser(ctx: QueryCtx | MutationCtx) {
+  const me = await ctx.auth.getUserIdentity();
+  if (!me) throw new ForgeError("Sign in");
+  return me;
+}
+
+export const send = mutation({
+  args: { body: v.string() },
+  handler: async (ctx, { body }) => {
+    const me = await requireUser(ctx);
+    return ctx.db.insert("messages", { body, authorId: me.userId, authorName: me.name });
+  },
+});
+```
+
+A `ForgeError` reaches the caller as a normal error with its message; anything else becomes "Server error". See [errors](errors.html). Functions that must never be called by clients belong in `internalQuery`/`internalMutation`.
+
+### Pages (full-stack apps)
+
+In a [full-stack app](framework.html), a route's `loader` runs before the page renders, on the server for the first load and in the browser for later navigations. `ctx.viewer()` is the signed-in user or `null`, and `redirect` sends the visitor elsewhere (a real 302 on the first request):
+
+```tsx
+import { redirect, useViewer, type LoaderArgs } from "@archlast/forge-framework";
+
+export const loader = async ({ ctx }: LoaderArgs) => {
+  if (!(await ctx.viewer())) throw redirect("/sign-in");
+  return null;
+};
+
+export default function Chat() {
+  const viewer = useViewer(); // { userId, email, name } | null, in the server-rendered HTML
+  return <h1>Hi {viewer?.name}</h1>;
+}
+```
+
+`useViewer()` follows sign-in and sign-out without a reload. A guard in a loader is a convenience for visitors, not a security boundary: the data still has to be protected in the functions the page calls.
+
+## Roles and ownership
+
+**Ownership** is a comparison with the identity:
+
+```ts
+export const remove = mutation({
+  args: { id: v.id("messages") },
+  handler: async (ctx, { id }) => {
+    const me = await requireUser(ctx);
+    const message = await ctx.db.get(id);
+    if (message && message.authorId !== me.userId) throw new ForgeError("Not your message");
+    if (message) await ctx.db.delete(id);
+  },
+});
+```
+
+**Roles** can be an additional field on the user, declared in `forge/auth.ts` so Better Auth stores it, and read with `ctx.db.get`:
+
+```ts
+// forge/auth.ts
+export default defineAuth({
+  emailAndPassword: { enabled: true },
+  user: { additionalFields: { role: { type: "string", defaultValue: "member", input: false } } },
+});
+```
+
+```ts
+// forge/roles.ts
+async function requireRole(ctx: QueryCtx | MutationCtx, role: string) {
+  const me = await requireUser(ctx);
+  const user = await ctx.db.get(me.userId);
+  if ((user as { role?: string } | null)?.role !== role) throw new ForgeError("Not allowed");
+  return me;
+}
+```
+
+`input: false` stops a client from choosing its own role when it signs up. New users get `"member"`; promote one by editing the user in the dashboard's Data page (`role: "admin"`, a patch) or with Better Auth's admin plugin. Without the engine-side type, `role` isn't in the generated `Doc<"users">`, so the cast above is needed.
+
+Per-user data of your own (profile, settings, avatar) goes in your own table keyed by `userId`, with an index: `profiles: defineTable({ userId: v.id("users"), … }).index("by_user", ["userId"])`.
+
+## Banned users
+
+In the dashboard's Users page, **Ban user** sets `banned: true` on the user, deletes all of their sessions, and from then on refuses new sessions: signing in fails with 401 `FAILED_TO_CREATE_SESSION`. **Unban** clears the flag. It is recorded in the audit log. The field is named `banned` like the admin plugin's, so the two agree. Your own `databaseHooks.session.create.before` still runs for everyone who isn't banned.
+
+## Email verification and password reset
+
+The engine doesn't send email. Better Auth calls functions you provide, and you send the message with whatever provider you use (an HTTP API call is enough; the callbacks run in the function runtime with network access).
 
 ```ts
 import { defineAuth } from "@archlast/forge-runtime";
 
+async function sendEmail(to: string, subject: string, text: string) {
+  await fetch("https://mail.example.com/send", { method: "POST", headers: { authorization: `Bearer ${process.env.MAIL_KEY}` }, body: JSON.stringify({ to, subject, text }) });
+}
+
 export default defineAuth({
-  emailAndPassword: { enabled: true, requireEmailVerification: false },
-  socialProviders: { github: { clientId: process.env.GITHUB_ID!, clientSecret: process.env.GITHUB_SECRET! } },
+  emailAndPassword: {
+    enabled: true,
+    requireEmailVerification: true,
+    sendResetPassword: async ({ user, url }) => sendEmail(user.email, "Reset your password", `Reset it here: ${url}`),
+  },
+  emailVerification: {
+    sendOnSignUp: true,
+    autoSignInAfterVerification: true,
+    sendVerificationEmail: async ({ user, url }) => sendEmail(user.email, "Confirm your email", `Confirm it here: ${url}`),
+  },
 });
 ```
 
-In functions, `await ctx.auth.getUserIdentity()` returns `{ userId: Id<"users">, email, name, sessionId }` or `null`. The identity is resolved once per request, from the session cookie or an `Authorization` header.
+What was run against a dev server:
 
-In the browser, `useAuth()` gives you the Better Auth client (`signIn.email`, `signUp.email`, `signOut`, …) and `useSession()` gives you the current session. After sign-in or sign-out, the client reconnects its WebSocket so live queries run as the new user.
+- **Verification.** With `requireEmailVerification`, sign-up returns `token: null` and no cookie, and sign-in answers 403 `EMAIL_NOT_VERIFIED` until the link is followed. The link is `BETTER_AUTH_URL/api/auth/verify-email?token=…`; following it sets the session cookie (with `autoSignInAfterVerification`) and redirects to `/`.
+- **Reset request.** `auth.requestPasswordReset({ email, redirectTo })` (or `POST /api/auth/request-password-reset`) answers 200 with the same message whether or not the email exists, and calls `sendResetPassword` with a link to `/api/auth/reset-password/<token>`, which redirects to `redirectTo?token=…`.
+- **Finishing a reset.** `auth.resetPassword({ newPassword, token })` (or `POST /api/auth/reset-password`) sets the new password, and the link works once: a second use answers 400. Magic links and email codes finish the same way. This needs `0.1.1` or later; on `0.1.0` the last step answered 500 (`must return the row id for atomic fallbacks`), so upgrade before you ship a reset flow.
 
-- **Production:** set `BETTER_AUTH_SECRET` (required) and `BETTER_AUTH_URL` (must be `https://`). Startup fails without them.
-- **Rate limiting:** Better Auth's sign-in rate limits are shared through Redis when `REDIS_URL` is set.
-- **Banning:** banning a user in the dashboard ends their sessions and blocks new ones.
-- **Cross-origin frontends:** list them in `TRUSTED_ORIGINS`. The default setup proxies the frontend instead, so it stays same-origin.
+Put `process.env` secrets (like `MAIL_KEY`) in the server's environment or in `archlast-forge env set`; see [configuration](configuration.html).
+
+## Bearer tokens for non-browser callers
+
+Add the plugin and sign-in returns a `set-auth-token` header. Send it back as `Authorization: Bearer <token>` on `/rpc/…`, `/http/…` and `/api/auth/…` calls:
+
+```ts
+import { bearer } from "better-auth/plugins";
+export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [bearer()] });
+```
+
+```bash
+curl -i -X POST localhost:3000/api/auth/sign-in/email -H 'content-type: application/json' -H 'origin: http://localhost:3000' \
+  -d '{"email":"ada@example.com","password":"…"}'      # note the set-auth-token header
+curl -X POST localhost:3000/rpc/me:whoami -H 'content-type: application/json' -H 'authorization: Bearer <token>' -d '{}'
+```
+
+Adding any plugin turns the fast cookie path off (see above); the cookie still works, through Better Auth. The JavaScript client cannot attach this header to its HTTP calls, so for a Node script use plain `fetch` (see [clients](clients.html#using-the-client-outside-the-browser)).
+
+## Cookies, origins and CORS
+
+| Setting | What it does |
+|---|---|
+| `BETTER_AUTH_SECRET` | Signs session cookies. **Required outside dev**; startup fails without it. In dev it is generated once and kept in `DATA_DIR/.dev-secrets.json`. Use a long random value (32 characters or more). Changing it signs everyone out. |
+| `BETTER_AUTH_URL` | The public address of the app, for example `https://app.example.com`. It builds the links in emails and OAuth callbacks (`<url>/api/auth/callback/github`) and decides whether cookies are `Secure`. **Must be `https://` outside dev**; set `ALLOW_INSECURE_HTTP=1` only for local testing. Defaults to `http://localhost:<port>`. |
+| `TRUSTED_ORIGINS` | Comma-separated browser origins that may call the engine cross-origin. Each gets CORS headers (`access-control-allow-origin`, `-credentials: true`) on `/rpc` and `/api/auth`, and passes Better Auth's origin check. The CLI's `dev` trusts its own address. |
+
+Better Auth rejects state-changing requests from an `Origin` it doesn't trust with 403 `INVALID_ORIGIN`. The origin of `BETTER_AUTH_URL` is trusted automatically.
+
+- **Same origin (the default setup).** A full-stack app serves pages and API from one origin, so none of this applies. With a separate frontend, proxy `/rpc` and `/api/auth` through the frontend's dev server and keep `url` unset in the client.
+- **A different origin.** Put the frontend in `TRUSTED_ORIGINS`. Only that variable adds the CORS headers: an origin listed only in `forge/auth.ts` as `trustedOrigins` passes Better Auth's check but the browser still blocks the response. The client already sends `credentials: "include"`.
+- **A different site.** Cookies are `SameSite=Lax`, which browsers don't send on cross-site fetches. Same-site setups (`app.example.com` and `api.example.com`) work. For truly cross-site, set `advanced: { defaultCookieAttributes: { sameSite: "none", secure: true } }` (the cookie becomes `Secure; SameSite=None`), and expect browsers that block third-party cookies to defeat it. Proxying to stay same-origin is more reliable.
+- **Rate limits.** Besides Better Auth's own limits (on outside dev), `/api/auth` shares the engine's per-IP limit; see [limits](limits.html).
+
+## Dashboard accounts are separate
+
+The people who sign in to the [dashboard](dashboard.html) are not users of your app. Dashboard accounts live in a separate system table (`_admins`), with roles `owner`, `admin` and `viewer`, created with `archlast-forge admin add`, or you sign in with `ADMIN_KEY`. App users can't reach the dashboard, and dashboard accounts can't sign in to your app. To act as an app user inside the dashboard, use **Run as user** on the Functions page.
+
+## Limits and what isn't there
+
+- No email or SMS sending, and no built-in UI: you bring both.
+- Password reset can't be completed yet (see above), and other flows that consume a verification token (magic link, email OTP) are likely affected the same way.
+- Plugins that add tables need those tables declared in your schema.
+- `UserIdentity` carries four fields; everything else is a `ctx.db.get(userId)` away.
+- Sessions are cookies with a signed token. There is no JWT mode for functions.

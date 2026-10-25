@@ -1,43 +1,458 @@
 # CLI reference
 
-`archlast-forge <command>`. Options that apply everywhere: `--dir <forge dir>`, `--port <n>`, `--no-docker`.
+`archlast-forge <command> [options]`. The command comes from `@archlast/forge-cli`, which a project made by `init` lists in `devDependencies`, so inside a project run it through the package scripts (`bun run dev`), `bunx archlast-forge dev`, or `./node_modules/.bin/archlast-forge`. Outside a project there is nothing to run it with; to use it once, `bunx --package @archlast/forge-cli archlast-forge init my-app`, or `bun create archlast-forge my-app`.
 
-## Start
+Commands that act on a project look for `forge/schema.ts` in the current directory, then `schema.ts` in the current directory (a folder that is itself the forge folder), then the old `convex/schema.ts` (which prints `! Using convex/, the old name for this folder. Rename it to forge/ ...`). Run them from the project root or pass `--dir`. When nothing is found:
 
-| Command | What it does |
+```
+✗ No schema.ts in /home/me/proj/forge. Pass --dir <path to forge/>.
+```
+
+| Command | Purpose |
 |---|---|
-| `init [dir]` | Creates a project; the same as `bun create archlast-forge`. Asks whether it is a full-stack app or a backend and which services to include. `--mode framework\|backend`, `--services postgres,redis,s3,caddy` (or `none`), `--yes` to ask nothing, `--no-install`, `--no-git`. |
+| [`init [dir]`](#init) | create a project |
+| [`dev`](#dev) | develop with live reload |
+| [`codegen`](#codegen) | write `forge/_generated` and check imports |
+| [`build`](#build) | build the app image, or a full-stack app's bundles |
+| [`up`](#up), [`down`](#down), [`logs`](#logs), [`status`](#status) | run and watch the Docker stack |
+| [`start`](#start), [`stop`](#stop) | run in production |
+| [`migrate`](#migrate) | sync tables, check documents, run data migrations |
+| [`export`](#export), [`import`](#import), [`backup`](#backup) | move and save data |
+| [`env`](#env), [`admin`](#admin) | variables for functions; dashboard accounts |
+| [`dashboard`](#dashboard) | print the dashboard address |
+| [`engine`](#engine) | the engine image (`build`) and its in-container entry points |
 
-## Develop
+## Options that apply everywhere
 
-| Command | What it does |
+| Option | Meaning |
 |---|---|
-| `dev` | A full-stack app: the engine and the app in this process, rebuilding and reloading on save, with your services in Docker. A backend: the engine in Docker with `forge/` mounted; edits restart only the function runtime. `--with postgres,redis,s3` overrides the services in `archlast-forge.json`; `--run "<cmd>"` runs a command alongside; `--no-docker` runs a backend's engine in this process. |
-| `codegen` | Writes `forge/_generated/`, installs server dependencies when they change, and checks that `app/` and `src/` import only `forge/_generated`. |
+| `--dir <path>` | the forge folder (the one with `schema.ts`). Default: see above. |
+| `--port <n>` | the port to listen on (`dev`, `start`) or to find a running server on (data commands, `dashboard`). Default: the `PORT` environment variable, else 3000. |
+| `--no-docker` | run in this process instead of Docker. Also set by `ARCHLAST_NO_DOCKER=1`. |
+| `--docker` | require Docker: fail instead of falling back when it is missing. |
+| `-h`, `--help` | print the usage text and exit 0. |
 
-## Ship
+Running with no command prints the usage text and exits 0; an unknown command prints it and exits 1. An option the CLI doesn't know is one line (`✗ Unknown option '--prot'. Run `archlast-forge --help` to see the options.`) with exit code 1. `archlast-forge --version` (or `-v`) prints the version. (On `0.1.0` an unknown option printed a stack trace and there was no `--version`; the version was on the first line of the usage text.)
 
-| Command | What it does |
+Failures print `✗ <message>` to stderr and exit 1. Success exits 0. Progress lines use `✓` (done), `→` (working), and `!` (a warning). Colors are off when output is not a terminal, or `NO_COLOR` is set or `TERM=dumb`; `FORCE_COLOR` turns them on. Spinners become single lines in logs and CI.
+
+## init
+
+```bash
+archlast-forge init [dir] [--mode framework|backend] [--services postgres,redis,s3,caddy|none] [--yes] [--install|--no-install] [--git|--no-git]
+bun create archlast-forge [dir] [same options]
+bunx create-archlast-forge [dir] [same options]
+```
+
+All three are the same program (`create-archlast-forge`). `init` forwards everything after it.
+
+| Option | Meaning |
 |---|---|
-| `up` | Builds the app image and starts the stack in `compose.yaml`: the app and its services. Creates `.env` with secrets on the first run. `--rebuild` ignores the build cache. |
-| `down [--volumes]` | Stops the stack. `--volumes` also deletes its data. |
-| `logs [service]`, `status` | Follow the logs; show what is running. |
-| `build [--tag image]` | Builds the app image: the engine plus your code and dependencies. With `--no-docker`, a full-stack app's production bundles only. |
-| `start` | Runs production. With `--no-docker`, in this process (a full-stack app needs `build --no-docker` first). With `--image <tag> [--env-file f]`, one image in Docker with `restart unless-stopped`. |
-| `stop` | Stops a single engine container from an older project; with a stack, the same as `down`. |
+| `dir` | the new folder, which must be empty or not exist. Its name becomes the project and package name (lowercased; anything but letters, digits, `-` and `_` becomes `-`). |
+| `-m`, `--mode <framework\|backend>` | `framework`: a full-stack React app (SQLite unless you add services). `backend`: the engine plus services, and no pages. `--template` is an alias. |
+| `-s`, `--services <list>` | any of `postgres`, `redis`, `s3`, `caddy`, comma separated, or `none`. Defaults: none for `framework`; `postgres,redis,s3` for `backend`. |
+| `--install`, `--no-install` | run `bun install` afterwards. When nothing is said: ask, or do not install if not asking. |
+| `--git`, `--no-git` | run `git init -q`. Same defaults. |
+| `-y`, `--yes` | take the default for every question not answered by a flag, and ask nothing. |
+| `-h`, `--help` | print the usage text. |
 
-## Data and configuration
+It asks the questions you did not answer (folder, "What are you building?", "Which services should run with it?", install, git) only when both input and output are a terminal, `CI` is unset and `--yes` is not given. Otherwise missing answers take their defaults, except the folder, which has none:
 
-| Command | What it does |
+```
+✗ Which folder? Pass a directory: bun create archlast-forge my-app
+```
+
+Other errors, each exit 1:
+
+```
+✗ Unknown mode "nope". Choose framework or backend.        (followed by the usage text)
+✗ Unknown service "mysql". Choose from postgres, redis, s3, caddy, or "none".
+✗ full already has files in it. Pick an empty folder or a new name.
+```
+
+Ctrl-C at a prompt prints `Cancelled. Nothing was created.` and exits 130. On success it prints `Created proj (full-stack app)` (adding `, with PostgreSQL, Redis, ...` for services), `Installed dependencies` and `Started a git repository` when those happen, and a "Next" box with `cd`, `bun install` (if you didn't install), `bun run dev`, the local addresses and `To deploy: bun run up`. A failed `bun install` or `git init` is reported but does not undo the project.
+
+Files written (the `framework` template adds `app/`, `public/`, `tsconfig.json`; the `backend` one adds `forge/http.ts`):
+
+| File | Notes |
 |---|---|
-| `migrate` | Syncs tables and indexes and reports documents that don't match the schema. `--run-migrations [name…]` and `--status` handle [data migrations](migrations.html). |
-| `export <file>`, `import <file> [--replace]`, `backup <file>` | Data portability. |
-| `env list`, `env get`, `env set NAME value`, `env rm NAME` | Variables for your functions (`process.env`). Setting one reloads the running engine. |
-| `admin add <email> [--role owner\|admin\|viewer] [--password p]`, `admin list`, `admin remove` | Dashboard accounts. |
-| `dashboard` | Prints the dashboard's address. |
-| `engine build` | Builds the engine image from this repository. |
+| `archlast-forge.json` | `{ "mode", "services" }` |
+| `package.json`, `forge/package.json`, `forge/tsconfig.json`, `forge/schema.ts`, `forge/messages.ts` | the starter, versions set to the CLI's own |
+| `forge/files.ts` | only with `s3` |
+| `compose.yaml`, `Dockerfile`, `.dockerignore` | the production stack ([Backends](backend.html#the-stack)) |
+| `.env` | fresh secrets, mode 0600 |
+| `.env.example` | the same keys, empty |
+| `Caddyfile` | only with `caddy` |
+| `.gitignore`, `README.md` | |
 
-When an engine container is running, data and config commands run inside it, through `docker exec`.
+## dev
+
+```bash
+archlast-forge dev [--port <n>] [--with postgres,redis,s3] [--no-docker] [--run "<cmd>"] [--dir <forge dir>]
+```
+
+What it does depends on the project's mode (`archlast-forge.json`).
+
+### A full-stack app
+
+Runs the engine and the app in this one process, on your machine:
+
+1. Installs `forge/package.json`'s dependencies if they or the lockfile changed (`→ installing server dependencies: bun install --ignore-scripts (…)`; scripts run only for packages listed in `trustedDependencies`).
+2. Regenerates `forge/_generated` (`✓ codegen: 3 modules`).
+3. Starts the services, if any (see below).
+4. Builds the app and starts serving.
+
+```
+✓ codegen: 3 modules
+✓ app built in 220 ms
+
+  archlast-forge 0.1.0  ·  full-stack app  · ready in 738 ms
+
+  ➜  App        http://localhost:3000
+  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  Admin key  d3b832770e58cecf6888fbfd7e06d761f5ec216251dcf6a7
+
+  Save a file and the page reloads. Ctrl-C stops everything.
+```
+
+Services come from `--with` or, if absent, from `archlast-forge.json` (`caddy` is ignored: it is for production). With Docker each starts as a container named `archlast-forge-<project>-<hash>-dev-<service>` on a project network, with its port published on `127.0.0.1` at a free port, and `DATABASE_URL`, `REDIS_URL` or `S3_*` set for the engine. The banner adds a `Service  postgres on localhost:54321` row for each. Data stays in named volumes; Ctrl-C stops the containers this run started. Without Docker:
+
+```
+! --no-docker: not starting postgres, redis; using SQLite. Set DATABASE_URL, REDIS_URL or S3_* yourself to use others.
+```
+
+and if the project needs services and Docker is missing without `--no-docker` it stops: `This project uses postgres, which run in Docker, and Docker isn't available.` followed by `Start Docker, or run `archlast-forge dev --no-docker` to develop on SQLite.` (There is no automatic fallback here.)
+
+Then: saving in `app/` or `public/` rebuilds and reloads the browser; saving in `forge/` regenerates types, restarts your functions (`✓ function runtime restarted (messages.ts)`) and rebuilds the app; changing `forge/package.json` or `bun.lock` installs first. It also watches a workspace-root `bun.lock` above the project. Ctrl-C (or SIGTERM) prints `SIGINT: draining connections…`, stops the server and exits 0.
+
+The environment: `BETTER_AUTH_URL` is set to `http://localhost:<port>` (a stray `.env` cannot point sessions elsewhere); `TRUSTED_ORIGINS` defaults to `http://localhost:<port>` (setting it yourself replaces that default); `BETTER_AUTH_SECRET` and `ADMIN_KEY` come from the environment (Bun loads `.env` from the current directory) or, if unset, are generated once into `forge/data/.dev-secrets.json` (mode 0600); `DATA_DIR` defaults to `forge/data`. Behind code-server's port proxy (`VSCODE_PROXY_URI` with `{{port}}`), the proxy's origin is trusted too.
+
+`--run "<cmd>"` starts a companion command (a separate frontend, a type watcher) alongside, in both modes, and stops it when the CLI exits. (On `0.1.0` it was ignored for full-stack apps.)
+
+### A backend
+
+With Docker, `dev` starts the engine container with `forge/` mounted read-only, and the services as sibling containers:
+
+```
+  archlast-forge 0.1.0  ·  backend  · engine in Docker
+
+  ➜  API        http://localhost:3000
+  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  Admin key  …
+  ➜  Container  archlast-forge-api-<hash>-dev
+```
+
+The container is `archlast-forge-<project>-<hash>-dev`, with port `--port` mapped to 3000, a data volume, `host.docker.internal` reachable, `forge/.env` (if it exists) as its env file, and the secrets above. The engine copies and watches `forge/` itself; the host only keeps `forge/_generated` current. The CLI then follows the container's logs; Ctrl-C stops the container (a 15 s drain), the services this run started, and exits 0. If the container stops by itself, `dev` prints `<name> stopped` and exits 0.
+
+Without Docker (`--no-docker`, `ARCHLAST_NO_DOCKER=1`, or Docker missing, which prints `! Docker isn't available; running in this process (--no-docker)`), the engine runs in the CLI's process on SQLite, with the same banner (`backend · in this process`), and services in the configuration are skipped with a warning. `--docker` makes a missing Docker an error: `Docker isn't available. Install it, or pass --no-docker to run in this process.`
+
+Troubleshooting `dev`:
+
+| Message | What to do |
+|---|---|
+| `Failed to start server. Is port 3000 in use?` | pass `--port`, or stop what holds the port |
+| `Engine image ghcr.io/…:0.1.0 isn't available. Set ARCHLAST_ENGINE_IMAGE to one you can pull or build.` | check network access to GHCR; or build locally with `engine build` in a checkout |
+| `bun install failed in … Fix forge/package.json; native packages may need "trustedDependencies".` | fix the dependency; list packages that need install scripts under `trustedDependencies` |
+| `Frontend code must import only forge/_generated: …` | see [codegen](#codegen) |
+| `Couldn't start postgres: …` / `postgres didn't become ready in 60 s. See: docker logs …` | look at the container's logs; a port or volume problem is usual |
+| the page shows "Build failed" | the message over the page is the build error; fix the file |
+
+## codegen
+
+```bash
+archlast-forge codegen [--dir <forge dir>]
+```
+
+Installs server dependencies if they changed, then writes `forge/_generated/api.ts` and `dataModel.ts` (skipping files whose content is unchanged), and checks that frontend code imports nothing from `forge/` except `forge/_generated`. It checks every relative import in `src/` and `app/` next to the forge folder.
+
+```
+✓ wrote /home/me/proj/forge/_generated (3 modules)
+```
+
+A violation prints and exits 1 (`dev`, `build` and `up` run the same check):
+
+```
+✗ Frontend code must import only forge/_generated:
+  app/routes/teapot.tsx imports "../../forge/posts"
+```
+
+Commit `forge/_generated`; `forge/_generated/.depshash` (a stamp used to skip reinstalls) is ignored by git.
+
+## build
+
+```bash
+archlast-forge build [--tag <image>] [--no-docker]
+```
+
+Regenerates types first. Then:
+
+- **With Docker** (the default): builds the app image from the project's `Dockerfile` on the engine image (`--build-arg ENGINE_IMAGE=<the CLI's engine image>`), tagged `--tag` or `<project>-<hash>:latest`. If the engine image isn't local it is built (in a checkout of this repository) or pulled. A project from before `init` has no `Dockerfile`, so a generated one around `forge/` is used. It ends with `✓ built <tag>` and hints for `up`, `start --image <tag>` and `docker run -p 3000:3000 -v data:/data --env-file .env <tag>`. Failures: `Engine image build failed`, `App image build failed` (exit 1, with Docker's output above).
+- **With `--no-docker`, a full-stack app**: builds the production bundles into `.forge/build` and prints what the browser downloads:
+
+  ```
+  → Building the app
+  ✓ Building the app 1.4s
+    first load  entry.client.js 389 kB (108 kB compressed), entry.client.css 5.2 kB (1.5 kB compressed)
+    all code   14 files, 400 kB; each page loads only the routes it shows
+
+  Run it here with: archlast-forge start --no-docker
+  ```
+
+  Errors in routes or imports print the build log with file, line and column, and exit 1. See [Full-stack apps](framework.html#production).
+- **With `--no-docker`, a backend**: `Nothing to build without Docker: a backend runs straight from forge/ (archlast-forge start --no-docker).` Exit 0.
+
+## up
+
+```bash
+archlast-forge up [--rebuild] [--dir <forge dir>]
+```
+
+Builds the image and starts the stack in `compose.yaml`. In order:
+
+1. Requires `archlast-forge.json`: otherwise `This folder has no archlast-forge.json. Create a project with `archlast-forge init`, or run a single image with `archlast-forge build` and `start --image`.` Requires Docker and `compose.yaml` (`No compose.yaml in …`).
+2. Installs dependencies, regenerates types, checks imports.
+3. Creates `.env` with fresh secrets if there is none (`✓ Created .env with fresh secrets (keep it out of git; it holds the keys to your data)`). An existing `.env` is never touched.
+4. Makes sure the engine image exists locally (pulling it, or building it in a checkout).
+5. `docker compose build` (`--rebuild` adds `--no-cache`), then `docker compose up -d --no-build --wait --wait-timeout 240`, with `ENGINE_IMAGE` set to the CLI's engine image unless already in your environment.
+
+```
+✓ Building the app image <seconds>s
+✓ Starting the app and postgres, redis, s3 <seconds>s
+
+  ● up
+
+  ➜  App        http://localhost:3000
+  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  Admin key  ADMIN_KEY in .env
+  ➜  Logs       archlast-forge logs
+  ➜  Stop       archlast-forge down
+```
+
+With plain http and no Caddy it adds `! Serving plain http, which is fine for trying it out. Put it behind https ... before real users arrive.` The `App` row shows `BETTER_AUTH_URL` from `.env`, with `${DOMAIN}` filled in from the same file for the Caddy variant. (On `0.1.0` it printed the literal `https://${DOMAIN}`.)
+
+Failures: `The app image didn't build. The end of the output:` with the last 15 lines; or the last lines of the compose error and of the app's log, then `The stack didn't become healthy. The app's last log lines are above; `archlast-forge logs` follows them.` Both exit 1. Typical causes: a missing `.env` key (compose says `missing: run archlast-forge up, which creates .env`), a port already published (`PORT`, `S3_PORT` in `.env`), a config the engine refuses (read `archlast-forge logs app`).
+
+## down
+
+```bash
+archlast-forge down [--volumes]
+```
+
+`docker compose down`; with `--volumes`, also removes the volumes (database, files, Caddy's certificates). Prints `Stopping the stack`, then `Data stays in Docker volumes. `archlast-forge down --volumes` deletes it.` Requires Docker and `compose.yaml`.
+
+## logs
+
+```bash
+archlast-forge logs [service]
+```
+
+With a stack: `docker compose logs --follow --tail 100 [service]` until Ctrl-C (`service` is a Compose service name: `app`, `postgres`, `redis`, `rustfs`, `caddy`). Without one, it follows the single engine container of an older project. Nothing running: `✗ Nothing is running for this project (`archlast-forge up` starts the stack)` (exit 1).
+
+## status
+
+```bash
+archlast-forge status
+```
+
+With a stack: `docker compose ps -a`. Otherwise it lists containers named for the project; when there are none: `no containers for archlast-forge-proj-f6b137`. (A project with a `compose.yaml` whose stack has never been created is "without a stack" here.)
+
+## start
+
+```bash
+archlast-forge start [--no-docker | --image <tag> [--env-file <file>] [--with <services>]] [--port <n>]
+```
+
+| Situation | Behavior |
+|---|---|
+| Docker, project has `archlast-forge.json`, no `--image` | the same as `up` |
+| `--image <tag>` | runs that image detached as `archlast-forge-<project>-<hash>`: `--restart unless-stopped`, host `--port` to 3000, a `<name>-data` volume at `/data`, `--env-file` (default `forge/.env` when it exists), `PORT=3000`, `DATA_DIR=/data`. Prints `<name> running <tag> on port 3000 (restarts automatically; `archlast-forge logs` to follow)`. `--with` also starts postgres/redis/s3 containers on a network with it. |
+| Docker, no config file, no `--image` | `Pass --image <tag> (from `archlast-forge build`), or --no-docker to run in this process.` |
+| `--no-docker` | runs the engine in this process. A full-stack app is loaded from `.forge/build`. |
+
+In-process output: `✓ archlast-forge on http://localhost:3000 (app and API)` (without the parenthesis for a backend). It needs `BETTER_AUTH_SECRET` and an https `BETTER_AUTH_URL` (or `ALLOW_INSECURE_HTTP=1`), which Bun reads from `.env` in the current directory; `DATA_DIR` defaults to `./data` in the current directory (unlike `dev`, which uses `forge/data`). `SIGTERM` and `SIGINT` stop it gracefully and exit 0 (a second signal exits 1); `SIGHUP` reloads the function runtime. Configuration problems print one line and exit 1 (see [Deployment](deployment.html#environment-for-production)); a full-stack app without a build says ``No production build in …/.forge/build. Run `archlast-forge build --no-docker` first.``
+
+## stop
+
+```bash
+archlast-forge stop
+```
+
+With a stack, the same as `down`. Otherwise stops the project's engine containers (`docker stop -t 15`), for projects started by `start --image` or an older `dev`.
+
+## migrate
+
+```bash
+archlast-forge migrate                          # create tables and indexes; check documents against the schema
+archlast-forge migrate --status                 # list data migrations
+archlast-forge migrate --run-migrations [name…] # run pending data migrations (all, or the ones named)
+```
+
+Runs in the running server if one answers on `--port` (using `ADMIN_KEY`), otherwise opens the project's database itself. See [Migrations](migrations.html) for writing them.
+
+```
+$ archlast-forge migrate
+✓ migrated 8 tables
+
+$ archlast-forge migrate --run-migrations
+✓ no pending migrations
+```
+
+`--status` prints one line per migration: `<state>  <name>  (<table>, <n> processed)` plus `✗ <error>` when it failed (nothing, when none are registered). If stored documents don't match the schema, `migrate` prints up to 50 of them and exits 1:
+
+```
+✗ <document id>: <what is wrong>
+✗ 3 documents don't match the schema; write a migration and run `archlast-forge migrate --run-migrations`
+```
+
+## export
+
+```bash
+archlast-forge export <file>
+```
+
+Writes every document of every table (yours, the auth tables, and `_storage`) as JSON Lines, one `{ "table", "_id", "_creationTime", "doc" }` per line:
+
+```
+✓ exported 7 documents to /home/me/proj/dump.jsonl
+```
+
+`export` with no file: `Usage: archlast-forge export <file>`. The file path is opened by whatever process runs the command (see [Where data commands run](#where-data-commands-run)).
+
+## import
+
+```bash
+archlast-forge import <file> [--replace]
+```
+
+Restores an export, keeping ids and creation times, validating each document against the schema. A table that already has documents is refused unless `--replace`, which clears the tables in the file first:
+
+```
+$ archlast-forge import dump.jsonl
+✗ Table "posts" already has 7 documents; pass --replace to clear it first
+$ archlast-forge import dump.jsonl --replace
+✓ imported 7 documents
+```
+
+Other errors: `Line 3 of dump.jsonl isn't valid JSON`, `Table "x" in the export isn't in the schema`. With a running server, an import reaches live subscribers.
+
+## backup
+
+```bash
+archlast-forge backup <file>
+```
+
+A consistent copy of the SQLite database (`VACUUM INTO`) while the engine runs: `✓ backed up to /home/me/proj/app.db`. With PostgreSQL it refuses and points at `pg_dump` (or `export`).
+
+## Where data commands run
+
+`migrate`, `export`, `import`, `backup`, `env` and `admin` choose where to run:
+
+1. If Docker is in use and the project's app is running as the `app` service of its compose stack (from `0.1.1`), or as an engine container started by the CLI for this project (`archlast-forge-<project>-<hash>` or its `-dev` twin), the command is run inside it with `docker exec … --dir /app/forge`, and for `export` and `backup` the file is copied out with `docker cp` (`✓ copied to <file>`).
+2. Otherwise it posts to `http://localhost:<port>/_cli` with the `x-admin-key` header (`ADMIN_KEY` from the environment, or the dev secret), so the work happens in the running server: an import reaches subscribers, and nothing fights the server for the SQLite write lock. A `401` prints `The server on port 3000 rejected the admin key; set ADMIN_KEY to the one it runs with.`
+3. If no server answers (connection refused), it opens the database itself and runs there: the SQLite file under `DATA_DIR` (default `<forge dir>/data`), or PostgreSQL if `DATABASE_URL` is in your environment.
+
+What follows from this:
+
+- In case 2 the server writes or reads `<file>` on **its** filesystem. That's the same machine in development; it isn't when the server is in a container the CLI can't find, for example a stack on another machine or one made by `0.1.0`'s CLI. Run the command inside that container instead ([Backends](backend.html#backups-and-restores)).
+- In case 3 you act on the local SQLite file, whatever your stack uses. If you meant a server that isn't reachable on this machine (a Caddy stack, a remote host), nothing warns you. Check the `--port`, and prefer running the command in the container.
+
+## env
+
+```bash
+archlast-forge env list
+archlast-forge env get <NAME>
+archlast-forge env set <NAME> <value>
+archlast-forge env rm <NAME>
+```
+
+Variables stored in the database and loaded into the function runtime (`process.env` in your functions). The process environment wins over stored values. `env` alone is `env list`.
+
+```
+$ archlast-forge env set GREETING hello
+✓ set GREETING
+✓ running server reloaded          # or: ✓ engine reloaded   (a container, via SIGHUP)
+                                   # or: (no running server picked it up; it applies on next start)
+$ archlast-forge env list
+GREETING=hello
+$ archlast-forge env get NOPE
+✗ NOPE isn't set
+```
+
+A wrong form prints `Usage: archlast-forge env list | get <NAME> | set <NAME> <value> | rm <NAME>`. Quote values with spaces. `set` and `rm` ask the running server to reload; `list` and `get` do not.
+
+## admin
+
+```bash
+archlast-forge admin add <email> [--role owner|admin|viewer] [--password <pw>]
+archlast-forge admin list
+archlast-forge admin remove <email>
+```
+
+Dashboard accounts (sign in at `/_dashboard`). The default role is `admin`. Without `--password` a random 20-character one is generated and printed once:
+
+```
+$ archlast-forge admin add ada@example.com --role owner
+✓ ada@example.com (owner)  password: qum7eHoh2yzpshrC_IOe
+$ archlast-forge admin list
+owner  ada@example.com
+$ archlast-forge admin add bob@example.com --password hunter22
+✗ Admin passwords must be at least 12 characters
+$ archlast-forge admin remove bob@example.com
+✗ No admin bob@example.com
+```
+
+Passwords are stored as Argon2 hashes and never written to the audit log. `ADMIN_KEY` works as an owner without an account.
+
+## dashboard
+
+```bash
+archlast-forge dashboard [--port <n>]
+```
+
+Prints `http://localhost:<port>/_dashboard` and exits. It doesn't check that anything is listening, and it prints localhost even for a remote server.
+
+## engine
+
+```bash
+archlast-forge engine build [--tag <image>]
+archlast-forge engine serve [--dev]
+archlast-forge engine prepare
+```
+
+- `build` builds the engine image from `docker/engine.Dockerfile` in a checkout of this repository, tagged `ghcr.io/algochad/archlast-forge-engine:<version>` (or `--tag`, or `ARCHLAST_ENGINE_IMAGE`). From an installed package there is no Dockerfile: `No engine Dockerfile at …; set ARCHLAST_ENGINE_IMAGE to a published image instead.`
+- `serve` and `prepare` are what the image runs: `prepare` (at image build time) copies the project in, installs its dependencies, builds a full-stack app; `serve` is the container's main process. You don't run them yourself. `serve --dev` is what a backend's dev container runs.
+
+## Environment variables the CLI reads
+
+| Variable | Effect |
+|---|---|
+| `ARCHLAST_NO_DOCKER=1` | the same as `--no-docker` |
+| `ARCHLAST_ENGINE_IMAGE` | the engine image to build on or pull, instead of `ghcr.io/algochad/archlast-forge-engine:<CLI version>` |
+| `ENGINE_IMAGE` | passed to `docker compose` for the `ENGINE_IMAGE` build argument; overrides the above for `up` |
+| `DOCKER` | the container program, default `docker` (`DOCKER=podman` is the intent; it has not been tested) |
+| `PORT` | the default for `--port` |
+| `ADMIN_KEY` | how data commands authenticate to a running server |
+| `DATA_DIR` | where `dev` keeps the database and secrets (default `forge/data`), and where data commands look when no server answers |
+| `TRUSTED_ORIGINS` | `dev`'s trusted browser origins (replaces the localhost default) |
+| `BETTER_AUTH_SECRET`, `S3_PUBLIC_ENDPOINT`, `VSCODE_PROXY_URI` | read by `dev`; see above |
+| `ARCHLAST_ENGINE=1` | set inside the engine image; the CLI there never uses Docker |
+| `NO_COLOR`, `FORCE_COLOR`, `TERM`, `CI` | output colors; `CI` also makes `init` non-interactive |
+
+Everything else you export is passed to the engine when it runs in the CLI's process (`dev` without Docker, `start --no-docker`), so `DATABASE_URL`, `REDIS_URL`, `S3_*`, `RATE_LIMIT_PER_MINUTE` and the rest of [Configuration](configuration.html) apply. `ARCHLAST_SRC`, `ARCHLAST_APP`, `ARCHLAST_WORKER`, `ARCHLAST_DEV`, `ARCHLAST_FORGE_DIR` and `ARCHLAST_SERVER_ID` are internal to the engine.
+
+## Files the CLI writes
+
+| Path | By | Content |
+|---|---|---|
+| `forge/_generated/api.ts`, `dataModel.ts` | `codegen`, `dev`, `build`, `up` | types; commit them |
+| `forge/_generated/.depshash` | the same | stamp for skipping `bun install` |
+| `forge/node_modules`, `forge/bun.lock` | the same | server dependencies |
+| `forge/data/app.db` (+ `-wal`, `-shm`) | `dev` | the development database |
+| `forge/data/.dev-secrets.json` | `dev` | generated `BETTER_AUTH_SECRET` and `ADMIN_KEY`, if none are in the environment |
+| `data/app.db` | `start --no-docker` | the default location without `DATA_DIR` |
+| `.forge/gen`, `.forge/build/<version>`, `.forge/build/latest.json` | `dev`, `build` | a full-stack app's generated entries and bundles |
+| `.env` | `init`, `up` | secrets, once |
+| Docker images, containers, volumes | `build`, `up`, `start --image`, `dev` | named after the project |
 
 ## archlast-forge.json
 
@@ -45,6 +460,20 @@ When an engine container is running, data and config commands run inside it, thr
 { "mode": "framework", "services": ["postgres", "redis"] }
 ```
 
-`mode` is `framework` or `backend`. `services` is what `dev` starts; `compose.yaml` is what `up` runs, and is edited by hand. A project without this file behaves as a backend with no services.
+`mode` is `framework` or `backend`. `services` is any of `postgres`, `redis`, `s3`, `caddy`. It is what `dev` starts (`caddy` aside); `up` runs `compose.yaml`, which is edited by hand. A project without the file behaves as a backend with no services. Errors name the file:
+
+```
+…/archlast-forge.json: "mode" must be "framework" or "backend" (got "web")
+…/archlast-forge.json: unknown service "mysql"; choose from postgres, redis, s3, caddy
+…/archlast-forge.json isn't valid JSON: …
+```
 
 Server dependencies in `forge/package.json` are installed with `--ignore-scripts`. If a package needs its install script, list it under `"trustedDependencies"` and Bun runs scripts for that package only.
+
+## Exit codes
+
+| Code | When |
+|---|---|
+| 0 | success; `--help`; no command; Ctrl-C or SIGTERM of `dev` and `start`; `dev` when its container stops |
+| 1 | any `✗` failure; an unknown command; an unknown option; a second signal during shutdown; a failed migration check |
+| 130 | Ctrl-C at an `init` prompt |

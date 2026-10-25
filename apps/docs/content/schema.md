@@ -1,5 +1,7 @@
 # Schema and validators
 
+The schema is `forge/schema.ts`. It declares your tables, their fields, their indexes, and the shape of every document. The same validators (`v.*`) also describe function arguments and return values, so you learn them once.
+
 ```ts
 // forge/schema.ts
 import { defineSchema, defineTable, v } from "@archlast/forge-runtime";
@@ -10,40 +12,261 @@ export default defineSchema({
     listId: v.id("lists"),
     title: v.string(),
     done: v.boolean(),
+    priority: v.optional(v.number()),
     tags: v.optional(v.array(v.string())),
+    meta: v.optional(v.object({ source: v.string(), score: v.number() })),
+    due: v.optional(v.union(v.number(), v.null())),
   })
     .index("by_list", ["listId"])
     .index("by_list_done", ["listId", "done"])
+    .index("by_priority", ["priority"])
     .searchIndex("search_title", { searchField: "title", filterFields: ["listId"] }),
 });
 ```
 
-Every document gets `_id` (an `Id<"todos">`, a string like `todos:3f…`) and `_creationTime` (milliseconds). Documents are stored as JSON and validated against the schema on every write. Changing a field never requires a database migration, but existing documents must still match the schema (see [Migrations](migrations.html)).
+The file must `export default defineSchema({ ... })`. If it does not, the server fails to start with `forge/schema.ts must default-export defineSchema({...})`. After you change the schema, run `archlast-forge codegen` (`archlast-forge dev` does it for you) so that `forge/_generated` and the types follow.
+
+## Documents
+
+Every document has two system fields next to the fields you declare:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `_id` | `Id<"todos">` | The document's id. |
+| `_creationTime` | `number` | When the document was inserted, in milliseconds since the epoch. It has a fractional part, so documents inserted in the same millisecond keep their order. |
+
+You never declare these, and you never pass them to `insert`, `patch` or `replace`. Documents are stored as JSON in a table of `(_id, _creationTime, doc)`, with one table per name in your schema. There are no per-field columns, so adding, removing or retyping a field never alters the database (see [Changing the schema](#changing-the-schema)).
+
+### Ids
+
+An id is a string of the form `<table>:<32 hex digits>`, for example `lists:e32991b9041e407f8cc70d582808c8b3`. The table name is part of the id, which has two consequences:
+
+- `ctx.db.get(id)` knows which table to read without being told.
+- `v.id("lists")` rejects an id that starts with another table's name: `args.listId must be an Id<"lists">, got "todos:abc"`.
+
+The check is on the prefix only. A validator does not look up whether the document exists, so an id that points at nothing passes validation (and `ctx.db.get` returns `null` for it). Treat ids as opaque strings: do not parse them or build them by hand.
+
+### Types
+
+The types come from your schema through the generated `forge/_generated/dataModel.ts`:
+
+```ts
+import type { Doc, Id } from "./_generated/dataModel";
+import { type Infer, v } from "@archlast/forge-runtime";
+
+type Todo = Doc<"todos">;      // { _id: Id<"todos">; _creationTime: number; listId: Id<"lists">; title: string; ... }
+type ListId = Id<"lists">;     // string & { __tableName: "lists" }
+
+const status = v.union(v.string(), v.null());
+type Status = Infer<typeof status>; // string | null
+```
+
+| Type | From | What it is |
+|---|---|---|
+| `Doc<"table">` | `dataModel` or `@archlast/forge-runtime` | A stored document, system fields included. |
+| `Id<"table">` | `dataModel` or `@archlast/forge-runtime` | An id for that table. It is a string at runtime, but plain strings are not assignable to it. |
+| `TableNames` | `dataModel` or `@archlast/forge-runtime` | The union of table names, built-in tables included. |
+| `Infer<V>` | `@archlast/forge-runtime` | The TypeScript type a validator accepts. |
+| `WithoutSystemFields<D>` | `@archlast/forge-runtime` | `D` without `_id` and `_creationTime`: what `insert` takes. |
+| `ObjectType<F>` | `@archlast/forge-runtime` | The type of `v.object(F)`; handlers receive `ObjectType` of their `args`. |
+| `PropertyValidators` | `@archlast/forge-runtime` | `Record<string, Validator>`: the shape of `args` and of table fields. |
 
 ## Validators
 
-| Validator | TypeScript type |
-|---|---|
-| `v.string()`, `v.number()`, `v.boolean()`, `v.null()` | `string`, `number`, `boolean`, `null` |
-| `v.id("lists")` | `Id<"lists">`, which rejects ids from other tables |
-| `v.array(v.string())` | `string[]` |
-| `v.object({ a: v.number() })` | `{ a: number }` (extra keys are rejected) |
-| `v.union(v.string(), v.null())` | `string \| null` |
-| `v.optional(v.string())` | an optional field |
+Every value that enters or leaves the backend can be checked by a validator: function arguments, return values (when you give `returns`), and documents on every write.
 
-`Infer<typeof validator>` gives you the type. Validation runs through Zod, and errors name the exact path: `args.todos[2].title must be a string`.
+| Validator | TypeScript type | Accepts |
+|---|---|---|
+| `v.string()` | `string` | Any string. |
+| `v.number()` | `number` | A finite number. `NaN` and `Infinity` are rejected. There is no separate integer type. |
+| `v.boolean()` | `boolean` | `true` or `false`. |
+| `v.null()` | `null` | Only `null`. |
+| `v.id("table")` | `Id<"table">` | A string whose table prefix is `table`. |
+| `v.array(element)` | `Infer<element>[]` | An array whose every item passes `element`. |
+| `v.object({ ... })` | the object type | An object with exactly the declared keys. |
+| `v.union(a, b, ...)` | `A \| B \| ...` | A value that passes at least one member. |
+| `v.optional(inner)` | `T \| undefined`, and the key may be absent | A missing key, `undefined`, or a value that passes `inner`. |
+
+Things that are deliberately not there: there are no literal, `any`, bytes, record, bigint or date validators. Store a date as a `number` (milliseconds), an enum as a `v.union` of `v.string()` values checked in your handler, and files in [file storage](storage.html) (a `v.id("_storage")` field). Documents travel as JSON, so a value has to survive `JSON.stringify` anyway.
+
+### Details that matter
+
+**Objects are strict.** `v.object({ a: v.number() })` rejects any key it does not declare: `args.o.b is not in the validator`. This holds at every nesting level, in arguments and in documents. If you receive a value you do not control, validate the keys you know and keep the rest out.
+
+**`v.optional` is about absence, not `null`.** `v.optional(v.string())` accepts a missing key and `undefined`; it does not accept `null`. To allow `null`, say so: `v.union(v.string(), v.null())`, or both: `v.optional(v.union(v.number(), v.null()))`. Keys set to `undefined` count as absent at the top level of a document or `args` object, and JSON drops them anywhere else.
+
+**`optional` only wraps once, and only at a field.** The types allow `v.optional(x)` for a field of `v.object` or a table, an argument, and nowhere else: `v.array(v.optional(v.string()))` and `v.union(v.optional(...))` do not type-check.
+
+**Unions report the member kinds, not the member that was closest.** For `v.union(v.string(), v.number())` and the value `true`, the message is `args.u must be one of string | number, got true`. Prefer unions of distinct primitive kinds, or tag object members with a field that holds a fixed string and branch on it in your handler.
+
+**Validators are plain data.** `v.string()` returns `{ kind: "string", optional: false }`. That is why they can cross into the dashboard (which draws your schema) and into the function runtime process. Each validator compiles once to a [Zod](https://zod.dev) schema and is cached on the validator object, so reusing one validator constant in many places costs nothing.
+
+### Error messages
+
+Validation errors name the exact path and are sent to the caller unchanged (code `BAD_REQUEST`, HTTP 400). These are the messages you will see:
+
+| Situation | Message |
+|---|---|
+| Wrong type | `args.title must be a string, got 5` |
+| Missing required key | `args.listId is required` |
+| Number that is not finite, or `null` for a number | `args.priority must be a finite number, got null` |
+| Wrong table in an id | `args.listId must be an Id<"lists">, got "todos:abc"` |
+| Wrong item in an array | `args.tags[1] must be a string, got 2` |
+| Not an object | `args.o must be an object, got 5` |
+| Unknown key | `args.extra is not in the validator` |
+| Unknown key, nested | `args.o.b is not in the validator` |
+| Missing nested key | `args.o.a is required` |
+| No union member matched | `args.u must be one of string \| number, got true` |
+| Arguments are not an object | `args must be an object, got [1]` |
+| Body is not JSON | `The request must be valid JSON` |
+| Document write | `lists.extra is not in the validator` (the path starts with the table name) |
+| Return value | `Invalid return value: returns._id is not in the validator` |
+
+The first error found is reported; fix it and the next one appears. The return-value error is different on purpose: it is a bug in your function, not a bad request, so it is reported as `INTERNAL_SERVER_ERROR` and, outside dev, the caller sees only `Server error (request <id>)`. See [Errors](errors.html).
+
+## defineSchema and defineTable
+
+`defineTable(fields)` takes an object of validators and returns a table you can chain `.index(...)` and `.searchIndex(...)` onto. `defineSchema(tables)` takes an object of tables and returns the schema. Both are checked when the file loads, and a mistake fails startup with a message that names the table:
+
+| Rule | Message |
+|---|---|
+| Table and field names match `^[a-zA-Z][a-zA-Z0-9_]*$` (a letter first, then letters, digits and underscores) | `Table name "my-table" must match /^[a-zA-Z][a-zA-Z0-9_]*$/` |
+| | `Field "a.x-y" must match /^[a-zA-Z][a-zA-Z0-9_]*$/` |
+| Built-in table names are taken | `Table "users" is reserved (Better Auth / system). Store extra user data in a separate table keyed by userId.` |
+| Index fields exist | `Index "a.i" uses unknown field "nope"` |
+| `by_id` and `by_creation_time` are reserved | `Index name "a.by_id" is invalid or reserved` |
+| Search field is a string | `Search index "a.s": "x" must be a v.string() field` |
+| Search and filter fields exist | `Search index "a.s" uses unknown field "zz"` |
+| Index names are unique within a table, across both kinds | `Search index name "a.s" is invalid or already used` |
+
+A name that starts with an underscore is not allowed for your tables or fields; the leading underscore is how the system marks its own (`_id`, `_creationTime`, `_storage`). `by_id` and `by_creation_time` are reserved: every table already has an index called `by_creation_time`, so `defineSchema` rejects a table that declares one (`Index name "a.by_creation_time" is invalid or reserved`; before `0.1.1` it was accepted and the built-in index silently took its place).
+
+## Indexes
+
+```ts
+defineTable({ listId: v.id("lists"), done: v.boolean(), title: v.string() })
+  .index("by_list", ["listId"])
+  .index("by_list_done", ["listId", "done"]);
+```
+
+`.index(name, fields)` takes a name and a non-empty list of field names. The index serves queries through `withIndex` (see [Reading data](queries.html#indexes)):
+
+- **Order matters.** A query compares a prefix of the index's fields with `eq`, then may put a range on the next field. `by_list_done` answers "list X" and "list X, not done", but not "not done" on its own. Results come out ordered by the fields that were not fixed with `eq`, then by `_creationTime`.
+- **Every table has `by_creation_time`**, built in. It orders by `_creationTime` and is what a query without `withIndex` scans.
+- **Documents that lack an indexed field are still in the index.** The missing value sorts first (SQLite), is matched by `q.eq("priority", undefined)`, and is excluded by range operators (`gt`, `gte`, `lt`, `lte`), which only match values that exist.
+- **Only top-level fields can be indexed.** A field inside a `v.object` cannot. Hoist it into its own field if you need to query by it.
+- **Indexes are not unique.** Nothing stops two documents having the same indexed values. To enforce uniqueness, check with `.unique()` or `.first()` inside the mutation that inserts. Mutations are serializable, so the check and the insert cannot interleave with another mutation's.
+- **There is no limit on index count, but every index costs writes.** A write updates every index, and publishes a [reactivity topic](reactivity.html) for every prefix of every index. Add the ones your queries use.
+
+### How indexes are stored, and what changes recreate them
+
+Each index becomes a database index named `afx_<hash>`, where the hash covers the table name, the index name and the field list. It is an expression index over the JSON fields in order (`json_extract("doc", '$.listId')` on SQLite, `"doc"->'listId'` on Postgres), followed by `_creationTime` and `_id`. On every startup the server compares the wanted names with the existing `afx_` indexes of each table, drops the ones that are no longer wanted and creates the new ones.
+
+So:
+
+- Adding an index builds it, over the existing documents, at the next start.
+- Removing an index drops it.
+- Changing an index's fields, reordering them, or renaming it all change the hash, so the old index is dropped and a new one built. Renaming an index while keeping its fields costs a rebuild.
+- On Postgres indexes are built and dropped with `CONCURRENTLY`, so writes are not blocked. On SQLite the build happens in one write transaction at startup, so a very large table delays startup.
+- Indexes the server did not create (names without the `afx_` prefix) are never touched.
+
+A query that names an index which no longer exists fails with `Unknown index "todos.nope"`, which TypeScript also catches after codegen.
+
+## Search indexes
+
+```ts
+defineTable({ listId: v.id("lists"), title: v.string() })
+  .searchIndex("search_title", { searchField: "title", filterFields: ["listId"] });
+```
+
+A search index makes one `v.string()` field searchable by words. The config takes:
+
+| Option | Meaning |
+|---|---|
+| `searchField` | The string field to search. Required, and it must be a string field (`v.string()` or `v.optional(v.string())`). Documents without a value are simply not indexed. |
+| `filterFields` | Fields you may narrow by equality in the same query (`.eq("listId", id)`). Optional; defaults to none. |
+
+How matching works, as implemented:
+
+- The query text is lowercased and split into words of letters and digits (any script); punctuation and spaces separate words. At most the first 16 words are used.
+- **Every word must match** (an AND, not an OR). **The last word matches as a prefix**, so `oat mil` finds "Buy oat milk" and `mil` finds "Milk the cow" and "Buy oat milk".
+- Results come back **by relevance**, best first. You cannot `order()` or `filter()` a search query, and it does not paginate. It supports `include`, `take(n)`, `first()` and `collect()`, which returns at most 1024 documents.
+- A query that contains no words (an empty string, only punctuation) returns `[]`, not an error.
+- On SQLite the index is an FTS5 table with the `unicode61` tokenizer, maintained on every insert, patch, replace and delete. On Postgres it is a GIN index over `to_tsvector('simple', ...)`. There is no stemming on either, so `run` does not match `running`.
+- `filterFields` are checked on the main table after the text match, not stored in the search index. They narrow results but do not make the search cheaper. Passing a field that is not in `filterFields` fails: `"done" is not a filter field of search index "todos.search_title"`.
+
+The usage side is in [Reading data](queries.html#full-text-search).
+
+Changing a search index: changing the `searchField` (or the name) drops and rebuilds it from the existing documents on the next start. Changing only `filterFields` needs no rebuild. A search index is registered once per table and name, and a name must not collide with a regular index on the same table.
 
 ## Relationships
 
-A `v.id("lists")` field is a reference to the `lists` table, and `v.array(v.id("todos"))` a list of references. Nothing else is needed: the dashboard draws them (Data, then Relationships), makes them links between documents, and [`include`](queries.html#joins) follows them in queries. Give the field an index (`.index("by_list", ["listId"])`) to look documents up by it, from either direction:
+A `v.id("lists")` field is a reference to the `lists` table, and `v.array(v.id("todos"))` is a list of references. Nothing else is needed: the dashboard draws them (Data, then Relationships), makes them links between documents, and [`include`](queries.html#joins) follows them in queries. Give the field an index (`.index("by_list", ["listId"])`) to look documents up by it from the other direction:
 
 ```ts
-todos: defineTable({ listId: v.id("lists"), blockedBy: v.optional(v.array(v.id("todos"))), … })
-  .index("by_list", ["listId"]),
+todos: defineTable({
+  listId: v.id("lists"),
+  blockedBy: v.optional(v.array(v.id("todos"))),
+  title: v.string(),
+  done: v.boolean(),
+}).index("by_list", ["listId"]),
 ```
 
-Only top-level `v.id` fields and arrays of them count; ids inside nested objects and unions work as data but aren't followed. References aren't checked on write beyond the id belonging to the right table, and deleting a document leaves the ids that pointed at it (see [Joins](queries.html#joins)).
+Only top-level `v.id` fields (optional or not) and arrays of them count as references. Ids inside nested objects and unions work as data but are not followed. A reverse lookup needs an index whose first field is the reference, and an array field cannot be looked up in reverse.
+
+References are not enforced. A write checks that the id has the right table prefix and nothing more. Deleting a document leaves the ids that pointed at it, and a joined field then comes back `null`. If you need cascading deletes or a "restrict" rule, write them in the mutation (see [Joins](queries.html#joins)).
 
 ## Built-in tables
 
-`users`, `sessions`, `accounts` and `verifications` belong to Better Auth, and `_storage` holds file metadata. You can reference them (`v.id("users")`, `v.id("_storage")`) but can't redefine them. Store extra user data in your own table keyed by `userId`.
+Every schema also contains these tables. You can read them, reference them with `v.id(...)`, and see them in the dashboard, but you cannot define a table with the same name.
+
+| Table | Fields | Indexes |
+|---|---|---|
+| `users` | `name`, `email`, `emailVerified`, `image?`, `createdAt`, `updatedAt` | `by_email` |
+| `sessions` | `userId`, `token`, `expiresAt`, `ipAddress?`, `userAgent?`, `createdAt`, `updatedAt` | `by_token`, `by_userId` |
+| `accounts` | `userId`, `accountId`, `providerId`, `accessToken?`, `refreshToken?`, `idToken?`, `accessTokenExpiresAt?`, `refreshTokenExpiresAt?`, `scope?`, `password?`, `createdAt`, `updatedAt` | `by_userId`, `by_accountId` |
+| `verifications` | `identifier`, `value`, `expiresAt`, `createdAt`, `updatedAt` | `by_identifier` |
+| `_storage` | `key`, `contentType?` | none |
+
+The first four belong to Better Auth (see [Authentication](auth.html)). Dates in them are numbers, in epoch milliseconds. Store your own per-user data in a table of your own that holds `userId: v.id("users")`, so that Better Auth upgrades and plugins never collide with your fields. `_storage` holds one row per uploaded file (see [File storage](storage.html)); its `_id` is the `storageId` you keep in your documents as `v.id("_storage")`.
+
+Besides these, the engine keeps internal tables whose names begin with an underscore (scheduled functions, logs, admin accounts, migration progress). They are not part of your schema and cannot be queried from functions.
+
+## Strict and non-strict tables
+
+Your tables are strict. On every `insert`, `patch` and `replace` the whole resulting document is validated, so a stray field or a wrong type is rejected before anything is stored:
+
+```ts
+await ctx.db.insert("lists", { name: "x", extra: 1 });
+// ValidationError: lists.extra is not in the validator
+```
+
+`patch` validates the document as it will be after the merge, so a patch can fail because of a field it did not touch if stored data was already invalid. A field set to `undefined` in a write is dropped before validation, which is how `patch(id, { priority: undefined })` removes `priority`.
+
+The Better Auth tables are non-strict. They are not validated on write, because Better Auth plugins add their own fields to them (a two-factor plugin adds columns to `users`, for example). Your code can insert into them, but you should let Better Auth do it.
+
+Documents are limited to 1 MiB of JSON (`MAX_DOCUMENT_BYTES`), checked on every write: `Document in "todos" is 1048600 bytes; the limit is 1048576 (MAX_DOCUMENT_BYTES)`. See [Limits](limits.html).
+
+## Changing the schema
+
+Because documents are JSON, a schema change never rewrites data, and it never has to be applied by hand. What each change does:
+
+| Change | What happens |
+|---|---|
+| Add a table | The table is created at startup. |
+| Remove a table | It disappears from the schema, but its data is kept in the database. Functions that name it stop type-checking. |
+| Add an optional field | Nothing to do. Existing documents are valid. |
+| Add a required field | Existing documents no longer match. Add it as optional, fill it with a [data migration](migrations.html#data-migrations), then make it required. |
+| Remove or retype a field | Stored documents keep the old data until you rewrite them; they no longer match, and a strict write that sends the old shape fails. |
+| Add, change or remove an index | Built, rebuilt or dropped at startup (see [above](#how-indexes-are-stored-and-what-changes-recreate-them)). |
+| Add or change a search index | Built or rebuilt from the stored documents at startup. |
+
+Stored data is not checked against the schema when you edit it. What does check it:
+
+- **Startup, outside dev.** The server refuses to serve when stored documents of strict tables do not match, and prints up to ten of them with the validator's message (`SCHEMA_CHECK=off` skips this; dev skips it by default). The error reads `Stored documents don't match the schema (fix them with a migration, or set SCHEMA_CHECK=off)`.
+- **`archlast-forge migrate`**, which lists every document that does not match.
+- **The next write** to a document, which validates the whole document again.
+
+A read never validates. A query returns what is stored, even when it does not match the schema, so TypeScript's idea of `Doc<"todos">` can be wrong for old documents until they are migrated.
+
+See [Migrations and data](migrations.html) for the data side of a change, and [Reading data](queries.html) for how indexes are used.

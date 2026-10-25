@@ -1,26 +1,353 @@
 # Testing
 
-`@archlast/forge-runtime/testing` runs your functions against an in-memory database, without a server:
+You can test your functions without a server, a port or Docker. `@archlast/forge-runtime/testing` loads your `forge/` folder against an in-memory database and lets you call queries, mutations and actions directly, as different users, and run scheduled work on demand. Tests run with `bun test`.
+
+For the parts the library doesn't cover (live updates, HTTP routes, the real server), [test against a running engine](#testing-a-running-app) instead.
+
+## Setup
+
+```bash
+bun test                     # from the project root
+```
+
+`createTestBackend(forgeDir = "forge")` takes the path to your `forge/` folder, relative to the directory you run `bun test` from. It imports `forge/_generated/api`, so run `archlast-forge codegen` first (the generated files are committed).
 
 ```ts
-import { createTestBackend } from "@archlast/forge-runtime/testing";
-import { expect, test } from "bun:test";
+import { createTestBackend, type TestBackend } from "@archlast/forge-runtime/testing";
 import { api, internal } from "../forge/_generated/api";
+```
 
-test("adding a todo", async () => {
-  const t = await createTestBackend("forge");
-  const ada = await t.withIdentity({ email: "ada@example.com", name: "Ada" });
-  const listId = await ada.mutation(api.lists.create, { name: "home" });
-  await ada.mutation(api.todos.add, { listId, title: "milk" });
-  expect(await t.query(api.todos.listByList, { listId })).toMatchObject([{ title: "milk" }]);
+Make one backend per test. It is a fresh in-memory SQLite database with your tables and indexes, so tests can't affect each other, and creating one takes a few milliseconds.
 
-  await t.mutation(internal.todos.scheduleReminder, { listId });
-  await t.finishScheduledFunctions(); // runs due jobs as if time had passed
-  await t.run(async (ctx) => expect(await ctx.db.query("todos").collect()).toHaveLength(1));
-  await t.close();
+## The test backend
+
+| | |
+|---|---|
+| `t.query(ref, args?)`, `t.mutation(ref, args?)`, `t.action(ref, args?)` | call a function as an anonymous visitor. **Internal functions can be called too**, which clients can't |
+| `await t.withIdentity({ email, name?, userId? })` | creates a user and returns a caller with the same three methods, signed in as them |
+| `t.run(async (ctx) => …)` | runs code with `ctx.db` in a write transaction: seed data, or look at what the functions did |
+| `await t.finishScheduledFunctions(maxRounds = 100)` | runs every scheduled job, as if time had passed |
+| `await t.close()` | closes the database |
+
+References are the generated ones (`api.todos.add`, `internal.reminders.send`), so arguments and results are type-checked.
+
+Calls go through the same code as a real call: arguments are validated, `returns` validators are checked, a mutation runs in a transaction that rolls back when it throws, and a query reads from one snapshot.
+
+## A complete test file
+
+The functions under test are the todos app's: `todos.add` throws `new ForgeError("Title can't be empty")` for an empty title and `new ForgeError({ code: "LIMIT", max: 3 })` for a fourth todo in a list, `todos.remind` schedules `internal.reminders.send` with `runAfter`, and `jobs.digest` is an action that calls a query:
+
+```ts
+// forge/jobs.ts
+export const digest = action({
+  args: { listId: v.id("lists") },
+  handler: async (ctx, { listId }): Promise<{ open: number }> => {
+    const todos = await ctx.runQuery(api.todos.open, { listId });
+    return { open: todos.length };
+  },
 });
 ```
 
-- `t.query`, `t.mutation` and `t.action` can call internal functions.
-- `withIdentity` creates a user and returns a caller signed in as them.
-- `run` gives you direct database access for seeding and assertions.
+```ts
+// test/todos.test.ts
+import { afterEach, beforeEach, expect, setSystemTime, test } from "bun:test";
+import { createTestBackend, type TestBackend } from "@archlast/forge-runtime/testing";
+import { api, internal } from "../forge/_generated/api";
+
+let t: TestBackend;
+beforeEach(async () => {
+  t = await createTestBackend("forge");
+});
+afterEach(() => t.close());
+
+test("adds todos and lists them", async () => {
+  const listId = await t.mutation(api.todos.createList, { name: "home" });
+  await t.mutation(api.todos.add, { listId, title: "milk" });
+  expect(await t.query(api.todos.byList, { listId })).toMatchObject([{ title: "milk", done: false }]);
+});
+
+test("rejects an empty title with a message the user can see", async () => {
+  const listId = await t.mutation(api.todos.createList, { name: "home" });
+  await expect(t.mutation(api.todos.add, { listId, title: " " })).rejects.toThrow("Title can't be empty");
+});
+
+test("a list holds three todos, and the error says so in data", async () => {
+  const listId = await t.mutation(api.todos.createList, { name: "home" });
+  for (const title of ["a", "b", "c"]) await t.mutation(api.todos.add, { listId, title });
+  const err = await t.mutation(api.todos.add, { listId, title: "d" }).catch((e) => e);
+  expect(err.name).toBe("ForgeError");
+  expect(err.data).toEqual({ code: "LIMIT", max: 3 });
+});
+
+test("arguments are validated", async () => {
+  await expect(t.mutation(api.todos.add, { listId: "nope" as any, title: "x" })).rejects.toThrow('args.listId must be an Id<"lists">');
+});
+
+test("queries can depend on who is calling", async () => {
+  expect((await t.query(api.todos.mine)).signedIn).toBe(false);
+  const ada = await t.withIdentity({ email: "ada@example.com", name: "Ada" });
+  expect((await ada.query(api.todos.mine)).signedIn).toBe(true);
+});
+
+test("a scheduled reminder is sent", async () => {
+  const listId = await t.mutation(api.todos.createList, { name: "home" });
+  const todoId = await t.mutation(api.todos.add, { listId, title: "milk" });
+  await t.mutation(api.todos.remind, { todoId, inMs: 3_600_000 });
+  expect(await t.query(api.reminders.list)).toEqual([]); // not yet
+  await t.finishScheduledFunctions(); // an hour passes
+  expect(await t.query(api.reminders.list)).toHaveLength(1);
+});
+
+test("an action reads through a query", async () => {
+  const listId = await t.mutation(api.todos.createList, { name: "home" });
+  await t.mutation(api.todos.add, { listId, title: "milk" });
+  expect(await t.action(api.jobs.digest, { listId })).toEqual({ open: 1 });
+});
+
+test("internal functions are callable", async () => {
+  const listId = await t.mutation(api.todos.createList, { name: "home" });
+  const todoId = await t.mutation(api.todos.add, { listId, title: "milk" });
+  await t.mutation(internal.reminders.send, { todoId });
+  expect(await t.query(api.reminders.list)).toHaveLength(1);
+});
+
+test("run gives direct database access", async () => {
+  const id = await t.run((ctx) => ctx.db.insert("lists", { name: "seeded" }));
+  expect(await t.run((ctx) => ctx.db.get(id))).toMatchObject({ name: "seeded" });
+});
+
+test("time can be set", async () => {
+  setSystemTime(new Date("2026-01-01T00:00:00Z"));
+  try {
+    expect((await t.query(api.todos.mine)).at).toBe(Date.parse("2026-01-01T00:00:00Z"));
+  } finally {
+    setSystemTime(); // always put the clock back
+  }
+});
+```
+
+## Errors in tests
+
+The test backend doesn't hide or reshape errors; it throws what your code threw.
+
+- A `ForgeError` rejects with a `ForgeError`: check `err.message`, or `err.data` for a structured one. Check it with `err.name === "ForgeError"` or `isForgeError(err)`, or `toThrow("message")` to match the message.
+- A validation error rejects with the validation message (`args.title is required`).
+- Any other error rejects with its own message. In production the caller would see `Server error (request <id>)`; a test always sees the real message, so it can't check that a message stays hidden.
+- A mutation that throws rolls back. Assert it by reading afterwards.
+- There are no HTTP statuses and no request ids here. To check what a client receives, [test a running app](#testing-a-running-app).
+
+## Auth
+
+`withIdentity({ email, name })` inserts a document into `users` and returns a caller whose `ctx.auth.getUserIdentity()` is `{ userId, sessionId: "test", email, name }` (`name` defaults to the email). Calling it twice with the same email makes two users; pass `userId` to be the same user again:
+
+```ts
+const ada = await t.withIdentity({ email: "ada@example.com" });
+const adaAgain = await t.withIdentity({ email: "ada@example.com", userId: someExistingUserId });
+```
+
+Two callers are two users, so you can test permissions: `bob` can't edit `ada`'s list, `ada` can.
+
+What it doesn't do: Better Auth itself. There are no sessions, cookies, sign-in routes or plugins in the test backend, so a test can't sign up or sign in. If you need those, [test against a running app](#testing-a-running-app).
+
+## Scheduled functions
+
+`ctx.scheduler.runAfter` and `runAt` work in the test backend: the job is saved in the in-memory database. It isn't run until you call `await t.finishScheduledFunctions()`, which runs every pending job whatever time it was due, including jobs that those jobs schedule, until none are left. The jobs run as they do in production: a scheduled mutation is exactly-once, a scheduled action at most once.
+
+- **Check "not yet" before calling it.** Time doesn't pass on its own; nothing runs until you ask. Assert the state before, then call `finishScheduledFunctions`, then assert after.
+- **Failures are silent.** A job that throws is marked failed, as in production, and `finishScheduledFunctions` doesn't throw. Assert on the effect of the job, since the job table isn't readable from `t.run` (`Unknown table "_scheduled_functions"`).
+- **It gives up on loops.** A job that always schedules another one makes `finishScheduledFunctions` throw `Scheduled functions keep scheduling more; gave up` after `maxRounds` rounds (100 by default).
+- **To test one job without the scheduler,** call its function directly: `t.mutation(internal.reminders.send, { todoId })`.
+- **Crons aren't run.** The test backend starts no crons. Test a cron's function by calling it, and test the schedule through the module's export:
+
+  ```ts
+  import crons from "../forge/crons";
+
+  test("crons are registered", () => {
+    expect(crons.jobs.map((j) => [j.name, j.fn, j.schedule])).toEqual([
+      ["purge done todos", "todos:purgeDone", { kind: "interval", ms: 3_600_000 }],
+      ["weekday digest", "digest:send", { kind: "cron", expression: "0 9 * * 1-5" }],
+    ]);
+  });
+  ```
+
+## Time
+
+Functions read the clock with `Date.now()`, and so does the scheduler when it computes `runAfter`. Use `setSystemTime` from `bun:test` to pin it, as in the example, and call `setSystemTime()` with no argument in a `finally` to restore it. `finishScheduledFunctions` ignores the clock.
+
+## Migrations
+
+A [data migration](migrations.html) is an internal mutation, so a test can call it directly. It processes one batch per call and returns `{ cursor, isDone, processed }`:
+
+```ts
+const result = await t.mutation(internal.migrations.moveDue, { cursor: null });
+expect(result).toMatchObject({ isDone: true, processed: 2 });
+```
+
+Seed the old shape with `t.run` while the old field is still in your schema.
+
+## Testing React components
+
+Components that use `useQuery` and `useMutation` need an `ArchlastForgeProvider`. You can give it a small fake client instead of a server: the hooks use only `watch` (for queries) and `mutation` and `action` (for calls). With [Testing Library](https://testing-library.com/docs/react-testing-library/intro/) and happy-dom:
+
+```bash
+bun add -d @testing-library/react @happy-dom/global-registrator
+```
+
+```toml
+# bunfig.toml
+[test]
+preload = ["./happydom.ts"]
+```
+
+```ts
+// happydom.ts
+import { GlobalRegistrator } from "@happy-dom/global-registrator";
+GlobalRegistrator.register();
+```
+
+```ts
+// test/fake-client.ts
+import type { ArchlastForgeClient, QueryUpdate } from "@archlast/forge-client";
+import { getFunctionName } from "@archlast/forge-runtime";
+
+export function fakeClient(opts: { queries?: Record<string, unknown>; mutations?: Record<string, (args: any) => unknown> } = {}) {
+  const listeners = new Map<string, Set<(u: QueryUpdate) => void>>();
+  const calls: { name: string; args: unknown }[] = [];
+  const client = {
+    watch(ref: any, _args: unknown, listener: (u: QueryUpdate) => void) {
+      const name = getFunctionName(ref);
+      (listeners.get(name) ?? listeners.set(name, new Set()).get(name)!).add(listener);
+      if (name in (opts.queries ?? {})) listener({ value: opts.queries![name] });
+      return () => listeners.get(name)!.delete(listener);
+    },
+    async mutation(ref: any, args: unknown) {
+      const name = getFunctionName(ref);
+      calls.push({ name, args });
+      const handler = opts.mutations?.[name];
+      if (!handler) throw new Error(`unexpected mutation ${name}`);
+      return handler(args);
+    },
+  } as unknown as ArchlastForgeClient;
+  /** Pushes a new live result, as the server would after a write. */
+  const push = (name: string, update: QueryUpdate) => listeners.get(name)?.forEach((l) => l(update));
+  return { client, calls, push };
+}
+```
+
+```tsx
+// test/Todos.test.tsx
+import { ArchlastForgeProvider } from "@archlast/forge-react";
+import { ForgeError } from "@archlast/forge-runtime";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, expect, test } from "bun:test";
+import { Todos } from "../app/Todos";
+import { fakeClient } from "./fake-client";
+
+afterEach(cleanup);
+
+test("renders the live result and follows updates", async () => {
+  const fake = fakeClient({ queries: { "todos:byList": [{ _id: "todos:1", title: "milk" }] } });
+  render(<ArchlastForgeProvider client={fake.client}><Todos listId="lists:1" /></ArchlastForgeProvider>);
+  expect(await screen.findByText("milk")).toBeTruthy();
+  act(() => fake.push("todos:byList", { value: [{ _id: "todos:1", title: "milk" }, { _id: "todos:2", title: "eggs" }] }));
+  expect(await screen.findByText("eggs")).toBeTruthy();
+});
+
+test("shows a ForgeError message from a mutation", async () => {
+  const fake = fakeClient({
+    queries: { "todos:byList": [] },
+    mutations: { "todos:add": () => { throw new ForgeError("List is full"); } },
+  });
+  render(<ArchlastForgeProvider client={fake.client}><Todos listId="lists:1" /></ArchlastForgeProvider>);
+  fireEvent.click(await screen.findByText("Add"));
+  expect((await screen.findByRole("alert")).textContent).toBe("List is full");
+  expect(fake.calls).toEqual([{ name: "todos:add", args: { listId: "lists:1", title: "new" } }]);
+});
+```
+
+- `push("name", { error: "…", data: …, requestId: "…" })` simulates a failing query: the hook throws to your error boundary, with a `ForgeError` when `data` is present. Wrap the component in your boundary and assert on its fallback.
+- Keys in `queries` and `mutations` are function names (`"module:export"`), the same as `getFunctionName(api.todos.byList)`.
+- If the component uses `useSession` or `useAuth`, add an `auth` object to the fake with what it touches.
+- React Testing Library logs a console error when an error boundary catches an error. Silence `console.error` in the test that does it.
+
+This tests how your component reacts to results and errors. It doesn't test that your queries return the right thing; the test backend does that.
+
+## Testing a running app
+
+For anything that needs the real server (live updates, HTTP routes, cookies, status codes, the framework), start the engine inside the test with `startServer` and talk to it with the client or `fetch`:
+
+```ts
+// test/e2e.test.ts
+import { afterAll, beforeAll, expect, test } from "bun:test";
+import { ArchlastForgeClient } from "@archlast/forge-client";
+import { startServer, type RunningServer } from "@archlast/forge-runtime/server";
+import { mkdtempSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { api } from "../forge/_generated/api";
+
+let server: RunningServer;
+let client: ArchlastForgeClient;
+
+beforeAll(async () => {
+  server = await startServer({
+    forgeDir: "forge",
+    dev: true,
+    env: { ...process.env, PORT: "0", DATA_DIR: mkdtempSync(join(tmpdir(), "e2e-")) },
+  });
+  client = new ArchlastForgeClient({ url: server.url });
+});
+afterAll(async () => {
+  client.close();
+  await server.stop();
+});
+
+const until = async (cond: () => boolean, ms = 3000) => {
+  for (const end = Date.now() + ms; !cond(); await Bun.sleep(10)) if (Date.now() > end) throw new Error("timed out");
+};
+
+test("a live query follows a mutation", async () => {
+  const listId = await client.mutation(api.todos.createList, { name: "e2e" });
+  const seen: number[] = [];
+  const stop = client.watch(api.todos.byList, { listId }, (u) => "value" in u && seen.push(u.value.length));
+  await until(() => seen.length === 1); // the first message is the current result
+  await client.mutation(api.todos.add, { listId, title: "milk" });
+  await until(() => seen.length === 2);
+  stop();
+  expect(seen).toEqual([0, 1]);
+});
+
+test("errors carry a code and a request id", async () => {
+  const err = await client.mutation(api.todos.boom, {}).catch((e) => e);
+  expect(err.code).toBe("INTERNAL_SERVER_ERROR"); // dev shows the message; production says "Server error (request <id>)"
+  expect(err.requestId).toBeString();
+});
+
+test("an HTTP route", async () => {
+  const res = await fetch(`${server.url}/http/hello`);
+  expect(res.status).toBe(200);
+});
+```
+
+`PORT: "0"` picks a free port, and `DATA_DIR` gives the server a new database, so tests don't share state. `dev: true` skips the production checks (HTTPS URL, auth secret, schema check). Wait for the first message of a subscription before you write, as above, or the write can land before the subscription starts and you'd see only the final state. Wait with a condition, not a fixed sleep.
+
+Start one server per file (not per test), and use new lists and ids per test so tests don't see each other's data.
+
+### Against Postgres
+
+The test backend is always in-memory SQLite. To run a test against Postgres, start the server with a `DATABASE_URL` in `env` (`env: { …, DATABASE_URL: process.env.TEST_POSTGRES_URL }`) and point it at a throwaway database: the engine creates its tables there and your tests write to it. Run these as a separate set of tests that you only turn on when the variable is set.
+
+### Against `archlast-forge dev`
+
+You can also run `archlast-forge dev --no-docker --port 3631` in another terminal and point `ArchlastForgeClient` at `http://localhost:3631`. That keeps the data between runs, which is rarely what a test wants; prefer `startServer`.
+
+## What the library does not cover
+
+- **Live queries and the WebSocket.** There's no subscription in the test backend: a query is one call. Use `startServer` to test updates.
+- **Better Auth.** Sign-up, sign-in, sessions, cookies and plugins. `withIdentity` fakes the result.
+- **HTTP routes** (`forge/http.ts`). `createTestBackend` doesn't register them. Test them with `startServer` and `fetch`.
+- **Crons.** Test the function and the schedule separately, as above.
+- **Storage.** There's no S3: `ctx.storage` throws `Storage is not configured`.
+- **The caches, the rate limiter, timeouts, and status codes.** These belong to the server.
+- **Full-stack pages.** There's no test support for loaders or server rendering. Test your functions with the test backend, your components with a fake client, and a page with the real server and a browser.
+- **Postgres.** SQLite only.

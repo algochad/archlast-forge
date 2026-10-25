@@ -28,6 +28,7 @@ test("defineSchema adds auth and system tables and rejects bad definitions", () 
   expect(Object.keys(s.tables).sort()).toEqual(["_storage", "accounts", "sessions", "todos", "users", "verifications"]);
   expect(s.tables.todos.indexes).toEqual({ by_title: ["title"] });
   expect(() => defineSchema({ users: defineTable({}) } as any)).toThrow("reserved");
+  expect(() => defineSchema({ t: defineTable({ a: v.string() }).index("by_creation_time", ["a"]) })).toThrow("invalid or reserved"); // the built-in index would shadow it
   expect(() => defineSchema({ "bad-name": defineTable({}) })).toThrow("must match");
   expect(() => defineSchema({ t: defineTable({ a: v.string() }).index("by_b", ["b" as "a"]) })).toThrow('unknown field "b"');
 });

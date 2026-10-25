@@ -19,8 +19,10 @@ test("useQuery is live and stops with its scope", async () => {
   const app = createApp({}).use(archlastForge(client));
   const scope = effectScope();
   const { events, add } = app.runWithContext(() => scope.run(() => ({ events: useQuery(api.todos.events), add: useMutation(api.todos.logEvent) }))!);
+  expect(events.isLoading.value).toBe(true); // a ref, like data and error: no call needed
   await until(() => Array.isArray(events.data.value));
   expect(events.data.value).toEqual([]);
+  expect(events.isLoading.value).toBe(false);
   await add({ kind: "vue" });
   await until(() => (events.data.value as any[]).length === 1);
   scope.stop();

@@ -275,7 +275,7 @@ export interface MigrationResult {
 }
 
 /**
- * A resumable data migration over one table: `archlast-forge migrate --run` calls `migrateOne` for every
+ * A resumable data migration over one table: `archlast-forge migrate --run-migrations` calls `migrateOne` for every
  * document, in batches (one transaction each). Return a patch to apply, or nothing; use ctx.db for anything else.
  * Registered as an internal mutation, so clients can't run it.
  */

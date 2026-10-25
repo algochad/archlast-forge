@@ -40,9 +40,19 @@ function patchConsole() {
   }
 }
 
-/** Variables set with `archlast-forge env`; the process environment wins over them. */
-async function loadEnv(db: Db) {
-  for (const { name, value } of await db.query<{ name: string; value: string }>(`SELECT "name", "value" FROM "_env"`)) process.env[name] ??= value;
+/** Names this process took from `_env`, so a later load can change or remove them. A variable that was in the process environment to begin with is never touched. */
+const fromStore = new Set<string>();
+
+/** Variables set with `archlast-forge env`; the process environment wins over them. Runs again on every reload. */
+export async function loadEnv(db: Db) {
+  const rows = await db.query<{ name: string; value: string }>(`SELECT "name", "value" FROM "_env"`);
+  const wanted = new Set(rows.map((r) => r.name));
+  for (const name of [...fromStore]) if (!wanted.has(name)) (delete process.env[name], fromStore.delete(name));
+  for (const { name, value } of rows)
+    if (process.env[name] === undefined || fromStore.has(name)) {
+      process.env[name] = value;
+      fromStore.add(name);
+    }
 }
 
 /** Production startup check: refuses to serve when stored documents no longer match the schema. */
@@ -122,7 +132,7 @@ export async function startCore(opts: {
   if (config.schemaCheck && worker === 0) await checkSchema(exec, project);
   const auth = createAuth(exec, project.tables, project.authOptions, config);
   // One scheduler per server: in a runtime pool only the first process polls.
-  const scheduler = worker === 0 ? new SchedulerLoop(exec, db, project.functions, project.crons, config.limits.actionTimeoutMs + 60_000) : undefined;
+  const scheduler = worker === 0 ? new SchedulerLoop(exec, db, project.functions, project.crons, config.limits.actionTimeoutMs + 60_000, 500, config.logRetentionDays * 86_400_000) : undefined;
   const deps = { db, exec, functions: project.functions, tables: project.tables, crons: project.crons, storage, serverId };
 
   /** CLI data commands, run here because this process holds the database. */
@@ -142,6 +152,15 @@ export async function startCore(opts: {
     return out;
   }
 
+  const isText = (bytes: ArrayBuffer) => {
+    try {
+      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   async function handle(msg: HostMessage): Promise<unknown> {
     switch (msg.t) {
       case "call":
@@ -151,7 +170,8 @@ export async function startCore(opts: {
       case "auth": {
         const { method, url, headers, body } = msg.req;
         const res = await auth.handler(new Request(url, { method, headers, body }));
-        return { status: res.status, headers: [...res.headers], body: await res.text() } satisfies SerializedResponse;
+        const text = await res.text();
+        return { status: res.status, headers: [...res.headers], body: text } satisfies SerializedResponse;
       }
       case "http": {
         const { method, url, headers, body } = msg.req;
@@ -159,7 +179,13 @@ export async function startCore(opts: {
         const answer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({ status, headers: [["content-type", "text/plain"], ...extra], body: new TextEncoder().encode(status === 404 ? "Not found" : "Method not allowed").buffer as ArrayBuffer });
         if (!("route" in found)) return answer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
         const res = await exec.runHttp(routeName(found.route), found.route.handler, new Request(url, { method, headers, body }), msg.headers, msg.requestId);
-        return { status: res.status, headers: [...res.headers].filter(([k]) => k !== "content-length"), body: await res.arrayBuffer() } satisfies HttpResponseMessage;
+        const blob = await res.blob();
+        const bytes = await blob.arrayBuffer();
+        const out = [...res.headers].filter(([k]) => k !== "content-length");
+        // `new Response("text")` has no content-type header of its own: Bun.serve adds one when it sends. Passing the bytes along loses that,
+        // so give text bodies the type the platform would have (binary bodies keep the default, and a handler can always set one).
+        if (!out.some(([k]) => k === "content-type") && blob.type.startsWith("text/plain") && isText(bytes)) out.push(["content-type", blob.type]);
+        return { status: res.status, headers: out, body: bytes } satisfies HttpResponseMessage;
       }
       case "admin":
         if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });

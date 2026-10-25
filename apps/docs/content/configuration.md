@@ -1,37 +1,301 @@
 # Configuration
 
-Environment variables, read at startup. Invalid or contradictory values fail fast with a message.
+The engine is configured with environment variables, read once at startup. Invalid or contradictory values stop it with a one-line message (see [Startup checks](#startup-checks)), so a bad setting never gets as far as serving traffic. A project also has one small file, [`archlast-forge.json`](#archlast-forgejson), which says what kind of project it is. Variables for your own functions are a separate thing: see [Variables for your functions](#variables-for-your-functions).
 
-| Variable | Default | |
+This page lists every variable the engine reads. [Limits and security](limits.html) explains what the limits do when they are reached, and [Deployment](deployment.html) and [Backends](backend.html) cover running the stack.
+
+## How settings reach the engine
+
+Where a variable comes from depends on how you start the engine.
+
+| You run | Settings come from | Data lives in |
 |---|---|---|
-| `PORT`, `HOST` | `3000`, `0.0.0.0` | |
-| `DATABASE_URL` | bun:sqlite at `DATA_DIR/app.db` | `postgres://…` for Postgres |
-| `DATA_DIR` | `./data` (`/data` in the engine image) | |
-| `REDIS_URL` | in-memory bus, cache, rate limits | required when `REPLICAS > 1` |
-| `REPLICAS` | `1` | |
-| `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY`, `S3_REGION` | storage off | |
-| `S3_PUBLIC_ENDPOINT` | `S3_ENDPOINT` | Where browsers reach storage. Upload and download URLs are signed for it. |
-| `BETTER_AUTH_SECRET` | generated in dev | required in production |
-| `BETTER_AUTH_URL` | the server's URL | must be `https://` in production (`ALLOW_INSECURE_HTTP=1` to override for local testing) |
-| `TRUSTED_ORIGINS` | none | comma-separated browser origins |
-| `DASHBOARD` | on in dev, off in production | |
-| `ALLOW_CUSTOM_FUNCTIONS` | on in dev, off in production | lets dashboard owners [run their own code](dashboard.html#running-your-own-code) |
-| `ADMIN_KEY` | generated in dev | owner access to the dashboard and `/metrics` |
-| `CACHE_TTL_MS` | `60000` | longest a cached query result lives; `0` turns the [cache](caching.html) off |
-| `CACHE_MAX_MB` | `64` | memory the in-process cache may use (ignored with `REDIS_URL`) |
-| `RUNTIME_MODE` | `inline` outside dev, `process` in dev or with `RUNTIME_WORKERS > 1` | `inline` runs your functions in the server process: no IPC per call, about twice the throughput on one core; a function that blocks the event loop for longer than its timeout plus 5 s gets the whole process restarted (by Docker or your supervisor). `process` runs them in a child process that is restarted alone |
-| `RUNTIME_WORKERS` | `1` | function runtime processes per server (needs `RUNTIME_MODE=process`) |
-| `MAX_PENDING_CALLS` | `1000` | calls waiting for one function runtime process; past this, new calls get `503` with `Retry-After: 1` instead of queueing (see [limits](limits.html)) |
-| `FUNCTION_TIMEOUT_MS`, `ACTION_TIMEOUT_MS` | `10000`, `600000` | |
-| `MAX_RESULT_BYTES`, `MAX_DOCUMENT_BYTES`, `MAX_REQUEST_BYTES` | 8 MiB, 1 MiB, 8 MiB | |
-| `IDLE_TIMEOUT_SECONDS` | `75` (at most 255) | how long an idle keep-alive connection stays open; keep it above your proxy's upstream keep-alive (nginx and cloud load balancers use 60 s or more) |
-| `RATE_LIMIT_PER_MINUTE` | `1200` (`0`, off, in dev) | per client IP |
-| `MAX_SUBSCRIPTIONS_PER_CONNECTION` | `200` | |
-| `TRUST_PROXY` | off | use `X-Forwarded-For` for client IPs |
-| `LOG_FORMAT` | `pretty` in dev, `json` in production | |
-| `LOG_RETENTION_DAYS` | `7` | function logs kept in the database |
-| `SCHEMA_CHECK` | on in production | refuse to start when stored documents don't match the schema |
-| `METRICS_TOKEN` | `ADMIN_KEY` | bearer token for `/metrics` |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` (or `…_TRACES_ENDPOINT`), `OTEL_SERVICE_NAME` | tracing off | export a span per function call over OTLP/HTTP JSON; incoming `traceparent` headers are continued |
+| `archlast-forge dev` (a full-stack app, or `--no-docker`) | the process environment, plus generated dev secrets | `forge/data/` |
+| `archlast-forge dev` (a backend, with Docker) | `forge/.env` if it exists, plus values the CLI sets (`PORT`, `DATA_DIR`, the dev secrets, `BETTER_AUTH_URL`, `TRUSTED_ORIGINS`, and the URLs of services it started) | a Docker volume mounted at `/data` |
+| `archlast-forge start --no-docker` | the process environment | `forge/data/` (next to `forge/`, as for `dev`), unless `DATA_DIR` is set |
+| `archlast-forge up` | `.env` in the project root, through `compose.yaml` | the `app-data` volume, mounted at `/data` |
+| `archlast-forge start --image <tag>` | `forge/.env`, or the file given with `--env-file` | a Docker volume mounted at `/data` |
 
-Variables set with `archlast-forge env set` are stored in the database and loaded into the function runtime. The process environment wins over them.
+In a project that has an `archlast-forge.json`, plain `archlast-forge start` with Docker available is the same as `up`. `--image` is what runs a single image on its own.
+
+Four details are worth knowing before you debug a setting that "does nothing".
+
+- **The process environment wins.** Whatever is already in the environment is never overwritten by the CLI's defaults or by `archlast-forge env set`.
+- **Bun reads `.env` for you.** `bun` loads a `.env` file from the current directory into the environment before the CLI starts. So `archlast-forge start --no-docker` run in the project root sees the `.env` that `init` wrote, including `ALLOW_INSECURE_HTTP=1`. Move or delete it and the same command stops with `BETTER_AUTH_SECRET is required outside dev`.
+- **`compose.yaml` passes only the variables it lists.** `up` uses `.env` to fill in `${...}` placeholders in `compose.yaml`; it does not hand the whole file to the app. The generated file passes `BETTER_AUTH_SECRET`, `ADMIN_KEY`, `BETTER_AUTH_URL`, `ALLOW_INSECURE_HTTP` and `DASHBOARD`, plus the service URLs and, with Caddy, `TRUST_PROXY` and `TRUSTED_ORIGINS`. To set anything else (`RATE_LIMIT_PER_MINUTE`, `TRUST_PROXY` without Caddy, `LOG_FORMAT`), add a line under `environment:` in `compose.yaml`. The file is yours to edit.
+- **`dev` and `start --no-docker` share a database.** Both keep it in `forge/data/` unless `DATA_DIR` says otherwise, so what you create in development is there when you start the production bundles on the same machine. (Before `0.1.1`, `start --no-docker` used `./data` of the directory you ran it from, a different database.) Set `DATA_DIR` to keep them apart. In a container the database is on the volume at `/data`.
+
+### Development secrets
+
+In development the CLI generates `BETTER_AUTH_SECRET` and `ADMIN_KEY` the first time and saves them in `.dev-secrets.json` inside the data directory (`forge/data/.dev-secrets.json`, file mode `0600`), so sessions and the dashboard key survive restarts. They are used only when the variable is not already set. Delete the file to get new ones; everyone is signed out. `dev` also trusts `http://localhost:<port>` as an origin and, when it runs behind a code-server port proxy (`VSCODE_PROXY_URI` is set to something like `https://{{port}}.host/`), the proxy's address for the same port. Outside development nothing is generated: you set the secrets.
+
+### Value formats
+
+- **Integers** (`PORT`, `*_MS`, `*_BYTES`, counts) must be whole numbers at or above the stated minimum. `"10s"` and `"1.5"` are rejected; `"1e3"` is read as 1000. An empty value means "use the default".
+- **Booleans** (`DASHBOARD`, `TRUST_PROXY`, `SCHEMA_CHECK`, `ALLOW_CUSTOM_FUNCTIONS`, `ALLOW_INSECURE_HTTP`) are true for `1`, `true`, `on` or `yes` in any case. Every other non-empty value is false, so `DASHBOARD=enabled` turns the dashboard off. Write `on` or `off`.
+- **Lists** (`TRUSTED_ORIGINS`) are comma separated; spaces around items are ignored.
+
+"Dev" in the tables below means `archlast-forge dev`. Everything else, including `start` and `up`, is production.
+
+## Server
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `PORT` | `3000` | integer ≥ 0 | The port to listen on. `0` picks a free one. The CLI's `--port` overrides it. In the engine image keep it at `3000` and map the port with Docker: the image's health check calls `localhost:3000`. |
+| `HOST` | `0.0.0.0` | an address | The interface to bind. Set `127.0.0.1` when a proxy on the same machine is the only client. |
+| `IDLE_TIMEOUT_SECONDS` | `75` | integer 1 to 255 (higher values are capped at 255) | How long an idle keep-alive connection stays open. Proxies and load balancers reuse upstream connections for 60 to 75 seconds, so closing sooner makes them send a request down a socket that was just closed. Keep it above your proxy's upstream keep-alive. Responses that must stay open (server-sent events) opt out of it on their own. |
+| `DATA_DIR` | `./data` (`/data` in the image) | a path | Where the SQLite database (`app.db`), its WAL files and the dev secrets live. Created if missing. Ignored when `DATABASE_URL` is set. |
+
+## Authentication and origins
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `BETTER_AUTH_SECRET` | generated in dev | any string; use 32 or more random characters | Signs session cookies. **Required outside dev.** Changing it signs everybody out. Better Auth logs a warning at startup for a secret shorter than 32 characters or one that looks low-entropy; generate one with `openssl rand -hex 32`. |
+| `BETTER_AUTH_URL` | `http://localhost:<port>` | a URL | The public address of the app, as browsers see it. Sign-in cookies and redirects are built from it. **Outside dev it must start with `https://`** unless `ALLOW_INSECURE_HTTP` is on. Its origin is trusted automatically. |
+| `ALLOW_INSECURE_HTTP` | off | boolean | Lets production start with an `http://` `BETTER_AUTH_URL`. Over http the session cookie is not marked `Secure`, so use it for trying things out on one machine, not for real users. |
+| `TRUSTED_ORIGINS` | none | comma-separated origins | Browser origins other than `BETTER_AUTH_URL` that may call the engine: Better Auth accepts their sign-in requests (`Invalid origin` otherwise) and `/rpc` and `/api/auth` answer them with CORS headers and credentials. Write origins exactly as the browser sends them: scheme, host and port, no path, no trailing slash. Origins from `trustedOrigins` in `forge/auth.ts` are added to this list. |
+
+If you serve a frontend from another origin, list it in `TRUSTED_ORIGINS` and create the client with `{ url }`. If the frontend is proxied through the same origin, you need no entry. See [Authentication](auth.html).
+
+## Database
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `DATABASE_URL` | unset: SQLite at `DATA_DIR/app.db` | `postgres://…` or `postgresql://…` | Use Postgres instead of the SQLite file. Any other scheme fails at startup. Required when `REPLICAS` is above 1. |
+| `SCHEMA_CHECK` | on outside dev, off in dev | boolean | At startup, validate every stored document against the schema and refuse to start if some do not match. `SCHEMA_CHECK=off` skips the scan, which can take a while on big tables. [Migrations](migrations.html) shows how to fix mismatches. |
+| `REPLICAS` | `1` | integer ≥ 1 | The number of servers you run. It does not start any; it declares your intent so that a multi-server setup missing its shared pieces fails at startup. Above 1 it requires `REDIS_URL` and a Postgres `DATABASE_URL`. |
+
+SQLite runs in WAL mode with one serialized writer, and it belongs to one engine process. Postgres is the choice for several servers. The engine does not pool or tune Postgres connections through variables; put those options in the URL.
+
+## Redis
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `REDIS_URL` | unset: in-memory | `redis://…` | Turns on cross-server behavior: the bus that carries write notifications between servers, a shared query cache, and rate limits (also Better Auth's) that count across servers. With one server you can leave it unset. If it is set and Redis is not reachable, startup fails rather than hanging. |
+
+## Storage
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `S3_ENDPOINT` | unset: storage off | a URL | The S3-compatible service, as the engine reaches it. |
+| `S3_BUCKET` | unset | a bucket name | The bucket for uploads. It must already exist. Set together with `S3_ENDPOINT`, or neither. |
+| `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | unset | strings | Credentials for the bucket. |
+| `S3_REGION` | unset | a region, e.g. `us-east-1` | Needed by some providers when signing. |
+| `S3_PUBLIC_ENDPOINT` | the value of `S3_ENDPOINT` | a URL | The address browsers use for uploads and downloads. Presigned URLs are signed for this host, so it must be reachable from the browser and must be the host that will be called. Set it whenever the engine reaches storage by an internal name (a Docker network, a private IP). |
+
+Without storage, `ctx.storage.generateUploadUrl()` fails with `Storage is not configured: set S3_ENDPOINT and S3_BUCKET`. See [File storage](storage.html).
+
+## Limits
+
+These are explained one by one, with what happens when each is hit, in [Limits and security](limits.html#limits-and-what-happens-when-you-hit-them).
+
+| Variable | Default | Minimum | What it limits |
+|---|---|---|---|
+| `FUNCTION_TIMEOUT_MS` | `10000` | 1 | Time for a query or mutation (and the basis of the hard timeout). |
+| `ACTION_TIMEOUT_MS` | `600000` | 1 | Time for an action or an HTTP endpoint handler. |
+| `MAX_RESULT_BYTES` | `8388608` (8 MiB) | 1 | The JSON size of a function's return value. |
+| `MAX_DOCUMENT_BYTES` | `1048576` (1 MiB) | 1 | The JSON size of one stored document. |
+| `MAX_REQUEST_BYTES` | `8388608` (8 MiB) | 1 | An HTTP request body and a WebSocket message. |
+| `RATE_LIMIT_PER_MINUTE` | `1200` (off in dev) | 0 | Requests per client IP per minute. `0` turns rate limiting off. |
+| `MAX_SUBSCRIPTIONS_PER_CONNECTION` | `200` | 1 | Live queries one WebSocket may hold. |
+| `MAX_PENDING_CALLS` | `1000` | 1 | Calls waiting for the function runtime before new ones get `503`. |
+| `TRUST_PROXY` | off | | Take the client IP from `X-Forwarded-For` for rate limiting. Only behind a proxy that overwrites that header. |
+
+Raise limits only when you have a reason. A larger `MAX_REQUEST_BYTES` lets a single client hold more memory, and a larger `FUNCTION_TIMEOUT_MS` lets one slow query occupy the runtime for longer. Keep work that needs more than ten seconds in an action.
+
+## Cache
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `CACHE_TTL_MS` | `60000` | integer ≥ 0 | The longest a query result is kept. `0` turns the query cache off. Results are also evicted the moment a write touches what they read, so the TTL only matters for queries that depend on the clock or on something outside the database. |
+| `CACHE_MAX_MB` | `64` | integer ≥ 1 | Memory for the in-process cache. Ignored with `REDIS_URL`, where Redis applies its own limits. |
+
+See [Caching](caching.html) for what is cached and how to measure it.
+
+## Logging and observability
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `LOG_FORMAT` | `pretty` in dev, `json` otherwise | `pretty`, `json` | Server log lines: readable text, or one JSON object per line with `time`, `level`, `msg` and fields such as `requestId` and `function`. |
+| `LOG_RETENTION_DAYS` | `7` | integer ≥ 1 | How long function logs stay in the database (the `_logs` table, shown on the dashboard's Logs page). The connection and subscription samples behind the dashboard's charts are kept 30 days. The audit log is not pruned. |
+| `METRICS_TOKEN` | the value of `ADMIN_KEY` | a string | The bearer token for `GET /metrics` (Prometheus text format). With neither set, `/metrics` answers `404` outside dev. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | unset: tracing off | a base URL | Export one span per function call as OTLP/HTTP JSON to `<endpoint>/v1/traces`. An incoming W3C `traceparent` header is continued. |
+| `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` | unset | a full URL | The same, with the full traces URL. Wins over the variable above. |
+| `OTEL_SERVICE_NAME` | `archlast-forge` | a string | The `service.name` on exported spans. |
+| `NO_COLOR`, `FORCE_COLOR` | unset | any value | CLI output: no colors, or colors even when output is not a terminal. |
+
+Every response carries an `x-request-id` header. A request id sent in by the caller is kept if it is 1 to 64 letters, digits, `_`, `.` or `-`; otherwise the server makes one. Logs, errors and spans all carry it. `GET /health` is liveness and `GET /ready` is readiness (`503` while starting, shutting down, or after a failed load, with the error in the body).
+
+## Dashboard and admin
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `DASHBOARD` | on in dev, off otherwise | boolean | Serve `/_dashboard` and its API under `/_admin`. When off, `/_admin/*` answers `404`. The generated `compose.yaml` turns it on (`DASHBOARD: ${DASHBOARD:-on}`); set `DASHBOARD=off` in `.env` to hide it. |
+| `ADMIN_KEY` | generated in dev | any string; use 24 or more random bytes | An owner credential. It signs in to the dashboard and authorizes the CLI's data commands over `POST /_cli`. Without it, key sign-in is refused and the CLI cannot reach a running production server (it answers `Invalid admin key`). Prefer named admin accounts (`archlast-forge admin add`) for people, and keep the key for scripts. |
+| `ALLOW_CUSTOM_FUNCTIONS` | on in dev, off otherwise | boolean | Lets owners run code typed into the dashboard. That code runs with the function runtime's privileges, so leave it off unless you need it. See [Dashboard](dashboard.html#running-your-own-code). |
+
+## Runtime and process model
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `RUNTIME_MODE` | `inline` outside dev; `process` in dev or when `RUNTIME_WORKERS` is above 1 | `process`, `inline` | `inline` runs your functions inside the server process: no message passing per call, about twice the throughput on one core. A function that blocks the event loop for longer than its timeout plus 5 seconds makes a watchdog kill the whole process, so run it under something that restarts it (the engine container does). `process` runs functions in child processes that are restarted alone on a code change or a hang. |
+| `RUNTIME_WORKERS` | `1` | integer ≥ 1 | Function runtime processes per server, used round-robin. Needs `process` mode (setting it above 1 selects it). Only the first runs the scheduler, migrations and the schema check. Helps CPU-heavy functions more than write-heavy ones, because SQLite writes share one lock. |
+
+`RUNTIME_MODE=inline` is refused in dev (it could not reload code), and refused together with `RUNTIME_WORKERS` above 1.
+
+## CLI and Docker
+
+These are read by the CLI on your machine, not by the engine.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `ARCHLAST_ENGINE_IMAGE` | `ghcr.io/algochad/archlast-forge-engine:<cli version>` | The engine image the CLI runs and builds on. Set it to use your own build or a mirror. In plain `docker compose`, set `ENGINE_IMAGE` in `.env` instead. |
+| `DOCKER` | `docker` | The container tool to run, for example `podman`. |
+| `ARCHLAST_NO_DOCKER` | unset | `1` is the same as `--no-docker`. |
+| `ADMIN_KEY` | from `.dev-secrets.json` | The key the CLI's data commands send to a running server. Set it to the server's key when talking to production. |
+| `PORT` | `3000` | The port a data command (`env`, `export`, `import`, …) looks for the server on, unless `--port` is given. |
+
+Inside the engine container the image sets `NODE_ENV=production`, `ARCHLAST_ENGINE=1`, `DATA_DIR=/data` and `PORT=3000`. `ARCHLAST_SRC`, `ARCHLAST_APP`, `ARCHLAST_FORGE_DIR`, `ARCHLAST_DEV`, `ARCHLAST_WORKER` and `ARCHLAST_SERVER_ID` are used between the engine's own processes. Do not set them.
+
+## Startup checks
+
+The engine checks its configuration before it opens the database. These are the messages, exactly as printed, and what to change.
+
+| Message | Cause and fix |
+|---|---|
+| `BETTER_AUTH_SECRET is required outside dev` | Set it in the environment or `.env`. |
+| `BETTER_AUTH_URL must be https:// outside dev (got "http://localhost:3000"). Set ALLOW_INSECURE_HTTP=1 only for local testing.` | Set `BETTER_AUTH_URL` to your public `https://` address, or `ALLOW_INSECURE_HTTP=1` for a local trial. |
+| `REPLICAS > 1 requires REDIS_URL, or mutations won't reach subscribers on other servers` | Add `REDIS_URL`. |
+| `REPLICAS > 1 requires a Postgres DATABASE_URL; bun:sqlite is single-server` | Add a Postgres `DATABASE_URL`. |
+| `Set both S3_ENDPOINT and S3_BUCKET, or neither` | Storage needs both. |
+| `DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite), got "mysql:"` | Only Postgres is supported besides SQLite. |
+| `RUNTIME_MODE must be "process" or "inline", got "thread"` | Fix the spelling. |
+| `RUNTIME_MODE=inline can't reload code when it changes; use it outside dev` | Remove `RUNTIME_MODE` in dev. |
+| `RUNTIME_MODE=inline runs one function runtime, in the server process; unset RUNTIME_WORKERS` | Choose `process`, or unset `RUNTIME_WORKERS`. |
+| `LOG_FORMAT must be "pretty" or "json"` | Fix the value. |
+| `FUNCTION_TIMEOUT_MS must be an integer ≥ 1, got "0"` | The same shape for every integer variable: `<NAME> must be an integer ≥ <min>, got "<value>"`. |
+| `REDIS_URL is set but Redis is unreachable: Connection closed` | Check the host, port and that Redis is up. |
+
+Failures after these checks come from the database itself: a Postgres URL with the wrong password prints `password authentication failed for user "forge"`, a missing database `database "nosuchdb" does not exist`, and an unresolvable host just `Failed to connect`. A schema mismatch prints `Stored documents don't match the schema (fix them with a migration, or set SCHEMA_CHECK=off):` followed by up to ten documents. [Troubleshooting](troubleshooting.html) walks through each.
+
+## archlast-forge.json
+
+This file in the project root says how the project is built and run. `archlast-forge init` writes it; the CLI and the scaffolder both read it.
+
+```json
+{
+  "mode": "framework",
+  "services": ["postgres", "redis"]
+}
+```
+
+| Key | Values | Meaning |
+|---|---|---|
+| `mode` | `"framework"` or `"backend"` | A full-stack app (React pages, server rendering and the backend in one engine) or a backend only. |
+| `services` | a list of `"postgres"`, `"redis"`, `"s3"`, `"caddy"`; default `[]` | What `dev` starts in Docker (`caddy` is for production only) and what `compose.yaml` and `.env` were generated for. |
+
+A full-stack app defaults to no services (SQLite, in-memory bus and cache); a backend defaults to `postgres`, `redis` and `s3`. Changing `services` afterwards changes what `dev` starts but does not rewrite `compose.yaml`, which is yours to edit. `dev --with postgres,redis` overrides the list for one run.
+
+The file is validated, and a mistake says what to change:
+
+```
+archlast-forge.json: "mode" must be "framework" or "backend" (got "fullstack")
+archlast-forge.json: unknown service "mysql"; choose from postgres, redis, s3, caddy
+archlast-forge.json isn't valid JSON: …
+```
+
+A project without the file behaves as a backend with no services.
+
+## Variables for your functions
+
+Your functions read configuration from `process.env`, like any Bun program:
+
+```ts
+const key = process.env.EMAIL_API_KEY;
+if (!key) throw new Error("EMAIL_API_KEY is not set"); // a bug: callers see "Server error (request …)"
+```
+
+There are two places to define them.
+
+- **The engine's environment.** The same variables as everything above: your shell, `.env`, `compose.yaml`, your platform's secret store. Every variable of the process is visible to your functions, including `BETTER_AUTH_SECRET` and `DATABASE_URL`.
+- **The `_env` table**, managed with the CLI. Values are stored in the database, so they travel with it (a backup includes them) and can be changed without rebuilding the image.
+
+```bash
+archlast-forge env set EMAIL_API_KEY re_12345       # create or change
+archlast-forge env list                              # NAME=value, one per line
+archlast-forge env get EMAIL_API_KEY
+archlast-forge env rm EMAIL_API_KEY
+```
+
+Names must match `[A-Za-z_][A-Za-z0-9_]*`. The commands talk to the running server (so `ADMIN_KEY` must match; in dev the saved dev key is used), and open the database themselves when none is running. Setting or removing a value is written to the audit log, never its value.
+
+Know these rules:
+
+- **The process environment wins.** At startup the function runtime copies each `_env` row into `process.env` only if that name is not already set. A variable in `.env` or `compose.yaml` therefore overrides `env set` for the same name.
+- **Applying a change.** `env set` and `env rm` ask the running engine to reload its function runtime (the CLI sends `SIGHUP` to the container, or calls the admin reload endpoint of a local server), and the reload applies the change: a changed value is replaced, a removed one is unset. A variable that was in the process environment before the engine started (set in `compose.yaml`, a shell or `.env`) always wins and is never touched. On `0.1.0` a reload in production only picked up variables that were new, so restart after changing or removing one. With `DASHBOARD` off, a local `start --no-docker` server has no reload endpoint at all, and the CLI says `(no running server picked it up; it applies on next start)`.
+- **Values are not hidden from the dashboard's owner.** The Settings page lists names only, but `env list` prints values to anyone who has the admin key. Treat `_env` as being as sensitive as the database.
+- **Keep engine settings out of `_env`.** The engine reads `PORT`, `BETTER_AUTH_SECRET` and the rest before the database is open, so a value stored here never reaches them.
+
+Reading variables inside a query is fine, but remember the [query cache](caching.html): a result that depends on `process.env` is cached for up to `CACHE_TTL_MS`. A reload empties the cache.
+
+## Examples
+
+### A small deployment
+
+One server, SQLite on a volume, Caddy or another proxy for HTTPS. This is the shape `init --services caddy` produces. Put it in `.env` next to `compose.yaml`:
+
+```bash
+BETTER_AUTH_SECRET=3f1c0e…                 # openssl rand -hex 32
+ADMIN_KEY=9a47d2…                          # openssl rand -hex 24
+BETTER_AUTH_URL=https://app.example.com
+DOMAIN=app.example.com
+```
+
+With Caddy in the stack, `compose.yaml` already sets `TRUST_PROXY=1` and `TRUSTED_ORIGINS=https://${DOMAIN}`. The data is in the `app-data` volume; take a copy with `archlast-forge backup app.db`. Leave `DASHBOARD` at its default only if you want the dashboard reachable behind the admin key; otherwise add `DASHBOARD=off`.
+
+Without compose, the same server as a plain environment file for `start --image`:
+
+```bash
+BETTER_AUTH_SECRET=3f1c0e…
+ADMIN_KEY=9a47d2…
+BETTER_AUTH_URL=https://app.example.com
+TRUST_PROXY=1
+DASHBOARD=off
+LOG_FORMAT=json
+```
+
+### A scaled deployment
+
+Three servers behind a load balancer, with Postgres and Redis shared. Every server gets the same file:
+
+```bash
+BETTER_AUTH_SECRET=3f1c0e…                      # the same on every server
+ADMIN_KEY=9a47d2…
+BETTER_AUTH_URL=https://app.example.com
+TRUSTED_ORIGINS=https://www.example.com         # only if another origin calls the API
+
+DATABASE_URL=postgres://forge:…@db.internal:5432/forge
+REDIS_URL=redis://redis.internal:6379
+REPLICAS=3                                      # fails at startup if the two lines above are missing
+
+S3_ENDPOINT=http://rustfs.internal:9000
+S3_PUBLIC_ENDPOINT=https://files.example.com
+S3_BUCKET=forge
+S3_ACCESS_KEY_ID=…
+S3_SECRET_ACCESS_KEY=…
+S3_REGION=us-east-1
+
+TRUST_PROXY=1                                   # the load balancer overwrites X-Forwarded-For
+RATE_LIMIT_PER_MINUTE=1200                      # counted across all servers through Redis
+IDLE_TIMEOUT_SECONDS=90                         # above the load balancer's upstream keep-alive
+DASHBOARD=off
+OTEL_EXPORTER_OTLP_ENDPOINT=http://otel-collector.internal:4318
+```
+
+Points that matter at this size:
+
+- The load balancer must pass WebSocket upgrades on `/rpc`. Sticky sessions are not needed.
+- `/ready` is the readiness probe; `SIGTERM` drains a server and closes its sockets with code 1012, so clients reconnect to another one.
+- Only the first runtime process of each server runs the scheduler. Cron runs are inserted once across servers, because every server computes the same id for a run.
+- `REPLICAS` starts nothing. It only makes the engine refuse to start without Redis and Postgres.
+- Scrape `/metrics` with the `METRICS_TOKEN` bearer token on each server.

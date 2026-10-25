@@ -13,5 +13,14 @@ export const send = mutation({
   },
 });
 
+/** Fails until a flag exists: a query that is broken now and fine later. */
+export const gated = query({
+  handler: async (ctx) => {
+    if (!(await ctx.db.query("flags").first())) throw new ForgeError("not yet");
+    return "ready";
+  },
+});
+export const setFlag = mutation({ handler: (ctx) => ctx.db.insert("flags", { on: true }) });
+
 export const failing = query({ handler: () => { throw new ForgeError({ code: "NOPE" }); } });
 export const crashing = query({ handler: () => { throw new Error("database password is hunter2"); } });

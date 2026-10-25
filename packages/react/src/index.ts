@@ -50,7 +50,12 @@ export function useQuery<R extends PublicQuery>(ref: R, ...args: QueryArgsOrSkip
   useEffect(() => (skip ? undefined : syncQuery(queryClient, client, ref, queryArgs as never)), [client, queryClient, hash, skip]);
   // Results arrive over the subscription, so TanStack never fetches.
   const { data, error } = useTanstackQuery({ queryKey: key, queryFn: skipToken, staleTime: Infinity, enabled: !skip });
-  if (error) throw error;
+  if (error) {
+    // Forget the failure as it is thrown. An error boundary's "try again" mounts this component afresh, and it must not meet the same
+    // cached error again (that would loop until the cache entry expired).
+    queueMicrotask(() => void queryClient.resetQueries({ queryKey: key, exact: true }));
+    throw error;
+  }
   return skip ? undefined : (data as FunctionReturn<R> | undefined);
 }
 

@@ -62,15 +62,17 @@ function collect(appDir: string, relDir: string, prefix: string[]): RouteFile[] 
 }
 
 /** The URL every non-layout route answers, to catch two files claiming the same one. */
-function checkConflicts(routes: RouteFile[], base: string, seen = new Map<string, string>()) {
+function checkConflicts(routes: RouteFile[], base: string, seen = new Map<string, { file: string; url: string }>()) {
   for (const r of routes) {
     const here = [base, r.path].filter(Boolean).join("/");
     if (r.children) checkConflicts(r.children, here, seen);
     else {
       const url = `/${here}`;
-      const other = seen.get(url);
-      if (other) throw new Error(`app/${other} and app/${r.file} both answer ${url}. Keep one.`);
-      seen.set(url, r.file);
+      // [id] and [slug] are different names for the same URLs, so parameter names don't count.
+      const key = url.replace(/:[A-Za-z_]\w*/g, ":");
+      const other = seen.get(key);
+      if (other) throw new Error(`app/${other.file} and app/${r.file} both answer ${other.url === url ? url : `the same URLs (${other.url} and ${url}: parameter names don't tell routes apart)`}. Keep one.`);
+      seen.set(key, { file: r.file, url });
     }
   }
 }

@@ -111,7 +111,7 @@ export function defineSchema<T extends Record<string, TableDefinition<any, any>>
     for (const field of Object.keys(table.fields))
       if (!IDENT.test(field)) throw new Error(`Field "${name}.${field}" must match ${IDENT}`);
     for (const [index, fields] of Object.entries(table.indexes as Indexes)) {
-      if (!IDENT.test(index) || index === "by_id") throw new Error(`Index name "${name}.${index}" is invalid or reserved`);
+      if (!IDENT.test(index) || index === "by_id" || index === "by_creation_time") throw new Error(`Index name "${name}.${index}" is invalid or reserved`);
       for (const f of fields) if (!(f in table.fields)) throw new Error(`Index "${name}.${index}" uses unknown field "${f}"`);
     }
     for (const [index, { searchField, filterFields }] of Object.entries(table.searchIndexes as SearchIndexes)) {

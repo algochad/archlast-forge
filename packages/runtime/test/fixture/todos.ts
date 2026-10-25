@@ -102,6 +102,7 @@ export const secretCount = internalQuery({ handler: async (ctx) => (await ctx.db
 
 export const callsInternal = action({ handler: async (ctx) => (await ctx.runQuery((anyApi as any).todos.secretCount)) as number });
 
+export const slowAction = action({ args: { ms: v.number() }, handler: async (_ctx, { ms }) => (await sleep(ms), "done") });
 export const slowQuery = query({ args: { ms: v.number() }, handler: async (_ctx, { ms }) => (await sleep(ms), 1) });
 
 /** Blocks the event loop: only killing the process stops it. */

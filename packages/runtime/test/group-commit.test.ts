@@ -71,7 +71,7 @@ test("a background thread checkpoints the WAL into the database file", async () 
   const size = () => Bun.file(join(dir, "app.db")).size;
   const before = size();
   await Promise.all(Array.from({ length: 12_000 }, (_, i) => db.transaction("write", (tx) => tx.execute(`INSERT INTO "t" VALUES (?, ?)`, [`k${i}`, "x".repeat(4000)])))); // past the 32 MiB that starts a checkpoint
-  for (let i = 0; i < 100 && size() <= before; i++) await Bun.sleep(100); // the connections here never checkpoint themselves
+  for (let i = 0; i < 400 && size() <= before; i++) await Bun.sleep(100); // the connections here never checkpoint themselves
   expect(size()).toBeGreaterThan(before + 100_000);
   await db.close();
-}, 30_000);
+}, 60_000);

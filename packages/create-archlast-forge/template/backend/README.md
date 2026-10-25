@@ -36,4 +36,4 @@ bun run logs
 bun run down     # stops it; data stays in Docker volumes
 ```
 
-`compose.yaml` is the stack. It is yours to edit. Secrets live in `.env`, which `up` creates and git ignores; `.env.example` lists the keys. To put it on a server, copy the project there and run `bun run up` (or `docker compose up -d --build`).
+`compose.yaml` is the stack. It is yours to edit. Secrets live in `.env`, which `init` created with fresh keys and git ignores (`up` makes one only if it's missing); `.env.example` lists the keys. To put it on a server, copy the project there and run `bun run up` (or `docker compose up -d --build`).

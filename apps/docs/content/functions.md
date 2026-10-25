@@ -1,20 +1,22 @@
 # Functions
 
-Every export made with these helpers is a function. Its name is `<file path>:<export>`, for example `todos:add`.
+Your backend is a set of functions in `forge/`. Clients call them by name over HTTP or a WebSocket, other functions call them through the generated `api`, and the scheduler and crons call them on a timer. There are three kinds, and each has a public and an internal form.
 
-| Kind | Reads | Writes | Live | External I/O | Runs in |
+| Kind | Reads | Writes | Live (re-runs on change) | External I/O | Runs in |
 |---|---|---|---|---|---|
-| `query` | yes | no | yes | no | one read snapshot |
-| `mutation` | yes | yes | no | no | one serializable transaction |
-| `action` | via `ctx.runQuery` | via `ctx.runMutation` | no | yes | no transaction |
+| `query` | `ctx.db` | no | yes | no | one read snapshot |
+| `mutation` | `ctx.db` | `ctx.db` | no | no | one serializable transaction |
+| `action` | `ctx.runQuery` | `ctx.runMutation` | no | yes (`fetch`, SDKs, anything) | no transaction |
 
 ```ts
-import { action, mutation, query, v } from "@archlast/forge-runtime";
+// forge/todos.ts
+import { action, internalMutation, mutation, query, v } from "@archlast/forge-runtime";
 import { api, internal } from "./_generated/api";
 
 export const listByList = query({
   args: { listId: v.id("lists") },
-  handler: (ctx, { listId }) => ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).collect(),
+  handler: (ctx, { listId }) =>
+    ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).collect(),
 });
 
 export const add = mutation({
@@ -23,29 +25,374 @@ export const add = mutation({
   handler: (ctx, args) => ctx.db.insert("todos", { ...args, done: false }),
 });
 
+export const markReminded = internalMutation({
+  args: { todoId: v.id("todos") },
+  handler: (ctx, { todoId }) => ctx.db.patch(todoId, { done: true }),
+});
+
 export const remind = action({
   args: { todoId: v.id("todos") },
   handler: async (ctx, { todoId }): Promise<void> => {
-    const todo = await ctx.runQuery(api.todos.get, { todoId });
+    const todo = await ctx.runQuery(api.todos.get, { id: todoId });
     await fetch("https://hooks.example.com", { method: "POST", body: JSON.stringify(todo) });
     await ctx.runMutation(internal.todos.markReminded, { todoId });
   },
 });
 ```
 
-- **`ctx.db`** is available in queries (read-only) and mutations. It has `get`, `query`, `insert`, `patch` (shallow merge; setting a field to `undefined` removes it), `replace` and `delete`. Actions have no `ctx.db`, and the compiler rejects it.
-- **Arguments** are validated on every call. **`returns`** is optional: when given, it becomes the function's return type and is checked at runtime. A mutation with a wrong return value rolls back.
-- **`ctx.auth.getUserIdentity()`** returns `{ userId, email, name, sessionId }` or `null`.
-- **`ctx.storage`** and **`ctx.scheduler`** are covered in [File storage](storage.html) and [Scheduling](scheduling.html).
+## Defining a function
+
+Every constructor takes one object:
+
+```ts
+query({
+  args: { ... },        // optional: an object of validators; omit for no arguments
+  returns: v.string(),  // optional: validator for the return value
+  handler: (ctx, args) => ...,   // required: sync or async
+})
+```
+
+The constructors are `query`, `mutation`, `action`, `internalQuery`, `internalMutation` and `internalAction`, all from `@archlast/forge-runtime`. A function is any export of a module in `forge/` that was made with one of them. Other exports (helpers, constants, types) are ignored, so you can keep shared code next to your functions.
+
+### Arguments
+
+`args` is an object of [validators](schema.html#validators). The handler's second parameter is typed from it, and the server checks the arguments on every call before your code runs:
+
+```ts
+export const move = mutation({
+  args: { todoId: v.id("todos"), listId: v.id("lists"), position: v.optional(v.number()) },
+  handler: async (ctx, { todoId, listId, position }) => { /* ... */ },
+});
+```
+
+- A call with a missing required argument, a wrong type, an extra key or an id from the wrong table fails with a `BAD_REQUEST` and a message such as `args.listId is required` or `args.extra is not in the validator`. The messages are listed in [Schema and validators](schema.html#error-messages).
+- The arguments must be a JSON object. Sending `[1]` fails with `args must be an object, got [1]`; sending nothing counts as `{}`.
+- Arguments cross the wire as JSON, so they can hold strings, numbers, booleans, `null`, arrays and plain objects. There are no `Date`, `Map`, `bigint` or binary values: send timestamps as numbers and upload files with [storage](storage.html).
+- Arguments of a scheduled function are validated when it is scheduled and again when it runs.
+
+### Return values and `returns`
+
+A handler can return anything JSON can carry. `undefined` becomes `null`. The whole response must fit in 8 MiB (`MAX_RESULT_BYTES`): `todos:list returned 9000000 bytes; the limit is 8388608 (MAX_RESULT_BYTES)`.
+
+Without `returns`, the return type is inferred from the handler. With `returns`, the validator is the function's return type: TypeScript checks the handler against it, and the runtime checks the actual value.
+
+```ts
+const listDoc = v.object({ _id: v.id("lists"), _creationTime: v.number(), name: v.string() });
+
+export const get = query({
+  args: { id: v.id("lists") },
+  returns: v.union(listDoc, v.null()),
+  handler: (ctx, { id }) => ctx.db.get(id),
+});
+
+export const clear = mutation({ args: {}, returns: v.null(), handler: () => {} });
+```
+
+Things to know:
+
+- A handler that returns nothing counts as `null`, so it matches `v.null()`.
+- A mismatch is reported as `Invalid return value: returns._id is not in the validator`. It is a bug in your function, so the caller sees `INTERNAL_SERVER_ERROR` (and outside dev only `Server error (request <id>)`), not a bad request.
+- A mutation checks its return value inside its own transaction, so a mismatch **rolls the mutation back**.
+- Object validators are strict at runtime but TypeScript allows extra properties on a returned object. A document returned with `returns: v.object({ name: v.string() })` type-checks and then fails at runtime because `_id` and `_creationTime` are not declared. To return documents, list the system fields as above.
+- `returns` is optional and costs one validation pass per call. Use it where the contract matters (public API, anything a client depends on) and let inference do the rest.
+
+## The context
+
+The first parameter of a handler is `ctx`. What it holds depends on the kind.
+
+| | `query` | `mutation` | `action` |
+|---|---|---|---|
+| `ctx.db` | `DatabaseReader` | `DatabaseWriter` | not available |
+| `ctx.auth` | yes | yes | yes |
+| `ctx.storage` | `getUrl` | `getUrl`, `generateUploadUrl`, `delete` | `getUrl`, `generateUploadUrl`, `delete` |
+| `ctx.scheduler` | no | yes | yes |
+| `ctx.runQuery` / `runMutation` / `runAction` | no | no | yes |
+
+The types are `QueryCtx`, `MutationCtx` and `ActionCtx` (all exported), for helper functions that take a context. A query cannot call another query, and a mutation cannot call another mutation or an action. Share code between them with plain functions that take `ctx`:
+
+```ts
+import { mutation, type MutationCtx, type QueryCtx, type Doc, type Id, v } from "@archlast/forge-runtime";
+
+async function listName(ctx: QueryCtx, id: Id<"lists">) {
+  return (await ctx.db.get(id))?.name ?? null;
+}
+
+async function addTwo(ctx: MutationCtx, listId: Id<"lists">, title: string) {
+  const a = await ctx.db.insert("todos", { listId, title, done: false });
+  const b = await ctx.db.insert("todos", { listId, title: title + "!", done: false });
+  return [a, b] as const;
+}
+
+export const addPair = mutation({
+  args: { listId: v.id("lists"), title: v.string() },
+  handler: async (ctx, { listId, title }) => ({
+    ids: await addTwo(ctx, listId, title),
+    list: await listName(ctx, listId),
+  }),
+});
+```
+
+A `MutationCtx` can be passed where a `QueryCtx` is expected. Put helpers in a file or folder whose name starts with `_` (such as `forge/_lib/util.ts`) if you want to be certain they are never treated as function modules.
+
+### `ctx.db`
+
+`get`, `getMany`, `query`, `include`, and for mutations `insert`, `patch`, `replace` and `delete`. Every call returns a promise: always `await` it. A promise that is still running after the function returned or timed out cannot use the transaction any more and fails with `Transaction already finished: the function kept using the database after it returned or timed out`.
+
+The complete API, with every option, is in [Reading data](queries.html). In short:
+
+```ts
+const todo = await ctx.db.get(id);                    // Doc | null
+const id = await ctx.db.insert("todos", { ... });     // Id<"todos">
+await ctx.db.patch(id, { done: true });               // shallow merge; a field set to undefined is removed
+await ctx.db.replace(id, { ... });                    // the whole document, without _id and _creationTime
+await ctx.db.delete(id);                              // does nothing if it is already gone
+```
+
+`ctx.db` in a query is read-only (it has no `insert`, and TypeScript rejects the call). Inside a mutation, reads see the mutation's own earlier writes.
+
+### `ctx.auth`
+
+```ts
+const me = await ctx.auth.getUserIdentity();
+// { userId: Id<"users">, sessionId: string, email: string, name: string } | null
+```
+
+`null` means the caller is anonymous. Identity is resolved once per request from the session cookie or `Authorization` header, before the function's transaction starts. Actions pass it on: `ctx.runQuery` and `ctx.runMutation` from an action run as the same user. Scheduled functions and crons have no user, so `getUserIdentity()` returns `null` there.
+
+A query that calls `getUserIdentity()` is cached per user instead of being shared. Authorization is always yours to write: check the identity in the function and throw a `ForgeError` when it is not allowed. See [Authentication](auth.html).
+
+### `ctx.storage`
+
+`getUrl(id)` returns a presigned download URL, or `null` for an id that does not exist. `generateUploadUrl({ contentType })` creates the `_storage` row and a presigned upload URL; `delete(id)` removes the row and the object (the object delete runs after the transaction commits). Storage needs `S3_ENDPOINT` and `S3_BUCKET`; without them the call fails with `Storage is not configured: set S3_ENDPOINT and S3_BUCKET`. See [File storage](storage.html).
+
+### `ctx.scheduler`
+
+```ts
+const jobId = await ctx.scheduler.runAfter(60_000, internal.emails.send, { to });  // string id
+await ctx.scheduler.runAt(Date.parse("2027-01-01"), api.reports.yearly);
+await ctx.scheduler.cancel(jobId);
+```
+
+Only mutations and actions can be scheduled (`Only mutations and actions can be scheduled; "todos:get" is a query`). Called from a mutation, the job exists only if the mutation commits. See [Scheduling and crons](scheduling.html).
+
+### `ctx.runQuery`, `ctx.runMutation`, `ctx.runAction` (actions only)
+
+```ts
+const value = await ctx.runQuery(api.todos.get, { id });
+await ctx.runMutation(internal.todos.markReminded, { todoId });
+const out = await ctx.runAction(internal.pdf.render, { id });
+```
+
+Arguments are optional when the function takes none. Each call is validated, logged and metered like a call from a client, runs as the caller, and **is its own unit**: every `runMutation` commits or fails by itself, and an action that makes two of them has no transaction around the pair. If the second fails, the first stays committed.
+
+```ts
+export const twoSteps = action({
+  args: { listId: v.id("lists") },
+  handler: async (ctx, { listId }): Promise<string> => {
+    await ctx.runMutation(api.todos.add, { listId, title: "from action" }); // committed
+    try {
+      await ctx.runMutation(api.todos.fail);                                // rolled back
+    } catch (e) {
+      return `caught: ${(e as Error).message}`;  // a ForgeError thrown inside arrives as a ForgeError
+    }
+    return "no error";
+  },
+});
+```
+
+If you need two writes to be atomic, do both in one mutation.
+
+## Queries
+
+A query is a read-only function of its arguments and the database. It runs in one consistent snapshot, so everything it reads agrees. Clients can call it once (`client.query`) or subscribe to it, and the server runs it again whenever something it read changes, then pushes the new result. That is the whole reactivity model; see [Reactivity](reactivity.html).
+
+Because queries are re-run and cached, they must be **deterministic functions of their arguments and database contents**. Nothing enforces this, so it is yours to keep:
+
+- Do not call `fetch`, read files or call anything outside the database. Use an action.
+- Do not depend on `Date.now()` or `Math.random()`. A query is not re-run when time passes, and its result may be served from the [cache](caching.html) for up to `CACHE_TTL_MS` (60 s by default, in dev too). To filter by "now", take the time as an argument (rounded, so cache entries are shared) or store a flag with a scheduled function.
+- A query that reads `ctx.auth` gets one cache entry per user. One that does not read it is shared by everyone, so it must not return anything user-specific.
+- Reads are limited: a `filter` or aggregate that scans more than 100,000 documents fails (see [Reading data](queries.html#limits)).
+
+## Mutations
+
+A mutation runs in one transaction. Either everything it wrote is committed, or nothing is: a thrown error, a failed validation, a timeout or a bad return value rolls it all back.
+
+```ts
+export const fail = mutation({
+  args: {},
+  handler: async (ctx) => {
+    await ctx.db.insert("lists", { name: "rolled back" });
+    throw new ForgeError({ code: "nope" });   // the insert is undone
+  },
+});
+```
+
+- **Topics are published after the commit.** Subscribers hear about the write only once it is durable, and a failed mutation notifies nobody.
+- **Isolation.** On Postgres a mutation runs `SERIALIZABLE`. If it conflicts with a concurrent one, the database aborts it, and the server **runs it again from the start**, up to 10 attempts with jittered backoff, before the error reaches the caller. On SQLite one connection writes at a time, so mutations queue behind each other and never conflict.
+- **Therefore a mutation's handler may run more than once.** Only database writes made through `ctx.db`, `ctx.scheduler` and `ctx.storage` are undone by a retry. Anything else you do in the handler (a `fetch`, appending to a file, incrementing a counter in module memory) is repeated. Keep mutations to database work; do I/O in an action. `ctx.scheduler` is part of the transaction, which is how an action can safely be scheduled from a mutation (the job exists only if the mutation commits). Deleting a stored file removes its `_storage` row in the transaction and the object itself after the commit.
+- **Check-then-insert is safe.** Because mutations are serializable, "look for an existing row, insert if none" inside one mutation cannot race with another mutation (this is how you build uniqueness; indexes are not unique).
+- **Timeout.** 10 s by default (`FUNCTION_TIMEOUT_MS`). On timeout the caller gets a `TIMEOUT` error and the transaction rolls back. Your handler may still be running; its next database call fails with `Transaction already finished`.
+- **Size.** A document is limited to 1 MiB; a write over it fails with `Document in "todos" is ... bytes; the limit is ... (MAX_DOCUMENT_BYTES)`.
+
+A mutation commits before the caller hears back. With SQLite, mutations that arrive together are committed in a group, each in its own savepoint: one failing does not affect the others, and each still resolves only after the shared commit.
+
+## Actions
+
+An action is for work with the outside world: calling an API, sending email, running a model, a long computation. It has no `ctx.db`; it reads and writes through `ctx.runQuery` and `ctx.runMutation`.
+
+- **At most once, no retries.** If the process dies halfway, the action is not run again, and neither the server nor the client retries a failed one. If a retry is right for your case, schedule one yourself from the failure path. A scheduled action is claimed as `running` before it starts and marked `failed` if the server dies (see [Scheduling](scheduling.html)).
+- **Timeout.** 10 minutes by default (`ACTION_TIMEOUT_MS`). The caller gets `TIMEOUT`, but the handler is not cancelled and keeps running in the background.
+- **Not live.** A client calls an action once (`client.action`, `useAction`); it cannot subscribe to one.
+- **Side effects are yours to make safe.** Because nothing retries, the usual hazard is a call that succeeded externally and then failed locally. Record intent first with a mutation (`status: "sending"`), do the I/O, then record the outcome with a second mutation.
+- You can use `fetch`, `process.env` (set values with `archlast-forge env`, see [Configuration](configuration.html)) and any package from `forge/package.json`.
 
 ## Internal functions
 
-`internalQuery`, `internalMutation` and `internalAction` can only be called from other functions (`ctx.runQuery(internal.x.y)`), the scheduler, crons, migrations and the dashboard. Clients can't reach them: codegen leaves them out of `api` and puts them in `internal`, and the server returns "Unknown function" for them.
+`internalQuery`, `internalMutation` and `internalAction` can be called only from other functions (`ctx.runQuery(internal.x.y)`), from the scheduler and crons, from [migrations](migrations.html), and from the dashboard. Clients cannot reach them: codegen leaves them out of `api` (and out of the client's router), and the server answers `POST /rpc/<name>` for an internal function with `404 No function "<name>"`, the same answer as for a name that does not exist.
 
-## Mutations retry
+Use internal functions for anything a client should not be able to trigger: scheduled work, admin steps, the second half of a multi-step action. A public function is part of your API; authorize it. An internal one is not, and it runs with no identity check of its own.
 
-On Postgres, mutations run SERIALIZABLE and retry automatically on conflicts. Keep them deterministic: put randomness and network calls in actions.
+## Calling one function from another
 
-## A note on self-references
+Codegen reads your modules and writes `forge/_generated/api.ts`, with two objects:
 
-A handler that calls `api.<its own module>.*` needs an explicit return type annotation (`async (ctx, args): Promise<string> => …`). Without it, TypeScript can't infer the module's types in a cycle.
+```ts
+import { api, internal } from "./_generated/api";
+
+api.todos.add            // reference to the public function "todos:add"
+internal.todos.markDone  // reference to the internal function "todos:markDone"
+api.admin.users.count    // for forge/admin/users.ts, the function "admin/users:count"
+```
+
+Only actions can call other functions (`runQuery`, `runMutation`, `runAction`); the scheduler, crons and clients take references too. A reference is a typed handle: its arguments and return type come from the target's `args` and `returns` or handler, so a wrong argument is a compile error.
+
+`api` and `internal` are plain references (`getFunctionName(api.todos.add)` is `"todos:add"`); in a project without codegen `anyApi` gives untyped ones.
+
+### Breaking inference cycles
+
+`api` is typed from the modules it describes. When a handler uses `api.<its own module>.*` (or two modules use each other's functions), TypeScript has to infer the module's types while it is inferring the handler, and gives up:
+
+```
+error TS2339: Property 'one' does not exist on type 'ModuleRefs<typeof import(".../cyc"), "public">'.
+```
+
+Fix it by giving the handler an explicit return type:
+
+```ts
+export const two = action({
+  args: {},
+  handler: async (ctx): Promise<number> => ctx.runQuery(api.cyc.one),   // annotation breaks the cycle
+});
+```
+
+Annotate the handler that calls into the cycle; the annotation on the return type is what matters. A `returns` validator on its own does not fix it (the handler's type is still inferred), so use the explicit `Promise<...>` annotation.
+
+## Errors
+
+Throw a `ForgeError` for errors you want the caller to see. Its message and `data` arrive unchanged:
+
+```ts
+import { ForgeError } from "@archlast/forge-runtime";
+
+if (!me) throw new ForgeError("Sign in to post");
+if (count >= limit) throw new ForgeError({ code: "LIMIT", max: limit });   // data can be any JSON
+```
+
+A `ForgeError` reaches the client as `400 BAD_REQUEST` with `data`. Argument and return validation errors come through as described above. **Any other error** (a bug, a failed `fetch`, a database error) is reported to the client as `Server error (request <id>)` outside dev, with the real error and stack in the server log under that id; in dev you see the real message. Exceeding the time limit is `TIMEOUT` (HTTP 408). See [Errors](errors.html) for the client side.
+
+When an action calls `ctx.runMutation(...)` and that mutation throws, the error arrives in the action as the original `ForgeError`, so you can `catch` and inspect `e.data`.
+
+## Logging
+
+`console.log`, `info`, `warn`, `error` and `debug` inside a function are attributed to the call that printed them. In the terminal the line is prefixed with the function name, and the output is also shown in the dashboard's logs next to the call and its duration:
+
+```ts
+export const logs = mutation({
+  args: {},
+  handler: () => {
+    console.log("hello", { a: 1 });
+    console.warn("careful");
+    return null;
+  },
+});
+```
+
+```
+[todos:logs] hello {
+  a: 1,
+}
+[todos:logs] careful
+```
+
+Objects are formatted with `Bun.inspect`. Log entries are kept in the database for `LOG_RETENTION_DAYS` (7 by default). Output printed outside a function call (at module load, or from a timer that outlives its call) is written as is, with no function name, and is not kept. Every call also produces one `call` entry with its duration and whether it succeeded, which is what feeds the dashboard and `/metrics`.
+
+## Modules, names and special files
+
+`forge/` is a directory of modules. The name of a function is `<path without extension>:<export name>`:
+
+| File | Export | Function name | Reference |
+|---|---|---|---|
+| `forge/todos.ts` | `add` | `todos:add` | `api.todos.add` |
+| `forge/admin/users.ts` | `count` | `admin/users:count` | `api.admin.users.count` |
+
+The name is what goes on the wire: `POST /rpc/admin/users:count`.
+
+Which files are function modules:
+
+- `.ts` and `.js` files anywhere under `forge/` are loaded.
+- Any file or folder whose name starts with `_` or `.` is skipped (`_generated`, `_lib`), as is `node_modules`.
+- `*.test.ts`, `*.spec.ts` and `*.d.ts` are skipped.
+- A module exporting no functions is fine; it just contributes nothing.
+
+Four files at the top of `forge/` are special and are never function modules:
+
+| File | Default export | Page |
+|---|---|---|
+| `schema.ts` | `defineSchema({...})` (required) | [Schema](schema.html) |
+| `auth.ts` | `defineAuth({...})` (optional; email and password sign-in is on without it) | [Authentication](auth.html) |
+| `crons.ts` | `cronJobs()` (optional) | [Scheduling](scheduling.html) |
+| `http.ts` | `httpRouter()` (optional) | [HTTP endpoints](http.html) |
+
+A cron job may only target a mutation or an action: `Cron "x" targets a query "todos:get"` is a startup error.
+
+Your frontend may import only from `forge/_generated`. `archlast-forge codegen` fails when frontend code in `src/` imports anything from `forge/` other than `forge/_generated`, so server code (and its dependencies) never reaches the browser.
+
+### Server-only dependencies
+
+`forge/` has its own `package.json`, separate from the app's, for the packages your functions use:
+
+```json
+{
+  "name": "proj-forge",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@archlast/forge-runtime": "^0.1.0", "stripe": "^17.0.0" }
+}
+```
+
+`archlast-forge codegen` and `dev` run `bun install` there when the manifest or the nearest `bun.lock` changes. Install scripts do not run unless you list the package in `trustedDependencies`. A function module that imports a package you have not installed fails to load with the command that fixes it:
+
+```
+forge/billing.ts imports "stripe", which is not installed. Add it to /path/forge/package.json: bun add --cwd /path/forge stripe
+```
+
+Functions run in Bun, so `fetch`, `crypto`, `Bun.*` and `node:*` modules are available, and the starter's `forge/tsconfig.json` includes Bun's types (`@types/bun` is in `forge/package.json`). A project created before `0.1.1` has neither: add `@types/bun` to `forge/package.json` and `"types": ["bun"]` to `forge/tsconfig.json`, or `process.env` and `Bun` give "Cannot find name".
+
+## Calling functions from outside
+
+Over HTTP (see [Clients](clients.html) and the [API reference](reference.html#wire-protocol)):
+
+```bash
+curl -X POST localhost:3000/rpc/todos:add \
+  -H 'content-type: application/json' \
+  -d '{"listId":"lists:e32991b9041e407f8cc70d582808c8b3","title":"milk"}'
+# {"result":"todos:951e8d0af74b4a73a137547b484e4e34"}
+
+curl 'localhost:3000/rpc/todos:byList?args=%7B%22listId%22%3A%22lists%3A...%22%7D'   # queries also answer GET
+```
+
+Wrong kinds are rejected: a `GET` to a mutation is `405 Call todos:add with POST`.
+
+## Testing functions
+
+`createTestBackend` from `@archlast/forge-runtime/testing` runs your functions against an in-memory database with no server. It can call internal functions and run scheduled ones. See [Testing](testing.html).

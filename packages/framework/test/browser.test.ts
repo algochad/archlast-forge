@@ -78,6 +78,15 @@ describe("in a real browser", () => {
     expect(problems).toEqual([]);
   });
 
+  run("an error boundary's \"try again\" works once the query can succeed", async () => {
+    const { page } = await open("/gated");
+    await page.waitForSelector("#err");
+    expect(await page.textContent("#err")).toContain("not yet");
+    await fetch(`${srv.url}/rpc/messages:setFlag`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
+    await page.click("#retry");
+    await page.waitForFunction(() => document.querySelector("#ready")?.textContent === "ready", undefined, { timeout: 5000 }); // not the same error again
+  });
+
   run("error pages hydrate too", async () => {
     const { page, problems } = await open("/boom");
     expect(await page.textContent("h1")).toBe("500");

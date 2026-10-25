@@ -111,7 +111,8 @@ export class QueryRunner {
     const stats = this.statsOf(name);
     // Queries that read ctx.auth are cached per caller. Who the caller is gets resolved fresh each time, so a revoked session stops matching.
     const identity = this.perUser.has(name) ? await this.runtime.identity(headers) : undefined;
-    const who = identity === undefined ? name : JSON.stringify([name, identity]);
+    // Per user, not per session: someone signed in on two devices has two sessions and the same results. (The session id stays out of the key.)
+    const who = identity === undefined ? name : JSON.stringify([name, identity && { userId: identity.userId, email: identity.email, name: identity.name }]);
     const key = raw !== undefined ? `${who}\u0000${raw}` : `${who}\u0001${JSON.stringify(argsOf(args) ?? {})}`;
     if (this.evicting) await this.invalidating; // a pending eviction must land before we read the cache
     const hit = await cache.get<Result>(key);

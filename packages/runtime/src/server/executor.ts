@@ -225,6 +225,11 @@ export class Executor {
     return res;
   }
 
+  /** A function's time limit, for mutations run outside `call` (the scheduler). */
+  timed<T>(promise: Promise<T>, name: string): Promise<T> {
+    return withTimeout(promise, this.limits.functionTimeoutMs, name);
+  }
+
   async invokeMutation(fn: RegisteredFunction, args: unknown, store: DocStore, tx: DbTx, after: AfterCommit, identity: UserIdentity | null) {
     const ctx = {
       db: store.writer(),

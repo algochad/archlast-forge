@@ -1,21 +1,134 @@
 # Reading data
 
+This page covers everything on `ctx.db`: reading documents, indexes and ranges, filters, pagination, search, counts and aggregates, joins, and writing. Examples use the schema from [Schema and validators](schema.html):
+
+```ts
+import { defineSchema, defineTable, v } from "@archlast/forge-runtime";
+
+export default defineSchema({
+  lists: defineTable({ name: v.string() }).index("by_name", ["name"]),
+  todos: defineTable({
+    listId: v.id("lists"),
+    title: v.string(),
+    done: v.boolean(),
+    priority: v.optional(v.number()),
+    tags: v.optional(v.array(v.string())),
+  })
+    .index("by_list", ["listId"])
+    .index("by_list_done", ["listId", "done"])
+    .index("by_list_priority", ["listId", "priority"])
+    .index("by_priority", ["priority"])
+    .searchIndex("search_title", { searchField: "title", filterFields: ["listId"] }),
+});
+```
+
+## The API at a glance
+
+`ctx.db` is a `DatabaseReader` in queries and a `DatabaseWriter` (the same, plus writes) in mutations. Every method is async: `await` it.
+
+| Call | Returns | Notes |
+|---|---|---|
+| `db.get(id)` | `Doc \| null` | One document by id. |
+| `db.getMany(ids)` | `(Doc \| null)[]` | Many by id, in the order given. |
+| `db.query(table)` | a query | Start of every table read. |
+| `db.include(table, docs, spec)` | the documents, joined | Joins onto documents you already have. |
+| `db.insert(table, value)` | `Id` | Mutations only. |
+| `db.patch(id, partial)` | `void` | Shallow merge. |
+| `db.replace(id, value)` | `void` | Replace the whole document. |
+| `db.delete(id)` | `void` | |
+
+A query chain starts with `db.query("todos")`, optionally narrows it, and ends with a method that runs it:
+
+| Step | Methods |
+|---|---|
+| Choose the range | `.withIndex(name, range?)` or `.withSearchIndex(name, search)` |
+| Shape it | `.order("asc" \| "desc")`, `.filter(fn)`, `.include(spec)` |
+| Run it | `.collect()`, `.take(n)`, `.first()`, `.unique()`, `.paginate(opts)`, `.count()`, `.sum(f)`, `.avg(f)`, `.min(f)`, `.max(f)` |
+
+Unknown tables, indexes and fields fail with a `BAD_REQUEST` that names them (`Unknown table "nope"`, `Unknown index "todos.nope"`). TypeScript catches the same mistakes after codegen.
+
+## Reading one document
+
+```ts
+const todo = await ctx.db.get(todoId);          // Doc<"todos"> | null
+if (!todo) throw new ForgeError("No such todo");
+```
+
+`get` takes an id from any table (the table is in the id) and returns `null` when the document does not exist. A string that is not an id fails with `Invalid id "nonsense"`, and an id whose table does not exist with `Unknown table "nope"`.
+
+`getMany` loads many documents in one round trip and keeps your order, with `null` where one is missing. The ids may belong to different tables, and duplicates are fine.
+
+```ts
+const todos = await ctx.db.getMany(ids);                       // (Doc<"todos"> | null)[]
+const present = todos.filter((t) => t !== null);
+```
+
+## Queries
+
+```ts
+await ctx.db.query("todos").collect();      // all documents, oldest first
+await ctx.db.query("todos").order("desc").take(10);   // the ten newest
+await ctx.db.query("todos").first();        // the oldest, or null
+await ctx.db.query("lists").unique();       // the one document, or null; an error if there are several
+```
+
+| Method | Returns | Behavior |
+|---|---|---|
+| `collect()` | `Doc[]` | Every match. Bounded only by the 8 MiB result limit, so narrow large tables first. |
+| `take(n)` | `Doc[]` | At most `n`; `n` must be a non-negative integer (`take() expects a non-negative integer, got -1`). |
+| `first()` | `Doc \| null` | The first match. |
+| `unique()` | `Doc \| null` | The only match, `null` for none. Several matches throw `unique() found more than one document in "todos"`. |
+| `paginate(opts)` | `{ page, isDone, continueCursor }` | See [Pagination](#pagination). |
+| `count()`, `sum`, `avg`, `min`, `max` | numbers | See [Counting and aggregates](#counting-and-aggregates). |
+
+Without `withIndex`, a query scans the table in creation order (`_creationTime`, then `_id`). With one, results come out in the index's order. `order("desc")` reverses whichever order applies.
+
 ## Indexes
 
 ```ts
 ctx.db.query("todos").withIndex("by_list_done", (q) => q.eq("listId", listId).eq("done", false)).collect();
 ```
 
-Compare a prefix of the index's fields with `eq`. Then the next field can take a range:
+`withIndex(name, range?)` picks an index you declared in the schema (or the built-in `by_creation_time`) and optionally narrows it. The range callback gets a builder with five operators:
+
+| Operator | Meaning |
+|---|---|
+| `q.eq(field, value)` | The field equals `value`. |
+| `q.gt(field, value)` / `q.gte(field, value)` | Lower bound, exclusive / inclusive. |
+| `q.lt(field, value)` / `q.lte(field, value)` | Upper bound, exclusive / inclusive. |
+
+The rules, which the types enforce and the server checks again:
+
+1. **Fields in index order.** Use `eq` on a prefix of the index's fields, in order: `by_list_done` is `listId`, then `done`. `q.eq("done", true)` alone fails with `Index "todos.by_list_done" field 0 is "listId", not "done"`.
+2. **A range goes on the next field.** After the `eq`s you may add one lower and one upper bound on the field that follows. It must be the field right after the equalities, else `Index "todos.by_list_done": a range must be on "done", the field after the equalities`.
+3. **`eq` before bounds.** `q.gt("priority", 1).eq("priority", 2)` fails with `eq() must come before range bounds`.
+4. **One bound per side, on one field.** A second lower bound fails with `Only one lower bound is allowed`, and bounds on two fields with `Lower and upper bounds must be on the same field`.
 
 ```ts
-ctx.db.query("events").withIndex("by_time", (q) => q.gte("at", start).lt("at", end)).collect();
+// All of a list, any done state
+ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId));
+
+// A range on the field after the equality: priority 2 or 3 in this list
+ctx.db.query("todos").withIndex("by_list_priority", (q) => q.eq("listId", listId).gte("priority", 2).lt("priority", 4));
+
+// A range with no equality: the whole index, from a value
+ctx.db.query("todos").withIndex("by_priority", (q) => q.gte("priority", 3));
+
+// Time windows with the built-in index
 ctx.db.query("todos").withIndex("by_creation_time", (q) => q.gt("_creationTime", since)).take(10);
 ```
 
-`withIndex` only accepts an index's fields, in order. To filter on anything else, use [`filter`](#filtering). Results are ordered by the remaining index fields, then `_creationTime`. Use `.order("desc")` to reverse.
+**Order of results.** Within the range, documents are ordered by the index fields that were not fixed with `eq`, then `_creationTime`, then `_id`. For `by_list_done` with `eq("listId", x)`, that is `done` first (`false` before `true`), then oldest to newest. `order("desc")` reverses all of it.
 
-`collect()`, `take(n)`, `first()` and `unique()` end a query (`unique()` is the one match, `null` for none, and an error if there are several). Without `withIndex`, a query scans the table in creation order.
+**Missing fields.** A document that does not have an indexed field is still in the index. It sorts before documents that have a value (on SQLite), `q.eq("priority", undefined)` finds exactly those, and range operators leave them out, because a missing value is not greater or less than anything:
+
+```ts
+ctx.db.query("todos").withIndex("by_priority", (q) => q.eq("priority", undefined));   // no priority set
+```
+
+**Values compare by type.** Numbers numerically, strings as text, booleans as `false < true`. Keep an indexed field to one type (which `v.number()` or `v.string()` already guarantees); the order between different types is not defined.
+
+An index only helps the fields it lists, in order. If you find yourself writing a `filter` on the same field you always query by, it wants an index.
 
 ## Filtering
 
@@ -27,66 +140,91 @@ ctx.db
   .take(10);
 ```
 
-`filter` takes a plain function, so any condition works. It runs while scanning the index range, looking past the documents it skips until it has what you asked for, so `take(10)` still returns up to ten matches. Narrow the range with `withIndex` first: a query scans at most 100,000 documents and fails beyond that. Several `filter` calls all apply.
+`filter` takes a plain function, so any condition works: string tests, array membership, comparing two fields. It runs while the index range is scanned, in batches of 256 documents, looking past the documents it rejects until the query has what it needs. So `take(10)` still returns up to ten matches, and `first()` stops at the first.
 
-A query that uses `filter` is still reactive to changes anywhere in the index range it scanned, including documents the filter skipped.
+- Narrow the range with `withIndex` first. A query with a filter scans at most **100,000 documents**; past that it fails with `filter() scanned 100000 documents of "todos" without finishing; narrow the range with withIndex()`.
+- Several `filter` calls all apply, in order. A filter sees what `include()` added before it (see [Joins](#joins)).
+- `filter` must be a function, else `filter() expects a function`. It runs on the server: it cannot be async and cannot call `ctx.db`.
+- A filtered query is still [reactive](#reactivity-and-read-sets) to changes anywhere in the index range it scanned, including documents the filter skipped.
+
+Prefer an index for the part of the condition you can express as equality or a range, and `filter` for the rest, in that order. A common shape is an index on the owner and a filter on a flag.
 
 ## Counting and aggregates
 
 ```ts
 await ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).count();
-await ctx.db.query("orders").withIndex("by_user", (q) => q.eq("userId", userId)).sum("total");
-await ctx.db.query("comments").avg("score"); // also min("score") and max("score")
+await ctx.db.query("todos").sum("priority");
+await ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).avg("priority");
+await ctx.db.query("todos").max("priority");     // also min("priority")
 ```
 
-`count()` is a single database `COUNT` unless there is a `filter`. `sum`, `avg`, `min` and `max` take a number field (the types only allow those) and scan the matching range, skipping documents that don't have the field. `sum` of nothing is `0`; `avg`, `min` and `max` of nothing are `null`.
+| Method | Result | Empty or missing |
+|---|---|---|
+| `count()` | number of matching documents | `0` |
+| `sum(field)` | sum of a number field | `0` |
+| `avg(field)` | mean | `null` |
+| `min(field)`, `max(field)` | smallest, largest | `null` |
+
+- `count()` is a single `COUNT` in the database, unless the query has a `filter`, in which case the matching documents are scanned and counted.
+- `sum`, `avg`, `min` and `max` scan the matching range, and skip documents where the field is missing or `null`. The types only offer fields that hold numbers; at runtime, a field that is not a number in your schema fails with `sum() needs a number field; "todos.title" isn't one`, and a stored value that is not a number with `sum(): "todos.priority" holds a string, not a number`. `_creationTime` is allowed.
+- An aggregate scans at most 100,000 documents: beyond that it fails with `Aggregates scan at most 100000 documents of "todos"; narrow the range with withIndex()`. For a large table, keep a running total in a document that your mutations update.
 
 ## Joins
 
-References between tables are the `v.id("…")` fields in your schema. `include` follows them for every result at once, in a few batched queries rather than one query per document, and gives you the related documents under names you choose:
+References between tables are the `v.id("...")` fields in your schema. `include` follows them for every result at once, in a few batched queries rather than one query per document, and gives you the related documents under names you choose:
 
 ```ts
 // Follow a field to the document it points at.
 const todos = await ctx.db
   .query("todos")
   .withIndex("by_list", (q) => q.eq("listId", listId))
-  .include({ list: "listId", assignee: "assigneeId" })
-  .collect();
-todos[0].list.name; // Doc<"lists"> | null, null if the reference is missing or its document was deleted
+  .include({ list: "listId" })
+  .take(20);
+todos[0].list?.name;   // Doc<"lists"> | null: null if the reference is missing or its document was deleted
 
 // Look the other way: the documents that point back, through an index that starts with that reference.
 const lists = await ctx.db
   .query("lists")
   .include({
-    todos: { table: "todos", index: "by_list", order: "desc", take: 5 }, // Doc<"todos">[]
-    todoCount: { table: "todos", index: "by_list", count: true }, // number
+    recent: { table: "todos", index: "by_list", order: "desc", take: 5 },   // Doc<"todos">[]
+    todoCount: { table: "todos", index: "by_list", count: true },            // number
   })
-  .take(10);
+  .collect();
 ```
 
 | Rule | Gives | Notes |
 |---|---|---|
-| `"field"` | the document, or `null` | the field is `v.id(…)`, optional or not. For `v.array(v.id(…))` it gives the documents that still exist, as an array |
-| `{ table, index }` | the documents of `table` whose first index field is this document's id | `order` (`"asc"` default, `"desc"`) and `take` apply to each parent |
-| `{ table, index, count: true }` | how many there are | |
-| `{ …, include: { … } }` | nests: the related documents get their own includes | |
+| `"field"` | the document, or `null` | The field is `v.id(...)`, optional or not. For `v.array(v.id(...))` it gives the documents that still exist, as an array (deleted ones are dropped). |
+| `{ table, index }` | the documents of `table` whose first index field is this document's id | `order` (`"asc"` default, `"desc"`) and `take` apply to each parent. |
+| `{ table, index, count: true }` | how many there are | `0` when none. |
+| `{ ..., include: { ... } }` | nests | The related documents get their own includes. |
 
 Everything is typed: only fields that hold ids are accepted, the `index` must belong to the `table` you name, and the result type includes the joined documents.
 
-- **Without `take`**, a reverse include fetches the children of many parents in one query. With `take` or `count` it runs one indexed query per parent, so keep the parent list small.
-- **Reverse includes need an index** that starts with the reference (`.index("by_list", ["listId"])`). It is what makes them fast, and it is how the dashboard finds them too.
+- **Without `take`**, a reverse include fetches the children of many parents in one query. With `take` it runs one indexed query per parent, so keep the parent list small. Counts run one scalar `COUNT` per parent, 100 parents to a statement.
+- **Reverse includes need an index** that starts with a `v.id` field pointing at the parent's table (`.index("by_list", ["listId"])`). Otherwise: `include() "recent": index "todos.by_list" must start with a v.id("lists") field to find the todos of a lists`. It is also how the dashboard finds them.
 - **Filters see includes.** `.include({ list: "listId" }).filter((t) => t.list?.name === "build")` filters on the related data. A filter sees only what was included before it, and includes written after the last filter run only on the results that are left.
-- **Reactive:** the query re-runs when a document it joined changes, or when documents appear or disappear in an index range it joined through.
-- **Names** can't be the name of one of the document's own fields.
+- **Reactive.** The query re-runs when a document it joined changes, or when documents appear or disappear in an index range it joined through.
+- **Names** cannot be the name of one of the document's own fields: `include() key "title" is already a field of "todos"`. Pointing a rule at a field that is not a reference fails with `include() "x": "todos.title" isn't a reference; use a field declared with v.id(...) or v.array(v.id(...))`.
 
-`include` works on `withSearchIndex` results and pages from `paginate` too. For documents you already have, `ctx.db.include("todos", doc, { list: "listId" })` takes one document, `null`, or an array. And `ctx.db.getMany(ids)` loads many documents by id in one round trip, in the order you gave, with `null` for any that don't exist.
+`include` also works on `withSearchIndex` results and on pages from `paginate`.
+
+For documents you already have, `ctx.db.include(table, docs, spec)` takes one document, `null` (returned as `null`) or an array:
+
+```ts
+const todo = await ctx.db.get(todoId);
+const full = todo && (await ctx.db.include("todos", todo, { list: "listId" }));
+
+const ids = await ctx.db.getMany(todoIds);
+const joined = await Promise.all(ids.map((d) => (d ? ctx.db.include("todos", d, { list: "listId" }) : null)));
+```
 
 References are not enforced: deleting a document does not delete or change the documents that point at it, so a joined field can come back `null`. Delete or update those yourself in the same mutation.
 
 ## Pagination
 
 ```ts
-import { paginationOptsValidator, query } from "@archlast/forge-runtime";
+import { paginationOptsValidator, query, v } from "@archlast/forge-runtime";
 
 export const page = query({
   args: { listId: v.id("lists"), paginationOpts: paginationOptsValidator },
@@ -95,12 +233,148 @@ export const page = query({
 });
 ```
 
-`paginate` returns `{ page, isDone, continueCursor }`. Cursors are keyset-based, so inserting before a cursor doesn't shift later pages. In React, `usePaginatedQuery(api.todos.page, { listId }, { initialNumItems: 20 })` keeps every loaded item live (see [Clients](clients.html)).
+`paginationOptsValidator` is `v.object({ numItems: v.number(), cursor: v.union(v.string(), v.null()) })`. A page is requested with `{ numItems, cursor }`: `cursor` is `null` for the first page and the previous result's `continueCursor` after that. The result is:
+
+```ts
+{ page: Doc[], isDone: boolean, continueCursor: string }
+```
+
+```json
+{
+  "page": [ { "_id": "todos:52a2...", "title": "Milk the cow" }, { "_id": "todos:80eb...", "title": "Fix bike" } ],
+  "isDone": false,
+  "continueCursor": "WzE3OTI4NTAxNjU4OTkuNDIxNCwidG9kb3M6ODBlYjRj..."
+}
+```
+
+- `numItems` must be an integer from 1 to 8192, else `paginate() numItems must be an integer from 1 to 8192`.
+- `isDone` is `true` when the page reached the end of the range. Stop then; do not use its `continueCursor`.
+- **Cursors are keyset-based**: a cursor is the position of the last document returned (the unfixed index fields, `_creationTime` and `_id`), encoded as an opaque string. Inserting or deleting before the cursor does not shift later pages or repeat items, unlike offsets. Treat the string as opaque. A cursor from a different query shape, or garbage, fails with `Invalid pagination cursor (was the query or index changed?)`.
+- Pagination composes with `withIndex`, `order`, `filter` and `include`. With a filter, the server scans past rejected documents to fill the page.
+- Paginated queries are reactive like any other, for the page that was requested. In React, `usePaginatedQuery(api.todos.page, { listId }, { initialNumItems: 20 })` keeps one live window that grows with `loadMore(n)`, so every loaded item stays up to date and nothing is duplicated when items are added. In a mutation, `paginate` is the way to walk a large table in batches (data migrations do exactly that). See [Clients](clients.html).
+- Search queries cannot be paginated (`take` them instead).
 
 ## Full-text search
 
 ```ts
-ctx.db.query("todos").withSearchIndex("search_title", (q) => q.search("title", "oat mil").eq("listId", listId)).take(10);
+ctx.db
+  .query("todos")
+  .withSearchIndex("search_title", (q) => q.search("title", "oat mil").eq("listId", listId))
+  .take(10);
 ```
 
-Every term must match, and the last one matches as a prefix ("mil" finds "milk"). Results come back by relevance. SQLite uses FTS5 and Postgres uses `tsvector` with a GIN index. Both stay in sync with writes automatically.
+`withSearchIndex(name, builder)` uses an index declared with `.searchIndex(...)` in the schema. The builder must call `q.search(searchField, text)` and may chain `.eq(filterField, value)` for each of the index's `filterFields` (anything else fails: `"done" is not a filter field of search index "todos.search_title"`). Searching a field the index is not on fails with `Search index "todos.search_title" searches "title", not "body"`.
+
+- Every word must match, the last one as a prefix, so `oat mil` finds "Buy oat milk". Results are ordered by relevance, best first. Case and punctuation do not matter; at most 16 words are used; there is no stemming. The full rules are in [Schema](schema.html#search-indexes).
+- A search query ends in `take(n)`, `first()` or `collect()` (at most 1024 documents), and supports `include`. It has no `order`, `filter`, `paginate` or aggregates. Narrow with `filterFields`, or filter the returned array in JavaScript.
+- An empty search (no words) returns `[]`.
+- A search query reads the whole table for reactivity: any write to the table re-runs it, because any write can change ranking.
+
+## Writing
+
+Writes are available in mutations only. Every write validates the whole resulting document against the schema (see [Strict and non-strict tables](schema.html#strict-and-non-strict-tables)) and fails the mutation, rolling back everything it wrote, if the check fails.
+
+### insert
+
+```ts
+const id = await ctx.db.insert("todos", { listId, title: "milk", done: false });   // Id<"todos">
+```
+
+Takes the table and the fields (no `_id` or `_creationTime`; the server creates them). Optional fields can be left out. Passing a field that is not in the table fails with `todos.extra is not in the validator`.
+
+### patch
+
+```ts
+await ctx.db.patch(id, { done: true });          // shallow merge: other fields are untouched
+await ctx.db.patch(id, { priority: undefined }); // removes the field
+```
+
+Merges the fields you pass into the stored document, one level deep: a nested object you pass replaces the stored one entirely; it is not merged field by field. A field set to `undefined` is deleted. Patching a document that does not exist fails with `Document todos:... not found`.
+
+### replace
+
+```ts
+await ctx.db.replace(id, { listId, title: "replaced", done: true });
+```
+
+Replaces the whole document with the value, which must be complete: optional fields not included are removed. Do not pass the full document you read, as it contains `_id` and `_creationTime`, which are not part of the schema (`todos._id is not in the validator`); leave those out (`const { _id, _creationTime, ...rest } = doc`). Replacing a missing document also fails with `Document ... not found`. `_id` and `_creationTime` never change.
+
+### delete
+
+```ts
+await ctx.db.delete(id);
+```
+
+Removes the document. Deleting one that does not exist does nothing, which makes deletes safe to repeat. Nothing else changes: documents that reference the deleted one keep their ids.
+
+### Cascades and uniqueness
+
+Because references and indexes are not enforced by the database, you write the rules in the mutation. Both are safe inside one mutation, since mutations are serializable:
+
+```ts
+export const removeList = mutation({
+  args: { listId: v.id("lists") },
+  handler: async (ctx, { listId }) => {
+    const todos = await ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).collect();
+    for (const t of todos) await ctx.db.delete(t._id);
+    await ctx.db.delete(listId);
+  },
+});
+
+export const createUnique = mutation({
+  args: { name: v.string() },
+  handler: async (ctx, { name }) => {
+    const taken = await ctx.db.query("lists").withIndex("by_name", (q) => q.eq("name", name)).first();
+    if (taken) throw new ForgeError("That name is taken");
+    return ctx.db.insert("lists", { name });
+  },
+});
+```
+
+For a very large cascade, delete in batches (`take(500)` then schedule the rest) so the mutation stays within the 10 s limit.
+
+## Reactivity and read sets
+
+A query is re-run when something it read changes. While it runs, the server records what it read as **topics**; every committed write publishes the topics it touched, and subscriptions whose read set contains one re-run. The topics are:
+
+| Topic | Read by | Published by |
+|---|---|---|
+| `todos` | a query with no equality prefix (a scan, a range-only `withIndex`, search, count over the table) | every write to `todos` |
+| `todos:by_list:["lists:..."]` | a `withIndex("by_list", q => q.eq("listId", x))` read, including ranges and pages beyond the `eq` | a write whose old or new document has that value |
+| `todos:by_id:["todos:..."]` | `db.get`, `getMany`, forward `include` | a write to that document |
+
+A write publishes the table, the document's `by_id`, and **every prefix of every index** with the old and the new values (so `by_list_done` publishes `["x"]` and `["x", false]`). A move between lists notifies both lists.
+
+What follows for your queries:
+
+- **Equality in the index narrows what wakes the query.** A query on `by_list` with `eq("listId", x)` re-runs only for writes to list `x`. A query with no `eq` re-runs on every write to the table.
+- **Range bounds do not narrow it further.** A range or page is tracked at its equality prefix, so a write inside the same prefix but outside the range still re-runs the query, which then returns the same result. That is coarser than strictly necessary, never wrong.
+- **`filter` does not narrow it either.** The read covers the whole scanned range.
+- **Joins add the topics they read**: the `by_id` of followed documents, and `table:index:[parentId]` for reverse includes.
+- Writes that arrive close together are batched (a 50 ms debounce) into one re-run, and a re-run whose result did not change is not sent to clients.
+
+See [Reactivity](reactivity.html) for how subscriptions use this and [Caching](caching.html) for the query cache.
+
+## Performance notes
+
+- **Index the field you look up by.** `withIndex` with `eq` on a prefix reads only matching entries; a `filter` on the same field reads the entire range. A table with 100,000 documents and no usable index fails the filter limit.
+- **Put the field you always fix first.** Index `["listId", "done"]` serves "a list's todos" and "a list's open todos". Index `["done", "listId"]` serves neither as well, and it makes the query wake on every write.
+- **`take` and `first` stop early**; `collect` reads everything. Page large reads.
+- **Counts of ranges are cheap** (`COUNT` over the index) when the query has no `filter`. Aggregates read every document in range.
+- **Joins are batched**, but `take` on a reverse include costs a query per parent.
+- **Query results are cached** per `(function, args)` outside dev (see [Caching](caching.html)), so repeated identical reads cost little.
+
+## Limits
+
+| Limit | Value | Applies to |
+|---|---|---|
+| Documents scanned by a query with `filter()` | 100,000 | `collect`, `take`, `first`, `unique`, `paginate`, `count` with a filter |
+| Documents scanned by an aggregate | 100,000 | `sum`, `avg`, `min`, `max`, and `count` with a filter |
+| Page size | 8192 | `paginate({ numItems })`, 1 to 8192 |
+| Search results | 1024 | `collect()` on a search query; `take(n)` is also capped at 1024 |
+| Search words | 16 | the first 16 words of the query text |
+| Result size | 8 MiB | `MAX_RESULT_BYTES`, any function |
+| Document size | 1 MiB | `MAX_DOCUMENT_BYTES`, every write |
+| Time | 10 s | queries and mutations, `FUNCTION_TIMEOUT_MS` |
+
+An unfiltered `collect()` is not bounded by the scan limit, only by the 8 MiB result size and the time limit. The environment variables and the rest of the limits are in [Limits](limits.html) and [Configuration](configuration.html).

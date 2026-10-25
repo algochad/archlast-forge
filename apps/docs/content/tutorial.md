@@ -1,0 +1,577 @@
+# Tutorial: a notes app
+
+You will build a small notes app as a full-stack archlast-forge project. People sign up, write notes, pin them, search them and delete them, and every open window stays in sync without any refresh code. Along the way you will use almost every part of the framework: a schema with an index and a search index, queries and mutations with validation and authorization, file routes with loaders that preload live data, a `[id]` route, optimistic updates, and a production build.
+
+Every file below is shown in full, or as a diff against the step before. The code was run end to end: typechecked, built, driven in a real browser with two windows open, and run from the production build.
+
+You need [Bun](https://bun.sh) 1.4.3 or later and a browser. You do not need Docker until the last step, and even there it is optional.
+
+## 1. Create the project
+
+```bash
+bun create archlast-forge notes --mode framework --yes --install
+cd notes
+bun run dev
+```
+
+`--mode framework` makes a full-stack app, `--yes` skips the other questions (no extra services, so the database is a SQLite file), and `--install` runs `bun install`. (Without flags, the questions are described in [Getting started](getting-started.html#the-prompts).)
+
+You will see:
+
+```
+✓ codegen: 1 modules
+✓ app built in 162 ms
+
+  archlast-forge 0.1.0  ·  full-stack app  · ready in 737 ms
+
+  ➜  App        http://localhost:3000
+  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  Admin key  <48 hex characters>
+
+  Save a file and the page reloads. Ctrl-C stops everything.
+```
+
+Open http://localhost:3000. The starter is a chat app: a `messages` table, three functions in `forge/messages.ts`, and pages for the home screen, sign-in and chat. You will replace the chat with notes and keep the sign-in page, the layout and the styles. Leave `bun run dev` running in its terminal for the whole tutorial: every save rebuilds the app and reloads the browser, and every change in `forge/` restarts only your functions and regenerates the types.
+
+Remove the chat. The `messages` table stays in the database file (dropped tables keep their data), but nothing refers to it any more:
+
+```bash
+rm forge/messages.ts app/routes/chat.tsx
+```
+
+## 2. Describe the data
+
+Replace `forge/schema.ts`:
+
+```ts
+import { defineSchema, defineTable, v } from "@archlast/forge-runtime";
+
+// `users` and Better Auth's tables are built in.
+export default defineSchema({
+  notes: defineTable({
+    ownerId: v.id("users"),
+    title: v.string(),
+    body: v.string(),
+    pinned: v.boolean(),
+    updatedAt: v.number(),
+  })
+    // A person's notes, most recently edited last (reverse it with order("desc")).
+    .index("by_owner_updated", ["ownerId", "updatedAt"])
+    // Full-text search over the body, narrowed to one person's notes.
+    .searchIndex("search_body", { searchField: "body", filterFields: ["ownerId"] }),
+});
+```
+
+Three things to notice:
+
+- **Validators** (`v.string()`, `v.id("users")`) describe each field. They give you the TypeScript type of a document, and the engine checks every write against them: a note with a number for `title` is rejected before it reaches the database. `v.id("users")` accepts only ids of the `users` table, which Better Auth provides.
+- **`by_owner_updated`** is an index on `ownerId` then `updatedAt`. A read that fixes `ownerId` with `eq` can walk the rest in `updatedAt` order, and, as you will see in [How it works](concepts.html#reactivity-in-more-detail), the same read becomes a narrow live subscription: it wakes only for writes to that person's notes.
+- **`search_body`** is a full-text index on one string field, with `ownerId` as a filter so a search can be limited to your own notes.
+
+Saving the file makes the dev server migrate the database: it creates the `notes` table and its indexes. Nothing else needs to run. More in [Schema and validators](schema.html).
+
+## 3. Write the functions
+
+Create `forge/notes.ts`:
+
+```ts
+import { ForgeError, mutation, query, v, type MutationCtx, type QueryCtx } from "@archlast/forge-runtime";
+
+/** The signed-in user's id. Throws a ForgeError, whose message reaches the caller, when nobody is signed in. */
+async function requireUser(ctx: QueryCtx | MutationCtx) {
+  const me = await ctx.auth.getUserIdentity();
+  if (!me) throw new ForgeError("Sign in to use notes");
+  return me.userId;
+}
+
+function checked(title: string, body: string) {
+  const t = title.trim();
+  if (!t || t.length > 120) throw new ForgeError("A title is 1 to 120 characters");
+  if (body.length > 20_000) throw new ForgeError("A note is at most 20,000 characters");
+  return { title: t, body };
+}
+
+/** My notes, most recently edited first. */
+export const list = query({
+  args: {},
+  handler: async (ctx) => {
+    const ownerId = await requireUser(ctx);
+    return ctx.db
+      .query("notes")
+      .withIndex("by_owner_updated", (q) => q.eq("ownerId", ownerId))
+      .order("desc")
+      .take(100);
+  },
+});
+
+/** One of my notes, or null. Someone else's note looks the same as one that doesn't exist. */
+export const get = query({
+  args: { id: v.id("notes") },
+  handler: async (ctx, { id }) => {
+    const ownerId = await requireUser(ctx);
+    const note = await ctx.db.get(id);
+    return note && note.ownerId === ownerId ? note : null;
+  },
+});
+
+export const search = query({
+  args: { text: v.string() },
+  handler: async (ctx, { text }) => {
+    const ownerId = await requireUser(ctx);
+    return ctx.db
+      .query("notes")
+      .withSearchIndex("search_body", (q) => q.search("body", text).eq("ownerId", ownerId))
+      .take(20);
+  },
+});
+
+export const create = mutation({
+  args: { title: v.string(), body: v.string() },
+  returns: v.id("notes"),
+  handler: async (ctx, args) => {
+    const ownerId = await requireUser(ctx);
+    return ctx.db.insert("notes", { ownerId, ...checked(args.title, args.body), pinned: false, updatedAt: Date.now() });
+  },
+});
+
+export const update = mutation({
+  args: { id: v.id("notes"), title: v.string(), body: v.string() },
+  handler: async (ctx, { id, ...fields }) => {
+    const ownerId = await requireUser(ctx);
+    const note = await ctx.db.get(id);
+    if (!note || note.ownerId !== ownerId) throw new ForgeError("No such note");
+    await ctx.db.patch(id, { ...checked(fields.title, fields.body), updatedAt: Date.now() });
+  },
+});
+
+export const setPinned = mutation({
+  args: { id: v.id("notes"), pinned: v.boolean() },
+  handler: async (ctx, { id, pinned }) => {
+    const ownerId = await requireUser(ctx);
+    const note = await ctx.db.get(id);
+    if (!note || note.ownerId !== ownerId) throw new ForgeError("No such note");
+    await ctx.db.patch(id, { pinned });
+  },
+});
+
+export const remove = mutation({
+  args: { id: v.id("notes") },
+  handler: async (ctx, { id }) => {
+    const ownerId = await requireUser(ctx);
+    const note = await ctx.db.get(id);
+    if (!note || note.ownerId !== ownerId) throw new ForgeError("No such note");
+    await ctx.db.delete(id);
+  },
+});
+```
+
+What this file decides:
+
+- **Authorization is your code.** There are no rules to configure: every function begins with `requireUser`, and every function that takes an id checks `note.ownerId` before it shows or changes anything. `get` returns `null` rather than "forbidden" so an attacker cannot tell which ids exist.
+- **`ForgeError`** is the one kind of error whose message reaches the caller. Anything else you throw becomes "Server error (request id)" outside development, with the details in the server log. Argument validation errors (`args.title must be a string`) reach the caller too. See [Errors](errors.html).
+- **Arguments are validated** before your handler runs, using `args`. `v.id("notes")` rejects an id from another table. Document fields are validated again when you `insert` or `patch`.
+- **`returns: v.id("notes")`** makes the return type explicit and checks it at runtime; a mutation that returns the wrong thing rolls back.
+- **Order.** `by_owner_updated` is sorted by `updatedAt`, so `.order("desc")` gives the most recently edited first. The index's remaining fields, then `_creationTime`, decide the order.
+- **`list` reads `ctx.auth`**, so its result is cached and subscribed per user.
+
+The dev terminal prints a line such as `✓ function runtime restarted (notes.ts, schema.ts)`, and `forge/_generated/api.ts` now has `api.notes.list`, `api.notes.create` and the rest, typed from your validators.
+
+Try a function without any page. Signed out, it refuses:
+
+```bash
+curl -X POST localhost:3000/rpc/notes:list -H 'content-type: application/json' -d '{}'
+# {"error":{"message":"Sign in to use notes","code":"BAD_REQUEST","data":"Sign in to use notes","requestId":"..."}}
+```
+
+An id of the wrong table is refused before your code runs:
+
+```bash
+curl -X POST localhost:3000/rpc/notes:get -H 'content-type: application/json' -d '{"id":"users:abc"}'
+# {"error":{"message":"args.id must be an Id<\"notes\">, got \"users:abc\"","code":"BAD_REQUEST","requestId":"..."}}
+```
+
+## 4. Point the starter at notes
+
+The starter links to `/chat` in three places. In `app/root.tsx`, change the navigation link:
+
+```diff
+-            <NavLink to="/chat">Chat</NavLink>
++            <NavLink to="/notes">Notes</NavLink>
+```
+
+In `app/routes/sign-in.tsx`, send people to `/notes` instead (two places):
+
+```diff
+ export const loader = async ({ ctx }: LoaderArgs) => {
+-  if (await ctx.viewer()) throw redirect("/chat");
++  if (await ctx.viewer()) throw redirect("/notes");
+   return null;
+ };
+```
+
+```diff
+     if (res.error) return setError(res.error.message ?? "That didn't work");
+-    await navigate("/chat");
++    await navigate("/notes");
+   }
+```
+
+Replace `app/routes/index.tsx` with a shorter home page:
+
+```tsx
+import { Link, useViewer } from "@archlast/forge-framework";
+
+export default function Home() {
+  const viewer = useViewer();
+  return (
+    <main className="container hero">
+      <title>Notes</title>
+      <h1>Notes that stay in sync</h1>
+      <p className="lead">Write a note in one window and watch it appear in another.</p>
+      <div className="actions">
+        <Link className="btn primary" to={viewer ? "/notes" : "/sign-in"}>{viewer ? "Open your notes" : "Get started"}</Link>
+      </div>
+    </main>
+  );
+}
+```
+
+Add a few styles to the end of `app/styles.css`:
+
+```css
+.notes { list-style: none; padding: 0; display: grid; gap: 0.75rem; }
+textarea { font: inherit; padding: 0.6rem 0.8rem; border-radius: 10px; border: 1px solid var(--line); background: var(--bg); color: inherit; width: 100%; }
+```
+
+`useViewer()` is the signed-in user (or `null`). It is part of the server-rendered HTML, so the header can say who you are on the first paint, and it follows sign-in and sign-out without a reload.
+
+## 5. The list page
+
+Every file in `app/routes` is a page, and its path is its name. `app/routes/notes/index.tsx` answers `/notes`. Create it:
+
+```tsx
+import { Link, redirect, useNavigate, type LoaderArgs } from "@archlast/forge-framework";
+import { ForgeError, useMutation, useQuery } from "@archlast/forge-react";
+import { useState, type FormEvent } from "react";
+import { api } from "../../../forge/_generated/api";
+import type { Doc } from "../../../forge/_generated/dataModel";
+
+// Server: on the first request. Browser: on every later visit. Either way the list is in the live cache before the page renders.
+export const loader = async ({ ctx }: LoaderArgs) => {
+  if (!(await ctx.viewer())) throw redirect("/sign-in");
+  await ctx.query(api.notes.list);
+  return null;
+};
+
+export default function Notes() {
+  const navigate = useNavigate();
+  const notes = useQuery(api.notes.list);
+  const create = useMutation(api.notes.create);
+  const [error, setError] = useState<string>();
+
+  async function submit(e: FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    const form = new FormData(e.currentTarget);
+    setError(undefined);
+    try {
+      const id = await create({ title: String(form.get("title")), body: String(form.get("body")) });
+      await navigate(`/notes/${id}`);
+    } catch (err) {
+      setError(err instanceof ForgeError ? err.message : "Couldn't save that");
+    }
+  }
+
+  const shown = notes && [...notes].sort((a, b) => Number(b.pinned) - Number(a.pinned)); // pinned first, then newest
+
+  return (
+    <main className="container">
+      <title>Notes</title>
+      <h1>Notes</h1>
+
+      <form className="card" onSubmit={submit}>
+        <div className="field">
+          <label htmlFor="title">Title</label>
+          <input id="title" name="title" type="text" required maxLength={120} />
+        </div>
+        <div className="field">
+          <label htmlFor="body">Note</label>
+          <textarea id="body" name="body" rows={3} />
+        </div>
+        {error && <p className="error" role="alert">{error}</p>}
+        <button className="btn primary">Add note</button>
+      </form>
+
+      {shown === undefined ? (
+        <p>Loading...</p>
+      ) : shown.length === 0 ? (
+        <p>No notes yet.</p>
+      ) : (
+        <ul className="notes">
+          {shown.map((n) => (
+            <NoteRow key={n._id} note={n} />
+          ))}
+        </ul>
+      )}
+    </main>
+  );
+}
+
+function NoteRow({ note }: { note: Doc<"notes"> }) {
+  const setPinned = useMutation(api.notes.setPinned);
+  const remove = useMutation(api.notes.remove);
+
+  return (
+    <li className="card">
+      <Link to={`/notes/${note._id}`}>{note.pinned ? "* " : ""}{note.title}</Link>
+      <p>{note.body.slice(0, 120)}</p>
+      <button className="btn small" onClick={() => setPinned({ id: note._id, pinned: !note.pinned })}>{note.pinned ? "Unpin" : "Pin"}</button>{" "}
+      <button className="btn small" onClick={() => remove({ id: note._id })}>Delete</button>
+    </li>
+  );
+}
+```
+
+How the pieces fit:
+
+- **The loader** runs before the page renders: on the server for the first request, in the browser for every later navigation, with the same code. `ctx.viewer()` is the signed-in user or `null`; `throw redirect("/sign-in")` sends anonymous visitors away (a real `302` on the first request). `ctx.query(api.notes.list)` runs the query as the visitor and stores the result in the page's live cache under the key `useQuery` reads, so the component renders with data in the server's HTML. The loader returns `null` because the data lives in the cache, not in loader data.
+- **`useQuery(api.notes.list)`** subscribes to the query. It returns `undefined` until there is data (here it never is, thanks to the loader) and then re-renders each time the result changes. Use the same function and arguments in the loader and the component.
+- **`useMutation(api.notes.create)`** returns an async function. A `ForgeError` thrown on the server arrives as a `ForgeError` here, with the server's message, which the form shows.
+- **Navigation** after creating goes to `/notes/<id>`, the page you write next.
+
+Open http://localhost:3000. You land on the sign-in page, because the loader redirected you. Choose "Create an account", sign up with any email and a password of at least 8 characters, and you arrive at an empty notes page. Add a note. The page navigates to the note's URL, which does not exist yet; carry on.
+
+Before moving on, look at what you stored: open http://localhost:3000/_dashboard in another window, sign in with the admin key from the terminal, and open the `notes` table under Data. Each note is a JSON document with the fields from your schema, an `_id` of the form `notes:<32 hex>` and an `_creationTime`.
+
+## 6. The detail page
+
+A file named `[id].tsx` is a route parameter. `app/routes/notes/[id].tsx` answers `/notes/anything`, with `params.id` set. Create it:
+
+```tsx
+import { data, Link, redirect, useNavigate, useParams, type LoaderArgs } from "@archlast/forge-framework";
+import { ForgeError, useMutation, useQuery } from "@archlast/forge-react";
+import { useState, type FormEvent } from "react";
+import { api } from "../../../forge/_generated/api";
+import type { Doc, Id } from "../../../forge/_generated/dataModel";
+
+export const loader = async ({ params, ctx }: LoaderArgs) => {
+  if (!(await ctx.viewer())) throw redirect("/sign-in");
+  if (!params.id?.startsWith("notes:")) throw data("No such note", { status: 404 }); // an id of another table would fail validation
+  const note = await ctx.query(api.notes.get, { id: params.id as Id<"notes"> });
+  if (!note) throw data("No such note", { status: 404 }); // renders the error page, with a real 404 on the first request
+  return null;
+};
+
+export default function NotePage() {
+  const id = useParams().id as Id<"notes">;
+  const note = useQuery(api.notes.get, { id });
+  if (note === undefined) return <main className="container">Loading...</main>;
+  if (note === null) return <main className="container"><p>This note is gone. <Link to="/notes">Back to your notes</Link></p></main>;
+  return <Editor key={note._id} note={note} />;
+}
+
+function Editor({ note }: { note: Doc<"notes"> }) {
+  const navigate = useNavigate();
+  const [title, setTitle] = useState(note.title);
+  const [body, setBody] = useState(note.body);
+  const [error, setError] = useState<string>();
+  const [saved, setSaved] = useState(false);
+  const update = useMutation(api.notes.update);
+  const remove = useMutation(api.notes.remove);
+
+  async function save(e: FormEvent) {
+    e.preventDefault();
+    setError(undefined);
+    setSaved(false);
+    try {
+      await update({ id: note._id, title, body });
+      setSaved(true);
+    } catch (err) {
+      setError(err instanceof ForgeError ? err.message : "Couldn't save that");
+    }
+  }
+
+  async function del() {
+    await remove({ id: note._id });
+    await navigate("/notes");
+  }
+
+  return (
+    <main className="container">
+      <title>{note.title}</title>
+      <p><Link to="/notes">All notes</Link></p>
+      <form className="card" onSubmit={save}>
+        <div className="field">
+          <label htmlFor="title">Title</label>
+          <input id="title" type="text" value={title} onChange={(e) => setTitle(e.target.value)} maxLength={120} required />
+        </div>
+        <div className="field">
+          <label htmlFor="body">Note</label>
+          <textarea id="body" rows={10} value={body} onChange={(e) => setBody(e.target.value)} />
+        </div>
+        {error && <p className="error" role="alert">{error}</p>}
+        <button className="btn primary">Save</button>{" "}
+        <button type="button" className="btn" onClick={del}>Delete</button>
+        {saved && <span> Saved</span>}
+      </form>
+      <p><small>Edited {new Date(note.updatedAt).toLocaleString()}</small></p>
+    </main>
+  );
+}
+```
+
+- **Missing notes are 404s.** `throw data("No such note", { status: 404 })` from a loader renders the nearest `ErrorBoundary` (the starter's `root.tsx` has one) with that status code, and on the first request the response really is a 404. The first guard exists because an id in the URL like `/notes/bogus` would otherwise fail the query's argument validation and render as a server error.
+- **The form is local state.** `Editor` copies the note into `useState` once, so typing is not interrupted when the live query updates. `key={note._id}` resets that state when you move to a different note. If another window edits the same note, this window's fields keep what you typed until you save.
+- **Delete** calls the mutation and navigates away. For a moment the live query reports `null` for the deleted note, which is why the page handles it.
+
+Click the note you made. You see the editor. Change the title and press Save: "Saved" appears next to the buttons. Try saving with a title of only spaces, and the message from `checked` appears: *A title is 1 to 120 characters*. That came from your server code, through `ForgeError`.
+
+## 7. Search
+
+The search index and the `search` query already exist. Add a search box to the list page. This is the change:
+
+```diff
+ export default function Notes() {
+   const navigate = useNavigate();
+   const notes = useQuery(api.notes.list);
++  const [text, setText] = useState("");
++  const query = text.trim();
++  const found = useQuery(api.notes.search, query ? { text: query } : "skip");
+   const create = useMutation(api.notes.create);
+   const [error, setError] = useState<string>();
+```
+
+```diff
+-  const shown = notes && [...notes].sort((a, b) => Number(b.pinned) - Number(a.pinned)); // pinned first, then newest
++  const shown = query ? found : notes && [...notes].sort((a, b) => Number(b.pinned) - Number(a.pinned)); // pinned first, then newest
+```
+
+```diff
+         <button className="btn primary">Add note</button>
+       </form>
+
++      <p>
++        <input type="text" value={text} onChange={(e) => setText(e.target.value)} placeholder="Search note text" aria-label="Search" />
++      </p>
++
+       {shown === undefined ? (
+         <p>Loading...</p>
+       ) : shown.length === 0 ? (
+-        <p>No notes yet.</p>
++        <p>{query ? "Nothing matches." : "No notes yet."}</p>
+       ) : (
+```
+
+- Passing `"skip"` instead of arguments means no subscription is opened while the box is empty.
+- Every term must match, and the last one matches as a prefix, so typing `oat mil` finds "Buy oat milk". Results come back by relevance.
+- A search reads the whole table (it cannot be narrowed to one owner's index range for reactivity), so a search subscription re-runs on any write to `notes`. Fine for a notes app; for a busy table, keep searches short-lived.
+- The search is also live: add a matching note in another window and it appears in the results.
+
+Type "oat" and you see only the matching notes; clear the box and the full list returns.
+
+## 8. Optimistic updates
+
+At the moment, pressing Pin waits for the server before the button changes. On localhost that takes milliseconds, but on a slow connection it feels slow. An **optimistic update** changes the locally cached query results immediately and lets the live result replace the guess when it arrives. If the mutation fails, the cache goes back.
+
+In `app/routes/notes/index.tsx`, change `NoteRow`:
+
+```diff
+ function NoteRow({ note }: { note: Doc<"notes"> }) {
+-  const setPinned = useMutation(api.notes.setPinned);
+-  const remove = useMutation(api.notes.remove);
++  // The pin shows at once. If the server refuses, the list goes back; either way the live result replaces the guess.
++  const setPinned = useMutation(api.notes.setPinned).withOptimisticUpdate((store, { id, pinned }) => {
++    const list = store.getQuery(api.notes.list, {});
++    if (list) store.setQuery(api.notes.list, {}, list.map((n) => (n._id === id ? { ...n, pinned } : n)));
++  });
++  const remove = useMutation(api.notes.remove).withOptimisticUpdate((store, { id }) => {
++    const list = store.getQuery(api.notes.list, {});
++    if (list) store.setQuery(api.notes.list, {}, list.filter((n) => n._id !== id));
++  });
+```
+
+And in `app/routes/notes/[id].tsx`, make saving show the new title at once:
+
+```diff
+-  const update = useMutation(api.notes.update);
++  const update = useMutation(api.notes.update).withOptimisticUpdate((store, args) => {
++    const current = store.getQuery(api.notes.get, { id: args.id });
++    if (current) store.setQuery(api.notes.get, { id: args.id }, { ...current, title: args.title, body: args.body });
++  });
+```
+
+`store.getQuery(ref, args)` reads what is cached for that query and arguments; `store.setQuery(ref, args, value)` writes it. The arguments must match the ones the page subscribed with (here `{}` for `list`). The function you pass is typed from the mutation's own arguments.
+
+To see it work, open your browser's developer tools, throttle the network to a slow profile, and press Pin: the button flips to "Unpin" immediately, and the request finishes later. (This was checked by delaying the request by 1.5 seconds and reading the button 200 ms in: it had already changed. A server error rolled the button back.)
+
+A note on creating: there is no optimistic version of `create` here, because the new note's id only exists once the server has made it, and the page navigates to that id. Optimism suits changes to something you already have.
+
+## 9. Watch it stay in sync
+
+Open http://localhost:3000/notes in two windows, signed in as the same user (a second window in the same browser shares the session). Then:
+
+1. Add a note in window A. It appears in window B, with no refresh.
+2. Open the note in A, rename it and save. The new title shows in B's list.
+3. Pin a note in B. A's list reorders.
+4. Delete a note in A. It disappears from B.
+
+Each of those is one mutation, which wrote some documents, which published topics after it committed. B's subscription to `notes:list` was holding a single topic, `notes:by_owner_updated:["users:<your id>"]`, and each of those writes touched it. You can see the held topics in the dashboard under Settings. A different user's note writes publish a different `by_owner_updated` topic, so your window is not woken for them. That is the whole mechanism; [How it works](concepts.html) explains each step.
+
+## 10. Check types and build
+
+```bash
+bun run typecheck
+```
+
+This regenerates `forge/_generated` and runs `tsc`. It prints `✓ wrote .../forge/_generated (1 modules)` and nothing else when all is well. Change `title: v.string()` in the schema to `v.number()` and run it again to see every call site that breaks.
+
+Build the production bundles and run them without Docker:
+
+```bash
+bun run build
+```
+
+```
+→ Building the app
+✓ Building the app 1.3s
+  first load  entry.client.js 387 kB (107 kB compressed), entry.client.css 5.3 kB (1.5 kB compressed)
+  all code   6 files, 395 kB; each page loads only the routes it shows
+
+Run it here with: archlast-forge start --no-docker
+```
+
+```bash
+bun run start
+# ✓ archlast-forge on http://localhost:3000 (app and API)
+```
+
+Stop `bun run dev` first, because both use port 3000. The production server uses the secrets in `.env`. The production server keeps its data in `forge/data/app.db`, the same file `dev` used, so your notes are still there (sign in with the account you made; the secrets differ, so you sign in again). The dashboard is off in production (`/_dashboard` answers 404) unless `DASHBOARD=on`.
+
+## 11. Deploy with Docker
+
+```bash
+bun run up
+```
+
+`up` builds an image from your code on top of the engine image, starts the stack in `compose.yaml`, waits until it is healthy and prints the addresses. This needs Docker, and this step was not run for the tutorial, so expect to read its output rather than match one here. `bun run logs` follows the logs, `bun run down` stops the stack, and the data stays in a Docker volume.
+
+Two things to know before you put it on the internet:
+
+- The generated stack serves plain HTTP and sets `ALLOW_INSECURE_HTTP=1` so you can try it. Outside development the engine refuses to start unless `BETTER_AUTH_URL` is an `https://` address. Put TLS in front (create the project with the Caddy service, or use your own proxy), set `BETTER_AUTH_URL` in `.env` to the public address, and remove `ALLOW_INSECURE_HTTP`.
+- `.env` holds `BETTER_AUTH_SECRET` and `ADMIN_KEY`. Keep it out of git (it is already in `.gitignore`) and back it up: changing the secret signs everybody out.
+
+Everything else (backups, upgrades, running more than one server with PostgreSQL and Redis) is in [Deployment](deployment.html).
+
+## What you built, and where to go next
+
+You wrote one schema file, one functions file and two pages, and you got authentication, authorization, validation, server rendering, live updates in every window and a production build. The shape repeats for any app: tables and indexes in the schema, a small set of functions that check who is calling, pages whose loaders preload the same queries their components subscribe to.
+
+Things this tutorial left out, and where they are covered:
+
+- **File attachments.** Uploads go straight from the browser to an S3-compatible service through presigned URLs, which needs a storage service running (`archlast-forge dev --with s3` starts one in Docker). It is not part of this tutorial because it was not run here. [File storage](storage.html) has the three functions and the `useUploadFile` hook.
+- **Pagination** for long lists: `.paginate(paginationOpts)` and `usePaginatedQuery`, as in the starter's chat page you removed. See [Reading data](queries.html#pagination).
+- **Scheduled work**, such as deleting old notes every night: [Scheduling and crons](scheduling.html).
+- **Webhooks and public endpoints**: [HTTP endpoints](http.html).
+- **Social sign-in** and other Better Auth plugins: [Authentication](auth.html).
+- **Tests** for `forge/notes.ts` against an in-memory database: [Testing](testing.html).
+- **Changing the schema** of a table that has data: [Migrations and data](migrations.html).
+- **More answers to "how do I...":** [Recipes](recipes.html), and [Troubleshooting](troubleshooting.html) when something fails.

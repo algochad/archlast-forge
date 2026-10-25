@@ -4,5 +4,8 @@
   "type": "module",
   "dependencies": {
     "@archlast/forge-runtime": "^__VERSION__"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.3"
   }
 }

@@ -1,31 +1,287 @@
 # File storage
 
-Set `S3_ENDPOINT`, `S3_BUCKET`, `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` and `S3_REGION`. Any S3-compatible service works. [RustFS](https://rustfs.com) is a good self-hosted choice, and `archlast-forge dev --with s3` runs one for you on `localhost:9000`.
+Files (avatars, attachments, exports) live in any S3-compatible object store, and the engine keeps a small record of each one. File bytes **never pass through the engine**: the browser uploads straight to storage with a short-lived presigned URL, and downloads the same way. The engine only hands out URLs and keeps the bookkeeping.
 
-Browsers upload to storage directly, so they must be able to reach it. When the engine reaches storage at a different address than browsers do (a Docker network name, or a dev proxy), set `S3_PUBLIC_ENDPOINT` to the browser-facing address.
+## Turning it on
 
-File bytes never pass through the engine. Clients upload straight to storage through presigned URLs:
+Set the endpoint and bucket, plus credentials:
+
+| Variable | Meaning |
+|---|---|
+| `S3_ENDPOINT` | Where the **engine** reaches storage, for example `http://rustfs:9000` or `https://s3.example.com`. |
+| `S3_BUCKET` | The bucket name. It must already exist; the engine doesn't create it. |
+| `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | Credentials for that bucket. |
+| `S3_REGION` | The region, for example `us-east-1`. Most self-hosted servers accept any value but still want one. |
+| `S3_PUBLIC_ENDPOINT` | Where **browsers** reach storage. Defaults to `S3_ENDPOINT`. See [below](#s3publicendpoint). |
+
+Set both `S3_ENDPOINT` and `S3_BUCKET`, or neither: with only one, startup fails with `Set both S3_ENDPOINT and S3_BUCKET, or neither`. With neither, storage is off, the dashboard's Files page says so, and any function that uses `ctx.storage` fails with `Storage is not configured: set S3_ENDPOINT and S3_BUCKET` (outside dev that reaches the client as a generic "Server error"; the message is in the log).
+
+URLs are path-style: `<endpoint>/<bucket>/<key>`. That is what RustFS and MinIO expect, and what other S3-compatible servers accept. [RustFS](https://rustfs.com) is a good self-hosted choice. The bundled setups use it:
+
+- **Development:** `archlast-forge dev --with s3` starts a RustFS container for you on `localhost:9000` (keys `forgeadmin`/`forgeadmin`, bucket `forge`, CORS open to every origin) and wires the variables in. It needs Docker.
+- **A backend stack** (`archlast-forge init --mode backend` with S3 chosen): `compose.yaml` runs RustFS plus a one-shot job that creates the bucket, with random keys in `.env`. With Caddy, storage is served on `s3.<your domain>`.
+
+In `archlast-forge.json`, `"services": ["s3"]` is what `dev` and `up` read; see [CLI](cli.html) and [backend mode](backend.html).
+
+## The upload flow
+
+There are three steps and two round trips from the browser. Nothing is a single call because the file goes somewhere else.
+
+1. **Ask for an upload URL.** A mutation of yours calls `ctx.storage.generateUploadUrl()`. The engine inserts a row in the `_storage` table, signs a PUT URL, and returns `{ uploadUrl, storageId }`.
+2. **PUT the file to `uploadUrl`.** The browser sends the bytes straight to storage.
+3. **Save the `storageId`.** A second mutation stores it on the document that owns the file.
 
 ```ts
 // forge/files.ts
+import { ForgeError, mutation, v } from "@archlast/forge-runtime";
+
 export const generateUploadUrl = mutation({
   args: { contentType: v.optional(v.string()) },
-  handler: (ctx, args) => ctx.storage.generateUploadUrl(args), // { uploadUrl, storageId }
+  handler: async (ctx, args) => {
+    if (!(await ctx.auth.getUserIdentity())) throw new ForgeError("Sign in to upload");
+    return ctx.storage.generateUploadUrl(args); // { uploadUrl, storageId }
+  },
 });
-
-export const attach = mutation({
-  args: { todoId: v.id("todos"), storageId: v.id("_storage") },
-  handler: (ctx, { todoId, storageId }) => ctx.db.patch(todoId, { attachmentId: storageId }),
-});
-
-// in a query: a presigned download URL, or null
-const url = await ctx.storage.getUrl(todo.attachmentId);
 ```
+
+`generateUploadUrl` is **your** mutation, so you decide who may upload, and what types you accept. The engine doesn't ship a default one (choosing S3 when you create a backend adds a starting `forge/files.ts`).
+
+In React, `useUploadFile` does steps 1 and 2:
 
 ```tsx
 const upload = useUploadFile(api.files.generateUploadUrl);
-const storageId = await upload(file);       // PUTs directly to storage
-await attach({ todoId, storageId });
+const save = useMutation(api.files.setAvatar);
+
+const storageId = await upload(file);  // asks for the URL, PUTs the file, resolves to the _storage id
+await save({ storageId });             // step 3
 ```
 
-`ctx.storage.delete(id)` removes the metadata row in the transaction and deletes the object after it commits. Configure CORS on your bucket so browsers can PUT to it.
+Outside React, `client.uploadFile(api.files.generateUploadUrl, file)` is the same thing. Both pass `file.type` as `contentType`, send it as the `Content-Type` of the PUT, and throw `Upload failed (<status>)` if storage doesn't answer 2xx. Without those helpers, the three steps are plain `fetch` calls: call your mutation, `fetch(uploadUrl, { method: "PUT", body: file, headers: { "content-type": file.type } })`, call your save mutation.
+
+### What the `_storage` table holds
+
+```ts
+{ _id: "_storage:509be695…", _creationTime: 1792850571374, key: "d050f105-a64b-480b-b3bd-f3f4ab74336f", contentType?: "image/png" }
+```
+
+`key` is the object's name in the bucket (a random UUID). `contentType` is only what the caller said it would upload. The engine stores no size, no filename and no owner, so keep those on your own documents (`name`, `size` from `file.size`, `userId`). In your schema a reference is `v.id("_storage")`:
+
+```ts
+profiles: defineTable({ userId: v.id("users"), avatarId: v.optional(v.id("_storage")) }).index("by_user", ["userId"]),
+```
+
+## Downloads and public access
+
+```ts
+// in a query, a mutation or an action
+const url = await ctx.storage.getUrl(profile.avatarId); // string | null
+```
+
+`getUrl` returns a presigned GET URL, or `null` when no `_storage` row has that id. It does not check that the object exists in the bucket: a row whose upload never happened gives a URL that answers 404.
+
+- **Every URL is signed and expires after one hour** (3600 s). The expiry isn't configurable from `ctx.storage`.
+- **There is no public mode.** The engine always signs. Anyone holding the URL can read the file until it expires, whether or not they are signed in, so the signature, not your auth, is the access control. Check access in the function that hands out the URL: only return it to people who may see the file.
+- **Don't store URLs.** They expire. Store the `storageId` and call `getUrl` when you render. A query that returns `getUrl(...)` is live like any other, but each re-run signs a fresh URL.
+- **Access-checked links.** To put a login in front of a download, route it through an [HTTP endpoint](http.html#download-through-a-presigned-url) that checks `ctx.auth` and answers with a redirect to the presigned URL.
+- **Truly public files** (a logo, public images) can come from a public bucket or CDN instead. Read the object name from the row, `(await ctx.db.get(storageId))?.key`, and build your own URL from it. The engine doesn't help with that.
+
+## Deleting
+
+```ts
+await ctx.storage.delete(storageId);
+```
+
+Deleting removes the `_storage` row **inside your transaction** and deletes the object from the bucket **after the transaction commits**, so a mutation that fails afterwards keeps both. Deleting an id that doesn't exist does nothing. The document that referenced the file keeps a dangling id unless you clear it too.
+
+The reverse isn't automatic: deleting the document that points at a file does not delete the file. Do both in the same mutation (see the avatar example). Deleting a `_storage` document from the dashboard's Data page does delete the object as well, the same as the Files page's **Delete**.
+
+## `S3_PUBLIC_ENDPOINT`
+
+Presigned URLs contain the host they were signed for, and the browser must request exactly that host. The engine and the browser often don't reach storage at the same address:
+
+| Setup | `S3_ENDPOINT` (engine) | `S3_PUBLIC_ENDPOINT` (browser) |
+|---|---|---|
+| Docker network | `http://rustfs:9000` | `http://localhost:9000` or `https://s3.example.com` |
+| Behind a reverse proxy | the internal address | the public one |
+| Same address for both | the address | leave unset |
+
+Upload and download URLs are signed for `S3_PUBLIC_ENDPOINT`. The engine itself uses `S3_ENDPOINT` for the rest (deleting objects, the dashboard's size lookups). A proxy in front of storage has to pass the `Host` header through unchanged, or signatures stop matching.
+
+## CORS for browser uploads
+
+The `PUT` goes from your page's origin to the storage origin, with a `Content-Type` header, so the browser sends a preflight first. The bucket (or the server) must allow it:
+
+- allowed **origin**: your app (`https://app.example.com`), or `*` while developing;
+- allowed **method**: `PUT` (add `GET` if scripts will `fetch` the files; `<img>` and `<a download>` need no CORS);
+- allowed **headers**: at least `content-type`.
+
+For an AWS S3 bucket, with the AWS CLI:
+
+```bash
+aws s3api put-bucket-cors --bucket my-bucket --cors-configuration '{
+  "CORSRules": [{
+    "AllowedOrigins": ["https://app.example.com"],
+    "AllowedMethods": ["PUT", "GET"],
+    "AllowedHeaders": ["content-type"],
+    "MaxAgeSeconds": 3000
+  }]
+}'
+```
+
+The RustFS setups that `dev --with s3` and the backend stack create set `RUSTFS_CORS_ALLOWED_ORIGINS` to `*`. Narrow it to your origins in production by editing `compose.yaml`. For other servers, look for their CORS setting. A missing rule shows up in the browser console as a blocked request to the storage host, and `useUploadFile` rejects with a network error.
+
+## Size, type and expiry limits
+
+| What | Value |
+|---|---|
+| Upload URL lifetime | 1 hour, fixed |
+| Download URL lifetime | 1 hour, fixed (the dashboard's Files page opens 10-minute links) |
+| File size | **Not limited by the engine.** The bytes don't go through it, so `MAX_REQUEST_BYTES` doesn't apply. The server's own limits do (S3 allows 5 GB in a single PUT). |
+| File type | **Not enforced.** The signature covers the URL and the `host` header only, not the content type or the length. |
+| Resumable or multipart uploads | Not supported. One PUT per file. |
+
+Because anyone with an upload URL can PUT anything to it for an hour, treat what you stored as untrusted: don't rely on `contentType` being truthful, check `file.size` and `file.type` in the browser before asking for a URL, refuse unwanted types in `generateUploadUrl` with a `ForgeError`, and set bucket-side limits (a size policy, a lifecycle rule) where your server supports them. There is no `ctx.storage` call to read an object's size or type from a function.
+
+When you pass `contentType`, the engine records it on the `_storage` row and adds `response-content-type` to the URL; the object's real `Content-Type` is the header on the PUT. That's why the helpers send it.
+
+## Cleaning up orphans
+
+A `_storage` row is created when the URL is issued, not when the upload completes. A user who requests a URL and never uploads (or uploads and never saves the id) leaves a row, and perhaps an object, that nothing references. One way to find them is to remember who asked for each URL until the id is claimed, and sweep what stays unclaimed:
+
+```ts
+// forge/schema.ts
+pendingUploads: defineTable({ storageId: v.id("_storage"), userId: v.id("users") }).index("by_storage", ["storageId"]),
+```
+
+```ts
+// forge/files.ts: generateUploadUrl records the request...
+const upload = await ctx.storage.generateUploadUrl(args);
+await ctx.db.insert("pendingUploads", { storageId: upload.storageId, userId: me.userId });
+return upload;
+
+// ...and the mutation that saves the id claims it
+const pending = await ctx.db.query("pendingUploads").withIndex("by_storage", (q) => q.eq("storageId", storageId)).unique();
+if (!pending || pending.userId !== me.userId) throw new ForgeError("Unknown upload");
+await ctx.db.delete(pending._id);
+```
+
+```ts
+// forge/files.ts: a sweep for uploads nobody claimed within a day, 100 per run
+export const sweepUploads = internalMutation({
+  handler: async (ctx) => {
+    const cutoff = Date.now() - 24 * 3600_000;
+    const stale = await ctx.db.query("pendingUploads").withIndex("by_creation_time", (q) => q.lt("_creationTime", cutoff)).take(100);
+    for (const row of stale) {
+      await ctx.storage.delete(row.storageId);
+      await ctx.db.delete(row._id);
+    }
+    return stale.length;
+  },
+});
+```
+
+```ts
+// forge/crons.ts
+crons.interval("sweep stale uploads", { hours: 6 }, internal.files.sweepUploads);
+```
+
+The claim step also closes a hole: a `v.id("_storage")` argument accepts any file's id, so without it a user could attach somebody else's file to their profile. See [scheduling](scheduling.html) for crons.
+
+One case this can't catch: if the mutation that called `generateUploadUrl` fails after it, its rows roll back but the URL is still valid for an hour, and an upload through it leaves an object with no row. That's rare, and a bucket lifecycle rule is the fallback.
+
+## Example: avatar upload
+
+Schema, server functions and component. It checks who is uploading, accepts images only, and removes the old picture when it's replaced.
+
+```ts
+// forge/schema.ts
+export default defineSchema({
+  profiles: defineTable({ userId: v.id("users"), avatarId: v.optional(v.id("_storage")) })
+    .index("by_user", ["userId"]),
+  pendingUploads: defineTable({ storageId: v.id("_storage"), userId: v.id("users") })
+    .index("by_storage", ["storageId"]),
+});
+```
+
+```ts
+// forge/files.ts
+import { ForgeError, internalMutation, mutation, query, v } from "@archlast/forge-runtime";
+
+export const generateUploadUrl = mutation({
+  args: { contentType: v.optional(v.string()) },
+  handler: async (ctx, args) => {
+    const me = await ctx.auth.getUserIdentity();
+    if (!me) throw new ForgeError("Sign in to upload");
+    if (args.contentType && !args.contentType.startsWith("image/")) throw new ForgeError("Only images");
+    const upload = await ctx.storage.generateUploadUrl(args);
+    await ctx.db.insert("pendingUploads", { storageId: upload.storageId, userId: me.userId });
+    return upload;
+  },
+});
+
+export const setAvatar = mutation({
+  args: { storageId: v.id("_storage") },
+  handler: async (ctx, { storageId }) => {
+    const me = await ctx.auth.getUserIdentity();
+    if (!me) throw new ForgeError("Sign in first");
+    const pending = await ctx.db.query("pendingUploads").withIndex("by_storage", (q) => q.eq("storageId", storageId)).unique();
+    if (!pending || pending.userId !== me.userId) throw new ForgeError("Unknown upload");
+    await ctx.db.delete(pending._id);
+
+    const profile = await ctx.db.query("profiles").withIndex("by_user", (q) => q.eq("userId", me.userId)).unique();
+    if (!profile) return void (await ctx.db.insert("profiles", { userId: me.userId, avatarId: storageId }));
+    if (profile.avatarId) await ctx.storage.delete(profile.avatarId); // the old picture goes with the change
+    await ctx.db.patch(profile._id, { avatarId: storageId });
+  },
+});
+
+export const myAvatarUrl = query({
+  handler: async (ctx) => {
+    const me = await ctx.auth.getUserIdentity();
+    if (!me) return null;
+    const profile = await ctx.db.query("profiles").withIndex("by_user", (q) => q.eq("userId", me.userId)).unique();
+    return profile?.avatarId ? await ctx.storage.getUrl(profile.avatarId) : null;
+  },
+});
+```
+
+```tsx
+// a component
+import { useMutation, useQuery, useUploadFile } from "@archlast/forge-react";
+import { api } from "../forge/_generated/api";
+
+export function Avatar() {
+  const url = useQuery(api.files.myAvatarUrl);
+  const upload = useUploadFile(api.files.generateUploadUrl);
+  const setAvatar = useMutation(api.files.setAvatar);
+  return (
+    <>
+      {url && <img src={url} alt="" width={64} height={64} />}
+      <input
+        type="file"
+        accept="image/*"
+        onChange={async (e) => {
+          const file = e.target.files?.[0];
+          if (file) await setAvatar({ storageId: await upload(file) });
+        }}
+      />
+    </>
+  );
+}
+```
+
+`useQuery(api.files.myAvatarUrl)` is live: when `setAvatar` commits, the query re-runs and the new picture appears without a reload. Failures (`Only images`, a rejected PUT) throw from the handler; wrap it in `try`/`catch` to show them (see [clients](clients.html#error-handling)).
+
+## Local development
+
+1. `archlast-forge dev --with s3` (Docker required). Open the dashboard's Files page to see uploads, with their size and a link.
+2. Without Docker, point the variables at any S3-compatible server you run, such as RustFS or MinIO started by hand: `S3_ENDPOINT`, `S3_BUCKET`, the keys, and a bucket that exists. In `archlast-forge dev`, put them in the environment of the command.
+3. Use `*` as the allowed CORS origin in dev; the RustFS container does by default.
+
+## Not supported
+
+- Streaming files through the engine, image transformations, thumbnails, virus scanning.
+- Per-file access rules beyond what your own functions check before returning a URL.
+- Reading size or type of an object from a function.
+- Resumable or multipart uploads.
+- Several buckets: one `S3_BUCKET` per deployment.

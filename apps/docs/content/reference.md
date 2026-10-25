@@ -1,0 +1,809 @@
+# API reference
+
+Every public export of every package, the wire protocol and the HTTP surface of the engine. Signatures are copied from the source of version 0.1.0. For explanations and examples, follow the links to the guide pages.
+
+| Package | Use it for | Import |
+|---|---|---|
+| `@archlast/forge-runtime` | `forge/` code: schema, validators, functions, crons, HTTP routes | `@archlast/forge-runtime` |
+| `@archlast/forge-runtime/testing` | tests for your functions | `createTestBackend` |
+| `@archlast/forge-runtime/server` | embedding the engine (Bun only) | `startServer`, `loadConfig` |
+| `@archlast/forge-client` | calling the engine from any JavaScript runtime | `ArchlastForgeClient` |
+| `@archlast/forge-react` | React hooks | `useQuery`, `useMutation`, ... |
+| `@archlast/forge-vue` | Vue composables | `useQuery`, `useMutation`, ... |
+| `@archlast/forge-svelte` | Svelte stores | `query`, `session` |
+| `@archlast/forge-framework` | file routes, loaders and server rendering for full-stack apps | `useLoaderData`, `Link`, ... |
+| `@archlast/forge-cli` | the `archlast-forge` command (see [CLI](cli.html)) | |
+| `@archlast/forge-dashboard` | the dashboard, served at `/_dashboard` (see [Dashboard](dashboard.html)) | |
+| `create-archlast-forge` | project scaffolding (see [Getting started](getting-started.html)) | |
+
+## @archlast/forge-runtime
+
+`forge/` code imports from the package root. It has no Bun-specific code, so generated client types can import it in the browser too.
+
+### Validators
+
+```ts
+import { v, paginationOptsValidator, ValidationError } from "@archlast/forge-runtime";
+import type { Id, Infer, ObjectType, PropertyValidators, Validator } from "@archlast/forge-runtime";
+```
+
+| Validator | Type it describes |
+|---|---|
+| `v.string()` | `string` |
+| `v.number()` | `number` (finite) |
+| `v.boolean()` | `boolean` |
+| `v.null()` | `null` |
+| `v.id<TableName extends string>(table: TableName)` | `Id<TableName>` |
+| `v.array<E extends Validator<any, false>>(element: E)` | `Infer<E>[]` |
+| `v.object<F extends PropertyValidators>(fields: F)` | `ObjectType<F>`; unknown keys are rejected |
+| `v.union<M extends [Validator<any, false>, ...Validator<any, false>[]]>(...members: M)` | `Infer<M[number]>` |
+| `v.optional<I extends Validator<any, false>>(inner: I)` | `Infer<I> \| undefined`; the key may be absent |
+
+There are no `v.literal`, `v.any`, `v.bytes`, `v.record`, `v.int64` or `v.date`. See [Schema and validators](schema.html#validators).
+
+```ts
+interface Validator<T = unknown, IsOptional extends boolean = boolean> {
+  readonly kind: "string" | "number" | "boolean" | "null" | "id" | "array" | "object" | "union";
+  readonly optional: IsOptional;
+  readonly table?: string;                       // id
+  readonly element?: Validator;                  // array
+  readonly fields?: Record<string, Validator>;   // object
+  readonly members?: Validator[];                // union
+}
+type PropertyValidators = Record<string, Validator<any, boolean>>;
+type Infer<V extends Validator<any, any>> = /* the TypeScript type of V */;
+type ObjectType<F extends PropertyValidators> = /* required keys, plus optional keys marked ? */;
+type Id<TableName extends string> = string & { readonly __tableName: TableName };
+```
+
+`paginationOptsValidator` is `v.object({ numItems: v.number(), cursor: v.union(v.string(), v.null()) })`. `ValidationError` is the error thrown for any failed check (`name` is `"ValidationError"`); it reaches callers as a `BAD_REQUEST`.
+
+### Schema
+
+```ts
+function defineSchema<T extends Record<string, TableDefinition<any, any>>>(
+  tables: T & { [K in keyof BuiltinTables]?: never },
+): SchemaDefinition<T & BuiltinTables>;
+
+function defineTable<F extends PropertyValidators>(fields: F): TableDefinition<F, {}, {}>;
+
+interface TableDefinition<F, I, S> {
+  readonly fields: F;
+  readonly indexes: I;               // name -> field names
+  readonly searchIndexes: S;         // name -> { searchField, filterFields }
+  readonly strict: boolean;          // false for the Better Auth tables
+  index(name: string, fields: readonly [field, ...field[]]): TableDefinition;
+  searchIndex(name: string, config: { searchField: string; filterFields?: readonly string[] }): TableDefinition;
+}
+
+interface SchemaDefinition<T> { readonly tables: T }
+interface Register {}   // augmented by forge/_generated/dataModel.ts to bind your schema to the types
+```
+
+`field` is constrained to the table's field names. `BuiltinTables` are `users`, `sessions`, `accounts`, `verifications` and `_storage` (see [Built-in tables](schema.html#built-in-tables)). Names are validated when the file loads; the messages are in [Schema and validators](schema.html#defineschema-and-definetable).
+
+| Type | Definition |
+|---|---|
+| `TableNames` | `keyof RegisteredTables & string` |
+| `Doc<T extends TableNames>` | `{ _id: Id<T>; _creationTime: number } & ObjectType<fields>` |
+| `WithoutSystemFields<D>` | `Omit<D, "_id" \| "_creationTime">` |
+
+### Function constructors
+
+```ts
+const query: FunctionBuilder<"query", "public">;
+const mutation: FunctionBuilder<"mutation", "public">;
+const action: FunctionBuilder<"action", "public">;
+const internalQuery: FunctionBuilder<"query", "internal">;
+const internalMutation: FunctionBuilder<"mutation", "internal">;
+const internalAction: FunctionBuilder<"action", "internal">;
+
+interface FunctionBuilder<K extends FunctionKind, Vis extends Visibility> {
+  <A extends PropertyValidators = {}, R = unknown>(def: {
+    args?: A;
+    handler: (ctx: CtxFor<K>, args: ObjectType<A>) => R;
+  }): RegisteredFunction<K, ObjectType<A>, Awaited<R>, Vis>;
+
+  <A extends PropertyValidators = {}, V extends Validator<any, false> = Validator<any, false>>(def: {
+    args?: A;
+    returns: V;
+    handler: (ctx: CtxFor<K>, args: ObjectType<A>) => HandlerReturn<V> | Promise<HandlerReturn<V>>;
+  }): RegisteredFunction<K, ObjectType<A>, Infer<V>, Vis>;
+}
+
+type FunctionKind = "query" | "mutation" | "action";
+type Visibility = "public" | "internal";
+
+interface RegisteredFunction<K, Args, Return, V> {
+  readonly kind: K;
+  readonly visibility: V;           // internal functions are not reachable by clients
+  readonly args: PropertyValidators;
+  readonly returns?: Validator;
+  readonly handler: (ctx: any, args: any) => unknown;
+}
+```
+
+`CtxFor<K>` is `QueryCtx`, `MutationCtx` or `ActionCtx`. `HandlerReturn<V>` is `Infer<V>`, plus `void` when `null` is allowed. Guide: [Functions](functions.html).
+
+### Context
+
+```ts
+interface QueryCtx    { db: DatabaseReader; auth: Auth; storage: StorageReader }
+interface MutationCtx { db: DatabaseWriter; auth: Auth; storage: StorageWriter; scheduler: Scheduler }
+interface ActionCtx {
+  auth: Auth;
+  storage: StorageWriter;
+  scheduler: Scheduler;
+  runQuery<R extends FunctionReference<"query">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+  runMutation<R extends FunctionReference<"mutation">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+  runAction<R extends FunctionReference<"action">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+}
+
+interface Auth { getUserIdentity(): Promise<UserIdentity | null> }
+interface UserIdentity { userId: Id<"users">; sessionId: string; email: string; name: string }
+
+interface StorageReader { getUrl(id: Id<"_storage">): Promise<string | null> }
+interface StorageWriter extends StorageReader {
+  generateUploadUrl(opts?: { contentType?: string }): Promise<{ uploadUrl: string; storageId: Id<"_storage"> }>;
+  delete(id: Id<"_storage">): Promise<void>;
+}
+
+interface Scheduler {
+  runAfter<R extends FunctionReference<"mutation" | "action">>(delayMs: number, ref: R, ...args: OptionalArgs<R>): Promise<string>;
+  runAt<R extends FunctionReference<"mutation" | "action">>(timestamp: number, ref: R, ...args: OptionalArgs<R>): Promise<string>;
+  cancel(id: string): Promise<void>;
+}
+```
+
+`runAt` takes a time in milliseconds since the epoch; both return the scheduled job's id. `Auth`, `Scheduler`, `StorageReader` and `StorageWriter` are not exported by name; use `QueryCtx["auth"]` and so on. Guides: [Scheduling](scheduling.html), [File storage](storage.html), [Authentication](auth.html).
+
+### Database
+
+```ts
+interface DatabaseReader {
+  get<T extends TableNames>(id: Id<T>): Promise<Doc<T> | null>;
+  getMany<T extends TableNames>(ids: readonly Id<T>[]): Promise<(Doc<T> | null)[]>;
+  query<T extends TableNames>(table: T): QueryInitializer<T>;
+  include<T, const S extends IncludeSpec<T>>(table: T, docs: Doc<T>, spec: S): Promise<Doc<T> & Joined>;
+  include<T, const S extends IncludeSpec<T>>(table: T, docs: Doc<T> | null, spec: S): Promise<(Doc<T> & Joined) | null>;
+  include<T, const S extends IncludeSpec<T>>(table: T, docs: readonly Doc<T>[], spec: S): Promise<(Doc<T> & Joined)[]>;
+}
+
+interface DatabaseWriter extends DatabaseReader {
+  insert<T extends TableNames>(table: T, value: WithoutSystemFields<Doc<T>>): Promise<Id<T>>;
+  patch<T extends TableNames>(id: Id<T>, value: Partial<WithoutSystemFields<Doc<T>>>): Promise<void>;   // shallow merge; undefined removes a field
+  replace<T extends TableNames>(id: Id<T>, value: WithoutSystemFields<Doc<T>>): Promise<void>;
+  delete(id: Id<TableNames>): Promise<void>;
+}
+```
+
+`Joined` is the type that `spec` adds. Usage and errors: [Reading data](queries.html).
+
+```ts
+interface QueryInitializer<T> extends Query<Doc<T>, T> {
+  withIndex<I extends IndexNames<T> | "by_creation_time">(
+    index: I,
+    range?: (q: IndexRangeBuilder<Doc<T>, FieldsOfIndex>) => IndexRange,
+  ): Query<Doc<T>, T>;
+  withSearchIndex<I extends SearchIndexNames<T>>(
+    index: I,
+    filter: (q: SearchFilterBuilder<Doc<T>, SearchIndexConfig<T, I>>) => SearchFilter,
+  ): SearchQuery<Doc<T>, T>;
+}
+
+interface Query<D, T> {
+  order(order: "asc" | "desc"): Query<D, T>;
+  filter(predicate: (doc: D) => boolean): Query<D, T>;
+  include<const S extends IncludeSpec<T>>(spec: S): Query<D & Joined, T>;
+  collect(): Promise<D[]>;
+  first(): Promise<D | null>;
+  unique(): Promise<D | null>;          // throws if several match
+  take(n: number): Promise<D[]>;
+  paginate(opts: PaginationOptions): Promise<PaginationResult<D>>;
+  count(): Promise<number>;
+  sum(field: NumberFields<D>): Promise<number>;
+  avg(field: NumberFields<D>): Promise<number | null>;
+  min(field: NumberFields<D>): Promise<number | null>;
+  max(field: NumberFields<D>): Promise<number | null>;
+}
+
+interface IndexRangeBuilder<D, Fields extends readonly string[]> {
+  eq(field: Fields[0], value): IndexRangeBuilder<D, Tail<Fields>>;
+  gt(field: Fields[0], value): UpperBoundBuilder;     // then .lt(...) or .lte(...)
+  gte(field: Fields[0], value): UpperBoundBuilder;
+  lt(field: Fields[0], value): IndexRange;
+  lte(field: Fields[0], value): IndexRange;
+}
+
+interface SearchFilterBuilder<D, C> { search(field: C["searchField"], query: string): SearchFilterFinalizer }
+interface SearchFilterFinalizer<D, C> { eq(field: C["filterFields"][number], value): SearchFilterFinalizer }
+
+interface SearchQuery<D, T> {
+  include<const S extends IncludeSpec<T>>(spec: S): SearchQuery<D & Joined, T>;
+  take(n: number): Promise<D[]>;
+  first(): Promise<D | null>;
+  collect(): Promise<D[]>;              // at most 1024
+}
+
+interface PaginationOptions { numItems: number; cursor: string | null }
+interface PaginationResult<D> { page: D[]; isDone: boolean; continueCursor: string }
+
+type IncludeSpec<T> = { [key: string]: ReferenceField<T> | ReverseRule };
+type ReverseRule = { table: TableNames; index: string; take?: number; order?: "asc" | "desc"; include?: IncludeSpec; count?: boolean };
+```
+
+`IncludeSpec`, `ReverseRule`, `PaginationOptions` and `PaginationResult` are exported; the builder and query interfaces are reached through `ctx.db`.
+
+### Function references
+
+```ts
+const anyApi: any;                                    // untyped references: anyApi.todos.add
+function getFunctionName(ref: FunctionReference | string): string;   // "todos:add"; throws if it is not a reference
+
+interface FunctionReference<K extends FunctionKind = FunctionKind, Args = any, Return = any, V extends Visibility = Visibility> {}
+type FunctionArgs<R> = /* the arguments object of R */;
+type FunctionReturn<R> = /* the return type of R */;
+type OptionalArgs<R> = /* [args?: Args] when R takes no arguments, else [args: Args] */;
+type ModuleRefs<M, Vis extends Visibility = "public"> = /* references for the functions of module M */;
+```
+
+`forge/_generated/api.ts`, written by `archlast-forge codegen`, exports `api` (public functions) and `internal` (internal ones), both typed with `ModuleRefs`. A nested file `forge/admin/users.ts` gives `api.admin.users.<fn>`, named `admin/users:<fn>`. `getFunctionName` throws `Expected a function reference like api.module.fn` for anything else.
+
+### Errors
+
+```ts
+class ForgeError<T = string> extends Error {
+  readonly data: T;
+  constructor(data: T);          // message is data when a string, else JSON.stringify(data)
+}
+function isForgeError(e: unknown): e is ForgeError<unknown>;   // by name, so it works across module copies
+```
+
+Anything else a function throws is reported as `Server error (request <id>)` outside dev. See [Errors](errors.html).
+
+### HTTP routes
+
+```ts
+function httpRouter(): { routes: HttpRoute[]; route(spec: HttpRoute): void };
+function httpAction(handler: (ctx: ActionCtx, request: Request) => Response | Promise<Response>): HttpAction;
+
+type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
+interface HttpRoute {
+  method: HttpMethod;
+  path?: string;          // exact, starts with "/"
+  pathPrefix?: string;    // starts and ends with "/"
+  handler: HttpAction;
+}
+interface HttpAction { kind: "httpAction"; handler: (ctx: ActionCtx, request: Request) => Response | Promise<Response> }
+```
+
+`route` requires exactly one of `path` and `pathPrefix`, and throws on a bad method, a duplicate `(method, path | pathPrefix)` pair, or a handler that was not made with `httpAction`. Exact paths win over prefixes, then the longest prefix wins. Routes are served under `/http`. Guide: [HTTP endpoints](http.html).
+
+### Crons
+
+```ts
+function cronJobs(): {
+  jobs: CronJob[];
+  interval<R extends FunctionReference<"mutation" | "action">>(
+    name: string,
+    every: { seconds?: number; minutes?: number; hours?: number },
+    ref: R,
+    ...args: OptionalArgs<R>
+  ): void;
+  cron<R extends FunctionReference<"mutation" | "action">>(name: string, expression: string, ref: R, ...args: OptionalArgs<R>): void;
+};
+```
+
+`interval` throws if the total is under one second; `cron` takes a standard 5-field expression evaluated in UTC; a duplicate `name` throws `Duplicate cron job "name"`. Default-export the result from `forge/crons.ts`. Guide: [Scheduling](scheduling.html).
+
+### Authentication
+
+```ts
+type AuthOptions = Omit<BetterAuthOptions, "database" | "secret" | "baseURL">;
+const defineAuth: (options: AuthOptions) => AuthOptions;
+```
+
+Default-export from `forge/auth.ts`. Without that file, `{ emailAndPassword: { enabled: true } }` is used. Guide: [Authentication](auth.html).
+
+### Data migrations
+
+```ts
+function migration<T extends TableNames>(def: {
+  table: T;
+  migrateOne: (ctx: MutationCtx, doc: Doc<T>) => Promise<Partial<WithoutSystemFields<Doc<T>>> | void> | Partial<WithoutSystemFields<Doc<T>>> | void;
+  batchSize?: number;       // default 100
+}): RegisteredFunction<"mutation", { cursor: string | null; batchSize?: number }, MigrationResult, "internal">;
+
+interface MigrationResult { cursor: string; isDone: boolean; processed: number }
+```
+
+A migration is an internal mutation that pages through one table; `archlast-forge migrate --run-migrations` runs it in batches, one transaction each, and returns a patch to apply or nothing. Guide: [Migrations and data](migrations.html).
+
+### Testing
+
+```ts
+import { createTestBackend, type TestBackend } from "@archlast/forge-runtime/testing";
+
+function createTestBackend(forgeDir = "forge"): Promise<{
+  query<R extends FunctionReference<"query">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+  mutation<R extends FunctionReference<"mutation">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+  action<R extends FunctionReference<"action">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+  withIdentity(user: { email: string; name?: string; userId?: string }): Promise<{ query; mutation; action }>;
+  run<T>(fn: (ctx: Pick<MutationCtx, "db">) => Promise<T>): Promise<T>;
+  finishScheduledFunctions(maxRounds = 100): Promise<void>;
+  close(): Promise<void>;
+}>;
+```
+
+The calls on the object itself are anonymous; `withIdentity` creates a `users` document (unless you pass `userId`) and returns callers signed in as that user. All three can call internal functions. `finishScheduledFunctions` runs every pending scheduled job as if time had passed, including ones they schedule, and throws `Scheduled functions keep scheduling more; gave up` after `maxRounds`. Not supported in the test backend: HTTP routes and crons. Guide: [Testing](testing.html).
+
+### Server entry (`@archlast/forge-runtime/server`)
+
+Bun only. Most projects never import it: the CLI starts the engine for you.
+
+```ts
+function startServer(opts: ServerOptions): Promise<RunningServer>;
+
+interface ServerOptions {
+  forgeDir: string;
+  dev?: boolean;
+  env?: Record<string, string | undefined>;      // defaults to process.env
+  dashboard?: HTMLBundle;                         // Bun HTML import, served at /_dashboard when enabled
+  app?: AppHost;                                  // a frontend for every path the engine does not own
+}
+
+interface RunningServer {
+  url: string;
+  config: Config;
+  runtime: FunctionRuntime;
+  reload(): Promise<Manifest>;                    // restarts only the function runtime
+  stop(opts?: { graceful?: boolean }): Promise<void>;
+}
+
+interface AppHost {
+  fetch(req: Request, env: AppEnv): Response | undefined | Promise<Response | undefined>;
+  dispose?(): void | Promise<void>;
+}
+
+interface AppEnv {
+  requestId: string;
+  dev: boolean;
+  headers: CallHeaders;                           // the caller's cookie and authorization headers
+  call(name: string, kind: FunctionKind, args?: unknown): Promise<unknown>;   // runs a public function as the caller
+  identity(): Promise<UserIdentity | null>;
+  rateLimited(): Promise<number | null>;          // seconds to wait, or null
+  keepAlive(): void;                              // opt a response out of the idle timeout
+}
+```
+
+The module also exports `loadConfig(env, dev)` and `ConfigError` (configuration is described in [Configuration](configuration.html)), `listModules`, `createSqliteDb`, `createPostgresDb`, the `Bus`, `Cache` and `Storage` implementations and the `ops` namespace the CLI uses. They are the engine's internals and may change between versions.
+
+## @archlast/forge-client
+
+```ts
+import { ArchlastForgeClient, ForgeError, queryKey, syncQuery, windowArgs, toClientError, updateError } from "@archlast/forge-client";
+import type { QueryUpdate, ClientOptions, SessionUser, ErrorBody, PublicQuery, PublicMutation, PublicAction, PaginatedQuery, PaginatedArgs, PaginatedItem } from "@archlast/forge-client";
+```
+
+It uses only `fetch` and `WebSocket` (pass `WebSocket` in `ClientOptions` where there is no global one).
+
+```ts
+class ArchlastForgeClient {
+  constructor(opts?: ClientOptions);
+  readonly url: string;
+
+  query<R extends PublicQuery>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+  mutation<R extends PublicMutation>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+  action<R extends PublicAction>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+
+  watch<R extends PublicQuery>(ref: R, args: FunctionArgs<R>, listener: (update: QueryUpdate<FunctionReturn<R>>) => void): () => void;
+
+  uploadFile<R extends FunctionReference<"mutation", { contentType?: string }, { uploadUrl: string; storageId: Id<"_storage"> }, "public">>(
+    generateUploadUrl: R,
+    file: Blob,
+  ): Promise<Id<"_storage">>;
+
+  readonly auth: ReturnType<typeof createAuthClient>;    // the Better Auth client
+  onSessionChange(listener: (user: SessionUser | null) => void): () => void;
+
+  reconnect(): void;
+  close(): void;
+}
+
+interface ClientOptions {
+  url?: string;                     // server origin; defaults to location.origin
+  WebSocket?: typeof WebSocket;     // for runtimes without a global WebSocket
+}
+```
+
+| Member | Behavior |
+|---|---|
+| `query`, `mutation`, `action` | One `POST /rpc/<name>` each, with `credentials: "include"`. A failed call rejects with the error described below. They are not batched and not retried. Only public references are accepted by the types. |
+| `watch` | Subscribes to a live query and calls `listener` with every update: first the current result, then one after each relevant write. Identical `(function, args)` pairs share one server subscription; a late listener is called at once with the latest update. Returns an unsubscribe function; the subscription closes with the last listener. |
+| `uploadFile` | Calls your mutation (which returns `ctx.storage.generateUploadUrl()`), `PUT`s the blob straight to storage and resolves to the new `_storage` id. Rejects with `Upload failed (<status>)`. |
+| `auth` | A Better Auth client for this server (`signIn`, `signUp`, `signOut`, `useSession`, `getSession`, ...), created on first use. A change of session reconnects the socket, because cookies are sent only on the WebSocket handshake. |
+| `onSessionChange` | Called with the user (or `null`) each time the browser learns the session. Fires only once something has used `auth`. |
+| `reconnect` | Opens a new socket (use it after signing in by other means); subscriptions are re-sent. |
+| `close` | Stops every subscription and closes the socket for good. |
+
+The socket opens with the first subscription and reconnects after a drop with jittered exponential backoff (250 ms doubling to 10 s). Each subscription's first message after a reconnect is a fresh result, so reconnecting refetches.
+
+```ts
+type QueryUpdate<T = unknown> = { value: T } | { error: string; data?: unknown; requestId?: string };
+
+interface SessionUser { id: string; email: string; name: string }
+interface ErrorBody { message: string; code: string; data?: unknown; requestId?: string }
+
+function toClientError(e: ErrorBody): Error & { code?: string; requestId?: string };
+function updateError(u: { error: string; data?: unknown; requestId?: string }): Error;
+function queryKey(ref: FunctionReference<"query">, args: unknown): readonly ["archlast-forge", string, unknown];
+function syncQuery(queryClient: QueryClient, client: ArchlastForgeClient, ref: PublicQuery, args): () => void;
+const windowArgs: (args: object, numItems: number) => object;   // { ...args, paginationOpts: { numItems, cursor: null } }
+```
+
+**Errors.** A call that fails rejects with a `ForgeError` (its `data` is what the function threw) when the server sent `data`, otherwise with an `Error` carrying the server's message. Both have `code` (`BAD_REQUEST`, `TIMEOUT`, `INTERNAL_SERVER_ERROR`, ...) and `requestId`. A response that is not JSON rejects with `"<status> <statusText>"`. `updateError` does the same for a failed live update.
+
+`queryKey` is the TanStack Query key used for a live query: `["archlast-forge", name, args]`. `syncQuery` pushes live results into a `QueryClient` under that key. `windowArgs` and the `Paginated*` types back [`usePaginatedQuery`](#react-hooks): a query is paginated when it takes `paginationOpts` and returns `.paginate(paginationOpts)`.
+
+Guide: [Clients](clients.html).
+
+## @archlast/forge-react
+
+Peer dependency: `react ^19.3.1`. It includes TanStack Query; live results are stored in a `QueryClient`.
+
+```ts
+import {
+  ArchlastForgeProvider, useArchlastForge, useQuery, usePaginatedQuery, useMutation, useAction,
+  useUploadFile, useAuth, useSession, updateError,
+  ArchlastForgeClient, ForgeError,
+} from "@archlast/forge-react";
+import type { ClientOptions, QueryUpdate, LocalStore, PaginationStatus } from "@archlast/forge-react";
+```
+
+### React hooks
+
+```ts
+function ArchlastForgeProvider(props: { client: ArchlastForgeClient; queryClient?: QueryClient; children?: ReactNode }): ReactElement;
+
+function useArchlastForge(): ArchlastForgeClient;     // throws "Wrap your app in <ArchlastForgeProvider client={...}>"
+
+function useQuery<R extends PublicQuery>(ref: R, ...args: [args: FunctionArgs<R> | "skip"]): FunctionReturn<R> | undefined;
+```
+
+`useQuery` returns `undefined` until the first result, then re-renders on every change. Pass `"skip"` as the arguments to not subscribe (it returns `undefined`). The arguments are optional when the function takes none. An error in the query is thrown to the nearest error boundary, as a `ForgeError` when the function threw one.
+
+```ts
+function usePaginatedQuery<R extends PaginatedQuery>(
+  ref: R,
+  args: PaginatedArgs<R> | "skip",
+  opts: { initialNumItems: number },
+): {
+  results: PaginatedItem<R>[];
+  status: PaginationStatus;       // "LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted"
+  isLoading: boolean;             // LoadingFirstPage or LoadingMore
+  loadMore: (n: number) => void;
+};
+```
+
+`usePaginatedQuery` keeps one live window: `loadMore(n)` widens it by `n` items, so everything loaded stays up to date and nothing is duplicated or skipped when items are inserted. New `args` start over from `initialNumItems`. While a wider window loads, `results` keeps showing the previous one.
+
+```ts
+function useMutation<R extends PublicMutation>(ref: R): ((...args: OptionalArgs<R>) => Promise<FunctionReturn<R>>) & {
+  withOptimisticUpdate(
+    update: (store: LocalStore, args: FunctionArgs<R>) => void,
+  ): (...args: OptionalArgs<R>) => Promise<FunctionReturn<R>>;
+};
+
+interface LocalStore {
+  getQuery<Q extends PublicQuery>(ref: Q, args: FunctionArgs<Q>): FunctionReturn<Q> | undefined;
+  setQuery<Q extends PublicQuery>(ref: Q, args: FunctionArgs<Q>, value: FunctionReturn<Q> | undefined): void;
+}
+```
+
+`withOptimisticUpdate` applies `update` to the local results right away. If the mutation fails, the values it changed are restored and the error is rethrown. Live results replace the optimistic ones either way.
+
+```ts
+function useAction<R extends PublicAction>(ref: R): (...args: OptionalArgs<R>) => Promise<FunctionReturn<R>>;
+
+function useUploadFile<R extends FunctionReference<"mutation", { contentType?: string }, { uploadUrl: string; storageId: Id<"_storage"> }, "public">>(
+  generateUploadUrl: R,
+): (file: Blob) => Promise<Id<"_storage">>;
+
+const useAuth: () => ReturnType<typeof createAuthClient>;     // the Better Auth client: signIn, signUp, signOut, ...
+function useSession(): /* Better Auth session state: { data, error, isPending, isRefetching, refetch } */;
+```
+
+`useSession` reads the session store with `useSyncExternalStore`. During server rendering and hydration it reports `isPending: true`; the signed-in state arrives in the browser. In a full-stack app, `useViewer()` from the framework is rendered on the server.
+
+## @archlast/forge-vue
+
+Peer dependency: `vue 3`.
+
+```ts
+import { archlastForge, useArchlastForge, useQuery, useMutation, useAction, useSession, ArchlastForgeClient, ForgeError } from "@archlast/forge-vue";
+
+const archlastForge: (client: ArchlastForgeClient) => { install(app: App): void };    // app.use(archlastForge(client))
+function useArchlastForge(): ArchlastForgeClient;     // throws "Install the plugin first: app.use(archlastForge(client))"
+
+function useQuery<R extends PublicQuery>(
+  query: R,
+  args?: MaybeRefOrGetter<FunctionArgs<R> | "skip">,    // defaults to {}
+): {
+  data: Ref<FunctionReturn<R> | undefined>;
+  error: ShallowRef<Error | undefined>;
+  isLoading: ComputedRef<boolean>;
+};
+
+function useMutation<R extends PublicMutation>(mutation: R): (...args: OptionalArgs<R>) => Promise<FunctionReturn<R>>;
+function useAction<R extends PublicAction>(action: R): (...args: OptionalArgs<R>) => Promise<FunctionReturn<R>>;
+function useSession(): Ref</* Better Auth session state */>;
+```
+
+`useQuery` subscribes immediately. `args` may be a ref or a getter; the subscription restarts when its value changes, and `"skip"` unsubscribes and clears `data`. It stops with the component (or effect scope). `isLoading` is a computed ref, true until the first result or error (a function you called, `isLoading()`, on `0.1.0`). There is no paginated hook for Vue: build one with `windowArgs` from `@archlast/forge-client`.
+
+## @archlast/forge-svelte
+
+No dependency on Svelte itself: the stores follow the Svelte store contract, so `$store` works in Svelte 4 and 5.
+
+```ts
+import { query, session, ArchlastForgeClient, ForgeError } from "@archlast/forge-svelte";
+
+interface Readable<T> { subscribe(run: (value: T) => void): () => void }
+type QueryState<T> = { data: T | undefined; error: Error | undefined; isLoading: boolean };
+
+function query<R extends PublicQuery>(client: ArchlastForgeClient, ref: R, args?: FunctionArgs<R>): Readable<QueryState<FunctionReturn<R>>>;
+function session(client: ArchlastForgeClient): Readable</* Better Auth session state */>;
+```
+
+`query` opens the server subscription with the first subscriber and closes it with the last. Arguments are fixed when the store is created; make a new store for new arguments. For mutations and actions call `client.mutation(...)` and `client.action(...)` directly.
+
+## @archlast/forge-framework
+
+Full-stack React on the engine: file routes, loaders, server rendering, the live cache and the build. Peer dependencies: `react` and `react-dom` `^19.3.1`. Routing and data loading are [React Router](https://reactrouter.com)'s data router. Guide: [Full-stack apps](framework.html).
+
+### Entry points
+
+| Import | Contents |
+|---|---|
+| `@archlast/forge-framework` | what `app/` code uses (browser safe) |
+| `@archlast/forge-framework/server` | `createApp`, `AppOptions` |
+| `@archlast/forge-framework/build` | `buildApp`, `readBuild`, `BuildError`, `BuildResult`, `BuildManifest` |
+| `@archlast/forge-framework/client` | `startClient`, `ManifestNode`, `RouteModule` (used by the generated entry) |
+
+### Exports of `@archlast/forge-framework`
+
+Re-exported from React Router, unchanged: `data`, `isRouteErrorResponse`, `Link`, `NavLink`, `Navigate`, `Outlet`, `redirect`, `useLocation`, `useNavigate`, `useNavigation`, `useParams`, `useRevalidator`, `useRouteError`, `useRouteLoaderData`, `useSearchParams`.
+
+From the framework:
+
+```ts
+function useLoaderData<L extends (...args: never[]) => unknown>(): Awaited<ReturnType<L>>;   // useLoaderData<typeof loader>()
+function useViewer(): Viewer | null;
+const forgeContext: RouterContext<LoaderContext>;     // args.context.get(forgeContext)
+function DefaultLayout(props: { children: ReactNode }): ReactElement;
+function DefaultErrorBoundary(): ReactElement;
+
+interface Viewer { userId: string; email: string; name: string }
+
+interface LoaderArgs {
+  request: Request;
+  params: Record<string, string | undefined>;
+  ctx: LoaderContext;
+}
+
+interface LoaderContext {
+  query<R extends PublicQuery>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+  viewer(): Promise<Viewer | null>;
+}
+
+interface RouteModule {
+  default?: ComponentType;
+  loader?: (args: LoaderArgs) => unknown;
+  ErrorBoundary?: ComponentType;
+  handle?: unknown;
+  shouldRevalidate?: ShouldRevalidateFunction;
+  Layout?: ComponentType<{ children: ReactNode }>;   // root only
+}
+```
+
+- `useLoaderData` returns what the route's `loader` returned. It went through JSON on the way to the browser, so dates arrive as strings and `undefined` fields are gone.
+- `ctx.query(ref, args)` runs a public query as the signed-in user and stores the result in the page's live cache, so `useQuery(ref, args)` in the component has its data on the first render and stays live afterwards. On the server it calls the engine in-process; in the browser it goes over HTTP.
+- `ctx.viewer()` returns the signed-in user or `null`. In the browser it asks the server, so it is right just after a sign-in or sign-out.
+- `useViewer()` is the signed-in user, rendered on the server and kept current after sign-in and sign-out without a reload.
+- `DefaultLayout` is the `<html>` document used when `app/root.tsx` has no `Layout`. `DefaultErrorBoundary` is shown for routes without an `ErrorBoundary`: `404 Page not found`, `401`/`403 Not allowed`, otherwise `Something went wrong`.
+- Hooks from `@archlast/forge-react` (`useQuery`, `useMutation`, `useAuth`, ...) work in pages; the provider is already set up.
+
+### Route module exports
+
+A file in `app/routes` (or `app/root.tsx`) may export:
+
+| Export | Meaning |
+|---|---|
+| `default` | The page component. |
+| `loader` | `(args: LoaderArgs) => unknown`. Runs before the page: on the server for the first request, in the browser for later navigations. May throw `redirect(...)` or `data(...)`. |
+| `ErrorBoundary` | Shown when this route's loader or page fails. |
+| `handle` | Arbitrary data for `useMatches`, as in React Router. |
+| `shouldRevalidate` | As in React Router. |
+| `Layout` | `app/root.tsx` only: the `<html>` document that wraps the app and its error page. |
+
+### File route conventions
+
+`app/routes` is scanned recursively. `app/root.tsx` (or `.jsx`, `.ts`, `.js`) is the root route.
+
+| File | Route |
+|---|---|
+| `index.tsx` | `/` (the index of its folder) |
+| `about.tsx` | `/about` |
+| `blog/index.tsx` | `/blog` |
+| `blog/[slug].tsx` | `/blog/:slug`, `params.slug` |
+| `docs/[...path].tsx` | `/docs/*`, `params["*"]`; a splat must be a file |
+| `blog/_layout.tsx` | layout for everything below `/blog`; renders `<Outlet />` |
+| `(app)/_layout.tsx` | a layout that adds nothing to the URL |
+| `(group)/page.tsx` | a folder in parentheses is not part of the path |
+| `_components/`, `_helpers.ts` | not routes (a leading `_` makes a file or folder private) |
+| `.hidden.tsx`, `*.test.tsx`, `*.spec.ts`, `*.d.ts` | ignored |
+
+Extensions: `.tsx`, `.ts`, `.jsx`, `.js`. Segment names use letters, digits and `- _ . ~`. Build errors name the file: a segment that mixes a parameter with text (`post-[id].tsx`: `"post-[id]" mixes a dynamic part with other text. Name the whole segment [param], or use only plain characters.`), a segment with other characters, a splat folder, two files that answer the same URL (`app/a.tsx and app/b.tsx both answer /a. Keep one.`), and no `routes` directory or no routes.
+
+Paths the engine uses itself are not available to routes: `/rpc`, `/api/auth`, `/http`, `/_app`, `/_admin`, `/_dashboard`, `/_cli`, `/health`, `/ready`, `/metrics`.
+
+### Server and build
+
+```ts
+import { createApp, type AppOptions } from "@archlast/forge-framework/server";
+import { buildApp, readBuild, BuildError } from "@archlast/forge-framework/build";
+
+interface AppOptions {
+  root: string;                                              // the project: holds app/, public/ and forge/
+  dev: boolean;
+  log?: (level: "info" | "error", message: string) => void;   // defaults to the console
+}
+function createApp(opts: AppOptions): Promise<AppHost>;      // pass to startServer({ app })
+
+function buildApp(o: { root: string; dev: boolean }): Promise<BuildResult>;   // throws BuildError
+function readBuild(root: string): BuildResult | undefined;                  // the build buildApp left behind
+
+interface BuildResult { manifest: BuildManifest; dir: string }              // dir: <root>/.forge/build/<version>
+interface BuildManifest { version: string; dev: boolean; entry: string; css: string[]; routes: Record<string, string[]>; server: string }
+class BuildError extends Error {}
+```
+
+`createApp` builds the app in dev (and rebuilds on change, with live reload) and loads the production build otherwise, failing with `No production build in <root>/.forge/build. Run \`archlast-forge build --no-docker\` first.` when there is none. The returned host serves:
+
+- `/_app/*`: built assets, hashed and immutable in production, with precompressed `.br` and `.gz` copies handed out as they are;
+- files in `public/` (paths with an extension), outside `.`-prefixed names except `.well-known`;
+- every other `GET` or `HEAD`: a server-rendered page. HTML responses carry `cache-control: private, no-cache`, `vary: cookie` and the request id; the status comes from the router (404 for unknown URLs). A page request over the per-IP rate limit gets `429` with `retry-after`.
+
+`buildApp` bundles the app twice with `Bun.build`: for the browser (split per route, hashed, minified outside dev) and for the server (one file, packages external). It writes generated sources to `<root>/.forge/gen` and output to `<root>/.forge/build/<version>`, with `latest.json` pointing at the newest.
+
+The server embeds `window.__FORGE__` in each page with `{ dev, viewer, queries, hydration: { loaderData, actionData, errors } }`. Errors in it are sanitized: outside dev, only a `ForgeError`'s message and `Server error (request <id>)` for everything else.
+
+## Wire protocol
+
+Plain JSON; any language can call the engine. The clients above implement exactly this.
+
+### Calling a function over HTTP
+
+| | |
+|---|---|
+| Mutation or action | `POST /rpc/<module>:<function>`, `content-type: application/json`, body is the arguments object. An empty body means `{}`. |
+| Query | The same `POST`, or `GET /rpc/<module>:<function>?args=<url-encoded JSON>`. A missing `args` means `{}`. |
+| Nested modules | The slash is part of the name: `POST /rpc/admin/users:count`. |
+| Success | `200` `{ "result": <value> }`; a function that returns nothing gives `"result": null`. |
+| Failure | The HTTP status below, with `{ "error": { "message", "code", "data"?, "requestId" } }`. |
+
+```bash
+curl -X POST localhost:3000/rpc/todos:add -H 'content-type: application/json' \
+  -d '{"listId":"lists:e32991b9041e407f8cc70d582808c8b3","title":"milk"}'
+# {"result":"todos:951e8d0af74b4a73a137547b484e4e34"}
+
+curl -X POST localhost:3000/rpc/todos:add -H 'content-type: application/json' -d '{"title":5}'
+# {"error":{"message":"args.title must be a string, got 5","code":"BAD_REQUEST","requestId":"9d7883c3-6"}}   (HTTP 400)
+```
+
+Requests and responses:
+
+- Only the `cookie` and `authorization` request headers reach functions, to resolve `ctx.auth`. Send `x-request-id` (1 to 64 characters of `A-Za-z0-9_.-`) to choose the id logs use; otherwise the server makes one. Every response carries `x-request-id`. A W3C `traceparent` header is continued when tracing is enabled (`OTEL_EXPORTER_OTLP_ENDPOINT`).
+- Responses are `application/json;charset=utf-8`.
+- Browsers: a cross-origin caller must be listed in `TRUSTED_ORIGINS`, which gets `access-control-allow-origin` (echoing the origin) and `access-control-allow-credentials: true`. `OPTIONS` answers `204` with `access-control-allow-methods: GET, POST, OPTIONS` and `access-control-allow-headers: content-type, authorization, x-request-id`.
+- Requests over `MAX_REQUEST_BYTES` (8 MiB) are rejected, and over `RATE_LIMIT_PER_MINUTE` per IP get `429` with `retry-after` and the body `{ "message": "Too many requests" }`.
+
+### Error codes
+
+| `code` | HTTP | When |
+|---|---|---|
+| `BAD_REQUEST` | 400 | A `ForgeError` (with `data`), a failed argument or document validation, an invalid cursor, a body that is not JSON, a query or mutation that misuses `ctx.db`. |
+| `UNAUTHORIZED` | 401 | Admin and dashboard operations without a session. |
+| `FORBIDDEN` | 403 | Admin operations without the needed role. |
+| `NOT_FOUND` | 404 | No public function by that name (internal functions answer the same). |
+| `METHOD_NOT_ALLOWED` | 405 | `GET` to a mutation or action; anything but `GET` or `POST` (`Call todos:add with POST`). |
+| `TIMEOUT` | 408 | The function exceeded its time limit (`todos:slow timed out after 50 ms`). |
+| `UNSUPPORTED_MEDIA_TYPE` | 415 | A `POST` without `content-type: application/json` (`Send application/json`). |
+| `TOO_MANY_REQUESTS` | 429 | More than the allowed subscriptions on one WebSocket. |
+| `INTERNAL_SERVER_ERROR` | 500 | Any other error. Outside dev the message is `Server error (request <id>)`. |
+| `SERVICE_UNAVAILABLE` | 503 | The function runtime has more than `MAX_PENDING_CALLS` waiting (`Server is busy, try again`). Comes with `retry-after: 1`. |
+
+While the server shuts down every request gets `503` with `{ "message": "Server is shutting down" }`.
+
+### Live queries over a WebSocket
+
+Connect to `/rpc` (`ws://` or `wss://`). The handshake carries the cookies and `authorization` header, and they are fixed for the connection: after signing in or out, open a new one (the client does).
+
+| Direction | Message |
+|---|---|
+| client to server | `{ "type": "subscribe", "id": "<client id, 1-64 chars>", "name": "<query name>", "args": { ... } }` |
+| client to server | `{ "type": "unsubscribe", "id": "<id>" }` |
+| server to client | `{ "type": "data", "id": "<id>", "data": <QueryUpdate> }` |
+| server to client | `{ "type": "error", "id": "<id>", "error": { "message", "code", "data"?, "requestId" } }` |
+
+`QueryUpdate` is `{ "value": <result> }` when the query ran, or `{ "error": "<message>", "data"?, "requestId" }` when it failed (argument validation, a thrown `ForgeError`, a server error). A failed update does not end the subscription: it re-runs on the next write. The first `data` message is the query's current result, then one follows each relevant write; an update identical to the previous one is not sent again, and writes close together are batched into one re-run (50 ms).
+
+A `type: "error"` message ends that subscription and means the subscribe request itself was refused: `NOT_FOUND` (`No query "<name>"`; also for mutations, actions and internal functions), `BAD_REQUEST` (`Subscription <id> already exists`), or `TOO_MANY_REQUESTS` (`At most 200 subscriptions per connection`, `MAX_SUBSCRIPTIONS_PER_CONNECTION`).
+
+The server closes the socket for:
+
+| Close code | Reason |
+|---|---|
+| `1003` | `Messages are JSON`: a message that is not valid JSON. |
+| `1008` | `Messages need a string id`, `Unknown message type`, or `Too many requests` (the per-IP limit applies to messages). |
+| `1012` | `Server restarting`: reconnect, possibly to another server, and subscribe again. |
+| any | A client that buffers more than 4 MiB unread is disconnected; reconnect and refetch. |
+
+A message larger than `MAX_REQUEST_BYTES` closes the connection. A reconnecting client must send every `subscribe` again, and each gets a fresh first `data` message.
+
+## HTTP surface
+
+Everything the engine answers on its one port.
+
+| Path | Purpose |
+|---|---|
+| `GET /health` | Liveness: `200 {"ok":true}` while the process is up. |
+| `GET /ready` | Readiness: `200 {"ready":true}` once the functions are loaded; `503 {"ready":false,"error":...}` while loading, after a load error, or during shutdown. |
+| `GET /metrics` | Prometheus text. See below. |
+| `POST /rpc/<name>`, `GET /rpc/<name>?args=` | Function calls (above). |
+| `WS /rpc` | Live queries (above). |
+| `* /http/*` | Your routes from `forge/http.ts`. |
+| `* /api/auth/*` | Better Auth (sign-up, sign-in, sign-out, session, ...). |
+| `POST /_cli` | The CLI's data commands. |
+| `/_admin/*` | The dashboard's API. |
+| `GET /_dashboard` | The dashboard (when enabled). |
+| everything else | The app host in a full-stack app (`/_app/*`, `public/`, pages), otherwise `404 Not found`. |
+
+### /metrics
+
+`GET /metrics` with `Authorization: Bearer <token>`, where the token is `METRICS_TOKEN` or, when that is unset, `ADMIN_KEY`. When neither is set the endpoint is open in dev and `404` elsewhere; a wrong token is `404` too. The response is Prometheus text format:
+
+| Metric | Type | Labels |
+|---|---|---|
+| `forge_function_calls_total` | counter | `function` |
+| `forge_function_errors_total` | counter | `function` |
+| `forge_function_duration_ms` | histogram (buckets 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 ms) | `function` |
+| `forge_cache_hits_total`, `forge_cache_misses_total`, `forge_cache_coalesced_total`, `forge_cache_skipped_total` | counters, when the cache is on | `function` |
+| `forge_cache_invalidated_entries_total`, `forge_cache_evictions_total` | counters, when the cache is on | |
+| `forge_cache_entries`, `forge_cache_bytes` | gauges | |
+| `forge_subscriptions`, `forge_websocket_connections`, `forge_runtime_workers`, `forge_process_resident_bytes` | gauges | |
+
+### /_cli
+
+`POST /_cli` with header `x-admin-key: <ADMIN_KEY>` and body `{ "cmd": "<command>", "args": { ... } }` runs a data command inside the running server, so an import reaches subscribers. The response is `{ "result": ... }`. A wrong or missing key is `401 {"message":"Invalid admin key"}`; a missing `cmd` is `400 {"message":"Expected {cmd, args}"}`; an unknown command is `400 {"message":"Unknown command \"<cmd>\""}`. It is rate limited separately from `/rpc`.
+
+Commands: `migrate.status`, `migrate.run`, `migrate.check`, `export`, `import`, `backup`, `env.list`, `env.set`, `env.rm`, `admin.list`, `admin.add`, `admin.remove`. They are the implementation of the CLI commands (see [CLI](cli.html)); use the CLI rather than calling this directly.
+
+### /_admin
+
+The dashboard's API, available when `DASHBOARD` is on (default in dev, off elsewhere; otherwise `404`). Reads are `GET /_admin/<op>?input=<json>`; changes are `POST /_admin/<op>` with a JSON body and the header `x-forge-admin: 1` (a custom header a cross-site form cannot send). Answers are plain JSON.
+
+Authentication is a session cookie (`afx_admin`, from `POST /_admin/login` with `{ "email", "password" }` or `{ "key" }`; `POST /_admin/logout` ends it) or the `x-admin-key` header. Roles are `viewer`, `admin` and `owner`; each operation needs one.
+
+| Role | Operations |
+|---|---|
+| any signed-in admin | `me` |
+| `viewer` (reads) | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env`, `logs`, `metrics`, `subscriptions`, `recentLogs`, `server`, `cache`; `GET /_admin/logs/stream` (server-sent events) |
+| `admin` (changes) | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `run`, `clearCache`, `reload` |
+| `owner` | `runCustom` (also needs `ALLOW_CUSTOM_FUNCTIONS`) |
+
+Errors use the same `{ "error": { ... } }` body as `/rpc`. Guide: [Dashboard](dashboard.html).
+
+### /http
+
+A route registered as `path: "/hello"` answers at `/http/hello`, and the handler sees the path `/hello`. The request is a standard `Request` (bodies are buffered), the response a standard `Response`. Unmatched paths answer `404 Not found` and a known path under another method `405 Method Not Allowed` with an `allow` header, both as `text/plain`. A `ForgeError` or validation error thrown by a handler gets the JSON error body, and anything else `500`, as for `/rpc`. The server adds `x-request-id` and nothing else, so a route sets its own CORS headers and answers its own `OPTIONS`. Guide: [HTTP endpoints](http.html).

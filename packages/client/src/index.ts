@@ -193,8 +193,14 @@ export class ArchlastForgeClient {
       headers: { "content-type": "application/json" },
       body: JSON.stringify(args ?? {}),
     });
-    const body = (await res.json().catch(() => null)) as { result?: unknown; error?: ErrorBody } | null;
-    if (!res.ok || body?.error) throw toClientError(body?.error ?? { message: `${res.status} ${res.statusText}`, code: "INTERNAL_SERVER_ERROR" });
+    const body = (await res.json().catch(() => null)) as { result?: unknown; error?: ErrorBody; message?: string } | null;
+    if (!res.ok || body?.error) {
+      if (body?.error) throw toClientError(body.error);
+      // Answers that come from the server's front door (too many requests, shutting down) are `{ message }` with no error envelope.
+      const code = res.status === 429 ? "TOO_MANY_REQUESTS" : res.status === 503 ? "SERVICE_UNAVAILABLE" : "INTERNAL_SERVER_ERROR";
+      const retryAfter = Number(res.headers.get("retry-after"));
+      throw Object.assign(toClientError({ message: body?.message ?? `${res.status} ${res.statusText}`, code }), retryAfter > 0 ? { retryAfter } : {});
+    }
     return body?.result;
   }
 

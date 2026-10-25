@@ -79,6 +79,12 @@ describe("HTTP actions", () => {
     expect(res.headers.get("allow")).toBe("GET, OPTIONS");
   });
 
+  test("a Response made from a string keeps the content type the platform gives it", async () => {
+    const res = await http("/plain");
+    expect(await res.text()).toBe("just text");
+    expect(res.headers.get("content-type")).toStartWith("text/plain");
+  });
+
   test("an empty 204 and repeated set-cookie headers survive", async () => {
     const none = await http("/nothing");
     expect(none.status).toBe(204);

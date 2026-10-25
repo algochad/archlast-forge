@@ -4,6 +4,7 @@ import { hostname } from "node:os";
 import { resolve } from "node:path";
 import { buildAdminApi } from "./admin-api";
 import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
+import { CLIENT_IP_HEADER } from "./auth";
 import { connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
 import { loadConfig, type Config } from "./config";
@@ -80,6 +81,12 @@ const REQUEST_ID = /^[\w.-]{1,64}$/;
 const idPrefix = crypto.randomUUID().slice(0, 8);
 let idCount = 0;
 const requestIdOf = (given: string | null | undefined) => (given && REQUEST_ID.test(given) ? given : `${idPrefix}-${(++idCount).toString(36)}`);
+
+/**
+ * The client address a trusted proxy saw. A proxy appends the address it got the request from, so the last entry is the one to believe:
+ * the entries before it are whatever the client (or earlier hops) chose to send. A proxy that replaces the header leaves one entry.
+ */
+const lastForwarded = (header: string | null | undefined) => header?.split(",").at(-1)?.trim() || undefined;
 
 const cookieValue = (cookie: string | null, name: string) =>
   cookie
@@ -191,8 +198,26 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     return res;
   };
 
+  /**
+   * Browsers send an Origin with a WebSocket handshake and let any page open one to any host, with the visitor's cookies attached when
+   * they are SameSite=None. So a browser's origin must be this server's own address, a trusted origin, or the host that was asked for.
+   * Clients that are not browsers send no Origin and are not affected.
+   */
+  const originAllowed = (req: Request) => {
+    const origin = req.headers.get("origin");
+    if (!origin) return true;
+    if (config.trustedOrigins.includes(origin)) return true;
+    try {
+      const host = new URL(origin);
+      const asked = (config.trustProxy ? req.headers.get("x-forwarded-host") : null) ?? req.headers.get("host");
+      return host.origin === new URL(config.authUrl).origin || host.host === asked;
+    } catch {
+      return false;
+    }
+  };
+
   const clientIp = (req: Request, srv: Server<SocketData>) =>
-    (config.trustProxy && req.headers.get("x-forwarded-for")?.split(",")[0]?.trim()) || srv.requestIP(req)?.address || "unknown";
+    (config.trustProxy && lastForwarded(req.headers.get("x-forwarded-for"))) || srv.requestIP(req)?.address || "unknown";
   /** Seconds to wait when this client is over its rate limit; with no limit configured, null at once and the client's address is never looked up. */
   const limited = (req: Request, srv: Server<SocketData>, prefix = ""): Promise<number | null> | null => {
     const max = config.limits.rateLimitPerMinute;
@@ -286,6 +311,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
 
       if (path === "/rpc" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+        if (!originAllowed(req)) return new Response("Origin not allowed. Add it to TRUSTED_ORIGINS.", { status: 403 });
         const retry = await limited(req, srv);
         if (retry) return tooMany(retry);
         const ip = config.limits.rateLimitPerMinute ? clientIp(req, srv) : undefined;
@@ -335,7 +361,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (path.startsWith("/api/auth")) {
         const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
         try {
-          const r = await runtime.auth({ method: req.method, url: req.url, headers: [...req.headers], body });
+          const headers: [string, string][] = [...req.headers].filter(([k]) => k !== CLIENT_IP_HEADER);
+          headers.push([CLIENT_IP_HEADER, clientIp(req, srv)]);
+          const r = await runtime.auth({ method: req.method, url: req.url, headers, body });
           return cors(req, withId(new Response(r.body, { status: r.status, headers: r.headers })));
         } catch (e) {
           const err = toPublicError(e, requestId, dev, { path });

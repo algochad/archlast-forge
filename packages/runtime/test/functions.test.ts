@@ -185,3 +185,50 @@ test("an action whose server died is failed once its lease expires", async () =>
   const [job] = await db.query<{ state: string; error: string }>(`SELECT "state", "error" FROM "_scheduled_functions" WHERE "_id" = ?`, ["_scheduled_functions:dead"]);
   expect(job).toEqual({ state: "failed", error: "Interrupted: the server running this action stopped" });
 });
+
+const job = (id: string, name: string, args: object, state = "pending", completedTime: number | null = null) =>
+  db.execute(`INSERT INTO "_scheduled_functions" ("_id", "_creationTime", "name", "args", "scheduledTime", "state", "completedTime") VALUES (?, ?, ?, ?, ?, ?, ?)`, [
+    `_scheduled_functions:${id}`, Date.now(), name, JSON.stringify(args), Date.now() - 10, state, completedTime,
+  ]);
+const stateOf = async (id: string) => (await db.query<{ state: string; error: string | null }>(`SELECT "state", "error" FROM "_scheduled_functions" WHERE "_id" = ?`, [`_scheduled_functions:${id}`]))[0];
+
+test("a slow scheduled action doesn't hold up the jobs behind it", async () => {
+  await job("slow-one", "todos:slowAction", { ms: 700 });
+  await job("fast-one", "todos:logEvent", { kind: "not-held-up" });
+  const loop = new SchedulerLoop(exec, db, project.functions, [], 700_000, 25);
+  loop.start();
+  try {
+    for (const end = Date.now() + 1000; Date.now() < end && (await stateOf("fast-one"))!.state !== "success"; ) await Bun.sleep(25);
+    expect((await stateOf("fast-one"))!).toEqual({ state: "success", error: null });
+    expect((await stateOf("slow-one"))!.state).toBe("running"); // still going: the loop did not wait for it
+    for (const end = Date.now() + 3000; Date.now() < end && (await stateOf("slow-one"))!.state === "running"; ) await Bun.sleep(25);
+    expect((await stateOf("slow-one"))!).toEqual({ state: "success", error: null });
+  } finally {
+    loop.stop();
+  }
+});
+
+test("a scheduled mutation gets the same time limit as any other, and rolls back", async () => {
+  const listId = (await run("todos:createList", "mutation", { name: "timed" })) as string;
+  await job("too-slow", "todos:slowWrite", { listId, ms: 1000 });
+  await new SchedulerLoop(exec, db, project.functions, []).tick();
+  const failed = await stateOf("too-slow");
+  expect(failed?.state).toBe("failed");
+  expect(failed?.error).toContain("timed out");
+  await Bun.sleep(1200); // past the moment the handler would have written
+  expect(((await run("todos:listByList", "query", { listId })) as unknown[]).length).toBe(0);
+});
+
+test("finished jobs are deleted after the retention time; pending and running ones never are", async () => {
+  const loop = new SchedulerLoop(exec, db, project.functions, [], 700_000, 500, 1000);
+  const old = Date.now() - 5000;
+  await job("old-success", "todos:logEvent", {}, "success", old);
+  await job("old-failed", "todos:logEvent", {}, "failed", old);
+  await job("old-canceled", "todos:logEvent", {}, "canceled", old);
+  await job("recent", "todos:logEvent", {}, "success", Date.now());
+  await job("old-running", "todos:logEvent", {}, "running", old);
+  await job("old-pending", "todos:logEvent", {}, "pending", null);
+  await loop.prune();
+  const left = (await db.query<{ _id: string }>(`SELECT "_id" FROM "_scheduled_functions" WHERE "_id" IN (${["old-success", "old-failed", "old-canceled", "recent", "old-running", "old-pending"].map(() => "?").join(",")})`, ["old-success", "old-failed", "old-canceled", "recent", "old-running", "old-pending"].map((i) => `_scheduled_functions:${i}`))).map((r) => r._id.split(":")[1]);
+  expect(left.sort()).toEqual(["old-pending", "old-running", "recent"]);
+});

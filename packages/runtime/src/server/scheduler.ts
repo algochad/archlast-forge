@@ -51,6 +51,8 @@ export class SchedulerLoop {
     crons: CronJob[],
     private actionLeaseMs = 600_000 + 60_000,
     private pollMs = 500,
+    /** How long finished jobs are kept for the dashboard. */
+    private retentionMs = 7 * 86_400_000,
   ) {
     const now = Date.now();
     this.crons = crons.map((job) => ({ job, next: nextRun(job.schedule, now) }));
@@ -59,7 +61,8 @@ export class SchedulerLoop {
   start() {
     const loop = async () => {
       try {
-        await this.tick();
+        // Jobs start and the loop moves on: a slow action must not hold up the others, or the crons behind it.
+        for (const job of await this.poll()) job.catch((e) => console.error("[scheduler]", e));
       } catch (e) {
         console.error("[scheduler]", e);
       }
@@ -80,10 +83,20 @@ export class SchedulerLoop {
 
   private lastSweep = 0;
 
+  private inflight = new Set<string>();
+  /** Most jobs running at once on this server. */
+  private static readonly MAX_RUNNING = 50;
+
+  /** Finds the due jobs and starts them; resolves when they are all running, with a promise for each job. */
   async tick(now = Date.now()) {
+    await Promise.all(await this.poll(now));
+  }
+
+  private async poll(now = Date.now()): Promise<Promise<void>[]> {
     if (now - this.lastSweep > 30_000) {
       this.lastSweep = now;
       await this.sweep(now);
+      await this.prune(now);
     }
     for (const c of this.crons) {
       for (; c.next <= now; c.next = nextRun(c.job.schedule, c.next)) {
@@ -99,11 +112,24 @@ export class SchedulerLoop {
         );
       }
     }
+    const room = SchedulerLoop.MAX_RUNNING - this.inflight.size;
+    if (room <= 0) return [];
     const due = await this.db.query<{ _id: string; name: string; args: string }>(
-      `SELECT "_id", "name", "args" FROM ${T} WHERE "state" = 'pending' AND "scheduledTime" <= ? ORDER BY "scheduledTime" LIMIT 50`,
-      [now],
+      `SELECT "_id", "name", "args" FROM ${T} WHERE "state" = 'pending' AND "scheduledTime" <= ? ORDER BY "scheduledTime" LIMIT ?`,
+      [now, room + this.inflight.size],
     );
-    await Promise.all(due.map((job) => this.runJob(job)));
+    return due
+      .filter((job) => !this.inflight.has(job._id))
+      .slice(0, room)
+      .map((job) => {
+        this.inflight.add(job._id);
+        return this.runJob(job).finally(() => this.inflight.delete(job._id));
+      });
+  }
+
+  /** Deletes jobs that finished long ago, so the table doesn't grow for ever. */
+  prune(now = Date.now()) {
+    return this.exec.mutate((_s, tx) => tx.execute(`DELETE FROM ${T} WHERE "state" IN ('success', 'failed', 'canceled') AND "completedTime" < ?`, [now - this.retentionMs]));
   }
 
   /** Fails actions whose lease expired: the server running them died. */
@@ -136,7 +162,7 @@ export class SchedulerLoop {
           this.exec.mutate(async (store, tx, after) => {
             if (!(await this.claim(tx, _id, "success")).length) return;
             validateFields(fn.args, parsed, "args");
-            await this.exec.invokeMutation(fn, parsed, store, tx, after, null);
+            await this.exec.timed(this.exec.invokeMutation(fn, parsed, store, tx, after, null), name);
           }),
         );
       } else {
