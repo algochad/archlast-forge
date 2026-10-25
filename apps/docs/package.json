@@ -5,5 +5,8 @@
   "scripts": {
     "build": "bun build.ts",
     "dev": "bun build.ts --serve"
+  },
+  "devDependencies": {
+    "shiki": "^4.5.0"
   }
 }
