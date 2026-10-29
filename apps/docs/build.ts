@@ -116,6 +116,10 @@ function build() {
   writeFileSync(join(dist, "index.html"), landing(footerCols));
   writeFileSync(join(dist, "search.json"), JSON.stringify(searchIndex));
   for (const f of ["style.css", "site.js", "landing.css", "landing.js"]) copyFileSync(join(import.meta.dir, f), join(dist, f));
+  mkdirSync(join(dist, "fonts"), { recursive: true });
+  const fonts = join(import.meta.dir, "node_modules/@fontsource-variable");
+  copyFileSync(join(fonts, "geist/files/geist-latin-wght-normal.woff2"), join(dist, "fonts/geist.woff2"));
+  copyFileSync(join(fonts, "geist-mono/files/geist-mono-latin-wght-normal.woff2"), join(dist, "fonts/geist-mono.woff2"));
   console.log(`✓ built ${ORDER.length} pages and the landing page into ${dist}`);
 }
 

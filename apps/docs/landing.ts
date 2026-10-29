@@ -47,15 +47,23 @@ export default function Notes() {
 }`;
 
 const features = [
-  ["zap", "Live queries", "A query's result updates in every open window when the data it read changes. No polling, no refresh code.", "reactivity.html"],
-  ["code", "Typed end to end", "The client's types come from your functions. Arguments and results are validated on the server.", "clients.html"],
-  ["shield", "Auth built in", "Better Auth with email and password out of the box. Plugins and social sign-in through one file.", "auth.html"],
-  ["database", "SQLite or PostgreSQL", "A single file to start, a shared database when you grow. Add Redis to run several servers.", "deployment.html"],
-  ["layout", "Full-stack React", "File routes, server rendering, loaders and live data in one process, built with Bun. No Node, no Webpack.", "framework.html"],
-  ["box", "Backend mode", "The engine and its services as a Docker Compose stack, for any frontend or none at all.", "backend.html"],
-  ["globe", "HTTP endpoints", "Webhooks and public APIs as plain routes, run as actions with the same database and auth.", "http.html"],
-  ["clock", "Scheduling and crons", "Run a function later or on a schedule. Scheduled mutations run exactly once.", "scheduling.html"],
-  ["upload", "File storage", "Browser-to-S3 uploads with presigned URLs. File bytes never pass through the engine.", "storage.html"],
+  ["Live queries", "A query's result updates in every open window when the data it read changes. No polling, no refresh code.", "reactivity.html"],
+  ["Typed end to end", "The client's types come from your functions. Arguments and results are validated on the server.", "clients.html"],
+  ["Auth built in", "Better Auth with email and password out of the box. Plugins and social sign-in through one file.", "auth.html"],
+  ["SQLite or PostgreSQL", "A single file to start, a shared database when you grow. Add Redis to run several servers.", "deployment.html"],
+  ["Full-stack React", "File routes, server rendering, loaders and live data in one process, built with Bun.", "framework.html"],
+  ["Backend mode", "The engine and its services as a Docker Compose stack, for any frontend or none at all.", "backend.html"],
+  ["HTTP endpoints", "Webhooks and public APIs as plain routes, run as actions with the same database and auth.", "http.html"],
+  ["Scheduling and crons", "Run a function later or on a schedule. Scheduled mutations run exactly once.", "scheduling.html"],
+  ["File storage", "Browser-to-S3 uploads with presigned URLs. File bytes never pass through the engine.", "storage.html"],
+] as const;
+
+const promises = [
+  ["Transactions", "Every mutation runs in one. It commits whole or not at all."],
+  ["Types from your code", "Change a function and the client's types change with it. No codegen step to forget."],
+  ["Narrow live queries", "A query wakes only for writes it could have seen, so a busy table doesn't wake everyone."],
+  ["Honest retries", "Scheduled mutations run exactly once. Actions run at most once and never retry on their own."],
+  ["Your data, your disk", "One deployment per app, on SQLite or PostgreSQL that you run. No control plane."],
 ] as const;
 
 const steps = [
@@ -76,93 +84,87 @@ const footer = (cols: [string, [string, string][]][]) => {
 </div><div class="foot-bar"><span>MIT licensed. One deployment per app, on your own servers.</span><span>Docs built from <a href="${GITHUB}/tree/master/apps/docs">apps/docs</a></span></div></footer>`;
 };
 
-/** Splits text into words that animate in one after another (a CSS-only "blur text" reveal). */
-const words = (text: string, from = 0) => text.split(" ").map((w, i) => `<span class="w" style="--i:${from + i}">${w}</span>`).join(" ");
-
-const stats = [
-  ["1", "container runs the whole app"],
-  ["2", "databases: SQLite or PostgreSQL"],
-  ["3", "client libraries: React, Vue, Svelte"],
+const spec = [
+  ["Container", "1", "runs the whole app"],
+  ["Databases", "2", "SQLite or PostgreSQL"],
+  ["Clients", "3", "React, Vue and Svelte"],
 ] as const;
-const stack = ["Bun", "SQLite", "PostgreSQL", "Redis", "S3 storage", "Better Auth", "React Router", "TanStack Query", "Zod", "Docker", "Caddy"];
+const stack = ["Bun", "SQLite", "PostgreSQL", "Redis", "S3 storage", "Better Auth", "React Router", "TanStack Query", "Zod"];
+const tag = (t: string) => `<span class="tag">${t}</span>`;
 
 export function landing(cols: [string, [string, string][]][]) {
   const pages = cols.reduce((n, [, links]) => n + links.length, 0);
-  const marquee = [...stack, ...stack].map((n) => `<b>${n}</b>`).join("");
   const body = `<script>document.documentElement.classList.add("js")</script>${topbar()}
 <main id="content" class="land">
-  <section class="hero" data-hero>
-    <div class="aurora" aria-hidden="true"><i></i><i></i><i></i></div>
-    <canvas class="dots" aria-hidden="true"></canvas>
+  <section class="hero">
     <div class="hero-in">
       <div class="hero-copy">
-        <a class="pill glowborder" href="getting-started.html"><span class="dot"></span>Open source, MIT licensed ${icons.arrow}</a>
-        <h1>${words("The reactive backend you")} <em class="grad">${words("host yourself.", 5)}</em></h1>
-        <p class="lede" style="--d:0.9s">Typed queries and mutations with live results, on SQLite or PostgreSQL. Auth, storage and a full-stack React framework are built in. It runs as one container, on your own servers.</p>
-        <div class="cta" style="--d:1.05s">
-          <a class="btn primary" href="getting-started.html">Get started ${icons.arrow}</a>
+        ${tag("Open source · MIT")}
+        <h1>The reactive backend you <span class="hl">host yourself</span>.</h1>
+        <p class="lede">Typed queries and mutations with live results, on SQLite or PostgreSQL. Auth, storage and a full-stack React framework are built in. It runs as one container, on your own servers.</p>
+        <div class="cta">
+          <a class="btn solid" href="getting-started.html">Get started</a>
           <a class="btn" href="introduction.html">Read the docs</a>
-          <a class="btn ghost" href="${GITHUB}" rel="noopener">${icons.github} GitHub</a>
+          <a class="btn link" href="${GITHUB}" rel="noopener">GitHub ${icons.arrow}</a>
         </div>
-        <div class="install" data-install style="--d:1.2s">
+        <div class="install" data-install>
           <div class="install-tabs" role="tablist"><button role="tab" aria-selected="true" data-cmd="bun create archlast-forge my-app">bun create</button><button role="tab" aria-selected="false" data-cmd="bunx create-archlast-forge my-app">bunx</button></div>
           <div class="install-line"><span class="prompt">$</span><code id="install-cmd">bun create archlast-forge my-app</code><button type="button" class="copy" data-copy-from="install-cmd" aria-label="Copy command">Copy</button></div>
         </div>
       </div>
-      <div class="hero-code" data-tilt style="--d:0.7s">
+      <div class="hero-code">
         ${codeBlock("ts", `// forge/notes.ts: a query. It runs on the server.\nexport const list = query({\n  args: {},\n  handler: async (ctx) => {\n    const me = await ctx.auth.getUserIdentity();\n    if (!me) throw new ForgeError("Sign in to use notes");\n    return ctx.db.query("notes").withIndex("by_owner", (q) => q.eq("ownerId", me.userId)).take(100);\n  },\n});`)}
         <div class="demo" data-demo aria-label="Two browser windows showing the same list updating together">
-          <div class="win"><div class="win-bar"><i></i><i></i><i></i><span>Window A</span></div><div class="win-body"><button type="button" class="mini-btn" data-add tabindex="-1">Add note</button><ul data-list></ul></div></div>
-          <div class="sync" aria-hidden="true"><svg viewBox="0 0 48 12" width="48" height="12"><path d="M0 6h44M38 1l6 5-6 5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-          <div class="win"><div class="win-bar"><i></i><i></i><i></i><span>Window B</span><em class="live-tag"><span class="live"></span>live</em></div><div class="win-body"><div class="mini-label">Updates by itself</div><ul data-list></ul></div></div>
+          <div class="win"><div class="win-bar"><span>Window A</span></div><div class="win-body"><button type="button" class="mini-btn" data-add tabindex="-1">Add note</button><ul data-list></ul></div></div>
+          <div class="win"><div class="win-bar"><span>Window B</span><em class="live-tag">Live</em></div><div class="win-body"><div class="mini-label">Updates by itself</div><ul data-list></ul></div></div>
         </div>
       </div>
     </div>
+    <div class="spec">
+      ${[...spec, ["Docs", String(pages), "pages, with a tutorial"]].map(([k, v, d]) => `<div class="spec-cell"><span class="label">${k}</span><b>${v}</b><span>${d}</span></div>`).join("")}
+    </div>
   </section>
 
-  <section class="builton" aria-label="Built on"><span>Built on</span><div class="marquee"><div class="track">${marquee}</div></div></section>
+  <section class="builton" aria-label="Built on"><span class="label">Built on</span><p>${stack.join('<i>/</i>')}</p></section>
 
-  <section class="wrap stats" data-reveal>
-    ${[...stats, [String(pages), "pages of documentation"] as const].map(([n, label]) => `<div class="stat"><b data-count="${n}">${n}</b><span>${label}</span></div>`).join("")}
-  </section>
-
-  <section class="band">
+  <section class="sec">
     <div class="wrap">
-      <h2 class="section-title" data-reveal>Everything a backend needs, in one deploy</h2>
-      <p class="section-sub" data-reveal>The model will be familiar if you have used Convex. The difference is that you run it.</p>
-      <div class="grid">${features
-        .map(([icon, title, text, href], i) => `<a class="card spot" href="${href}" data-reveal style="--r:${(i % 3) * 80}ms"><span class="card-icon">${icons[icon]}</span><h3>${title}</h3><p>${text}</p></a>`)
+      <div class="sec-head">${tag("What is inside")}<h2>Everything a backend needs, in one deploy</h2><p>The model will be familiar if you have used Convex. The difference is that you run it.</p></div>
+      <div class="cells">${features.map(([title, text, href], i) => `<a class="cell" href="${href}"><span class="label">${String(i + 1).padStart(2, "0")}</span><h3>${title}</h3><p>${text}</p><span class="cell-arrow">${icons.arrow}</span></a>`).join("")}</div>
+    </div>
+  </section>
+
+  <section class="sec tight">
+    <div class="wrap two">
+      <div class="sec-head">${tag("What you can rely on")}<h2>Boring where it matters</h2><p>The guarantees are written down in the docs, with the places the engine does not promise anything.</p><a class="btn link" href="limits.html">Limits and security ${icons.arrow}</a></div>
+      <ul class="checks">${promises.map(([t, d]) => `<li><span class="box" aria-hidden="true"></span><p><b>${t}.</b> ${d}</p></li>`).join("")}</ul>
+    </div>
+  </section>
+
+  <section class="sec">
+    <div class="wrap">
+      <div class="sec-head">${tag("How it works")}<h2>From an empty folder to live data</h2><p>Three files. The tutorial builds this out into a notes app with search, sign-in and tests.</p></div>
+      <div class="steps">${steps
+        .map(([title, text, file, code, href], i) => `<div class="step"><div class="step-text"><span class="label step-n">${String(i + 1).padStart(2, "0")}</span><h3>${title}</h3><p>${text}</p><a class="btn link" href="${href}">Read more ${icons.arrow}</a></div><div class="step-code">${codeBlock("ts", code, file)}</div></div>`)
         .join("")}</div>
     </div>
   </section>
 
-  <section class="wrap steps">
-    <h2 class="section-title" data-reveal>From an empty folder to live data</h2>
-    <p class="section-sub" data-reveal>Three files. The tutorial builds this out into a notes app with search, sign-in and tests.</p>
-    ${steps
-      .map(
-        ([title, text, file, code, href], i) => `<div class="step" data-reveal><div class="step-text"><span class="step-n">${i + 1}</span><h3>${title}</h3><p>${text}</p><a class="more" href="${href}">Read more ${icons.arrow}</a></div><div class="step-code">${codeBlock("ts", code, file)}</div></div>`,
-      )
-      .join("")}
-  </section>
-
   <section class="band">
     <div class="wrap">
-      <h2 class="section-title" data-reveal>Two ways to run it</h2>
-      <p class="section-sub" data-reveal>Pick one when you create the project. Both use the same engine, and you can switch later.</p>
+      <div class="sec-head">${tag("Two ways to run it")}<h2>Pick one when you create the project</h2><p>Both use the same engine, and you can switch later.</p></div>
       <div class="modes">
-        <a class="mode spot" href="framework.html" data-reveal><h3>Full-stack app</h3><p>React pages rendered on the server, file routes and your backend in one container. A SQLite file is all it needs to start.</p><ul><li>Loaders with data already in the first HTML</li><li>One process in development, with live reload</li><li>Deploy with <code>bun run up</code></li></ul><span class="more">Full-stack apps ${icons.arrow}</span></a>
-        <a class="mode spot" href="backend.html" data-reveal style="--r:100ms"><h3>Backend only</h3><p>The engine and its services as a Compose stack, for a mobile app, a separate frontend, or no frontend.</p><ul><li>PostgreSQL, Redis and S3 storage included</li><li>Optional Caddy for HTTPS</li><li>Same client libraries for React, Vue and Svelte</li></ul><span class="more">Backends ${icons.arrow}</span></a>
+        <a class="mode" href="framework.html"><h3>Full-stack app</h3><p>React pages rendered on the server, file routes and your backend in one container. A SQLite file is all it needs to start.</p><ul><li>Loaders with data already in the first HTML</li><li>One process in development, with live reload</li><li>Deploy with <code>bun run up</code></li></ul><span class="more">Full-stack apps ${icons.arrow}</span></a>
+        <a class="mode" href="backend.html"><h3>Backend only</h3><p>The engine and its services as a Compose stack, for a mobile app, a separate frontend, or no frontend.</p><ul><li>PostgreSQL, Redis and S3 storage included</li><li>Optional Caddy for HTTPS</li><li>Same client libraries for React, Vue and Svelte</li></ul><span class="more">Backends ${icons.arrow}</span></a>
       </div>
     </div>
   </section>
 
-  <section class="wrap closing-wrap" data-reveal>
-    <div class="closing glowborder">
-      <div class="aurora small" aria-hidden="true"><i></i><i></i></div>
-      <h2>Build something that <em class="grad">updates itself.</em></h2>
-      <p>Create a project in a minute. Nothing to sign up for.</p>
-      <div class="cta center"><a class="btn primary" href="getting-started.html">Get started ${icons.arrow}</a><a class="btn" href="tutorial.html">Follow the tutorial</a></div>
+  <section class="closing">
+    <div class="wrap">
+      <h2>Build something that updates itself.</h2>
+      <div class="install"><div class="install-line"><span class="prompt">$</span><code id="close-cmd">bun create archlast-forge my-app</code><button type="button" class="copy" data-copy-from="close-cmd" aria-label="Copy command">Copy</button></div></div>
+      <div class="cta"><a class="btn ink" href="getting-started.html">Get started</a><a class="btn ink-outline" href="tutorial.html">Follow the tutorial</a></div>
     </div>
   </section>
 </main>
