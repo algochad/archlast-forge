@@ -280,7 +280,7 @@ export default http;`,
 
     const client = `const { ClientProxyFactory, Transport } = await import("@archlast/forge-runtime/nest/microservices"); const { rxjs } = await import("@archlast/forge-runtime/nest");
 const c = ClientProxyFactory.create({ transport: Transport.TCP, options: { host: "127.0.0.1", port: 4000 } }); console.log(await rxjs.firstValueFrom(c.send("sum", [1, 2, 3]))); await c.close(); process.exit(0);`;
-    const sum = local ? sh(["bun", "-e", client], `${p.dir}/forge`) : p.compose("exec", "-T", "-w", "/src/forge", "app", "bun", "-e", client);
+    const sum = local ? sh(["bun", "-e", client], `${p.dir}/forge`) : p.compose("exec", "-T", "-w", "/app/forge", "app", "bun", "-e", client);
     check(`the TCP microservice answers${local ? "" : " inside the container"}`, sum.ok && sum.out.trim().endsWith("6"), sum.err || sum.out);
   } finally {
     if (server) (server.kill(), await server.exited);
