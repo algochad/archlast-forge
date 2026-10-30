@@ -303,7 +303,7 @@ Without `DATABASE_URL` the engine stores data in a SQLite file (`bun:sqlite`, WA
 ### Logs
 
 - **Server logs** go to stdout and stderr, one JSON object per line in production (`{"time":…,"level":"warn","msg":…,"requestId":…}`), readable text in development (`LOG_FORMAT=pretty|json` overrides). Collect them with your platform (`docker logs`, `archlast-forge logs`, journald).
-- **Request ids:** every response carries `x-request-id`. A request may bring its own (letters, digits, `.`, `_` and `-`, at most 64 characters); otherwise one is generated. A "Server error (request <id>)" shown to a visitor is that id: search the logs for it to find the real error and stack.
+- **Request ids:** every response carries `x-request-id`. A request may bring its own (letters, digits, `.`, `_` and `-`, at most 64 characters); otherwise one is generated. A `Server error (request <id>)` shown to a visitor is that id: search the logs for it to find the real error and stack.
 - **Function logs** (`console.log` in your functions, and one entry per call) are batched into the database and shown in the dashboard's log view, with live streaming. They are kept for `LOG_RETENTION_DAYS` (7).
 - Page renders log failures as `render failed (request <id>): …`, and loader errors with the stack and the route.
 

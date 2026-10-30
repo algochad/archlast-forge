@@ -19,14 +19,14 @@ bun run dev                           # http://localhost:3000, reloading as you 
 bun run up                            # the production stack: builds the image, starts it with its services
 ```
 
-Full documentation is in [`apps/docs`](apps/docs/content). Build it with `bun run --cwd apps/docs build`, or preview it with `bun run --cwd apps/docs dev` on http://localhost:4000. Start with [Getting started](apps/docs/content/getting-started.md), then [Full-stack apps](apps/docs/content/framework.md) or [Backends](apps/docs/content/backend.md).
+Full documentation is in [`apps/docs`](apps/docs/content). Build it with `bun run --cwd apps/docs build`, or preview it with `bun run --cwd apps/docs dev` on http://localhost:4000. Start with [Getting started](apps/docs/content/getting-started.mdx), then [Full-stack apps](apps/docs/content/framework.mdx) or [Backends](apps/docs/content/backend.mdx).
 
 ## This repository
 
 ```
 apps/demo/                       todo app: a backend with a separate Vite + React frontend
 apps/demo/forge/                its backend: schema, functions, crons, auth; own package.json
-apps/docs/                       documentation site (Markdown → HTML with Bun)
+apps/docs/                       documentation site (MDX, a React single-page app built with Bun)
 packages/runtime/                engine: validators, schema, functions, document store, adapters, server, testing
 packages/client/                 framework-agnostic client: JSON over HTTP + WebSocket, live queries
 packages/react|vue|svelte/       framework bindings

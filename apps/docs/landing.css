@@ -1,4 +1,4 @@
-/* Landing page: flat, typographic, hairlines. One accent, no gradients, no shadows. */
+/* Landing page: flat, typographic, hairlines, one accent. The motion at the end (after ReactBits) is the only decoration. */
 .wrap { max-width: 1240px; margin: 0 auto; padding: 0 32px; }
 .tag { display: inline-block; font: 500 11px/1 var(--mono); letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); border: 1px solid var(--border-strong); padding: 7px 9px; }
 
@@ -53,6 +53,10 @@
 
 .builton { display: flex; align-items: baseline; gap: 24px; padding: 22px max(32px, calc((100% - 1176px) / 2)); border-bottom: 1px solid var(--border); }
 .builton p { margin: 0; color: var(--muted); font-size: 14.5px; }
+.marquee { display: flex; flex: 1; min-width: 0; overflow: hidden; mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); }
+.track { display: flex; flex: none; white-space: nowrap; animation: marquee 34s linear infinite; }
+.marquee:hover .track { animation-play-state: paused; }
+@keyframes marquee { to { transform: translateX(-100%); } }
 .builton i { font-style: normal; color: var(--border-strong); margin: 0 12px; }
 
 /* Sections */
@@ -140,7 +144,7 @@
 .foot-bar a { color: var(--muted); }
 .foot-bar a:hover { color: var(--text); }
 
-/* Entrance: the hero text and code fade up once. Nothing else moves except the demo. */
+/* Entrance: the hero text and code fade up once. */
 .hero-copy > *, .hero-code { opacity: 0; animation: up 0.6s ease-out forwards; }
 .hero-copy > :nth-child(1) { animation-delay: 0.05s; }
 .hero-copy > :nth-child(2) { animation-delay: 0.12s; }
@@ -149,6 +153,50 @@
 .hero-copy > :nth-child(5) { animation-delay: 0.36s; }
 .hero-code { animation-delay: 0.3s; }
 @keyframes up { from { opacity: 0; transform: translateY(12px); } to { opacity: 1; transform: none; } }
+
+/* The headline's words blur into focus (BlurText), and the highlighted ones catch a sheen (ShinyText). */
+.bw { display: inline-block; animation: blurin 0.8s cubic-bezier(0.22, 1, 0.36, 1) backwards; animation-delay: calc(0.2s + var(--i, 0) * 0.09s); }
+@keyframes blurin {
+  0% { opacity: 0; filter: blur(12px); transform: translateY(-16px); }
+  55% { opacity: 0.7; filter: blur(4px); transform: translateY(4px); }
+  100% { opacity: 1; filter: blur(0); transform: none; }
+}
+.hero h1 .hl .bw {
+  background: linear-gradient(100deg, transparent 40%, rgb(255 255 255 / 0.65) 50%, transparent 60%) 150% 0 / 250% 100% no-repeat, linear-gradient(var(--fill), var(--fill));
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+  animation-name: blurin, shine;
+  animation-duration: 0.8s, 4.5s;
+  animation-timing-function: cubic-bezier(0.22, 1, 0.36, 1), linear;
+  animation-iteration-count: 1, infinite;
+  animation-fill-mode: backwards, none;
+  animation-delay: calc(0.2s + var(--i, 0) * 0.09s), calc(1.6s + var(--i, 0) * 0.25s);
+}
+@keyframes shine { 0% { background-position: 150% 0, 0 0; } 55%, 100% { background-position: -50% 0, 0 0; } }
+
+/* A grid behind the hero that drifts, and lights up in the accent colour under the pointer (Squares). */
+.hero { position: relative; }
+.hero-in, .spec { position: relative; z-index: 1; }
+.hero-grid { --cell: 56px; position: absolute; inset: 0; pointer-events: none; }
+.hero-grid::before, .hero-grid::after { content: ""; position: absolute; inset: 0; background-size: var(--cell) var(--cell); animation: drift 30s linear infinite; }
+.hero-grid::before { background-image: linear-gradient(var(--border) 1px, transparent 1px), linear-gradient(90deg, var(--border) 1px, transparent 1px); mask-image: linear-gradient(#000 25%, transparent 92%); }
+.hero-grid::after { background-image: linear-gradient(color-mix(in srgb, var(--fill) 80%, transparent) 1px, transparent 1px), linear-gradient(90deg, color-mix(in srgb, var(--fill) 80%, transparent) 1px, transparent 1px); mask-image: radial-gradient(190px circle at var(--mx, -400px) var(--my, -400px), #000, transparent); }
+@keyframes drift { to { background-position: var(--cell) var(--cell); } }
+
+/* Cards lit by the pointer: a soft glow inside, and the edge catches it (SpotlightCard). --mx and --my come from Landing.tsx. */
+.cell, .mode { isolation: isolate; }
+.mode { position: relative; }
+.cell::before, .cell::after, .mode::before, .mode::after { content: ""; position: absolute; inset: 0; opacity: 0; pointer-events: none; transition: opacity 0.25s; }
+.cell::before, .mode::before { z-index: -1; background: radial-gradient(260px circle at var(--mx, 50%) var(--my, 50%), color-mix(in srgb, var(--fill) 16%, transparent), transparent 70%); }
+.cell::after, .mode::after { inset: -1px; padding: 1px; background: radial-gradient(170px circle at var(--mx, 50%) var(--my, 50%), var(--fill), transparent 70%); mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0); -webkit-mask-composite: xor; mask-composite: exclude; }
+.cell:hover::before, .cell:hover::after, .mode:hover::before, .mode:hover::after { opacity: 1; }
+.btn svg, .mode .more svg { transition: transform 0.15s; }
+.btn:hover svg, .mode:hover .more svg { transform: translateX(3px); }
+
+/* Sections rise into place as they scroll into view (AnimatedContent). Landing.tsx adds .in; --d staggers siblings. */
+[data-reveal] { opacity: 0; transform: translateY(24px); transition: opacity 0.8s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--d, 0) * 80ms), transform 0.8s cubic-bezier(0.22, 1, 0.36, 1) calc(var(--d, 0) * 80ms); }
+[data-reveal].in { opacity: 1; transform: none; }
 
 @media (max-width: 1180px) {
   .foot-in { grid-template-columns: repeat(3, 1fr); }
@@ -163,6 +211,7 @@
   .cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .two, .step { grid-template-columns: minmax(0, 1fr); gap: 32px; }
   .builton { flex-direction: column; gap: 10px; }
+  .marquee { align-self: stretch; }
 }
 @media (max-width: 640px) {
   .wrap, .hero-in, .builton, .foot-in, .foot-bar { padding-left: 20px; padding-right: 20px; }
@@ -182,4 +231,10 @@
 @media (prefers-reduced-motion: reduce) {
   .hero-copy > *, .hero-code { animation: none; opacity: 1; }
   .win li, .win li.flash { animation: none; }
+  .bw, .hero h1 .hl .bw { animation: none; }
+  .hero-grid::before, .hero-grid::after { animation: none; }
+  [data-reveal] { opacity: 1; transform: none; transition: none; }
+  .marquee { mask-image: none; }
+  .track { animation: none; flex-wrap: wrap; white-space: normal; }
+  .track[aria-hidden] { display: none; }
 }
