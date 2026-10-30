@@ -48,7 +48,7 @@ api/
 `bun run dev` (`archlast-forge dev`) starts the engine in Docker with `forge/` mounted read-only, plus the services in `archlast-forge.json`:
 
 ```
-  archlast-forge 0.1.0  ·  backend  · engine in Docker
+  archlast-forge 0.2.0  ·  backend  · engine in Docker
 
   ➜  API        http://localhost:3000
   ➜  Dashboard  http://localhost:3000/_dashboard
@@ -169,7 +169,7 @@ The schema has `payments: defineTable({ eventId: v.string(), amount: v.number() 
 
 - The public URL is `https://your-domain/http/webhooks/payments`. The rate limit applies to it like any call, per client IP, so with a proxy in front make sure `TRUST_PROXY=1` is set, or every webhook shares the proxy's address.
 - Store the secret with `archlast-forge env set WEBHOOK_SECRET …` (stored in the database, loaded into functions) or pass it through `compose.yaml`. The process environment wins over stored variables. A restart is not needed for `env set`: the CLI reloads the running engine.
-- `process.env` and `Bun` are typed in the starter's `forge/` (it includes `@types/bun`). A project created before `0.1.1` needs `bun add -d @types/bun` in `forge/` and `"types": ["bun"]` in `forge/tsconfig.json`.
+- `process.env` and `Bun` are typed in the starter's `forge/` (it includes `@types/bun`). A project created before `0.2.0` needs `bun add -d @types/bun` in `forge/` and `"types": ["bun"]` in `forge/tsconfig.json`.
 - Retries are the sender's job; make the handler idempotent as above. Handlers are actions, which are at-most-once; see [HTTP endpoints](http.html) for their rules.
 
 ## The stack
@@ -184,7 +184,7 @@ services:
     build:
       context: .
       args:
-        ENGINE_IMAGE: ${ENGINE_IMAGE:-ghcr.io/algochad/archlast-forge-engine:0.1.0}
+        ENGINE_IMAGE: ${ENGINE_IMAGE:-ghcr.io/algochad/archlast-forge-engine:0.2.0}
     image: api:latest
     restart: unless-stopped
     environment:
@@ -292,7 +292,7 @@ Without Caddy it also has `ALLOW_INSECURE_HTTP=1` and `PORT=3000`. `up` creates 
 ### The image
 
 ```dockerfile
-ARG ENGINE_IMAGE=ghcr.io/algochad/archlast-forge-engine:0.1.0
+ARG ENGINE_IMAGE=ghcr.io/algochad/archlast-forge-engine:0.2.0
 FROM ${ENGINE_IMAGE}
 COPY . /src
 RUN bun /engine/packages/cli/src/index.ts engine prepare
@@ -391,7 +391,7 @@ docker compose cp app:/data/backup.db ./backup.db
 
 (This is how the CLI itself runs data commands in a container it started: `docker exec … --dir /app/forge`. The commands are tested against a container started by the CLI; these two lines are not covered by a test against a compose stack.)
 
-From `0.1.1` you do not have to type these: run from the project folder, `archlast-forge backup`, `export`, `import`, `env`, `admin` and `migrate` find the stack's app container (`docker compose ps -q app`) and run inside it, copying files in and out with `docker cp`, the way they do for a container started by `archlast-forge dev`. That works behind Caddy too, where the app's port is not published. On `0.1.0` they posted to `http://localhost:<PORT>/_cli` and, when nothing answered, quietly opened a local database in `forge/data`, which is not your stack's data. So on `0.1.0`, and on a server that doesn't have the CLI, run the commands inside the container yourself, as above:
+From `0.2.0` you do not have to type these: run from the project folder, `archlast-forge backup`, `export`, `import`, `env`, `admin` and `migrate` find the stack's app container (`docker compose ps -q app`) and run inside it, copying files in and out with `docker cp`, the way they do for a container started by `archlast-forge dev`. That works behind Caddy too, where the app's port is not published. On `0.1.0` they posted to `http://localhost:<PORT>/_cli` and, when nothing answered, quietly opened a local database in `forge/data`, which is not your stack's data. So on `0.1.0`, and on a server that doesn't have the CLI, run the commands inside the container yourself, as above:
 
 ```bash
 docker compose exec app bun /engine/packages/cli/src/index.ts admin add you@example.com --role owner --dir /app/forge

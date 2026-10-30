@@ -40,7 +40,7 @@ A function file imports a package that is not in `forge/package.json`. The root 
 
 ### `Cannot find name 'process'` from `tsc`
 
-`forge/` has Bun's types in projects created with `0.1.1` or later. In an older project, run `bun add -d @types/bun` inside `forge/` and add `"types": ["bun"]` to `forge/tsconfig.json`. (The root `tsconfig.json` is for the browser code in `app/`, which has no `process`.)
+`forge/` has Bun's types in projects created with `0.2.0` or later. In an older project, run `bun add -d @types/bun` inside `forge/` and add `"types": ["bun"]` to `forge/tsconfig.json`. (The root `tsconfig.json` is for the browser code in `app/`, which has no `process`.)
 
 ### Types are out of date, or `api.x.y` doesn't exist
 
@@ -89,7 +89,7 @@ Another process owns the port. Stop it, or pick another: `archlast-forge dev --p
 
 ### `ENOENT: no such file or directory, mkdir '/some/path'` on start
 
-`DATA_DIR` points somewhere the process cannot create. In a container it should be the mounted volume (`/data`). Without `DATA_DIR`, `dev` and `start --no-docker` both use `forge/data` (before `0.1.1`, `start` used `./data` in the current directory, which was a different database).
+`DATA_DIR` points somewhere the process cannot create. In a container it should be the mounted volume (`/data`). Without `DATA_DIR`, `dev` and `start --no-docker` both use `forge/data` (before `0.2.0`, `start` used `./data` in the current directory, which was a different database).
 
 ### The app starts but every call says `No function "…"` (dev)
 
@@ -109,7 +109,7 @@ Fix the file named in it. If the runtime keeps crashing you will see `function r
 
 `up` and `down` need Docker: `Docker isn't available. Install it and make sure it is running; the stack runs in containers.` Check `docker info`. `DOCKER=podman` switches the tool.
 
-### `Engine image ghcr.io/algochad/archlast-forge-engine:0.1.0 isn't available`
+### `Engine image ghcr.io/algochad/archlast-forge-engine:0.2.0 isn't available`
 
 ```
 ✗ Engine image … isn't available. Set ARCHLAST_ENGINE_IMAGE to one you can pull or build.

@@ -223,7 +223,7 @@ function RefreshButton() {
 
 ### `handle`
 
-`export const handle = { crumb: "Posts" }` is attached to the route, and `useMatches()` (exported from `@archlast/forge-framework`, from `0.1.1`) returns every matched route with its `handle` and loader data, which is how breadcrumbs are built:
+`export const handle = { crumb: "Posts" }` is attached to the route, and `useMatches()` (exported from `@archlast/forge-framework`, from `0.2.0`) returns every matched route with its `handle` and loader data, which is how breadcrumbs are built:
 
 ```tsx
 import { Link, useMatches } from "@archlast/forge-framework";
@@ -637,7 +637,7 @@ The `ErrorBoundary` in `root.tsx` above handles both. To test it: `GET /anything
 ✓ codegen: 3 modules
 ✓ app built in 220 ms
 
-  archlast-forge 0.1.0  ·  full-stack app  · ready in 738 ms
+  archlast-forge 0.2.0  ·  full-stack app  · ready in 738 ms
 
   ➜  App        http://localhost:3000
   ➜  Dashboard  http://localhost:3000/_dashboard

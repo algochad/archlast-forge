@@ -366,7 +366,7 @@ Your frontend may import only from `forge/_generated`. `archlast-forge codegen` 
   "name": "proj-forge",
   "private": true,
   "type": "module",
-  "dependencies": { "@archlast/forge-runtime": "^0.1.0", "stripe": "^17.0.0" }
+  "dependencies": { "@archlast/forge-runtime": "^0.2.0", "stripe": "^17.0.0" }
 }
 ```
 
@@ -376,7 +376,7 @@ Your frontend may import only from `forge/_generated`. `archlast-forge codegen` 
 forge/billing.ts imports "stripe", which is not installed. Add it to /path/forge/package.json: bun add --cwd /path/forge stripe
 ```
 
-Functions run in Bun, so `fetch`, `crypto`, `Bun.*` and `node:*` modules are available, and the starter's `forge/tsconfig.json` includes Bun's types (`@types/bun` is in `forge/package.json`). A project created before `0.1.1` has neither: add `@types/bun` to `forge/package.json` and `"types": ["bun"]` to `forge/tsconfig.json`, or `process.env` and `Bun` give "Cannot find name".
+Functions run in Bun, so `fetch`, `crypto`, `Bun.*` and `node:*` modules are available, and the starter's `forge/tsconfig.json` includes Bun's types (`@types/bun` is in `forge/package.json`). A project created before `0.2.0` has neither: add `@types/bun` to `forge/package.json` and `"types": ["bun"]` to `forge/tsconfig.json`, or `process.env` and `Bun` give "Cannot find name".
 
 ## Calling functions from outside
 

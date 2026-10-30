@@ -36,7 +36,7 @@ export async function requireAdmin(ctx: WithAuth): Promise<Identity> {
 
 A `ForgeError` reaches the client as HTTP 400 with `{"error":{"message":"Sign in first","code":"BAD_REQUEST","data":"Sign in first",…}}`; see [Errors](errors.html).
 
-`process.env` is typed in `forge/` (the starter includes `@types/bun`; a project created before `0.1.1` needs `bun add -d @types/bun` in `forge/` and `"types": ["bun"]` in `forge/tsconfig.json`).
+`process.env` is typed in `forge/` (the starter includes `@types/bun`; a project created before `0.2.0` needs `bun add -d @types/bun` in `forge/` and `"types": ["bun"]` in `forge/tsconfig.json`).
 
 The schema used across the recipes, in one place, so you can copy what you need:
 

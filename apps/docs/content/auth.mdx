@@ -282,7 +282,7 @@ What was run against a dev server:
 
 - **Verification.** With `requireEmailVerification`, sign-up returns `token: null` and no cookie, and sign-in answers 403 `EMAIL_NOT_VERIFIED` until the link is followed. The link is `BETTER_AUTH_URL/api/auth/verify-email?token=…`; following it sets the session cookie (with `autoSignInAfterVerification`) and redirects to `/`.
 - **Reset request.** `auth.requestPasswordReset({ email, redirectTo })` (or `POST /api/auth/request-password-reset`) answers 200 with the same message whether or not the email exists, and calls `sendResetPassword` with a link to `/api/auth/reset-password/<token>`, which redirects to `redirectTo?token=…`.
-- **Finishing a reset.** `auth.resetPassword({ newPassword, token })` (or `POST /api/auth/reset-password`) sets the new password, and the link works once: a second use answers 400. Magic links and email codes finish the same way. This needs `0.1.1` or later; on `0.1.0` the last step answered 500 (`must return the row id for atomic fallbacks`), so upgrade before you ship a reset flow.
+- **Finishing a reset.** `auth.resetPassword({ newPassword, token })` (or `POST /api/auth/reset-password`) sets the new password, and the link works once: a second use answers 400. Magic links and email codes finish the same way. This needs `0.2.0` or later; on `0.1.0` the last step answered 500 (`must return the row id for atomic fallbacks`), so upgrade before you ship a reset flow.
 
 Put `process.env` secrets (like `MAIL_KEY`) in the server's environment or in `archlast-forge env set`; see [configuration](configuration.html).
 

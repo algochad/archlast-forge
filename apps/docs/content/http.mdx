@@ -288,7 +288,7 @@ curl -X POST localhost:3000/http/webhooks/acme -H "x-acme-signature: $SIG" -d "$
 # a wrong signature: 401
 ```
 
-`process.env` and `Bun` are typed in `forge/` (the starter includes `@types/bun`); a project created before `0.1.1` needs `bun add -d @types/bun` in `forge/` and `"types": ["bun"]` in `forge/tsconfig.json`. The code runs either way.
+`process.env` and `Bun` are typed in `forge/` (the starter includes `@types/bun`); a project created before `0.2.0` needs `bun add -d @types/bun` in `forge/` and `"types": ["bun"]` in `forge/tsconfig.json`. The code runs either way.
 
 ### A public JSON API
 

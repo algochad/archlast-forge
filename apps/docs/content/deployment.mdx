@@ -90,7 +90,7 @@ TimeoutStopSec=30
 WantedBy=multi-user.target
 ```
 
-Set `DATA_DIR` to a directory on a disk that persists. Without it, `start --no-docker` uses `forge/data/`, the same place `dev` does (before `0.1.1` it used `./data`, a different database). Put a TLS proxy in front. `SIGTERM` and `SIGINT` stop the process cleanly (below); `SIGHUP` reloads the function runtime without dropping connections.
+Set `DATA_DIR` to a directory on a disk that persists. Without it, `start --no-docker` uses `forge/data/`, the same place `dev` does (before `0.2.0` it used `./data`, a different database). Put a TLS proxy in front. `SIGTERM` and `SIGINT` stop the process cleanly (below); `SIGHUP` reloads the function runtime without dropping connections.
 
 ## Other platforms
 
@@ -235,7 +235,7 @@ Outside development the engine requires `BETTER_AUTH_URL` to be `https://`, so s
 - keeps idle upstream connections for less than `IDLE_TIMEOUT_SECONDS` (default 75; nginx and cloud load balancers reuse upstream connections for 60 s or more, so closing sooner makes them hit a socket the engine just closed);
 - sets the client address in `X-Forwarded-For`.
 
-**`TRUST_PROXY=1`** makes the engine take the client IP for rate limits from `X-Forwarded-For`; without it every visitor shares the proxy's address and one noisy client can rate-limit everyone. The engine uses the **last** address in the header, the one your proxy added for the connection it received. Anything the client put in front of it is ignored, so a client cannot pick its own address. A proxy that replaces the header (Caddy's default) leaves a single entry and works the same. Enable `TRUST_PROXY` only when every request really comes through your proxy, and only one proxy deep: with two proxies in a row the last entry is the first proxy's address. (Before `0.1.1` the engine used the first address, which a client could choose.)
+**`TRUST_PROXY=1`** makes the engine take the client IP for rate limits from `X-Forwarded-For`; without it every visitor shares the proxy's address and one noisy client can rate-limit everyone. The engine uses the **last** address in the header, the one your proxy added for the connection it received. Anything the client put in front of it is ignored, so a client cannot pick its own address. A proxy that replaces the header (Caddy's default) leaves a single entry and works the same. Enable `TRUST_PROXY` only when every request really comes through your proxy, and only one proxy deep: with two proxies in a row the last entry is the first proxy's address. (Before `0.2.0` the engine used the first address, which a client could choose.)
 
 An nginx server block (guidance, not tested here):
 

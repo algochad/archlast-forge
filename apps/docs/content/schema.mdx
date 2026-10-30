@@ -139,7 +139,7 @@ The first error found is reported; fix it and the next one appears. The return-v
 | Search and filter fields exist | `Search index "a.s" uses unknown field "zz"` |
 | Index names are unique within a table, across both kinds | `Search index name "a.s" is invalid or already used` |
 
-A name that starts with an underscore is not allowed for your tables or fields; the leading underscore is how the system marks its own (`_id`, `_creationTime`, `_storage`). `by_id` and `by_creation_time` are reserved: every table already has an index called `by_creation_time`, so `defineSchema` rejects a table that declares one (`Index name "a.by_creation_time" is invalid or reserved`; before `0.1.1` it was accepted and the built-in index silently took its place).
+A name that starts with an underscore is not allowed for your tables or fields; the leading underscore is how the system marks its own (`_id`, `_creationTime`, `_storage`). `by_id` and `by_creation_time` are reserved: every table already has an index called `by_creation_time`, so `defineSchema` rejects a table that declares one (`Index name "a.by_creation_time" is invalid or reserved`; before `0.2.0` it was accepted and the built-in index silently took its place).
 
 ## Indexes
 
