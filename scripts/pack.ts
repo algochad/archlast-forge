@@ -101,7 +101,9 @@ async function smoke(mode: "framework" | "backend") {
   run(["bunx", "tsc", ...(mode === "framework" ? [] : ["-p", "forge"]), "--noEmit"], app);
   if (mode === "framework") run(["bunx", "archlast-forge", "build", "--no-docker"], app);
 
-  const port = String(40000 + Math.floor(Math.random() * 20000));
+  const probe = Bun.serve({ port: 0, fetch: () => new Response() }); // a port the machine says is free; a random one sometimes collided on a busy runner
+  const port = String(probe.port);
+  await probe.stop(true);
   const server = Bun.spawn(["bunx", "archlast-forge", "start", "--no-docker"], {
     cwd: app,
     env: { ...process.env, PORT: port, DATA_DIR: join(app, "data"), BETTER_AUTH_SECRET: "x".repeat(40), ALLOW_INSECURE_HTTP: "1", ARCHLAST_NO_DOCKER: "1", BETTER_AUTH_URL: `http://localhost:${port}` },
