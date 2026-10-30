@@ -22,7 +22,7 @@ export const USAGE = `Usage: bun create archlast-forge [directory] [options]
   -y, --yes                    take the default for everything not given, and ask nothing
   -h, --help
 
-Without options you are asked. Defaults: framework mode with no extra services (SQLite);
+Without options you are asked. Defaults: framework mode with postgres, redis, s3 and caddy;
 backend mode with postgres, redis and s3.`;
 
 export function parseFlags(argv: string[]): Flags {

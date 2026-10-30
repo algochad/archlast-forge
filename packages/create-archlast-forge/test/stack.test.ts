@@ -59,6 +59,8 @@ describe(".env", () => {
     expect(a).not.toContain("S3_ACCESS_KEY");
     expect(a).toContain("ALLOW_INSECURE_HTTP=1");
     expect(renderEnv(["caddy"], generateSecrets())).toContain("DOMAIN=localhost");
+    const withCaddy = renderEnv(["caddy", "s3"], generateSecrets());
+    expect(withCaddy.indexOf("DOMAIN=")).toBeLessThan(withCaddy.indexOf("${DOMAIN}")); // Compose resolves .env top to bottom
     expect(renderEnv(["caddy"], generateSecrets())).not.toContain("ALLOW_INSECURE_HTTP");
     const [s1, s2] = [generateSecrets(), generateSecrets()];
     expect(s1.BETTER_AUTH_SECRET).toHaveLength(64);
@@ -83,6 +85,7 @@ describe("archlast-forge.json", () => {
     expect(parseProjectConfig({ mode: "framework" })).toEqual({ mode: "framework", services: [] });
     expect(parseProjectConfig({ mode: "backend", services: ["postgres", "postgres", "redis"] })).toEqual({ mode: "backend", services: ["postgres", "redis"] });
     expect(DEFAULT_SERVICES.backend).toEqual(["postgres", "redis", "s3"]);
+    expect(DEFAULT_SERVICES.framework).toEqual(["postgres", "redis", "s3", "caddy"]);
   });
   test("mistakes say what to change", () => {
     expect(() => parseProjectConfig({ mode: "spa" })).toThrow('"mode" must be "framework" or "backend"');

@@ -194,7 +194,7 @@ This file in the project root says how the project is built and run. `archlast-f
 | `mode` | `"framework"` or `"backend"` | A full-stack app (React pages, server rendering and the backend in one engine) or a backend only. |
 | `services` | a list of `"postgres"`, `"redis"`, `"s3"`, `"caddy"`; default `[]` | What `dev` starts in Docker (`caddy` is for production only) and what `compose.yaml` and `.env` were generated for. |
 
-A full-stack app defaults to no services (SQLite, in-memory bus and cache); a backend defaults to `postgres`, `redis` and `s3`. Changing `services` afterwards changes what `dev` starts but does not rewrite `compose.yaml`, which is yours to edit. `dev --with postgres,redis` overrides the list for one run.
+`init` gives a full-stack app `postgres`, `redis`, `s3` and `caddy`, and a backend `postgres`, `redis` and `s3`; pass `--services none` for SQLite with an in-memory bus and cache. A file without `services` means none. Changing `services` afterwards changes what `dev` starts but does not rewrite `compose.yaml`, which is yours to edit. `dev --with postgres,redis` overrides the list for one run.
 
 The file is validated, and a mistake says what to change:
 

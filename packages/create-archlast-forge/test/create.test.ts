@@ -31,6 +31,29 @@ describe("scaffold", () => {
     expect(read(dir, "Dockerfile")).toContain("archlast-forge-engine:1.2.3");
   });
 
+  test("a full-stack app made with the defaults gets a compose file for a production setup", async () => {
+    const dir = fresh("shop");
+    const { services } = await gather({ dir, yes: true, help: false }, false);
+    scaffold({ dir, mode: "framework", services });
+    const compose = Bun.YAML.parse(read(dir, "compose.yaml")) as any;
+    expect(Object.keys(compose.services)).toEqual(["app", "postgres", "redis", "rustfs", "rustfs-init", "caddy"]);
+    expect(compose.services.app.ports).toBeUndefined(); // only Caddy is reachable from outside
+    expect(compose.services.app.environment.DATABASE_URL).toContain("postgres");
+    expect(read(dir, "Caddyfile")).toContain("reverse_proxy app:3000");
+    expect(read(dir, ".env")).toContain("BETTER_AUTH_URL=https://${DOMAIN}");
+    expect(read(dir, ".env")).not.toContain("ALLOW_INSECURE_HTTP");
+    expect(existsSync(join(dir, "forge/files.ts"))).toBe(true);
+  });
+
+  test("untick everything and production is SQLite alone: the app, no database, cache, storage or proxy", () => {
+    const dir = fresh("lite");
+    scaffold({ dir, mode: "framework", services: [] });
+    expect(Object.keys((Bun.YAML.parse(read(dir, "compose.yaml")) as any).services)).toEqual(["app"]);
+    expect(existsSync(join(dir, "Caddyfile"))).toBe(false);
+    expect(read(dir, "compose.yaml")).not.toMatch(/postgres|redis|rustfs/);
+    expect(existsSync(join(dir, "forge/files.ts"))).toBe(false);
+  });
+
   test("a backend: forge only, with the full stack by default and an example HTTP route", () => {
     const dir = fresh("api");
     scaffold({ dir, mode: "backend", services: ["postgres", "redis", "s3"], version: "1.2.3" });
@@ -94,7 +117,7 @@ describe("flags", () => {
 describe("gather (no prompts)", () => {
   test("defaults depend on the mode", async () => {
     const dir = fresh();
-    expect(await gather({ dir, yes: true, help: false }, false)).toEqual({ dir, mode: "framework", services: [], install: false, git: false });
+    expect(await gather({ dir, yes: true, help: false }, false)).toEqual({ dir, mode: "framework", services: ["postgres", "redis", "s3", "caddy"], install: false, git: false });
     expect(await gather({ dir, mode: "backend", yes: true, help: false }, false)).toMatchObject({ mode: "backend", services: ["postgres", "redis", "s3"] });
     expect(await gather({ dir, mode: "backend", services: [], install: true, yes: true, help: false }, false)).toMatchObject({ services: [], install: true });
   });
@@ -139,13 +162,13 @@ describe("gather (prompts)", () => {
     expect(await done).toEqual({ dir, mode: "backend", services: ["redis", "s3"], install: false, git: false });
   });
 
-  test("a full-stack app starts with nothing ticked; Ctrl-C cancels without a trace", async () => {
+  test("a full-stack app starts with the production stack ticked; Ctrl-C cancels without a trace", async () => {
     const t = terminal();
     const dir = fresh("plain");
     const done = gather({ dir, install: false, git: false, yes: false, help: false }, true, { input: t.input, output: t.output });
     await Bun.sleep(30);
     await t.press("\r", "\r");
-    expect(await done).toMatchObject({ mode: "framework", services: [] });
+    expect(await done).toMatchObject({ mode: "framework", services: ["postgres", "redis", "s3", "caddy"] });
 
     const quit = terminal();
     const cancelled = gather({ dir: fresh("never"), yes: false, help: false }, true, { input: quit.input, output: quit.output }).catch((e) => e);

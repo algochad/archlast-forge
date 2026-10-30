@@ -24,7 +24,7 @@ When run in a terminal, it asks up to five questions, skipping any you answered 
 |---|---|---|
 | Where should we create your project? | a folder name (default `my-app`) | The folder name also becomes the package name and the Docker Compose project name, lowercased and with other characters turned into `-`. |
 | What are you building? | **Full-stack app** or **Backend only** | Full-stack: React pages rendered on the server, file routes and your backend, all in one container. Backend: the engine and its services, for any frontend or none. See [Full-stack apps](framework.html) and [Backends](backend.html). |
-| Add services to the stack? (backend: Which services should run with it?) | PostgreSQL, Redis, S3 storage (RustFS), Caddy | PostgreSQL replaces the SQLite file with a shared database. Redis carries reactivity between several servers, and holds the cache and rate limits. S3 storage is for file uploads. Caddy puts HTTPS with automatic certificates in front of the app. A full-stack app starts with none, because SQLite needs nothing. A backend starts with PostgreSQL, Redis and S3 storage. |
+| Which services will production need? | PostgreSQL, Redis, S3 storage (RustFS), Caddy | PostgreSQL replaces the SQLite file with a shared database. Redis carries reactivity between several servers, and holds the cache and rate limits. S3 storage is for file uploads. Caddy puts HTTPS with automatic certificates in front of the app. A full-stack app starts with all four, so its `compose.yaml` is a production setup. Only what you leave ticked goes into `compose.yaml`; untick them all to keep SQLite, which needs nothing, and the stack is the app alone. A backend starts with PostgreSQL, Redis and S3 storage. |
 | Install dependencies with bun? | yes or no | Runs `bun install` in the new folder. |
 | Start a git repository? | yes or no | Runs `git init`. |
 
@@ -37,7 +37,7 @@ Flags skip the questions. `--yes` takes the default for everything you did not g
 | Flag | Meaning |
 |---|---|
 | `--mode framework\|backend` (`-m`) | the project mode. The default with `--yes` is `framework`. |
-| `--services postgres,redis,s3,caddy` (`-s`) | a comma-separated list, or `none`. The default is none for `framework` and `postgres,redis,s3` for `backend`. |
+| `--services postgres,redis,s3,caddy` (`-s`) | a comma-separated list, or `none`. The default is `postgres,redis,s3,caddy` for `framework` and `postgres,redis,s3` for `backend`. |
 | `--install` / `--no-install` | run `bun install` afterwards, or not. With `--yes` the default is not. |
 | `--git` / `--no-git` | start a git repository, or not. With `--yes` the default is not. |
 | `-y`, `--yes` | ask nothing |
@@ -54,7 +54,7 @@ This is the output of the non-interactive form:
 ```
 $ bunx create-archlast-forge my-app --mode framework --yes --no-install --no-git
 │
-◆  Created my-app (full-stack app)
+◆  Created my-app (full-stack app, with PostgreSQL, Redis, S3 storage (RustFS), Caddy)
 │
 ◇  Next ───────────────────────────────────────────────────────────────╮
 │                                                                      │

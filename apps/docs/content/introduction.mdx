@@ -55,7 +55,7 @@ You choose one when you create a project (`bun create archlast-forge`). Both use
 | You write | `forge/` and React pages in `app/` | `forge/` only |
 | Frontend | Rendered by the engine, in the same process | Anything: React, Vue, Svelte, a mobile app, a script |
 | `bun run dev` | Everything on your machine, with rebuild and reload in about 0.2 s | The engine in Docker with `forge/` mounted (or `--no-docker`) |
-| Default services | None: SQLite needs nothing | PostgreSQL, Redis, S3 storage |
+| Default services | PostgreSQL, Redis, S3 storage, Caddy (or none, for SQLite) | PostgreSQL, Redis, S3 storage |
 | Production | One container: `bun run up` | A stack of containers: `bun run up` |
 | Read | [Full-stack apps](framework.html) | [Backends](backend.html) |
 

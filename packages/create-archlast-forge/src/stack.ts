@@ -16,8 +16,8 @@ export const SERVICES = {
 } as const;
 export type StackService = keyof typeof SERVICES;
 
-/** Services a mode starts with. A backend is usually shared by several clients, so it gets the whole stack. */
-export const DEFAULT_SERVICES: Record<Mode, StackService[]> = { framework: [], backend: ["postgres", "redis", "s3"] };
+/** Services a mode starts with: what a production deployment needs. An app gets HTTPS too; a backend is usually put behind a proxy of its own. */
+export const DEFAULT_SERVICES: Record<Mode, StackService[]> = { framework: ["postgres", "redis", "s3", "caddy"], backend: ["postgres", "redis", "s3"] };
 
 /** archlast-forge.json */
 export interface ProjectConfig {
@@ -74,9 +74,10 @@ export function renderEnv(services: StackService[], secrets?: Secrets): string {
     "# Opens the dashboard (/_dashboard) and the CLI's data commands.",
     `ADMIN_KEY=${v("ADMIN_KEY")}`,
     "",
-    "# The address people use to reach the app.",
-    has("caddy") ? "BETTER_AUTH_URL=https://${DOMAIN}" : "BETTER_AUTH_URL=http://localhost:3000",
-    ...(has("caddy") ? ["# Your domain; point its DNS (and s3.<domain>) at this machine.", "DOMAIN=localhost"] : ["# Plain http is only for trying things out; remove this once BETTER_AUTH_URL is https.", "ALLOW_INSECURE_HTTP=1", "PORT=3000"]),
+    // DOMAIN comes first: Compose fills ${DOMAIN} only from lines above the one that uses it.
+    ...(has("caddy")
+      ? ["# Your domain; point its DNS (and s3.<domain>) at this machine.", "DOMAIN=localhost", "", "# The address people use to reach the app.", "BETTER_AUTH_URL=https://${DOMAIN}"]
+      : ["# The address people use to reach the app.", "BETTER_AUTH_URL=http://localhost:3000", "# Plain http is only for trying things out; remove this once BETTER_AUTH_URL is https.", "ALLOW_INSECURE_HTTP=1", "PORT=3000"]),
   ];
   if (has("postgres")) lines.push("", "POSTGRES_PASSWORD=" + v("POSTGRES_PASSWORD"));
   if (has("s3")) lines.push("", `S3_ACCESS_KEY=${v("S3_ACCESS_KEY")}`, `S3_SECRET_KEY=${v("S3_SECRET_KEY")}`, "# Where browsers upload to and download from.", has("caddy") ? "S3_PUBLIC_ENDPOINT=https://s3.${DOMAIN}" : "S3_PUBLIC_ENDPOINT=http://localhost:9000");

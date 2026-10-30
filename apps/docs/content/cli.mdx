@@ -49,14 +49,14 @@ All three are the same program (`create-archlast-forge`). `init` forwards everyt
 | Option | Meaning |
 |---|---|
 | `dir` | the new folder, which must be empty or not exist. Its name becomes the project and package name (lowercased; anything but letters, digits, `-` and `_` becomes `-`). |
-| `-m`, `--mode <framework\|backend>` | `framework`: a full-stack React app (SQLite unless you add services). `backend`: the engine plus services, and no pages. `--template` is an alias. |
-| `-s`, `--services <list>` | any of `postgres`, `redis`, `s3`, `caddy`, comma separated, or `none`. Defaults: none for `framework`; `postgres,redis,s3` for `backend`. |
+| `-m`, `--mode <framework\|backend>` | `framework`: a full-stack React app (SQLite with `--services none`). `backend`: the engine plus services, and no pages. `--template` is an alias. |
+| `-s`, `--services <list>` | any of `postgres`, `redis`, `s3`, `caddy`, comma separated, or `none`. Defaults: `postgres,redis,s3,caddy` for `framework`; `postgres,redis,s3` for `backend`. |
 | `--install`, `--no-install` | run `bun install` afterwards. When nothing is said: ask, or do not install if not asking. |
 | `--git`, `--no-git` | run `git init -q`. Same defaults. |
 | `-y`, `--yes` | take the default for every question not answered by a flag, and ask nothing. |
 | `-h`, `--help` | print the usage text. |
 
-It asks the questions you did not answer (folder, "What are you building?", "Which services should run with it?", install, git) only when both input and output are a terminal, `CI` is unset and `--yes` is not given. Otherwise missing answers take their defaults, except the folder, which has none:
+It asks the questions you did not answer (folder, "What are you building?", "Which services will production need?", install, git) only when both input and output are a terminal, `CI` is unset and `--yes` is not given. Otherwise missing answers take their defaults, except the folder, which has none:
 
 ```
 ✗ Which folder? Pass a directory: bun create archlast-forge my-app

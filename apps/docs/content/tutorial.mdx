@@ -9,12 +9,12 @@ You need [Bun](https://bun.sh) 1.4.3 or later and a browser. You do not need Doc
 ## 1. Create the project
 
 ```bash
-bun create archlast-forge notes --mode framework --yes --install
+bun create archlast-forge notes --mode framework --services none --yes --install
 cd notes
 bun run dev
 ```
 
-`--mode framework` makes a full-stack app, `--yes` skips the other questions (no extra services, so the database is a SQLite file), and `--install` runs `bun install`. (Without flags, the questions are described in [Getting started](getting-started.html#the-prompts).)
+`--mode framework` makes a full-stack app, `--services none` keeps it to a SQLite file (without it you get PostgreSQL, Redis, S3 storage and Caddy, which `bun run dev` starts in Docker), `--yes` skips the other questions, and `--install` runs `bun install`. (Without flags, the questions are described in [Getting started](getting-started.html#the-prompts).)
 
 You will see:
 

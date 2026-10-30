@@ -7,6 +7,8 @@ bun install
 bun run dev      # http://localhost:3000, reloading as you edit
 ```
 
+`dev` starts the services in `archlast-forge.json` (PostgreSQL, Redis, S3 storage) in Docker. `bun run dev -- --no-docker` skips them and uses SQLite.
+
 ## Where things are
 
 ```
@@ -29,5 +31,7 @@ public/              served as they are: /favicon.svg, /robots.txt
 bun run up       # builds the image, starts the stack from compose.yaml, waits until it is healthy
 bun run down
 ```
+
+`compose.yaml` runs the app with PostgreSQL, Redis, S3 storage (RustFS) and Caddy, which serves HTTPS on ports 80 and 443. Before the first real deploy, open `.env` and set `DOMAIN` to your domain, and point its DNS and `s3.<domain>` at the machine. Caddy then gets the certificates itself.
 
 `bun run build && bun run start` runs the production bundles on this machine without Docker. `compose.yaml` is yours to edit; secrets are in `.env`, which `init` created with fresh keys and git ignores (`up` makes one only if it's missing).

@@ -66,7 +66,7 @@ export async function gather(flags: Flags, interactive: boolean, io: Io = {}): P
       ? await ask<StackService[]>((o) =>
           p.multiselect<StackService>({
             ...o,
-            message: mode === "backend" ? "Which services should run with it? (space selects, enter confirms)" : "Add services to the stack? (none is fine: SQLite needs nothing)",
+            message: "Which services will production need? (space selects, enter confirms; none keeps SQLite, with no database container)",
             required: false,
             initialValues: DEFAULT_SERVICES[mode],
             options: (Object.keys(SERVICES) as StackService[]).map((s) => ({ value: s, label: SERVICES[s].label, hint: SERVICES[s].hint })),

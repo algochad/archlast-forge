@@ -5,7 +5,7 @@
 // Needs Docker and the engine image (`bun packages/cli/src/index.ts engine build`).
 import { call, check, createProject, json, sh, signUp } from "./lib/e2e";
 
-/** What most people create first: a full-stack app with no services, so SQLite on a volume. */
+/** A full-stack app with `--services none`, so SQLite on a volume. */
 async function plain() {
   console.log("\nFull-stack app with nothing else (SQLite)");
   const p = createProject("e2e-plain", "framework", [], 3104, 9104);
@@ -108,12 +108,12 @@ async function backend() {
 
 /** Needs ports 80 and 443 on this machine, so it runs only when asked: `bun scripts/e2e-docker.ts caddy`. */
 async function caddy() {
-  console.log("\nFull-stack app behind Caddy, with HTTPS");
-  const p = createProject("e2e-caddy", "framework", ["caddy"], 3103, 9103);
+  console.log("\nFull-stack app with the default stack: PostgreSQL, Redis, S3 storage and Caddy (HTTPS)");
+  const p = createProject("e2e-caddy", "framework", ["postgres", "redis", "s3", "caddy"], 3103, 9103);
   const https = (path: string, init: RequestInit = {}) => fetch(`https://localhost${path}`, { ...init, tls: { rejectUnauthorized: false } } as RequestInit);
   try {
     const up = p.cli("up");
-    check("`archlast-forge up` starts the app and Caddy", up.ok, up.err || up.out);
+    check("`archlast-forge up` starts the app, its services and Caddy", up.ok, up.err || up.out);
     check("the app itself is not published", sh(["docker", "ps", "--format", "{{.Ports}}", "--filter", "name=e2e-caddy-app"], p.dir).out.includes("->") === false);
 
     const home = await https("/", { headers: { "accept-encoding": "gzip" } });
