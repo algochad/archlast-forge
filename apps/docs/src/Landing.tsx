@@ -171,13 +171,15 @@ function Demo() {
 }
 
 function Footer() {
-  const col = (name: string, links: ReactNode, wide = false) => (
-    <div className={`foot-col${wide ? " wide" : ""}`}>
+  const col = (name: string, links: ReactNode) => (
+    <div className="foot-col">
       <h4>{name}</h4>
       <div className="foot-links">{links}</div>
     </div>
   );
   const pages = (name: string) => GROUPS.find(([g]) => g === name)![1].map((s) => <Link key={s} to={`/${s}`}>{titleOf(s)}</Link>);
+  // Groups stacked into columns of about the same height.
+  const stack = (...names: string[]) => <div className="foot-col">{names.map((n) => <Fragment key={n}>{col(n, pages(n))}</Fragment>)}</div>;
   return (
     <footer className="foot">
       <div className="foot-in">
@@ -186,9 +188,10 @@ function Footer() {
           <p>A self-hosted reactive backend for TypeScript apps, with an optional full-stack React framework.</p>
           <Link className="btn" to="/getting-started">Get started <Arrow /></Link>
         </div>
-        {col("Start", pages("Start"))}
-        {col("Build", pages("Build"), true)}
-        <div className="foot-col">{col("Run", pages("Run"))}{col("Reference", pages("Reference"))}</div>
+        {stack("Start", "Project modes")}
+        {stack("Data and functions")}
+        {stack("Server features", "Clients and guides")}
+        {stack("Run", "Reference")}
         {col("Project", [["GitHub", GITHUB], ["Issues", `${GITHUB}/issues`], ["npm", NPM], ["License", `${GITHUB}/blob/master/LICENSE`], ["llms.txt", "/llms.txt"], ["llms-full.txt", "/llms-full.txt"]].map(([t, h]) => <a key={t} href={h}>{t}</a>))}
       </div>
       <div className="foot-bar">

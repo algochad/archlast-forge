@@ -1,6 +1,6 @@
 # NestJS
 
-[NestJS](https://nestjs.com) runs inside the engine. Its controllers answer under `/http`, next to the routes in `forge/http.ts`, and so do WebSocket gateways, GraphQL and the transports of microservices. Its services are classes that queries, mutations and actions use, and each call's `ctx` reaches them automatically. Everything comes from `@archlast/forge-runtime/nest` and its three companions, `/nest/websockets`, `/nest/graphql` and `/nest/microservices`, so you never install or import `@nestjs/*`. It works the same in a full-stack app and a backend.
+[NestJS](https://nestjs.com) runs inside the engine. Its controllers answer under `/http`, next to the routes in `forge/http.ts`, and so do WebSocket gateways, GraphQL and the transports of microservices. Its services are classes that queries, mutations and actions use, and each call's `ctx` reaches them automatically. Everything comes from `@archlast/forge-runtime/nest` and its three companions, `/nest/websockets`, `/nest/graphql` and `/nest/microservices`, so you never install or import `@nestjs/*`. It works the same in a full-stack app and a backend: [Backends](backend.html#nestjs) and [Full-stack apps](framework.html#nestjs) say what is particular to each.
 
 Nest doesn't start a server of its own. The engine receives the request, runs it as an [HTTP action](http.html) and hands it to Nest, so rate limits, request ids, logs, metrics and the action time limit apply as they do to any `/http` route. WebSockets are the engine's too: it holds the socket and passes its messages to the gateway.
 
@@ -120,7 +120,7 @@ nest(http, { controllers: [NotesController], providers: [Clock, NotesReader, Not
 export default http;
 ```
 
-- `nest(http, options)` takes `controllers`, `providers`, `imports` (Nest modules, including ones that configure middleware), `prefix`, `cors`, `microservices`, `setup` and `logger`. `nest(http, AppModule)` takes a module class instead.
+- `nest(http, options)` takes `controllers`, `providers`, `imports` (Nest modules, including ones that configure middleware), `prefix`, `cors`, `microservices`, `websockets`, `setup` and `logger`. `nest(http, AppModule)` takes a module class instead.
 - `prefix` (default `"/"`) is where the controllers answer below `/http`. With `prefix: "/api/"`, `@Controller("notes")` answers at `/http/api/notes`.
 - The providers here are also what `inject()` resolves, so register every service there, including ones only functions use.
 - Routes added with `http.route()` keep priority: exact paths win, then the longest prefix, then Nest. A path no one has answers with Nest's 404.
@@ -323,6 +323,11 @@ export class MathController {
 - In this entry `Ctx` is the engine's: a message has no caller, so `@Ctx()` gives an anonymous `ActionCtx`. Nest's transport context (`RedisContext`, `NatsContext`, ...) is `@TransportCtx()`.
 - Use `host: "0.0.0.0"` in a container so other containers reach it, and publish the port in `compose.yaml` if something outside the stack connects. `ClientsModule` and `ClientProxyFactory` are here too, for sending to other services.
 - With `RUNTIME_WORKERS > 1`, the transports listen in the first function runtime process only, so a port is bound once. Clients (`ClientsModule`) work in every process.
+
+## Testing
+
+- `createTestBackend` from `@archlast/forge-runtime/testing` runs functions that use services the way the server does: `inject(ctx, Service)` resolves the providers you mounted in `forge/http.ts`. So `t.query(api.notes.recent)` tests `NotesReader` through the query that uses it. See [Testing](testing.html).
+- Controllers, gateways, GraphQL and microservices need the server. Start it and call `/http/...`, as in [Testing a running app](testing.html#testing-a-running-app).
 
 ## Errors
 

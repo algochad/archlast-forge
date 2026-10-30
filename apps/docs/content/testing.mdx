@@ -31,6 +31,8 @@ Make one backend per test. It is a fresh in-memory SQLite database with your tab
 
 References are the generated ones (`api.todos.add`, `internal.reminders.send`), so arguments and results are type-checked.
 
+Functions that use [NestJS](nest.html#testing) services work too: `inject(ctx, Service)` resolves the providers mounted in `forge/http.ts`.
+
 Calls go through the same code as a real call: arguments are validated, `returns` validators are checked, a mutation runs in a transaction that rolls back when it throws, and a query reads from one snapshot.
 
 ## A complete test file

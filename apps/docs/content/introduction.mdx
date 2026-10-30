@@ -40,6 +40,7 @@ It is **not** a hosting platform. One deployment serves one app. There is no con
 | **Storage** | File uploads straight from the browser to any S3-compatible service (RustFS, AWS S3) through presigned URLs. File bytes never pass through the engine. | [File storage](storage.html) |
 | **Scheduling** | `ctx.scheduler.runAfter` and `runAt` from mutations and actions; `crons.ts` for recurring jobs, evaluated in UTC. Scheduled mutations run exactly once. | [Scheduling](scheduling.html) |
 | **HTTP endpoints** | Plain `Request` to `Response` routes under `/http`, for webhooks and public APIs. | [HTTP endpoints](http.html) |
+| **NestJS** | Nest controllers, services, WebSocket gateways (plain or Socket.IO), GraphQL and microservices inside the engine, from `@archlast/forge-runtime/nest`. Services get each call's `ctx`, so queries and mutations can use them. Nothing to install. | [NestJS](nest.html) |
 | **Dashboard** | A web UI at `/_dashboard`: browse and edit data, run functions, watch logs, metrics, cache statistics, scheduled jobs, files, users and an audit log. | [Dashboard](dashboard.html) |
 | **Full-stack framework** | Server-rendered React with file-based routes, loaders that preload live data, and sign-in state in the first HTML. Built on React Router's data router. | [Full-stack apps](framework.html) |
 | **Clients** | A plain TypeScript client, plus React, Vue and Svelte bindings. The wire protocol is plain JSON over HTTP and WebSocket, so any language can speak it. | [Clients](clients.html) |
@@ -83,32 +84,44 @@ If the app is a website, start with the full-stack mode. If you already have a f
 
 ## Map of the docs
 
-**Start here**
+The sidebar has the same sections, in the same order.
+
+**Start**
 
 - [How it works](concepts.html): the mental model. Processes, the life of a query and a mutation, how live queries stay current, glossary.
 - [Getting started](getting-started.html): create, run and change a project in each mode.
 - [Tutorial: a notes app](tutorial.html): a complete app with auth, search, optimistic updates and deployment.
 
-**Building an app**
+**Project modes**
 
-- [Full-stack apps](framework.html): routes, loaders, the page head, styles, errors.
-- [Backends](backend.html): the backend project, its stack and how frontends connect.
+- [Full-stack apps](framework.html): routes, loaders, the page head, styles, errors, and NestJS next to the pages.
+- [Backends](backend.html): the backend project, its stack, how frontends connect, and NestJS in a backend.
+
+**Data and functions**
+
 - [Schema and validators](schema.html): tables, `v`, indexes, search indexes.
 - [Functions](functions.html): queries, mutations, actions, internal functions.
 - [Reading data](queries.html): indexes, filters, aggregates, joins, pagination, search.
 - [Reactivity](reactivity.html): topics, read sets, what makes a query re-run.
 - [Caching](caching.html): the shared query cache and its statistics.
-- [Authentication](auth.html): sign-in, identities, plugins.
-- [File storage](storage.html): presigned uploads and downloads.
-- [HTTP endpoints](http.html): `forge/http.ts` routes.
-- [Scheduling and crons](scheduling.html): delayed functions and recurring jobs.
 - [Errors](errors.html): what callers see, `ForgeError`, request ids.
 - [Migrations and data](migrations.html): index changes, data migrations, export and import.
-- [Testing](testing.html): testing functions against an in-memory backend.
+
+**Server features**
+
+- [Authentication](auth.html): sign-in, identities, plugins.
+- [File storage](storage.html): presigned uploads and downloads.
+- [Scheduling and crons](scheduling.html): delayed functions and recurring jobs.
+- [HTTP endpoints](http.html): `forge/http.ts` routes.
+- [NestJS](nest.html): controllers, services with the call's ctx, gateways, Socket.IO, GraphQL, microservices.
+
+**Clients and guides**
+
 - [Clients: React, Vue, Svelte](clients.html): hooks, optimistic updates, the plain client.
+- [Testing](testing.html): testing functions against an in-memory backend.
 - [Recipes](recipes.html): worked answers to common tasks.
 
-**Running it**
+**Run**
 
 - [CLI reference](cli.html): every command and flag.
 - [Deployment](deployment.html): `up`, Docker, HTTPS, backups, upgrades, scaling out.
@@ -127,7 +140,7 @@ If the app is a website, start with the full-stack mode. If you already have a f
 |---|---|
 | `create-archlast-forge` | The scaffolder behind `bun create archlast-forge` |
 | `@archlast/forge-cli` | The `archlast-forge` command |
-| `@archlast/forge-runtime` | The engine, and the `v`, `query`, `mutation` helpers your `forge/` code imports |
+| `@archlast/forge-runtime` | The engine, and the `v`, `query`, `mutation` helpers your `forge/` code imports. NestJS is its `/nest` subpath, with `/nest/websockets`, `/nest/graphql` and `/nest/microservices` |
 | `@archlast/forge-client` | The TypeScript client (HTTP, WebSocket, auth) |
 | `@archlast/forge-react`, `-vue`, `-svelte` | Framework bindings |
 | `@archlast/forge-framework` | The full-stack React framework |

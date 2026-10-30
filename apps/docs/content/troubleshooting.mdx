@@ -8,6 +8,7 @@ Find the message or symptom, read the cause, apply the fix. The messages here ar
 - [Calls fail](#calls-fail)
 - [Sign-in, origins and cookies](#sign-in-origins-and-cookies)
 - [Pages and the build](#pages-and-the-build)
+- [NestJS](#nestjs)
 - [Live queries](#live-queries)
 - [Storage, databases and Redis](#storage-databases-and-redis)
 - [Performance and memory](#performance-and-memory)
@@ -300,6 +301,38 @@ Fix: render the same thing on both sides first and set browser-only values in `u
 ### `Cannot find module` for `@archlast/forge-…`
 
 The package names are scoped: `@archlast/forge-runtime`, `-client`, `-react`, `-vue`, `-svelte`, `-framework`, `-dashboard`, `-cli`; the scaffolder is `create-archlast-forge`. The scope is `@archlast`; a different scope in an import, such as the project's own name, will not resolve.
+
+## NestJS
+
+### `error TS1241: Unable to resolve signature of method decorator when called as an expression`
+
+`tsc` (and `bun run typecheck`) doesn't have the decorator options. That is the case for projects created before `0.4.0`. `TS1206: Decorators are not valid here` comes with it. Add the options to `forge/tsconfig.json`:
+
+```json
+{
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  }
+}
+```
+
+In a full-stack app, add `"experimentalDecorators": true` to the root `tsconfig.json` too, because the pages type-check `forge/` through `forge/_generated/api`. The engine compiles decorators with these options whatever the tsconfig says, so only the type check fails.
+
+### `Nest can't resolve dependencies of the NotesController (?)`
+
+The full message goes on with `Please make sure that the argument at index [0] is available in the current module`. A constructor parameter has no class that Nest can find. There are two causes:
+
+- **The class was imported with `import type`.** With `verbatimModuleSyntax`, which the starter's tsconfig sets, a type-only import is erased, so the decorator metadata names no class. Import injected classes as values: `import { Clock } from "./notes.service"`.
+- **The class isn't registered.** Add it to `providers` in `nest()`, or to a module that `nest()` imports.
+
+A mistake like this doesn't stop the engine. It fails every call that needs the Nest app: requests to its routes answer 500, and `inject()` throws. In development the answer has Nest's message. In production it is `Server error (request <id>)`, and the log has the message.
+
+### A gateway or Socket.IO client can't connect
+
+- **The socket opens, then closes with code 1008.** No gateway answers that path. A gateway's `path` is below `/http` and the `prefix`, so `@WebSocketGateway({ path: "/chat" })` is `ws://host/http/chat`. Socket.IO clients need `path: "/http/socket.io"`, and the app needs `nest(http, { websockets: "socket.io" })`.
+- **The upgrade answers `403 Origin not allowed. Add it to TRUSTED_ORIGINS.`** The page is on another origin. Add that origin to `TRUSTED_ORIGINS`.
+- **A socket closes with code 1012 in development.** Your functions restarted after a save, which closes gateway sockets. Reconnect. Socket.IO clients do it on their own.
 
 ## Live queries
 

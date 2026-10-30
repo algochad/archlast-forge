@@ -18,7 +18,7 @@ api/
   forge/
     schema.ts            tables
     messages.ts          queries and a mutation (a starter)
-    http.ts              plain HTTP routes, served under /http
+    http.ts              plain HTTP routes under /http, and NestJS if you mount it there
     files.ts             upload URL and download URL functions (only with s3)
     package.json         server-side dependencies (@archlast/forge-runtime, ...)
     tsconfig.json
@@ -171,6 +171,139 @@ The schema has `payments: defineTable({ eventId: v.string(), amount: v.number() 
 - Store the secret with `archlast-forge env set WEBHOOK_SECRET …` (stored in the database, loaded into functions) or pass it through `compose.yaml`. The process environment wins over stored variables. A restart is not needed for `env set`: the CLI reloads the running engine.
 - `process.env` and `Bun` are typed in the starter's `forge/` (it includes `@types/bun`). A project created before `0.2.0` needs `bun add -d @types/bun` in `forge/` and `"types": ["bun"]` in `forge/tsconfig.json`.
 - Retries are the sender's job; make the handler idempotent as above. Handlers are actions, which are at-most-once; see [HTTP endpoints](http.html) for their rules.
+
+## NestJS
+
+A backend can also be a Nest app. Controllers, services, guards, pipes, WebSocket gateways, GraphQL resolvers and microservice handlers go in `forge/` next to your functions. `nest()` in `forge/http.ts` mounts them under `/http`. Everything comes from `@archlast/forge-runtime/nest`, which `forge/package.json` already depends on, so there is nothing to install. Since `0.4.0`, the starter's `forge/tsconfig.json` has the two decorator options Nest needs. This section covers what is specific to a backend. [NestJS](nest.html) has the full API.
+
+```
+forge/
+  schema.ts              notes: defineTable({ text: v.string(), at: v.number() })
+  notes.service.ts       @Injectable() classes; ForgeService gets the call's ctx
+  notes.ts               queries and mutations that use them: inject(ctx, ...)
+  notes.controller.ts    @Controller("notes"): GET and POST /http/notes
+  http.ts                nest(http, { controllers, providers })
+```
+
+```ts
+// forge/notes.service.ts
+import { ForgeService, Injectable, type MutationCtx, type QueryCtx } from "@archlast/forge-runtime/nest";
+
+@Injectable()
+export class Clock {
+  now() {
+    return Date.now();
+  }
+}
+
+@Injectable()
+export class NotesReader extends ForgeService<QueryCtx> {
+  recent() {
+    return this.ctx.db.query("notes").order("desc").take(20);
+  }
+}
+
+@Injectable()
+export class NotesWriter extends ForgeService<MutationCtx> {
+  constructor(private readonly clock: Clock) {
+    super();
+  }
+  add(text: string) {
+    return this.ctx.db.insert("notes", { text, at: this.clock.now() });
+  }
+}
+```
+
+```ts
+// forge/notes.ts: the functions your frontend calls, and the ones the controller runs
+import { mutation, query, v } from "@archlast/forge-runtime";
+import { inject } from "@archlast/forge-runtime/nest";
+import { NotesReader, NotesWriter } from "./notes.service";
+
+export const recent = query({ args: {}, handler: async (ctx) => (await inject(ctx, NotesReader)).recent() });
+
+export const add = mutation({
+  args: { text: v.string() },
+  handler: async (ctx, { text }) => (await inject(ctx, NotesWriter)).add(text),
+});
+```
+
+```ts
+// forge/notes.controller.ts
+import { Body, Controller, Ctx, Get, Post, type ActionCtx } from "@archlast/forge-runtime/nest";
+import { api } from "./_generated/api";
+
+@Controller("notes")
+export class NotesController {
+  @Get()
+  list(@Ctx() ctx: ActionCtx) {
+    return ctx.runQuery(api.notes.recent);
+  }
+
+  @Post()
+  async add(@Ctx() ctx: ActionCtx, @Body() body: { text: string }) {
+    return { id: await ctx.runMutation(api.notes.add, { text: body.text }) };
+  }
+}
+```
+
+```ts
+// forge/http.ts
+import { httpAction, httpRouter } from "@archlast/forge-runtime";
+import { nest } from "@archlast/forge-runtime/nest";
+import { NotesController } from "./notes.controller";
+import { Clock, NotesReader, NotesWriter } from "./notes.service";
+
+const http = httpRouter();
+
+http.route({
+  method: "GET",
+  path: "/hello",
+  handler: httpAction(async () => Response.json({ message: "Hello from api" })),
+});
+
+nest(http, { controllers: [NotesController], providers: [Clock, NotesReader, NotesWriter] });
+export default http;
+```
+
+I ran these files in a project made with `bun create archlast-forge@0.4.0 --mode backend`. Its `bun run typecheck` passes, and these are the answers from `dev`:
+
+```bash
+curl -X POST http://localhost:3000/http/notes -H 'content-type: application/json' -d '{"text":"from curl"}'
+# {"id":"notes:860a526d94914a68a0e20101ff38ca20"}
+
+curl http://localhost:3000/http/notes
+# [{"_id":"notes:860a526d94914a68a0e20101ff38ca20","_creationTime":1793394048740.756,"text":"from curl","at":1793394048736}]
+
+# the same service through the function, which clients can also subscribe to
+curl -X POST http://localhost:3000/rpc/notes:recent -H 'content-type: application/json' -d '{}'
+# {"result":[{"_id":"notes:860a526d94914a68a0e20101ff38ca20", ...}]}
+
+# a path no route or controller has answers with Nest's 404
+curl http://localhost:3000/http/nope
+# {"message":"Cannot GET /nope","error":"Not Found","statusCode":404}
+```
+
+What to know in a backend:
+
+- **REST and live data share the services.** The controller serves REST clients, and your own frontend can `useQuery(api.notes.recent)` the same data live. Both go through `NotesReader`. Keep writes in mutations, as the controller above does, so each write is one transaction and live queries see it.
+- **Development.** `bun run dev` runs Nest inside the engine container like the rest of `forge/`. Saving a file restarts your functions, and the Nest app with them. The restart closes gateway sockets with code 1012, so their clients reconnect (Socket.IO clients do this on their own). Live queries on `/rpc` stay connected.
+- **The stack.** Controllers, gateways, Socket.IO and GraphQL are served by the `app` container on its port, through Caddy when the stack has it, so there is nothing to add to `compose.yaml`. Caddy passes WebSocket upgrades through. For browsers on other origins, set `cors` in `nest()` for the controllers. A gateway's socket is checked against `TRUSTED_ORIGINS`, like `/rpc`.
+- **Microservices.** A transport listens inside the `app` container, so give a TCP transport `host: "0.0.0.0"`. Other services in the stack reach it as `app:4000`. Something outside the stack needs the port published, and that holds with Caddy too, which only proxies HTTP:
+
+  ```yaml
+    app:
+      ports:
+        - "4000:4000"   # the TCP microservice
+  ```
+
+  The clients for the Redis, NATS, MQTT, Kafka, RabbitMQ and gRPC transports come with the runtime. Point their options at your broker's address.
+- **Workers and replicas.**
+  - With `RUNTIME_WORKERS > 1`, gateway sockets and microservice transports live in the first function runtime process. HTTP routes and GraphQL queries spread over all of them, and `createPubSub` events reach every process.
+  - With several `app` containers (`REPLICAS`), each runs its own Nest app, and a TCP transport listens in each. Sockets, Socket.IO rooms and pubsub events stay in their container, so reach every client through the database: a mutation that their live queries follow.
+- **Errors** answer as in Nest: an `HttpException` with its status and `{ "statusCode", "message" }`. A `ForgeError` answers 400. Anything else answers 500 with a request id, and shows its message only in development.
+
+The project's end-to-end test builds a backend like this with `archlast-forge up` on PostgreSQL. It checks a controller writing through a service, CORS, an Express-style response, server-sent events, a gateway that gets the caller's ctx, a GraphQL query, mutation and subscription, and the TCP microservice from inside the container.
 
 ## The stack
 
@@ -367,6 +500,7 @@ or leave `deploy` out and run `docker compose up -d --scale app=2`. Things to kn
 - Sticky sessions are not needed. WebSocket subscriptions are per connection, and a mutation on one server reaches subscribers on the others through Redis.
 - Migrations take advisory locks in PostgreSQL, and cron and scheduled-function runs are inserted under deterministic ids and claimed in the database, so starting replicas together does not duplicate them (from reading the code).
 - `RUNTIME_WORKERS` is a different knob: function-runtime processes inside one server.
+- A NestJS app runs in every replica. See [NestJS](#nestjs) for what stays in one container.
 
 Two app replicas behind Caddy have not been tested, and the project's end-to-end test does not run them either. The checks above come from the config validation, the code, and Caddy's documentation. Try it with a staging copy before relying on it, and look at `GET /ready` and `/metrics` on each replica. See [Deployment](deployment.html#scaling-out) for the load balancer side.
 
@@ -471,7 +605,7 @@ Keep `volumes: app-data:/data` on the app (and the `volumes:` entries at the bot
 - [ ] HTTPS is terminated by Caddy or your proxy, and `TRUST_PROXY=1` is set so rate limits see the visitor, with a proxy that overwrites `X-Forwarded-For` (the engine uses its first address).
 - [ ] `TRUSTED_ORIGINS` lists exactly the frontends that need it, and the compose file passes it through.
 - [ ] `DASHBOARD=off` unless you use the dashboard in production; if on, the admin key and accounts are strong.
-- [ ] PostgreSQL and Redis are not published to the network; only Caddy (80, 443) or your proxy is.
+- [ ] PostgreSQL and Redis are not published to the network; only Caddy (80, 443) or your proxy is, plus a microservice port if something outside the stack needs it.
 - [ ] Backups run on a schedule, and a restore has been tried.
 - [ ] Images are pinned. `restart: unless-stopped` is set (it is by default).
 - [ ] `GET /ready` is what your monitor or load balancer checks; `/metrics` is scraped with a token ([Deployment](deployment.html#logs-and-metrics)).

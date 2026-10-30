@@ -7,7 +7,7 @@ bun create archlast-forge my-app --mode framework
 cd my-app && bun install && bun run dev
 ```
 
-Open http://localhost:3000. The starter has a home page, a sign-in page and a live chat. The rest of this page explains how each part works and ends with examples you can copy. For the backend half (schema, functions, auth), see [Schema](schema.html), [Functions](functions.html) and [Authentication](auth.html). For a backend without pages, see [Backends](backend.html).
+Open http://localhost:3000. The starter has a home page, a sign-in page and a live chat. The rest of this page explains how each part works and ends with examples you can copy. For the backend half (schema, functions, auth), see [Schema](schema.html), [Functions](functions.html) and [Authentication](auth.html). To write it with NestJS, see [NestJS](#nestjs) below. For a backend without pages, see [Backends](backend.html).
 
 ## Project layout
 
@@ -21,7 +21,7 @@ my-app/
       index.tsx          /
       chat.tsx           /chat
       sign-in.tsx        /sign-in
-  forge/                 your backend: schema.ts, functions, forge/package.json
+  forge/                 your backend: schema.ts, functions, http.ts (and NestJS), forge/package.json
     _generated/          api, internal and dataModel types (committed)
     data/                the SQLite database in development (ignored by git)
   public/                served as they are: /favicon.svg, /robots.txt
@@ -407,6 +407,45 @@ export function ErrorBoundary() {
 
 Add an `ErrorBoundary` to a route to keep the rest of the page alive: in `blog/[slug].tsx`, a missing post shows "That post is gone" inside the blog layout while the header and navigation stay. An error thrown while rendering in the browser (not in a loader) is caught by the same boundaries.
 
+## NestJS
+
+The `forge/` half of a full-stack app can use NestJS the same way a backend does. Services, controllers, WebSocket gateways, GraphQL and microservices go in `forge/` and are mounted with `nest()` in `forge/http.ts`. The process that renders your pages serves them under `/http`. [Backends](backend.html#nestjs) walks through a complete example with its files, and [NestJS](nest.html) has the full API. What is particular to an app with pages:
+
+- **Three compiler options.** `forge/tsconfig.json` needs `experimentalDecorators` and `emitDecoratorMetadata`. The root `tsconfig.json` needs `experimentalDecorators` too, because the pages type-check `forge/` through `forge/_generated/api`. Without it, `bun run typecheck` stops at the first decorator with `error TS1241: Unable to resolve signature of method decorator when called as an expression.` Projects created with `0.4.0` or later have all three.
+- **Pages read through queries, and queries can use services.** A query calls `inject(ctx, Service)`, and a loader preloads it as usual. The first HTML has the data, and the list stays live:
+
+  ```ts
+  // forge/notes.ts
+  export const recent = query({ args: {}, handler: async (ctx) => (await inject(ctx, NotesReader)).recent() });
+  ```
+
+  ```tsx
+  // app/routes/notes.tsx
+  import { useQuery } from "@archlast/forge-react";
+  import type { LoaderArgs } from "@archlast/forge-framework";
+  import { api } from "../../forge/_generated/api";
+
+  export const loader = async ({ ctx }: LoaderArgs) => {
+    await ctx.query(api.notes.recent);
+    return null;
+  };
+
+  export default function Notes() {
+    const notes = useQuery(api.notes.recent);
+    return <ul>{notes?.map((n) => <li key={n._id}>{n.text}</li>)}</ul>;
+  }
+  ```
+
+  I ran this in a project made with `bun create archlast-forge@0.4.0`. After a `POST /http/notes` to the controller from [Backends](backend.html#nestjs), `GET /notes` answered with `<ul><li>written through Nest</li></ul>` in the server-rendered HTML.
+- **Controllers are for other callers.** REST clients, webhooks, a mobile app or another server call `/http/...`. A page can `fetch("/http/notes")` too. It is on the same origin, so the session cookie goes along and `@Ctx()` sees the signed-in user. But that result isn't preloaded or live, so for data a page shows, prefer a query.
+- **Sockets from a page.** Open them in an effect, because components also render on the server:
+  - A plain gateway: `new WebSocket(location.origin.replace(/^http/, "ws") + "/http/chat")`.
+  - Socket.IO: add `socket.io-client` to the root `package.json` and connect with `io({ path: "/http/socket.io" })`.
+
+  The page is on the app's own origin, so the origin check passes without `TRUSTED_ORIGINS`.
+- **`/http` belongs to the engine.** A route file can't take a path under it (see [Reserved paths](#reserved-paths)). Nest doesn't serve pages: its `listen()`, static assets and view engines aren't available.
+- **Development and production.** In `bun run dev`, saving a file in `forge/` restarts your functions, and the Nest app with them. Saving a page only rebuilds the pages. In production, Nest runs in the same container and process as the pages. The image needs nothing more, because the runtime brings every Nest package.
+
 ## How a request becomes a page
 
 1. The engine gets a `GET` or `HEAD` request it has no route for. (Anything else it doesn't own is a plain 404.) A path with a file extension is first looked up in `public/`.
@@ -700,7 +739,7 @@ In Docker, `archlast-forge up` builds an image from the project's `Dockerfile`: 
 
 ## Reserved paths
 
-These belong to the engine and are not available to routes: `/rpc`, `/api/auth`, `/http`, `/_app`, `/_admin`, `/_dashboard`, `/_cli` (POST), `/health`, `/ready`, `/metrics`. A route file named `health.tsx` would never be reached. Your `forge/http.ts` routes live under `/http` (see [HTTP endpoints](http.html)).
+These belong to the engine and are not available to routes: `/rpc`, `/api/auth`, `/http`, `/_app`, `/_admin`, `/_dashboard`, `/_cli` (POST), `/health`, `/ready`, `/metrics`. A route file named `health.tsx` would never be reached. Your `forge/http.ts` routes, and NestJS if you mount it, live under `/http` (see [HTTP endpoints](http.html) and [NestJS](#nestjs)).
 
 `/_dashboard` and `/_admin` exist only when the dashboard is on (development, or `DASHBOARD=on`). Otherwise `/_admin/*` answers a plain 404 and `/_dashboard` falls through to your app, which renders its own 404 page.
 
