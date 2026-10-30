@@ -22,7 +22,13 @@ export function docker(args: string[], opts: { inherit?: boolean; input?: string
 }
 
 let available: boolean | undefined;
-export const dockerAvailable = () => (available ??= Bun.spawnSync([DOCKER, "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0);
+export const dockerAvailable = () => {
+  try {
+    return (available ??= Bun.spawnSync([DOCKER, "info"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0);
+  } catch {
+    return (available = false); // no docker binary at all: Bun throws instead of failing the command
+  }
+};
 
 /** Stable per-project name, from the directory holding forge/. */
 export function projectName(forgeDir: string) {
