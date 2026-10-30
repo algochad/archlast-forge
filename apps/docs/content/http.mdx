@@ -2,6 +2,8 @@
 
 Some things can't be a function call: a webhook from a payment provider, a JSON API for people who don't use your client, a download link, a health check. For those, declare plain HTTP routes in `forge/http.ts`. Each route has a method, a path and a handler that takes a standard `Request` and returns a standard `Response`.
 
+For controllers and services in the NestJS style, mount Nest on the same router: see [NestJS](nest.html).
+
 ```ts
 // forge/http.ts
 import { httpAction, httpRouter } from "@archlast/forge-runtime";

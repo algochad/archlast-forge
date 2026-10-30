@@ -21,6 +21,15 @@ import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager } from "./subscriptions";
 import { Tracer } from "./tracing";
 
+/** A socket of the RPC protocol, or of a Nest gateway under /http (`gateway`), whose events go to the function runtime. */
+type ServerSocket = SocketData & { gateway?: { sid: string; path: string; headers: [string, string][] } };
+
+/** The first subprotocol a client asks for, echoed back: clients such as graphql-ws refuse a handshake without it. */
+const subprotocol = (req: Request) => {
+  const wanted = req.headers.get("sec-websocket-protocol")?.split(",")[0]?.trim();
+  return wanted ? { "sec-websocket-protocol": wanted } : undefined;
+};
+
 /** A frontend the engine serves next to the API (framework mode). */
 export interface AppHost {
   /**
@@ -133,6 +142,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     for (const send of logStreams) send(e);
   };
   runtime.onPublish = (topics) => void bus.publish(topics).catch((e) => log("error", "publish failed", { error: String(e) }));
+  /** Sockets of Nest gateways, by id: the function runtime sends to and closes them through runtime.onWs. */
+  const gatewaySockets = new Map<string, ServerWebSocket<ServerSocket>>();
+  runtime.onWs = (msg) => {
+    const ws = gatewaySockets.get(msg.sid);
+    if (msg.op === "send") ws?.send(msg.data);
+    else ws?.close(msg.code ?? 1000, msg.reason);
+  };
   const queries = new QueryRunner(runtime, cache, ttl);
   const subs = new SubscriptionManager(bus, queries, (e, requestId = crypto.randomUUID()) => {
     const err = toPublicError(e, requestId, dev);
@@ -270,7 +286,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     return admin(path.slice("/_admin/".length), req, { admin: who, requestId });
   }
 
-  const server = Bun.serve<SocketData>({
+  const server = Bun.serve<ServerSocket>({
     port: config.port,
     hostname: config.hostname,
     maxRequestBodySize: config.limits.maxRequestBytes,
@@ -321,16 +337,31 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       // HTTP actions (forge/http.ts). Before the OPTIONS branch below, so a route can answer its own preflight and set its own headers.
       if (path === "/http" || path.startsWith("/http/")) {
+        const routed = new URL(req.url);
+        routed.pathname = path.slice("/http".length) || "/"; // the handler sees the path it registered
+        // A WebSocket for a Nest gateway (or GraphQL subscriptions): the socket is the server's, its events go to the function runtime.
+        if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
+          if (!originAllowed(req)) return new Response("Origin not allowed. Add it to TRUSTED_ORIGINS.", { status: 403 });
+          const retry = await limited(req, srv);
+          if (retry) return tooMany(retry);
+          await loading;
+          const ip = config.limits.rateLimitPerMinute ? clientIp(req, srv) : undefined;
+          const gateway = { sid: crypto.randomUUID(), path: routed.pathname + routed.search, headers: [...req.headers] as [string, string][] };
+          const data: ServerSocket = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, ip, live: new Map(), gateway };
+          if (srv.upgrade(req, { data, headers: subprotocol(req) })) return;
+          return new Response("WebSocket upgrade failed", { status: 400 });
+        }
         const retry = await limited(req, srv);
         if (retry) return withId(tooMany(retry));
         await loading;
         const body = req.method === "GET" ? undefined : await req.arrayBuffer();
-        const routed = new URL(req.url);
-        routed.pathname = path.slice("/http".length) || "/"; // the handler sees the path it registered
         try {
-          const r = await runtime.http({ method: req.method, url: routed.href, headers: [...req.headers], body }, pickAuthHeaders((n) => req.headers.get(n)), requestId);
+          // Socket.IO's long-polling requests carry EIO=; their sessions live where its sockets do, on worker 0.
+          const worker = routed.searchParams.has("EIO") ? 0 : undefined;
+          const r = await runtime.http({ method: req.method, url: routed.href, headers: [...req.headers], body }, pickAuthHeaders((n) => req.headers.get(n)), requestId, worker);
           // A body on a 204 or 304 is an error in a Response.
-          return withId(new Response(r.body.byteLength ? r.body : null, { status: r.status, headers: r.headers }));
+          const out = r.body instanceof ReadableStream ? r.body : r.body.byteLength ? r.body : null;
+          return withId(new Response(out, { status: r.status, headers: r.headers }));
         } catch (e) {
           return withId(errorResponse(toPublicError(e, requestId, dev, { path })));
         }
@@ -417,6 +448,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       open(ws) {
         connections++;
         sockets.add(ws);
+        const g = ws.data.gateway;
+        if (!g) return;
+        gatewaySockets.set(g.sid, ws);
+        runtime.wsEvent({ t: "ws", op: "open", sid: g.sid, path: g.path, headers: g.headers, requestId: ws.data.requestId });
       },
       async message(ws, msg) {
         if (config.limits.rateLimitPerMinute) {
@@ -424,12 +459,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           if (!r.allowed) return ws.close(1008, "Too many requests");
         }
         await loading; // a socket can connect before the function runtime has loaded, as an HTTP request can
-        if (typeof msg === "string") rpc.message(ws, msg);
+        const g = ws.data.gateway;
+        if (g) runtime.wsEvent({ t: "ws", op: "message", sid: g.sid, data: typeof msg === "string" ? msg : (msg.buffer.slice(msg.byteOffset, msg.byteOffset + msg.byteLength) as ArrayBuffer) });
+        else if (typeof msg === "string") rpc.message(ws, msg);
       },
-      close(ws) {
+      close(ws, code, reason) {
         connections--;
         sockets.delete(ws);
-        rpc.close(ws);
+        const g = ws.data.gateway;
+        if (!g) return rpc.close(ws);
+        gatewaySockets.delete(g.sid);
+        runtime.wsEvent({ t: "ws", op: "close", sid: g.sid, code, reason });
       },
     },
   });

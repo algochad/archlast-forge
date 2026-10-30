@@ -1,7 +1,7 @@
 // Function runtime process: runs the core (runtime-core.ts) behind IPC, so the server can restart it alone when code or dependencies change,
 // and kill it if a call hangs.
 import { serializeError } from "./executor";
-import type { Batch, HostMessage, RuntimeMessage } from "./protocol";
+import type { Batch, HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage } from "./protocol";
 import { startCore } from "./runtime-core";
 
 // One IPC write per turn of the event loop instead of one per message.
@@ -27,19 +27,42 @@ async function main() {
 
   async function answer(msg: HostMessage) {
     try {
-      send({ t: "result", id: msg.id, ok: true, value: await core.handle(msg) });
+      const value = await core.handle(msg);
+      const res = value as HttpResponseMessage;
+      if (res?.stream && res.body instanceof ReadableStream) {
+        // A stream can't cross IPC: the result goes now, the bytes follow as they are written.
+        send({ t: "result", id: msg.id, ok: true, value: { ...res, body: new ArrayBuffer(0) } });
+        void pump(msg.id, res.body);
+      } else send({ t: "result", id: msg.id, ok: true, value });
     } catch (e) {
       send({ t: "result", id: msg.id, ok: false, error: serializeError(e) });
     }
   }
 
-  process.on("message", async (msg: HostMessage | Batch<HostMessage> | { t: "shutdown" }) => {
+  /** Streamed bodies being sent, so the server can stop one when its client leaves. */
+  const pumps = new Map<number, ReadableStreamDefaultReader<Uint8Array>>();
+  async function pump(id: number, body: ReadableStream<Uint8Array>) {
+    const reader = body.getReader();
+    pumps.set(id, reader);
+    try {
+      for (let r = await reader.read(); !r.done; r = await reader.read()) send({ t: "chunk", id, data: r.value.buffer.slice(r.value.byteOffset, r.value.byteOffset + r.value.byteLength) as ArrayBuffer });
+      send({ t: "chunk", id, end: true });
+    } catch (e) {
+      send({ t: "chunk", id, error: (e as Error)?.message ?? String(e) });
+    } finally {
+      pumps.delete(id);
+    }
+  }
+
+  // Cancelling the reader cancels the body, which is how the handler hears that its client left (`res` and `req` emit "close").
+  const take = (m: HostMessage | HostEvent) => (m.t === "cancel" ? void pumps.get(m.id)?.cancel().catch(() => {}) : m.t === "ws" || m.t === "relay" ? core.event(m) : void answer(m));
+  process.on("message", async (msg: HostMessage | HostEvent | Batch<HostMessage | HostEvent> | { t: "shutdown" }) => {
     if (msg.t === "shutdown") {
       await core.shutdown();
       process.exit(0);
     }
-    if (msg.t === "batch") for (const m of msg.messages) void answer(m);
-    else await answer(msg);
+    if (msg.t === "batch") for (const m of msg.messages) take(m);
+    else take(msg);
   });
   send({ t: "ready", manifest: core.manifest });
 }

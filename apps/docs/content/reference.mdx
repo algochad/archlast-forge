@@ -337,6 +337,51 @@ function createTestBackend(forgeDir = "forge"): Promise<{
 
 The calls on the object itself are anonymous; `withIdentity` creates a `users` document (unless you pass `userId`) and returns callers signed in as that user. All three can call internal functions. `finishScheduledFunctions` runs every pending scheduled job as if time had passed, including ones they schedule, and throws `Scheduled functions keep scheduling more; gave up` after `maxRounds`. Not supported in the test backend: HTTP routes and crons. Guide: [Testing](testing.html).
 
+### NestJS (`@archlast/forge-runtime/nest`)
+
+Everything `@nestjs/common` exports (`Controller`, `Get`, `Post`, `Body`, `Param`, `Query`, `Injectable`, `Module`, `HttpException` and the rest), and from `@nestjs/core` `APP_FILTER`, `APP_GUARD`, `APP_INTERCEPTOR`, `APP_PIPE`, `BaseExceptionFilter`, `ModuleRef` and `Reflector`. rxjs is exported as `rxjs`. Explained in [NestJS](nest.html). Its own exports:
+
+```ts
+function nest(http: { route(spec: HttpRoute): void }, options: NestOptions | Type): void;
+interface NestOptions {
+  controllers?: Type[];
+  providers?: Provider[];
+  imports?: (Type | DynamicModule | Promise<DynamicModule> | ForwardReference)[];
+  prefix?: string; // default "/", below /http; starts and ends with "/"; controllers and gateways answer under it
+  cors?: boolean | CorsOptions | CorsOptionsDelegate; // as Nest's enableCors() takes it
+  microservices?: MicroserviceOptions[]; // each as app.connectMicroservice() takes it; they listen in the first function runtime process
+  websockets?: "ws" | "socket.io"; // the gateways' protocol: @nestjs/platform-ws's JSON (default) or Socket.IO at /http + prefix + "/socket.io"
+  setup?: (app: INestApplication) => void | Promise<void>; // before the app starts
+  logger?: LoggerService | LogLevel[] | false; // default ["error", "warn"]
+}
+function inject<T extends object>(ctx: NeededCtx<T>, type: Type<T>): Promise<T>; // NeededCtx: the C of ForgeService<C>, or any ctx
+abstract class ForgeService<C extends QueryCtx | MutationCtx | ActionCtx = QueryCtx | MutationCtx | ActionCtx> {
+  protected readonly ctx: C;
+}
+const Ctx: () => ParameterDecorator; // a handler's ActionCtx: an HTTP request's, a socket's, a GraphQL operation's; anonymous for a microservice message
+const InjectCtx: () => PropertyDecorator & ParameterDecorator; // the call's ctx, for classes that don't extend ForgeService
+const CTX: unique symbol; // the token InjectCtx() injects
+function onSocket(path: string, open: (socket: ForgeSocket) => void): void; // raw WebSockets at /http + prefix + path
+class ForgeSocket { id; readyState; protocol; request: { url; headers }; send(data); close(code?, reason?) } // and "message", "close" events
+type NestRequest; // req: Express's request API, plus raw (the Web Request) and rawBody
+type NestResponse; // res: Express's response API and Node's (write, end, writeHead, flushHeaders); streams once written to
+function createPubSub<Topics extends Record<string, unknown>>(): { publish(topic, payload): void; subscribe(topic): AsyncIterableIterator<Payload>; on(topic, listener): () => void }; // events reach every function runtime process
+type QueryCtx, MutationCtx, ActionCtx; // re-exported from @archlast/forge-runtime
+```
+
+`@archlast/forge-runtime/nest/websockets` exports everything `@nestjs/websockets` does (`WebSocketGateway`, `SubscribeMessage`, `MessageBody`, `ConnectedSocket`, `WebSocketServer`, `WsException`), `onSocket` and `ForgeSocket`, and Socket.IO's `Server`, `Socket` and `Namespace` types.
+
+`@archlast/forge-runtime/nest/graphql` exports everything `@nestjs/graphql` does (`GraphQLModule`, `Resolver`, `Query`, `Mutation`, `Subscription`, `Args`, `Field`, `ObjectType`, ...), `createPubSub` (above), and:
+
+```ts
+class ForgeGraphQLDriver; // GraphQLModule.forRoot({ driver: ForgeGraphQLDriver, ... })
+interface ForgeGraphQLOptions extends GqlModuleOptions {
+  yoga?: YogaServerOptions; // more options for Yoga: graphiql, maskedErrors, plugins (not schema, graphqlEndpoint or context)
+}
+```
+
+`@archlast/forge-runtime/nest/microservices` exports everything `@nestjs/microservices` does (`Transport`, `MessagePattern`, `EventPattern`, `Payload`, `ClientsModule`, `ClientProxyFactory`, ...), except that `Ctx` is the engine's (above) and Nest's transport context decorator is `TransportCtx`.
+
 ### Server entry (`@archlast/forge-runtime/server`)
 
 Bun only. Most projects never import it: the CLI starts the engine for you.

@@ -2,7 +2,7 @@ import type { Subprocess } from "bun";
 import type { FunctionKind, UserIdentity } from "../functions";
 import { serializeError, type CallHeaders, type CallResult, type ErrorKind, type LogEntry } from "./executor";
 import type { Manifest } from "./project";
-import type { Batch, HostMessage, HttpRequestMessage, HttpResponseMessage, RuntimeMessage, SerializedRequest, SerializedResponse } from "./protocol";
+import type { Batch, HostEvent, HostMessage, HttpRequestMessage, HttpResponseMessage, RuntimeMessage, SerializedRequest, SerializedResponse, SocketMessage } from "./protocol";
 import { startCore, type RuntimeCore } from "./runtime-core";
 
 // Next to this module: child.ts in the repo, child.js in the published build.
@@ -46,6 +46,8 @@ interface Worker {
   stop(): Promise<void>;
   kill(): void;
   request(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, onHang: () => void): Promise<unknown>;
+  /** A socket event, which needs no answer. */
+  event(msg: HostEvent): void;
 }
 
 /**
@@ -102,6 +104,10 @@ class InlineWorker implements Worker {
 
   /** Nothing to kill: the work runs on this thread (the watchdog handles a blocked one). */
   kill() {}
+
+  event(msg: HostEvent) {
+    this.proc?.event(msg);
+  }
 
   async request(msg: Omit2<HostMessage, "id">) {
     const core = this.proc;
@@ -182,22 +188,45 @@ class RuntimeProcess implements Worker {
       const p = this.pending.get(msg.id);
       this.pending.delete(msg.id);
       clearTimeout(p?.timer);
-      if (msg.ok) p?.resolve(msg.value);
-      else p?.reject(new RuntimeCallError(msg.error.message, msg.error.kind, msg.error.data, msg.error.stack));
+      if (!msg.ok) p?.reject(new RuntimeCallError(msg.error.message, msg.error.kind, msg.error.data, msg.error.stack));
+      else if ((msg.value as HttpResponseMessage | undefined)?.stream) {
+        // Its bytes follow as chunk messages with the same id.
+        const body = new ReadableStream<Uint8Array>({
+          start: (c) => void this.streams.set(msg.id, c),
+          cancel: () => (this.streams.delete(msg.id), this.event({ t: "cancel", id: msg.id })), // the client left: the handler hears it in the child
+        });
+        p?.resolve({ ...(msg.value as HttpResponseMessage), body });
+      } else p?.resolve(msg.value);
+      return;
+    }
+    if (msg.t === "chunk") {
+      const stream = this.streams.get(msg.id);
+      if (!stream) return; // the client went away
+      if (msg.data) stream.enqueue(new Uint8Array(msg.data));
+      if (msg.end || msg.error) this.streams.delete(msg.id);
+      if (msg.end) stream.close();
+      if (msg.error) stream.error(new Error(msg.error));
       return;
     }
     this.events.onMessage(msg);
   }
 
+  /** Streamed response bodies whose bytes are still arriving, by call id. */
+  private streams = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
+
   /** One IPC write per turn of the event loop instead of one per call. */
-  private outbox: HostMessage[] = [];
-  private enqueue(proc: Subprocess, msg: HostMessage) {
+  private outbox: (HostMessage | HostEvent)[] = [];
+  private enqueue(proc: Subprocess, msg: HostMessage | HostEvent) {
     if (this.outbox.push(msg) === 1) setImmediate(() => this.flush(proc));
   }
   private flush(proc: Subprocess) {
     const messages = this.outbox.splice(0);
     if (!messages.length || this.proc !== proc) return; // restarted meanwhile: these calls were failed with it
-    proc.send(messages.length === 1 ? messages[0]! : ({ t: "batch", messages } satisfies Batch<HostMessage>));
+    proc.send(messages.length === 1 ? messages[0]! : ({ t: "batch", messages } satisfies Batch<HostMessage | HostEvent>));
+  }
+
+  event(msg: HostEvent) {
+    if (this.proc) this.enqueue(this.proc, msg);
   }
 
   async stop() {
@@ -246,6 +275,8 @@ class RuntimeProcess implements Worker {
       p.reject(new RuntimeCallError(message, "internal"));
     }
     this.pending.clear();
+    for (const stream of this.streams.values()) stream.error(new Error(message));
+    this.streams.clear();
   }
 }
 
@@ -255,8 +286,12 @@ export class FunctionRuntime {
   loadError?: string;
   onPublish: (topics: string[]) => void = () => {};
   onLog: (entry: LogEntry) => void = () => {};
+  /** A gateway sends to, or closes, one of the server's sockets. */
+  onWs: (msg: SocketMessage) => void = () => {};
 
   private workers: Worker[] = [];
+  /** Each gateway socket stays with the worker that took its open, because that is where its state is. */
+  private sockets = new Map<string, Promise<Worker | undefined>>();
   private starting?: Promise<Manifest>;
   private next = 0;
   private stopping = false;
@@ -264,19 +299,42 @@ export class FunctionRuntime {
   constructor(private opts: Options) {}
 
   private spawn(index: number): Worker {
-    if (this.opts.inline) return new InlineWorker(this.opts, { onMessage: (msg) => (msg.t === "publish" ? this.onPublish(msg.topics) : msg.t === "log" ? this.onLog(msg.entry) : undefined) });
+    const onMessage = (msg: RuntimeMessage) => {
+      if (msg.t === "publish") this.onPublish(msg.topics);
+      else if (msg.t === "log") this.onLog(msg.entry);
+      else if (msg.t === "ws") this.onWs(msg);
+      else if (msg.t === "relay") for (const w of this.workers) if (w.ready) w.event(msg); // to every worker, the sender too: one path for all
+    };
+    if (this.opts.inline) return new InlineWorker(this.opts, { onMessage });
     return new RuntimeProcess(index, this.opts, {
-      onMessage: (msg) => {
-        if (msg.t === "publish") this.onPublish(msg.topics);
-        else if (msg.t === "log") this.onLog(msg.entry);
-      },
+      onMessage,
       // A crash outside a restart (e.g. out of memory) brings that process back, so one bad call doesn't take the server down.
       onCrash: (i, code) => {
         if (this.stopping || this.starting || !this.manifest) return;
         console.error(`function runtime ${i} exited (code ${code}); restarting it`);
+        this.closeSockets(1011, "The server restarted");
         void this.respawn(i);
       },
     });
+  }
+
+  /** A gateway socket's event, for the worker that has it. */
+  wsEvent(msg: Extract<HostEvent, { t: "ws" }>) {
+    if (msg.op === "open") {
+      const closed = () => (this.onWs({ t: "ws", op: "close", sid: msg.sid, code: 1011, reason: "The function runtime is not running" }), undefined);
+      // Worker 0, while it is up: every socket in one process, so a gateway's clients are all of them and a broadcast reaches everyone.
+      this.sockets.set(msg.sid, this.pick(0).then((w) => (w.event(msg), w), closed));
+      return;
+    }
+    const worker = this.sockets.get(msg.sid);
+    if (msg.op === "close") this.sockets.delete(msg.sid);
+    void worker?.then((w) => w?.event(msg)); // after its open: callbacks on one promise run in order
+  }
+
+  /** Their state was in a worker that is gone, so the clients reconnect to a fresh one. shortcut: closes every socket, not only that worker's; fine while one worker is the default. */
+  private closeSockets(code: number, reason: string) {
+    for (const sid of this.sockets.keys()) this.onWs({ t: "ws", op: "close", sid, code, reason });
+    this.sockets.clear();
   }
 
   private async respawn(index: number) {
@@ -307,6 +365,7 @@ export class FunctionRuntime {
 
   async stop() {
     this.stopping = true;
+    this.closeSockets(1012, "The server is restarting");
     await Promise.all(this.workers.map((w) => w.stop()));
   }
 
@@ -353,9 +412,10 @@ export class FunctionRuntime {
     return this.send({ t: "auth", req }, 30_000) as Promise<SerializedResponse>;
   }
 
-  http(req: HttpRequestMessage, headers: CallHeaders, requestId: string) {
+  /** `worker` pins the request to one process, where state it needs lives (Socket.IO's long-polling sessions are on worker 0). */
+  http(req: HttpRequestMessage, headers: CallHeaders, requestId: string, worker?: number) {
     const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
-    return this.send({ t: "http", req, headers, requestId }, t.actionMs + HARD_TIMEOUT_GRACE_MS) as Promise<HttpResponseMessage>;
+    return this.send({ t: "http", req, headers, requestId }, t.actionMs + HARD_TIMEOUT_GRACE_MS, worker) as Promise<HttpResponseMessage>;
   }
 
   admin<T = unknown>(op: string, args: Record<string, unknown>, actor: string) {

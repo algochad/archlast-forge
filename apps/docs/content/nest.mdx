@@ -1,0 +1,339 @@
+# NestJS
+
+[NestJS](https://nestjs.com) runs inside the engine. Its controllers answer under `/http`, next to the routes in `forge/http.ts`, and so do WebSocket gateways, GraphQL and the transports of microservices. Its services are classes that queries, mutations and actions use, and each call's `ctx` reaches them automatically. Everything comes from `@archlast/forge-runtime/nest` and its three companions, `/nest/websockets`, `/nest/graphql` and `/nest/microservices`, so you never install or import `@nestjs/*`. It works the same in a full-stack app and a backend.
+
+Nest doesn't start a server of its own. The engine receives the request, runs it as an [HTTP action](http.html) and hands it to Nest, so rate limits, request ids, logs, metrics and the action time limit apply as they do to any `/http` route. WebSockets are the engine's too: it holds the socket and passes its messages to the gateway.
+
+## Set up
+
+Decorators need two compiler options in `forge/tsconfig.json`. Projects created with `0.4.0` or later have them:
+
+```json
+{
+  "compilerOptions": {
+    "experimentalDecorators": true,
+    "emitDecoratorMetadata": true
+  }
+}
+```
+
+In a full-stack app, also set `"experimentalDecorators": true` in the root `tsconfig.json`. Pages type-check `forge/` through `forge/_generated/api`, and Nest's parameter decorators don't type-check without it. If a frontend of your own imports `forge/_generated`, set it in that frontend's tsconfig too.
+
+The engine compiles `forge/` files that use decorators with those options itself. Bun applies the tsconfig of the directory it runs in, not `forge/tsconfig.json`, so the settings above are for your editor and `tsc`. Stack traces still point at your source lines.
+
+## Services
+
+A service that reads or writes data extends `ForgeService` and names the ctx it needs. `this.ctx` is the ctx of the call it serves:
+
+```ts
+// forge/notes.service.ts
+import { ForgeService, Injectable, type MutationCtx, type QueryCtx } from "@archlast/forge-runtime/nest";
+
+@Injectable()
+export class Clock {
+  now() {
+    return Date.now();
+  }
+}
+
+@Injectable()
+export class NotesReader extends ForgeService<QueryCtx> {
+  recent() {
+    return this.ctx.db.query("notes").order("desc").take(20);
+  }
+}
+
+@Injectable()
+export class NotesWriter extends ForgeService<MutationCtx> {
+  constructor(private readonly clock: Clock) {
+    super();
+  }
+  add(text: string) {
+    return this.ctx.db.insert("notes", { text, at: this.clock.now() });
+  }
+}
+```
+
+A function gets a service with `inject(ctx, Service)`:
+
+```ts
+// forge/notes.ts
+import { mutation, query, v } from "@archlast/forge-runtime";
+import { inject } from "@archlast/forge-runtime/nest";
+import { NotesReader, NotesWriter } from "./notes.service";
+
+export const recent = query({ args: {}, handler: async (ctx) => (await inject(ctx, NotesReader)).recent() });
+
+export const add = mutation({
+  args: { text: v.string() },
+  handler: async (ctx, { text }) => (await inject(ctx, NotesWriter)).add(text),
+});
+```
+
+- **The ctx is checked.** `inject()` only accepts a ctx that has what the service asks for. A `ForgeService<MutationCtx>` can't be injected with a query's ctx, because a query can't write, and that's a type error. A `ForgeService<QueryCtx>` works from a query or a mutation. An action has no `db`, so it reaches data through `ctx.runQuery` and `ctx.runMutation`, as always.
+- **Scopes.** A `ForgeService` is request-scoped: there's one instance per call, and anything that injects it is request-scoped too. Two `inject()` calls with the same ctx share instances. A plain `@Injectable()` class with no ctx, like `Clock`, is a singleton for the whole app. Prefer singletons for anything that doesn't need the ctx, because request-scoped classes are built for every call.
+- **Constructor injection** works as in Nest. Import the classes you inject as values, not with `import type`, or their metadata is lost.
+- **Without the base class**, `@InjectCtx()` injects the same ctx into a constructor parameter or a property: `constructor(@InjectCtx() private readonly ctx: QueryCtx)`. The token is `CTX`.
+- Queries stay deterministic and reactive: a service reads through `this.ctx.db`, so the engine still knows which tables and documents a query read.
+
+## Controllers
+
+```ts
+// forge/notes.controller.ts
+import { Body, Controller, Ctx, Get, Param, Post, type ActionCtx } from "@archlast/forge-runtime/nest";
+import { api } from "./_generated/api";
+
+@Controller("notes")
+export class NotesController {
+  @Get()
+  list(@Ctx() ctx: ActionCtx) {
+    return ctx.runQuery(api.notes.recent);
+  }
+
+  @Post()
+  async add(@Ctx() ctx: ActionCtx, @Body() body: { text: string }) {
+    return { id: await ctx.runMutation(api.notes.add, { text: body.text }) };
+  }
+
+  @Get(":id")
+  one(@Param("id") id: string) {
+    return { id };
+  }
+}
+```
+
+A request is an action, so a controller gets an `ActionCtx` through `@Ctx()`. It has auth, storage and the scheduler, and it reaches the database through queries and mutations, where the services above do the work. That keeps every write in a transaction and every read reactive. A `ForgeService<ActionCtx>` injected into a controller gets the request's ctx too.
+
+## Mount it in forge/http.ts
+
+```ts
+// forge/http.ts
+import { httpAction, httpRouter } from "@archlast/forge-runtime";
+import { nest } from "@archlast/forge-runtime/nest";
+import { NotesController } from "./notes.controller";
+import { Clock, NotesReader, NotesWriter } from "./notes.service";
+
+const http = httpRouter();
+http.route({ method: "GET", path: "/health", handler: httpAction(async () => new Response("ok")) });
+
+nest(http, { controllers: [NotesController], providers: [Clock, NotesReader, NotesWriter] });
+export default http;
+```
+
+- `nest(http, options)` takes `controllers`, `providers`, `imports` (Nest modules, including ones that configure middleware), `prefix`, `cors`, `microservices`, `setup` and `logger`. `nest(http, AppModule)` takes a module class instead.
+- `prefix` (default `"/"`) is where the controllers answer below `/http`. With `prefix: "/api/"`, `@Controller("notes")` answers at `/http/api/notes`.
+- The providers here are also what `inject()` resolves, so register every service there, including ones only functions use.
+- Routes added with `http.route()` keep priority: exact paths win, then the longest prefix, then Nest. A path no one has answers with Nest's 404.
+- Call `nest()` once. Put everything in that call, or in modules it imports.
+
+## Requests and responses
+
+- **Bodies** are parsed the way Nest's Express setup parses them. JSON (`application/json`, `+json`) is parsed, and invalid JSON answers 400. Forms (`application/x-www-form-urlencoded`) become an object, `text/*` becomes a string, and anything else becomes a `Buffer`. When there is a body, `req.rawBody` has its bytes.
+- **Query strings** become an object, and repeated keys become arrays. Nested syntax such as `a[b]=1` isn't expanded.
+- **Return values.** An object or array is sent as JSON, and a string as `text/plain`. `null` or nothing sends an empty body. A `StreamableFile` streams with its headers. A Web `Response` is sent as it is, with its own status. Status codes follow Nest: 200, 201 for `@Post()`, `@HttpCode()` to change it, and `@Redirect()` for redirects.
+- **`@Req()`** is a `NestRequest` with Express's request API: `method`, `url`, `originalUrl`, `path`, `hostname`, `protocol`, `secure`, `headers`, `get(name)`, `query`, `params`, `body`, `cookies`, `rawBody`, and `raw`, the Web `Request`.
+- **Guards, pipes, interceptors and exception filters** work as in Nest, including global ones through `APP_GUARD`, `APP_PIPE`, `APP_INTERCEPTOR` and `APP_FILTER`. `ModuleRef`, `Reflector` and rxjs (as `rxjs`) are exported too. A global interceptor or guard also runs for gateways and resolvers, so check `context.getType()` before you reach for the HTTP response.
+- **Middleware** from a module's `configure(consumer)` runs for its routes, with the same `req` and `res` and a `next()`.
+
+## CORS and the rest of the app's setup
+
+```ts
+nest(http, {
+  controllers: [NotesController],
+  providers: [NotesWriter],
+  cors: { origin: "https://app.example.com", credentials: true },
+  setup: (app) => app.useGlobalGuards(new ApiKeyGuard()),
+});
+```
+
+- `cors` is what Nest's `enableCors()` takes: `true`, the options of the [`cors`](https://www.npmjs.com/package/cors) package, or a function of the request. It answers preflight `OPTIONS` requests and adds the headers to every response from the controllers.
+- `setup(app)` runs before the app starts, for anything else on `INestApplication`: global pipes, `enableVersioning()` (by URI), `setGlobalPrefix()`.
+
+## Writing the response yourself
+
+`@Res()` gives the handler a `NestResponse`, which has Express's response API, so code written for Nest on Express works:
+
+```ts
+@Get("report")
+report(@Res() res: NestResponse) {
+  res.status(201).set("x-report", "1").cookie("seen", "yes", { httpOnly: true, maxAge: 3_600_000 }).json({ ok: true });
+}
+```
+
+- It has `status`, `sendStatus`, `json`, `send` (an object as JSON, a string as HTML, bytes as they are), `set`/`header`, `get`, `append`, `type`, `location`, `redirect`, `attachment`, `vary`, `cookie` and `clearCookie` (with Express's options: `maxAge` in milliseconds), and Node's `setHeader`, `getHeader`, `removeHeader`, `writeHead`, `write`, `end` and `headersSent`.
+- With `@Res({ passthrough: true })` you can set headers and still return the body.
+- **A response streams once you write to it.** `res.write()` or `res.flushHeaders()` sends the head and every write after it as it happens, until `res.end()`. That carries `@Sse()` endpoints and anything else that sends as it goes. A response that is only `send()` or `end()` goes out as one body. In a child process (dev, `RUNTIME_WORKERS > 1`) the bytes cross to the server as they come. When the client goes away, `req` and `res` get their `"close"` event, so stop writing there.
+
+```ts
+@Sse("ticks")
+ticks() {
+  return rxjs.interval(1000).pipe(rxjs.map((i) => ({ data: { i } })));
+}
+```
+
+## WebSocket gateways
+
+```ts
+import { Ctx, type ActionCtx } from "@archlast/forge-runtime/nest";
+import { MessageBody, SubscribeMessage, WebSocketGateway, WebSocketServer, type ForgeSocket } from "@archlast/forge-runtime/nest/websockets";
+import { api } from "./_generated/api";
+
+@WebSocketGateway({ path: "/chat" })
+export class ChatGateway {
+  @WebSocketServer() server!: { clients: Set<ForgeSocket> };
+
+  @SubscribeMessage("count")
+  async count(@Ctx() ctx: ActionCtx) {
+    return { event: "count", data: (await ctx.runQuery(api.notes.list)).length };
+  }
+
+  @SubscribeMessage("shout")
+  shout(@MessageBody() text: string) {
+    for (const client of this.server.clients) client.send(JSON.stringify({ event: "shout", data: text }));
+  }
+}
+```
+
+- Register the gateway in `providers`. Its `path` is below `/http` and the mount prefix: this one answers at `ws://host/http/chat`. A socket on a path without a gateway is closed with code 1008.
+- The protocol is `@nestjs/platform-ws`'s: messages are JSON `{ "event": "...", "data": ... }`, and what a handler returns is sent back as JSON. A `WsException` reaches the client as `{ "event": "exception", "data": { "status": "error", "message": ... } }`.
+- `@Ctx()` is the socket's `ActionCtx`: the caller comes from the cookie or token of the upgrade request, resolved once when the socket opens.
+- A client is a `ForgeSocket`, with the `ws` package's `send`, `close`, `readyState` and `"message"` and `"close"` events. `handleConnection`, `handleDisconnect`, `@ConnectedSocket()` and `@MessageBody()` work as in Nest.
+- The upgrade is checked like the engine's own: the `Origin` must be trusted (`TRUSTED_ORIGINS`), and the rate limit counts its messages.
+- `onSocket(path, (socket) => ...)` takes raw sockets at a path, without Nest's protocol.
+- With `RUNTIME_WORKERS > 1`, every socket is held by the first function runtime process, so `server.clients` is every client of the server.
+
+### Socket.IO
+
+```ts
+// forge/http.ts
+nest(http, { providers: [EventsGateway], websockets: "socket.io" });
+```
+
+```ts
+// forge/events.gateway.ts
+import { ConnectedSocket, MessageBody, SubscribeMessage, WebSocketGateway, WebSocketServer, type Server, type Socket } from "@archlast/forge-runtime/nest/websockets";
+
+@WebSocketGateway()
+export class EventsGateway {
+  @WebSocketServer() server!: Server;
+
+  @SubscribeMessage("join")
+  join(@ConnectedSocket() socket: Socket, @MessageBody() room: string) {
+    void socket.join(room);
+    return "joined"; // the client's ack
+  }
+
+  @SubscribeMessage("tell")
+  tell(@MessageBody() message: { room: string; text: string }) {
+    this.server.to(message.room).emit("told", message.text);
+  }
+}
+```
+
+```ts
+// a client
+import { io } from "socket.io-client";
+
+const socket = io("https://app.example.com", { path: "/http/socket.io" });
+socket.emitWithAck("join", "lobby");
+```
+
+- `websockets: "socket.io"` makes every gateway of the app a Socket.IO one, with `@nestjs/platform-socket.io`'s behavior: a handler's return value is the client's ack, and namespaces (`@WebSocketGateway({ namespace: "admin" })`), rooms and broadcasts are Socket.IO's.
+- The path is `/socket.io` below `/http` and the mount prefix, so clients pass `path: "/http/socket.io"`. Clients that start with long-polling and upgrade, and clients that use only `transports: ["websocket"]`, both work.
+- `@Ctx()` is the caller of the handshake, as for a plain gateway. Compression is left to the engine's server and the proxy in front of it.
+
+## GraphQL
+
+```ts
+// forge/http.ts
+import { ForgeGraphQLDriver, GraphQLModule, type ForgeGraphQLOptions } from "@archlast/forge-runtime/nest/graphql";
+
+nest(http, {
+  imports: [GraphQLModule.forRoot<ForgeGraphQLOptions>({ driver: ForgeGraphQLDriver, autoSchemaFile: true })],
+  providers: [NotesResolver],
+});
+```
+
+```ts
+// forge/notes.resolver.ts
+import { Ctx, type ActionCtx } from "@archlast/forge-runtime/nest";
+import { Args, createPubSub, Field, Mutation, ObjectType, Query, Resolver, Subscription } from "@archlast/forge-runtime/nest/graphql";
+import { api } from "./_generated/api";
+
+const pubSub = createPubSub<{ noteAdded: { text: string } }>();
+
+@ObjectType()
+class Note {
+  @Field() text!: string;
+}
+
+@Resolver(() => Note)
+export class NotesResolver {
+  @Query(() => [Note])
+  notes(@Ctx() ctx: ActionCtx) {
+    return ctx.runQuery(api.notes.recent);
+  }
+
+  @Mutation(() => String)
+  async addNote(@Ctx() ctx: ActionCtx, @Args("text") text: string) {
+    const id = await ctx.runMutation(api.notes.add, { text });
+    pubSub.publish("noteAdded", { text });
+    return id;
+  }
+
+  @Subscription(() => Note, { resolve: (note: Note) => note })
+  noteAdded() {
+    return pubSub.subscribe("noteAdded");
+  }
+}
+```
+
+- `ForgeGraphQLDriver` serves the schema with [GraphQL Yoga](https://the-guild.dev/graphql/yoga-server), on `POST` and `GET` at `path` (default `/graphql`, so `/http/graphql`). The schema is built by `@nestjs/graphql` before the driver sees it, so code-first (`autoSchemaFile: true`, what the tests cover) and schema-first (`typePaths`) go through it the same way.
+- Subscriptions run over WebSockets at the same path with the `graphql-transport-ws` protocol, so a `graphql-ws` client connects to `ws://host/http/graphql`.
+- `@Ctx()` in a resolver is the caller's `ActionCtx`; `@Context()` is the whole context, with `req` (the `NestRequest`, or for a subscription the socket).
+- `yoga` passes more options to Yoga, such as `graphiql`, `maskedErrors` and `plugins`. GraphiQL is on unless you turn it off.
+- `createPubSub<{ topic: Payload }>()` is the engine's: `publish(topic, payload)` from a resolver, a controller or anywhere in the function runtime, and `subscribe(topic)` returns the async iterator a subscription resolver returns (`on(topic, listener)` listens without one). With `RUNTIME_WORKERS > 1` an event reaches subscribers in every process. Payloads must be structured-cloneable.
+
+## Microservices
+
+```ts
+import { Transport } from "@archlast/forge-runtime/nest/microservices";
+
+nest(http, {
+  controllers: [MathController],
+  microservices: [{ transport: Transport.TCP, options: { host: "0.0.0.0", port: 4000 } }],
+});
+```
+
+```ts
+import { Controller } from "@archlast/forge-runtime/nest";
+import { Ctx, MessagePattern, Payload, type ActionCtx } from "@archlast/forge-runtime/nest/microservices";
+
+@Controller()
+export class MathController {
+  @MessagePattern("sum")
+  sum(@Payload() numbers: number[]) {
+    return numbers.reduce((a, b) => a + b, 0);
+  }
+}
+```
+
+- Each entry in `microservices` is what `app.connectMicroservice()` takes, and its transport listens in the function runtime once the app has started. `@MessagePattern()` and `@EventPattern()` handlers go in the controllers.
+- Every transport works without installing anything: the runtime brings the clients Nest loads for them (`ioredis` for Redis, `nats`, `mqtt`, `kafkajs`, `amqplib` with `amqp-connection-manager`, `@grpc/grpc-js` with `@grpc/proto-loader`).
+- In this entry `Ctx` is the engine's: a message has no caller, so `@Ctx()` gives an anonymous `ActionCtx`. Nest's transport context (`RedisContext`, `NatsContext`, ...) is `@TransportCtx()`.
+- Use `host: "0.0.0.0"` in a container so other containers reach it, and publish the port in `compose.yaml` if something outside the stack connects. `ClientsModule` and `ClientProxyFactory` are here too, for sending to other services.
+- With `RUNTIME_WORKERS > 1`, the transports listen in the first function runtime process only, so a port is bound once. Clients (`ClientsModule`) work in every process.
+
+## Errors
+
+- An `HttpException` (`NotFoundException`, `BadRequestException`, a pipe's or a guard's) answers the way Nest answers it: its status, with `{ "statusCode", "message" }`.
+- A `ForgeError` answers 400 with its data, as it does from an HTTP action.
+- Anything else answers 500 with `Server error (request <id>)`, and the details go to the log, as for any action. In dev, the message is shown.
+- In a gateway or a resolver, errors are reported the way Nest reports them there: an exception event to the socket, a GraphQL error in the response.
+
+## Limits
+
+- `listen()`, static assets and view engines aren't available: the engine is the server (serve files from `public/` or storage).
+- Sockets, Socket.IO rooms and `createPubSub` events belong to one engine server. With several servers behind a load balancer (the Redis bus), reach every client through the database: a mutation that clients' live queries follow.
+- Because every socket is held by the first function runtime process, gateway handlers don't spread across `RUNTIME_WORKERS`. HTTP routes and GraphQL queries and mutations do.
+- Versioning works by URI only. `@Ip()` is undefined.

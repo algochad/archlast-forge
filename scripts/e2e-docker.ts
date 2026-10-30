@@ -1,7 +1,8 @@
 #!/usr/bin/env bun
 // End to end in Docker: scaffolds both kinds of project from the packed tarballs, brings each stack up with `archlast-forge up`,
 // and checks what a user would: pages, the API, the database, Redis, uploads, a restart, and `down`.
-//   bun scripts/pack.ts && bun scripts/e2e-docker.ts [framework|backend]
+//   bun scripts/pack.ts && bun scripts/e2e-docker.ts [plain|framework|backend|nest|caddy]
+//   bun scripts/e2e-docker.ts nest --no-docker   (the NestJS checks on SQLite, served by `start --no-docker`, where there is no Docker)
 // Needs Docker and the engine image (`bun packages/cli/src/index.ts engine build`).
 import { call, check, createProject, json, sh, signUp } from "./lib/e2e";
 
@@ -132,13 +133,169 @@ async function caddy() {
   }
 }
 
+/** NestJS in a backend on PostgreSQL, built into the image: controllers, services, CORS, Express writes, SSE, a gateway, GraphQL and a microservice. */
+async function nest() {
+  // `nest --no-docker`: the same checks on SQLite, served by `archlast-forge start --no-docker`, for a machine without Docker.
+  const local = process.argv.includes("--no-docker");
+  console.log(`\nBackend with NestJS on ${local ? "SQLite, without Docker" : "PostgreSQL"}`);
+  const p = createProject("e2e-nest", "backend", local ? [] : ["postgres"], 3105, 9105);
+  let server: ReturnType<typeof Bun.spawn> | undefined;
+  const forge = (file: string, text: string) => Bun.write(`${p.dir}/forge/${file}`, text);
+  await forge("schema.ts", (await Bun.file(`${p.dir}/forge/schema.ts`).text()).replace("export default defineSchema({", "export default defineSchema({\n  notes: defineTable({ text: v.string() }),"));
+  await forge(
+    "notes.service.ts",
+    `import { ForgeService, Injectable, type MutationCtx, type QueryCtx } from "@archlast/forge-runtime/nest";
+@Injectable()
+export class NotesReader extends ForgeService<QueryCtx> {
+  list() { return this.ctx.db.query("notes").collect(); }
+}
+@Injectable()
+export class NotesWriter extends ForgeService<MutationCtx> {
+  add(text: string) { return this.ctx.db.insert("notes", { text }); }
+}
+`,
+  );
+  await forge(
+    "notes.ts",
+    `import { mutation, query, v } from "@archlast/forge-runtime";
+import { inject } from "@archlast/forge-runtime/nest";
+import { NotesReader, NotesWriter } from "./notes.service";
+export const list = query({ args: {}, handler: async (ctx) => (await inject(ctx, NotesReader)).list() });
+export const add = mutation({ args: { text: v.string() }, handler: async (ctx, { text }) => (await inject(ctx, NotesWriter)).add(text) });
+`,
+  );
+  await forge(
+    "notes.nest.ts",
+    `import { Body, Controller, Ctx, Get, Post, Res, Sse, rxjs, type ActionCtx, type NestResponse } from "@archlast/forge-runtime/nest";
+import { createPubSub, Field, Mutation, ObjectType, Query, Resolver, Subscription, Args } from "@archlast/forge-runtime/nest/graphql";
+import { MessagePattern, Payload } from "@archlast/forge-runtime/nest/microservices";
+import { MessageBody, SubscribeMessage, WebSocketGateway } from "@archlast/forge-runtime/nest/websockets";
+import { api } from "./_generated/api";
+
+const pubSub = createPubSub<{ noteAdded: { text: string } }>();
+
+@Controller("notes")
+export class NotesController {
+  @Get() list(@Ctx() ctx: ActionCtx) { return ctx.runQuery(api.notes.list); }
+  @Post() async add(@Ctx() ctx: ActionCtx, @Body() body: { text: string }) { return { id: await ctx.runMutation(api.notes.add, { text: body.text }) }; }
+  @Get("express") express(@Res() res: NestResponse) { res.status(202).cookie("seen", "yes", { httpOnly: true }).json({ express: true }); }
+  @Sse("ticks") ticks() { return rxjs.interval(10).pipe(rxjs.take(2), rxjs.map((i) => ({ data: { i } }))); }
+  @MessagePattern("sum") sum(@Payload() numbers: number[]) { return numbers.reduce((a, b) => a + b, 0); }
+}
+
+@WebSocketGateway({ path: "/ws" })
+export class Gateway {
+  @SubscribeMessage("count") async count(@Ctx() ctx: ActionCtx) { return { event: "count", data: (await ctx.runQuery(api.notes.list)).length }; }
+}
+
+@ObjectType() class Note { @Field() text!: string; }
+
+@Resolver(() => Note)
+export class NotesResolver {
+  @Query(() => [Note]) notes(@Ctx() ctx: ActionCtx) { return ctx.runQuery(api.notes.list); }
+  @Mutation(() => String) async addNote(@Ctx() ctx: ActionCtx, @Args("text") text: string) {
+    const id = await ctx.runMutation(api.notes.add, { text });
+    pubSub.publish("noteAdded", { text });
+    return id;
+  }
+  @Subscription(() => Note, { resolve: (n: Note) => n }) noteAdded() { return pubSub.subscribe("noteAdded"); }
+}
+`,
+  );
+  const http = `${p.dir}/forge/http.ts`;
+  await Bun.write(
+    http,
+    (await Bun.file(http).text())
+      .replace(
+        `import { httpAction, httpRouter } from "@archlast/forge-runtime";`,
+        `import { httpAction, httpRouter } from "@archlast/forge-runtime";
+import { nest } from "@archlast/forge-runtime/nest";
+import { ForgeGraphQLDriver, GraphQLModule, type ForgeGraphQLOptions } from "@archlast/forge-runtime/nest/graphql";
+import { Transport } from "@archlast/forge-runtime/nest/microservices";
+import { Gateway, NotesController, NotesResolver } from "./notes.nest";
+import { NotesReader, NotesWriter } from "./notes.service";`,
+      )
+      .replace(
+        "export default http;",
+        `nest(http, {
+  imports: [GraphQLModule.forRoot<ForgeGraphQLOptions>({ driver: ForgeGraphQLDriver, autoSchemaFile: true, yoga: { graphiql: false } })],
+  controllers: [NotesController],
+  providers: [NotesReader, NotesWriter, Gateway, NotesResolver],
+  cors: { origin: "https://app.example" },
+  microservices: [{ transport: Transport.TCP, options: { host: "0.0.0.0", port: 4000 } }],
+});
+export default http;`,
+      ),
+  );
+  try {
+    const codegen = p.cli("codegen");
+    check("codegen takes the Nest files", codegen.ok, codegen.err || codegen.out);
+    if (local) {
+      server = Bun.spawn(["bunx", "archlast-forge", "start", "--no-docker"], { cwd: p.dir, env: { ...process.env, ARCHLAST_NO_DOCKER: "1", DATA_DIR: `${p.dir}/data` }, stdout: "inherit", stderr: "inherit" });
+      let ready = false;
+      for (let i = 0; i < 60 && !ready; i++) (await Bun.sleep(500), (ready = await fetch(`${p.base}/ready`).then((r) => r.ok, () => false)));
+      check("`archlast-forge start --no-docker` serves the backend with Nest", ready);
+    } else {
+      const up = p.cli("up");
+      check("`archlast-forge up` builds the image with Nest in it and starts the stack", up.ok, up.err || up.out);
+    }
+
+    const at = (path: string, init?: RequestInit) => fetch(`${p.base}/http${path}`, init);
+    const created = await at("/notes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "in postgres" }) });
+    check(`a controller writes through a service into ${local ? "SQLite" : "PostgreSQL"}`, created.status === 201, `${created.status} ${await created.clone().text()}`);
+    check("and reads it back", ((await (await at("/notes")).json()) as any[]).some((n) => n.text === "in postgres"));
+    const pre = await at("/notes", { method: "OPTIONS", headers: { origin: "https://app.example", "access-control-request-method": "POST" } });
+    check("CORS answers a preflight", pre.status === 204 && pre.headers.get("access-control-allow-origin") === "https://app.example", pre.status);
+    const express = await at("/notes/express");
+    check("an Express-style response keeps its status and cookie", express.status === 202 && /seen=yes/.test(express.headers.get("set-cookie") ?? ""), [...express.headers]);
+    const sse = await (await at("/notes/ticks")).text();
+    check("server-sent events stream", sse.includes('data: {"i":1}'), sse);
+
+    const socket = new WebSocket(`ws://localhost:${p.port}/http/ws`);
+    const count = await new Promise<any>((resolve) => {
+      socket.onopen = () => socket.send(JSON.stringify({ event: "count" }));
+      socket.onmessage = (e) => resolve(JSON.parse(String(e.data)));
+      setTimeout(() => resolve("no answer"), 10_000);
+    });
+    socket.close();
+    check("a gateway answers over the engine's socket, with the ctx", count?.event === "count" && count.data >= 1, count);
+
+    const subscription = new WebSocket(`ws://localhost:${p.port}/http/graphql`, "graphql-transport-ws");
+    const pushed = new Promise<any>((resolve) => {
+      subscription.onopen = () => subscription.send(JSON.stringify({ type: "connection_init" }));
+      subscription.onmessage = (e) => {
+        const m = JSON.parse(String(e.data));
+        if (m.type === "connection_ack") subscription.send(JSON.stringify({ id: "1", type: "subscribe", payload: { query: "subscription { noteAdded { text } }" } }));
+        if (m.type === "next") resolve(m.payload.data);
+      };
+      setTimeout(() => resolve("no event"), 15_000);
+    });
+    await Bun.sleep(500);
+    const gql = async (query: string) => (await (await at("/graphql", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query }) })).json()) as any;
+    check("a GraphQL mutation runs", typeof (await gql('mutation { addNote(text: "from graphql") }')).data?.addNote === "string");
+    check("a GraphQL query reads", (await gql("{ notes { text } }")).data?.notes?.some((n: any) => n.text === "from graphql"));
+    const event = await pushed;
+    subscription.close();
+    check("a GraphQL subscription gets the event over graphql-ws", event?.noteAdded?.text === "from graphql", event);
+
+    const client = `const { ClientProxyFactory, Transport } = await import("@archlast/forge-runtime/nest/microservices"); const { rxjs } = await import("@archlast/forge-runtime/nest");
+const c = ClientProxyFactory.create({ transport: Transport.TCP, options: { host: "127.0.0.1", port: 4000 } }); console.log(await rxjs.firstValueFrom(c.send("sum", [1, 2, 3]))); await c.close(); process.exit(0);`;
+    const sum = local ? sh(["bun", "-e", client], `${p.dir}/forge`) : p.compose("exec", "-T", "-w", "/src/forge", "app", "bun", "-e", client);
+    check(`the TCP microservice answers${local ? "" : " inside the container"}`, sum.ok && sum.out.trim().endsWith("6"), sum.err || sum.out);
+  } finally {
+    if (server) (server.kill(), await server.exited);
+    else p.cli("down", "--volumes");
+  }
+}
+
 const which = process.argv[2];
 try {
   if (!which || which === "plain") await plain();
   if (!which || which === "framework") await framework();
   if (!which || which === "backend") await backend();
+  if (!which || which === "nest") await nest();
   if (which === "caddy") await caddy();
-  console.log("\n✓ Docker end-to-end passed");
+  console.log(process.argv.includes("--no-docker") ? "\n✓ End-to-end passed without Docker" : "\n✓ Docker end-to-end passed");
 } catch (e) {
   console.error(`\n✗ ${(e as Error).message}`);
   process.exit(1);

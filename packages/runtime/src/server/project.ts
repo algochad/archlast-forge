@@ -1,4 +1,5 @@
-import { existsSync } from "node:fs";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import type { AuthOptions, CronJob, FunctionKind, HttpRoute, RegisteredFunction } from "../functions";
 import type { SchemaDefinition } from "../schema";
@@ -15,6 +16,46 @@ export function listModules(forgeDir: string): { name: string; file: string }[] 
     .map((file) => ({ name: file.replace(/\.(ts|js)$/, ""), file }))
     .filter((m) => !SPECIAL.has(m.name))
     .sort((a, b) => a.name.localeCompare(b.name));
+}
+
+const decorated = new Set<string>();
+const DECORATOR = /^\s*@[A-Za-z_$]|[(,]\s*@[A-Za-z_$]/m;
+
+/**
+ * Compiles forge/ files that use decorators (Nest's controllers and services) with experimentalDecorators and emitDecoratorMetadata.
+ * Bun applies the tsconfig of the directory the process runs in, not forge/tsconfig.json, so the engine sets them itself. Each such file
+ * is built on its own with every import left external, and an inline source map keeps its stack traces on the right lines.
+ */
+function compileDecorators(forgeDir: string) {
+  if (decorated.has(forgeDir)) return;
+  decorated.add(forgeDir);
+  const dir = join(tmpdir(), "archlast-forge");
+  mkdirSync(dir, { recursive: true });
+  const tsconfig = join(dir, `decorators-${Bun.hash(forgeDir).toString(36)}.json`);
+  const base = join(forgeDir, "tsconfig.json");
+  writeFileSync(tsconfig, JSON.stringify({ ...(existsSync(base) && { extends: base }), compilerOptions: { experimentalDecorators: true, emitDecoratorMetadata: true } }));
+  const files = new RegExp(`^${forgeDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/(?!.*node_modules/).*\\.tsx?$`);
+  Bun.plugin({
+    name: "archlast-forge decorators",
+    setup(build) {
+      build.onLoad({ filter: files }, async ({ path }) => {
+        const source = await Bun.file(path).text();
+        if (!DECORATOR.test(source)) return { contents: source, loader: path.endsWith("x") ? "tsx" : "ts" };
+        const out = await Bun.build({ entrypoints: [path], target: "bun", external: ["*"], sourcemap: "inline", tsconfig } as Parameters<typeof Bun.build>[0]);
+        if (!out.success) throw new AggregateError(out.logs, `forge/${relative(forgeDir, path)} did not compile`);
+        // The map's source is relative to where Bun built it from; point it at the file, so stack traces name the right one.
+        const code = await out.outputs[0]!.text();
+        return {
+          loader: "js",
+          contents: code.replace(/(\/\/# sourceMappingURL=data:application\/json;base64,)(\S+)/, (_, head, map) => {
+            const json = JSON.parse(Buffer.from(map, "base64").toString("utf8"));
+            json.sources = [path];
+            return head + Buffer.from(JSON.stringify(json)).toString("base64");
+          }),
+        };
+      });
+    },
+  });
 }
 
 /** Imports a user module, turning "Cannot find package" into an actionable error. */
@@ -47,6 +88,7 @@ export interface Project {
 }
 
 export async function loadProject(forgeDir: string): Promise<Project> {
+  compileDecorators(forgeDir);
   const schemaPath = join(forgeDir, "schema.ts");
   if (!existsSync(schemaPath)) throw new Error(`No schema.ts in ${forgeDir}`);
   const schema: SchemaDefinition<any> = (await importUserModule(schemaPath, forgeDir)).default;

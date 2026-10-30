@@ -16,6 +16,7 @@ export const PAGES = {
   auth: ["Authentication", () => import("../content/auth.mdx")],
   storage: ["File storage", () => import("../content/storage.mdx")],
   http: ["HTTP endpoints", () => import("../content/http.mdx")],
+  nest: ["NestJS", () => import("../content/nest.mdx")],
   scheduling: ["Scheduling and crons", () => import("../content/scheduling.mdx")],
   errors: ["Errors", () => import("../content/errors.mdx")],
   migrations: ["Migrations and data", () => import("../content/migrations.mdx")],
@@ -35,7 +36,7 @@ export type Slug = keyof typeof PAGES;
 /** The sidebar's sections, in reading order. Every page in PAGES must be in exactly one. */
 export const GROUPS: [string, Slug[]][] = [
   ["Start", ["introduction", "concepts", "getting-started", "tutorial"]],
-  ["Build", ["framework", "backend", "schema", "functions", "queries", "reactivity", "caching", "auth", "storage", "http", "scheduling", "errors", "migrations", "testing", "clients", "recipes"]],
+  ["Build", ["framework", "backend", "schema", "functions", "queries", "reactivity", "caching", "auth", "storage", "http", "nest", "scheduling", "errors", "migrations", "testing", "clients", "recipes"]],
   ["Run", ["cli", "deployment", "configuration", "dashboard", "limits"]],
   ["Reference", ["reference", "troubleshooting"]],
 ];

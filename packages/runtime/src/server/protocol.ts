@@ -26,8 +26,23 @@ export interface HttpRequestMessage {
 export interface HttpResponseMessage {
   status: number;
   headers: [string, string][];
-  body: ArrayBuffer;
+  /** A stream for a response that is sent as it is written (`stream`): across IPC its bytes follow as `chunk` messages. */
+  body: ArrayBuffer | ReadableStream<Uint8Array>;
+  stream?: true;
 }
+
+/** Server → function runtime, with no answer: the sockets of Nest gateways and GraphQL subscriptions under /http. */
+export type HostEvent =
+  | { t: "ws"; op: "open"; sid: string; path: string; headers: [string, string][]; requestId?: string }
+  | { t: "ws"; op: "message"; sid: string; data: string | ArrayBuffer }
+  | { t: "ws"; op: "close"; sid: string; code: number; reason: string }
+  /** The client left a streamed response (by the id of the call that started it). */
+  | { t: "cancel"; id: number }
+  /** A PubSub event from one worker, for every worker (createPubSub in @archlast/forge-runtime/nest). */
+  | { t: "relay"; topic: string; payload: unknown };
+
+/** Function runtime → server: what a gateway sends to one of those sockets, or that it closes it. */
+export type SocketMessage = { t: "ws"; op: "send"; sid: string; data: string | ArrayBuffer } | { t: "ws"; op: "close"; sid: string; code?: number; reason?: string };
 
 /** Server → function runtime. */
 export type HostMessage = { id: number } & (
@@ -48,4 +63,7 @@ export type RuntimeMessage =
   | { t: "result"; id: number; ok: true; value: CallResult | SerializedResponse | HttpResponseMessage | unknown }
   | { t: "result"; id: number; ok: false; error: SerializedError }
   | { t: "publish"; topics: string[] }
-  | { t: "log"; entry: LogEntry };
+  | { t: "log"; entry: LogEntry }
+  | { t: "chunk"; id: number; data?: ArrayBuffer; end?: true; error?: string }
+  | { t: "relay"; topic: string; payload: unknown }
+  | SocketMessage;

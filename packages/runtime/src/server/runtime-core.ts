@@ -8,10 +8,11 @@ import { loadConfig, sqlitePath } from "./config";
 import { createPostgresDb } from "./db/postgres";
 import { createSqliteDb } from "./db/sqlite";
 import type { Db } from "./db/types";
-import { Executor, logContext, type LogEntry } from "./executor";
+import type { UserIdentity } from "../functions";
+import { Executor, logContext, type CallHeaders, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
 import { matchRoute, routeName } from "./http";
-import type { HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
+import type { HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
 import { S3Storage } from "./storage";
 import { migrateSystem } from "./system";
@@ -84,8 +85,17 @@ async function checkSchema(exec: Executor, project: Project) {
 export interface RuntimeCore {
   manifest: Manifest;
   handle(msg: HostMessage): Promise<unknown>;
+  /** A socket event: given to whatever registered for them (the Nest bridge), or the socket is closed. */
+  event(msg: HostEvent): void;
   shutdown(): Promise<void>;
 }
+
+/** Set by a project's @archlast/forge-runtime/nest: where socket events go. A global, because the project's copy of that package is not this module. */
+const SOCKETS = Symbol.for("archlast-forge.sockets");
+/** Set by the same package: where relayed PubSub events go. */
+const RELAY = Symbol.for("archlast-forge.relay");
+/** Marks a Response whose body is sent as it is written instead of when it ends. */
+const STREAM = Symbol.for("archlast-forge.stream");
 
 /**
  * Loads `forge/`, opens the database, migrates, and starts auth and the scheduler. The same core runs in a function-runtime process
@@ -130,6 +140,15 @@ export async function startCore(opts: {
     readCache: !config.databaseUrl && config.runtimeWorkers === 1 ? new ReadCache() : undefined,
   });
   if (config.schemaCheck && worker === 0) await checkSchema(exec, project);
+  // What @archlast/forge-runtime/nest reaches the engine through, for work that doesn't start as a call: gateway sockets and microservice messages.
+  (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.host")] = {
+    identityOf: (headers: CallHeaders) => exec.identityOf(headers),
+    actionCtx: (identity: UserIdentity | null, requestId?: string) => exec.actionCtx({ getUserIdentity: async () => identity }, identity, requestId),
+    wsSend: (sid: string, data: string | ArrayBuffer) => send({ t: "ws", op: "send", sid, data }),
+    wsClose: (sid: string, code?: number, reason?: string) => send({ t: "ws", op: "close", sid, code, reason }),
+    relay: (topic: string, payload: unknown) => send({ t: "relay", topic, payload }),
+    worker,
+  };
   const auth = createAuth(exec, project.tables, project.authOptions, config);
   // One scheduler per server: in a runtime pool only the first process polls.
   const scheduler = worker === 0 ? new SchedulerLoop(exec, db, project.functions, project.crons, config.limits.actionTimeoutMs + 60_000, 500, config.logRetentionDays * 86_400_000) : undefined;
@@ -179,9 +198,11 @@ export async function startCore(opts: {
         const answer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({ status, headers: [["content-type", "text/plain"], ...extra], body: new TextEncoder().encode(status === 404 ? "Not found" : "Method not allowed").buffer as ArrayBuffer });
         if (!("route" in found)) return answer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
         const res = await exec.runHttp(routeName(found.route), found.route.handler, new Request(url, { method, headers, body }), msg.headers, msg.requestId);
+        const out = [...res.headers].filter(([k]) => k !== "content-length");
+        if (res.body && ((res as unknown as Record<symbol, unknown>)[STREAM] || res.headers.get("content-type")?.startsWith("text/event-stream")))
+          return { status: res.status, headers: out, body: res.body, stream: true } satisfies HttpResponseMessage;
         const blob = await res.blob();
         const bytes = await blob.arrayBuffer();
-        const out = [...res.headers].filter(([k]) => k !== "content-length");
         // `new Response("text")` has no content-type header of its own: Bun.serve adds one when it sends. Passing the bytes along loses that,
         // so give text bodies the type the platform would have (binary bodies keep the default, and a handler can always set one).
         if (!out.some(([k]) => k === "content-type") && blob.type.startsWith("text/plain") && isText(bytes)) out.push(["content-type", blob.type]);
@@ -200,9 +221,16 @@ export async function startCore(opts: {
     crons: project.crons,
     storage: Boolean(config.s3),
   };
+  function event(msg: HostEvent) {
+    const take = (globalThis as Record<symbol, unknown>)[msg.t === "relay" ? RELAY : SOCKETS] as ((msg: HostEvent) => void) | undefined;
+    if (take) return take(msg);
+    if (msg.t === "ws" && msg.op === "open") send({ t: "ws", op: "close", sid: msg.sid, code: 1008, reason: "No WebSocket gateway at this path" });
+  }
+
   return {
     manifest,
     handle,
+    event,
     async shutdown() {
       scheduler?.stop();
       await logWriter?.close().catch(() => {});
