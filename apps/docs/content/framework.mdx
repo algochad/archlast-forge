@@ -351,7 +351,7 @@ Rendered on the server, this is in the HTML (`<title>Hello world number 1</title
 
 ### shadcn/ui
 
-`bun create archlast-forge` adds [shadcn/ui](https://ui.shadcn.com) to a full-stack app unless you pick the plain starter (`--no-shadcn`). It is the `base-nova` style, built on Base UI, with the base color you chose:
+`bun create archlast-forge` adds [shadcn/ui](https://ui.shadcn.com) to a full-stack app unless you pick the plain starter (`--no-shadcn`). It is the `base-nova` style, built on Base UI, with the base color you chose (projects created before `0.3.0` have the plain starter):
 
 - `components.json` is shadcn's configuration. `bunx shadcn@latest add dialog` reads it and writes the component into `app/components/ui`, importing helpers through the `@/` alias, which `tsconfig.json` points at `app/` (and the build follows).
 - `app/styles.css` has Tailwind, the theme variables for light (`:root`) and dark (`.dark`) and the base styles. Change the look by editing the variables; the components read them.
@@ -648,7 +648,7 @@ The `ErrorBoundary` in `root.tsx` above handles both. To test it: `GET /anything
 ✓ codegen: 3 modules
 ✓ app built in 220 ms
 
-  archlast-forge 0.2.0  ·  full-stack app  · ready in 738 ms
+  archlast-forge 0.3.0  ·  full-stack app  · ready in 738 ms
 
   ➜  App        http://localhost:3000
   ➜  Dashboard  http://localhost:3000/_dashboard

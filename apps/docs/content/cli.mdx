@@ -108,7 +108,7 @@ Runs the engine and the app in this one process, on your machine:
 ✓ codegen: 3 modules
 ✓ app built in 220 ms
 
-  archlast-forge 0.2.0  ·  full-stack app  · ready in 738 ms
+  archlast-forge 0.3.0  ·  full-stack app  · ready in 738 ms
 
   ➜  App        http://localhost:3000
   ➜  Dashboard  http://localhost:3000/_dashboard
@@ -136,7 +136,7 @@ The environment: `BETTER_AUTH_URL` is set to `http://localhost:<port>` (a stray 
 With Docker, `dev` starts the engine container with `forge/` mounted read-only, and the services as sibling containers:
 
 ```
-  archlast-forge 0.2.0  ·  backend  · engine in Docker
+  archlast-forge 0.3.0  ·  backend  · engine in Docker
 
   ➜  API        http://localhost:3000
   ➜  Dashboard  http://localhost:3000/_dashboard
@@ -153,7 +153,7 @@ Troubleshooting `dev`:
 | Message | What to do |
 |---|---|
 | `Failed to start server. Is port 3000 in use?` | pass `--port`, or stop what holds the port |
-| `Engine image ghcr.io/…:0.2.0 isn't available. Set ARCHLAST_ENGINE_IMAGE to one you can pull or build.` | check network access to GHCR; or build locally with `engine build` in a checkout |
+| `Engine image ghcr.io/…:0.3.0 isn't available. Set ARCHLAST_ENGINE_IMAGE to one you can pull or build.` | check network access to GHCR; or build locally with `engine build` in a checkout |
 | `bun install failed in … Fix forge/package.json; native packages may need "trustedDependencies".` | fix the dependency; list packages that need install scripts under `trustedDependencies` |
 | `Frontend code must import only forge/_generated: …` | see [codegen](#codegen) |
 | `Couldn't start postgres: …` / `postgres didn't become ready in 60 s. See: docker logs …` | look at the container's logs; a port or volume problem is usual |
