@@ -10,7 +10,7 @@ const dist = join(import.meta.dir, "dist");
 
 async function build() {
   rmSync(dist, { recursive: true, force: true });
-  const out = await Bun.build({ entrypoints: [join(import.meta.dir, "index.html")], outdir: dist, publicPath: "/", splitting: true, minify: true, plugins: [mdx] });
+  const out = await Bun.build({ entrypoints: [join(import.meta.dir, "index.html")], outdir: dist, publicPath: "/", splitting: true, minify: true, drop: ["debugger"], plugins: [mdx] });
   if (!out.success) {
     out.logs.forEach((l) => console.error(l));
     process.exit(1);

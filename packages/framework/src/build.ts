@@ -96,7 +96,7 @@ export async function buildApp(o: { root: string; dev: boolean }): Promise<Build
 
   const version = Date.now().toString(36);
   const dir = join(buildDirOf(root), version);
-  const common = { root, publicPath: "/_app/", sourcemap: dev ? ("linked" as const) : ("none" as const), throw: false };
+  const common = { root, publicPath: "/_app/", sourcemap: dev ? ("linked" as const) : ("none" as const), drop: dev ? [] : ["debugger"], throw: false };
 
   const client = await Bun.build({
     ...common,
@@ -114,7 +114,9 @@ export async function buildApp(o: { root: string; dev: boolean }): Promise<Build
 
   const server = await Bun.build({
     ...common,
-    sourcemap: dev ? "inline" : "none",
+    // Production: smaller and quicker to load, with names kept (identifiers aren't renamed) and a linked map so stack traces point at the source.
+    minify: dev ? false : { whitespace: true, syntax: true },
+    sourcemap: dev ? "inline" : "linked",
     entrypoints: [join(gen, "routes.server.ts")],
     outdir: join(dir, "server"),
     target: "bun",
