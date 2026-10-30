@@ -70,7 +70,7 @@
     },
     "packages/cli": {
       "name": "@archlast/forge-cli",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "bin": {
         "archlast-forge": "./src/index.ts",
       },
@@ -86,7 +86,7 @@
     },
     "packages/client": {
       "name": "@archlast/forge-client",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@archlast/forge-runtime": "workspace:*",
         "@tanstack/query-core": "5.104.5",
@@ -98,7 +98,7 @@
     },
     "packages/create-archlast-forge": {
       "name": "create-archlast-forge",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "bin": {
         "create-archlast-forge": "./src/index.ts",
       },
@@ -111,7 +111,7 @@
     },
     "packages/dashboard": {
       "name": "@archlast/forge-dashboard",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@fontsource-variable/jetbrains-mono": "5.3.0",
         "@fontsource-variable/space-grotesk": "5.3.0",
@@ -126,7 +126,7 @@
     },
     "packages/framework": {
       "name": "@archlast/forge-framework",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@archlast/forge-client": "workspace:*",
         "@archlast/forge-react": "workspace:*",
@@ -149,7 +149,7 @@
     },
     "packages/react": {
       "name": "@archlast/forge-react",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@archlast/forge-client": "workspace:*",
         "@archlast/forge-runtime": "workspace:*",
@@ -166,7 +166,7 @@
     },
     "packages/runtime": {
       "name": "@archlast/forge-runtime",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@grpc/grpc-js": "1.14.7",
         "@grpc/proto-loader": "0.8.1",
@@ -203,7 +203,7 @@
     },
     "packages/svelte": {
       "name": "@archlast/forge-svelte",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@archlast/forge-client": "workspace:*",
         "@archlast/forge-runtime": "workspace:*",
@@ -214,7 +214,7 @@
     },
     "packages/vue": {
       "name": "@archlast/forge-vue",
-      "version": "0.3.0",
+      "version": "0.4.0",
       "dependencies": {
         "@archlast/forge-client": "workspace:*",
         "@archlast/forge-runtime": "workspace:*",
