@@ -39,7 +39,8 @@ function suite(label: string, name: string, shadcn?: BaseColor) {
       const context = await browser!.newContext({ colorScheme: scheme, viewport: { width: 1100, height: 760 } });
       const page = await context.newPage();
       const problems: string[] = [];
-      page.on("console", (m) => ["error", "warning"].includes(m.type()) && problems.push(`${m.type()}: ${m.text()}`));
+      // Chrome says this when a page is left while its live socket is still connecting, which quick navigations in a test (and a slow CI runner) cause. It is not the app's.
+      page.on("console", (m) => ["error", "warning"].includes(m.type()) && !/WebSocket is closed before the connection is established/.test(m.text()) && problems.push(`${m.type()}: ${m.text()}`));
       page.on("pageerror", (e) => problems.push(`pageerror: ${e.message}`));
       return { page, problems, context };
     }
