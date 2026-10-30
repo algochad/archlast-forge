@@ -10,9 +10,14 @@
 		file_server
 	}
 
-	# Everything else is a page of the single-page app.
+	# A page is a folder with an index.html (the text is in it for readers without JavaScript; the app takes over in a browser).
+	# Anything else that is missing is a real 404, shown as the app's "Page not found".
 	handle {
-		try_files {path} /index.html
+		try_files {path} {path}/index.html
+		file_server
+	}
+	handle_errors {
+		rewrite * /404.html
 		file_server
 	}
 }

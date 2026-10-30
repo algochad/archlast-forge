@@ -1,4 +1,4 @@
-import { type ComponentProps, useEffect, useRef, useState } from "react";
+import { type ComponentProps, type Ref, useEffect, useRef, useState } from "react";
 import { Link, NavLink, useLocation, useOutletContext, useParams } from "react-router";
 import { Code } from "./Code";
 import type { Doc } from "./doc";
@@ -25,15 +25,20 @@ export const components = {
   Code,
 };
 
+const loaded = new Map<Slug, Doc>();
+
+/** Brings a page's chunk in before the first render, so the HTML the build put in the page is replaced without a blank frame. */
+export const preload = (slug?: string) => (isSlug(slug) ? PAGES[slug][1]().then((mod) => void loaded.set(slug, mod)) : Promise.resolve());
+
 /** Loads a page's chunk. The previous page stays up until the next one is ready, or `failed` says it will not come (a tab left open across a deploy asks for chunks that are gone). */
 function useDoc(slug: string | undefined) {
-  const [doc, setDoc] = useState<{ slug: Slug; mod: Doc }>();
+  const [doc, setDoc] = useState<{ slug: Slug; mod: Doc } | undefined>(() => (isSlug(slug) && loaded.has(slug) ? { slug, mod: loaded.get(slug)! } : undefined));
   const [failed, setFailed] = useState(false);
   useEffect(() => {
     if (!isSlug(slug)) return;
     let live = true;
     setFailed(false);
-    PAGES[slug][1]().then((mod) => live && setDoc({ slug, mod }), (e) => (console.error(e), live && setFailed(true)));
+    PAGES[slug][1]().then((mod) => (loaded.set(slug, mod), live && setDoc({ slug, mod })), (e) => (console.error(e), live && setFailed(true)));
     return () => void (live = false);
   }, [slug]);
   return { doc, failed };
@@ -72,6 +77,90 @@ export function NotFound() {
   );
 }
 
+/** Copies a page's Markdown. The copy is made from the promise, which keeps Safari from dropping the click's permission while the file loads. */
+function CopyPage({ slug }: { slug: Slug }) {
+  const [state, setState] = useState<"copied" | "failed">();
+  const copy = async () => {
+    try {
+      const text = fetch(`/${slug}.md`).then((r) => (r.ok ? r.text() : Promise.reject(new Error(r.statusText)))).then((t) => new Blob([t], { type: "text/plain" }));
+      await navigator.clipboard.write([new ClipboardItem({ "text/plain": text })]);
+      setState("copied");
+    } catch {
+      setState("failed");
+    }
+    setTimeout(() => setState(undefined), 2000);
+  };
+  return (
+    <button type="button" onClick={copy} aria-live="polite">
+      {state === "copied" ? "Copied" : state === "failed" ? "Copy failed" : "Copy page"}
+    </button>
+  );
+}
+
+export function Sidebar({ ref }: { ref?: Ref<HTMLElement> }) {
+  return (
+    <aside className="side" id="sidebar" aria-label="Docs" ref={ref}>
+      {GROUPS.map(([name, slugs]) => (
+        <div className="group" key={name}>
+          <div className="group-name">{name}</div>
+          {slugs.map((s) => (
+            <NavLink key={s} to={`/${s}`}>
+              {titleOf(s)}
+            </NavLink>
+          ))}
+        </div>
+      ))}
+    </aside>
+  );
+}
+
+/** A page's text with its crumbs and pager. The build renders it into each page's HTML too. */
+export function Article({ slug, Content }: { slug: Slug; Content: Doc["default"] }) {
+  const at = reading.indexOf(slug);
+  const [prev, next] = [reading[at - 1], reading[at + 1]];
+  return (
+    <article>
+      <div className="crumbs">
+        <Link to="/">Home</Link>
+        <span>/</span>
+        <span>{groupOf(slug)}</span>
+        <span>/</span>
+        <span aria-current="page">{titleOf(slug)}</span>
+        <span className="actions">
+          <CopyPage slug={slug} />
+          <a href={`/${slug}.md`}>View as Markdown</a>
+        </span>
+      </div>
+      <div className="prose">
+        <Content components={components} />
+      </div>
+      <div className="edit">
+        <a href={`${GITHUB}/edit/master/apps/docs/content/${slug}.mdx`} rel="noopener">
+          Edit this page on GitHub <Arrow />
+        </a>
+      </div>
+      <nav className="pager" aria-label="Pages">
+        {prev ? (
+          <Link className="prev" to={`/${prev}`}>
+            <small>Previous</small>
+            <span>{titleOf(prev)}</span>
+          </Link>
+        ) : (
+          <span />
+        )}
+        {next ? (
+          <Link className="next" to={`/${next}`}>
+            <small>Next</small>
+            <span>{titleOf(next)}</span>
+          </Link>
+        ) : (
+          <span />
+        )}
+      </nav>
+    </article>
+  );
+}
+
 export function DocPage() {
   const { slug: wanted } = useParams();
   const closeMenu = useOutletContext<() => void>();
@@ -99,24 +188,11 @@ export function DocPage() {
 
   const Content = doc?.mod.default;
   const toc = doc?.mod.headings.filter((h) => h.depth > 1) ?? [];
-  const at = doc ? reading.indexOf(doc.slug) : 0;
-  const [prev, next] = [reading[at - 1], reading[at + 1]];
   return (
     <>
       <div className="scrim" onClick={closeMenu} />
       <div className="shell">
-        <aside className="side" id="sidebar" aria-label="Docs" ref={side}>
-          {GROUPS.map(([name, slugs]) => (
-            <div className="group" key={name}>
-              <div className="group-name">{name}</div>
-              {slugs.map((s) => (
-                <NavLink key={s} to={`/${s}`}>
-                  {titleOf(s)}
-                </NavLink>
-              ))}
-            </div>
-          ))}
-        </aside>
+        <Sidebar ref={side} />
         <main id="content" className="doc">
           {failed && (
             <article className="prose">
@@ -125,43 +201,7 @@ export function DocPage() {
               </p>
             </article>
           )}
-          {!failed && doc && Content && (
-            <article>
-              <div className="crumbs">
-                <Link to="/">Home</Link>
-                <span>/</span>
-                <span>{groupOf(doc.slug)}</span>
-                <span>/</span>
-                <span aria-current="page">{titleOf(doc.slug)}</span>
-              </div>
-              <div className="prose">
-                <Content components={components} />
-              </div>
-              <div className="edit">
-                <a href={`${GITHUB}/edit/master/apps/docs/content/${doc.slug}.mdx`} rel="noopener">
-                  Edit this page on GitHub <Arrow />
-                </a>
-              </div>
-              <nav className="pager" aria-label="Pages">
-                {prev ? (
-                  <Link className="prev" to={`/${prev}`}>
-                    <small>Previous</small>
-                    <span>{titleOf(prev)}</span>
-                  </Link>
-                ) : (
-                  <span />
-                )}
-                {next ? (
-                  <Link className="next" to={`/${next}`}>
-                    <small>Next</small>
-                    <span>{titleOf(next)}</span>
-                  </Link>
-                ) : (
-                  <span />
-                )}
-              </nav>
-            </article>
-          )}
+          {!failed && doc && Content && <Article slug={doc.slug} Content={Content} />}
         </main>
         {toc.length > 0 && (
           <aside className="toc" aria-label="On this page">

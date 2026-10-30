@@ -4,7 +4,9 @@ WORKDIR /docs
 COPY package.json ./
 RUN bun install --ignore-scripts
 COPY . .
-RUN bun run build
+# The site's address (https://docs.example.com) for canonical links and sitemap.xml. Without it both are left out.
+ARG SITE_URL=""
+RUN SITE_URL=$SITE_URL bun run build
 
 FROM caddy:2-alpine
 COPY Caddyfile /etc/caddy/Caddyfile

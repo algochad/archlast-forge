@@ -1,10 +1,14 @@
 # The docs site on its own.
 # Coolify: Docker Compose build pack, Base Directory /apps/docs, Docker Compose Location /compose.yaml, then give the
 # `docs` service a domain. Coolify's proxy handles HTTPS and reaches the container on port 80, so nothing is published.
+# Also add SITE_URL (for example https://docs.example.com) as a build variable: it gives the pages canonical links and the site a sitemap.xml.
 # Locally: docker compose run --build --rm -p 8080:80 docs   (then open http://localhost:8080)
 services:
   docs:
-    build: .
+    build:
+      context: .
+      args:
+        SITE_URL: ${SITE_URL:-}
     expose:
       - "80"
     restart: unless-stopped

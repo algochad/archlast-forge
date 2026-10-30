@@ -76,6 +76,9 @@ kbd, code, pre { font-family: var(--mono); }
 .crumbs { display: flex; flex-wrap: wrap; gap: 8px; font: 500 11.5px/1 var(--mono); letter-spacing: 0.06em; text-transform: uppercase; color: var(--faint); margin-bottom: 28px; }
 .crumbs a:hover { color: var(--text); }
 .crumbs [aria-current] { color: var(--muted); }
+.crumbs .actions { margin-left: auto; display: flex; gap: 16px; }
+.crumbs .actions button, .crumbs .actions a { font: inherit; letter-spacing: inherit; text-transform: inherit; color: var(--faint); background: none; border: 0; padding: 0; cursor: pointer; }
+.crumbs .actions button:hover, .crumbs .actions a:hover { color: var(--text); }
 
 /* Right column */
 .toc { position: sticky; top: var(--top-h); align-self: start; height: calc(100vh - var(--top-h)); overflow-y: auto; padding: 40px 16px 48px 8px; }

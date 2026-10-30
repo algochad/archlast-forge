@@ -189,7 +189,7 @@ function Footer() {
         {col("Start", pages("Start"))}
         {col("Build", pages("Build"), true)}
         <div className="foot-col">{col("Run", pages("Run"))}{col("Reference", pages("Reference"))}</div>
-        {col("Project", [["GitHub", GITHUB], ["Issues", `${GITHUB}/issues`], ["npm", NPM], ["License", `${GITHUB}/blob/master/LICENSE`]].map(([t, h]) => <a key={t} href={h}>{t}</a>))}
+        {col("Project", [["GitHub", GITHUB], ["Issues", `${GITHUB}/issues`], ["npm", NPM], ["License", `${GITHUB}/blob/master/LICENSE`], ["llms.txt", "/llms.txt"], ["llms-full.txt", "/llms-full.txt"]].map(([t, h]) => <a key={t} href={h}>{t}</a>))}
       </div>
       <div className="foot-bar">
         <span>MIT licensed. One deployment per app, on your own servers.</span>
