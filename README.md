@@ -19,7 +19,7 @@ bun run dev                           # http://localhost:3000, reloading as you 
 bun run up                            # the production stack: builds the image, starts it with its services
 ```
 
-Full documentation is in [`apps/docs`](apps/docs/content). Build it with `bun run --cwd apps/docs build`, or preview it with `bun run --cwd apps/docs dev` on http://localhost:4000. Start with [Getting started](apps/docs/content/getting-started.mdx), then [Full-stack apps](apps/docs/content/framework.mdx) or [Backends](apps/docs/content/backend.mdx).
+Full documentation is in [`apps/docs`](apps/docs/content). Preview it with `bun run --cwd apps/docs dev` on http://localhost:4000, or build it with `bun run --cwd apps/docs build` (output in `apps/docs/dist`). To serve it from a container, run `docker compose run --build --rm -p 8080:80 docs` in `apps/docs` and open http://localhost:8080. That folder builds on its own, so it can be deployed without the rest of the repo; on Coolify, use the Docker Compose build pack with Base Directory `/apps/docs` and Docker Compose Location `/compose.yaml`, then give the `docs` service a domain. Start with [Getting started](apps/docs/content/getting-started.mdx), then [Full-stack apps](apps/docs/content/framework.mdx) or [Backends](apps/docs/content/backend.mdx).
 
 ## This repository
 
