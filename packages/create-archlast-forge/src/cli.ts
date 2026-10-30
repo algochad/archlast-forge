@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { scaffold } from "./scaffold";
+import { BASE_COLORS, BASE_COLOR_HINTS, type BaseColor } from "./shadcn";
 import { defaultServices, nameOf, parseFlags, USAGE, type Flags } from "./options";
 import { DEFAULT_SERVICES, MODES, SERVICES, type Mode, type StackService } from "./stack";
 
@@ -16,6 +17,8 @@ export interface Answers {
   dir: string;
   mode: Mode;
   services: StackService[];
+  /** Full-stack apps: the shadcn/ui base color, or nothing for a plain app. */
+  shadcn?: BaseColor;
   install: boolean;
   git: boolean;
 }
@@ -60,6 +63,19 @@ export async function gather(flags: Flags, interactive: boolean, io: Io = {}): P
       : "framework";
   }
 
+  let shadcn: BaseColor | undefined;
+  if (mode === "framework") {
+    const use = flags.shadcn ?? (flags.baseColor ? true : interactive ? await ask<boolean>((o) => p.confirm({ ...o, message: "Add shadcn/ui? (Tailwind CSS and ready-made components)", initialValue: true })) : true);
+    if (use)
+      shadcn =
+        flags.baseColor ??
+        (interactive
+          ? await ask<BaseColor>((o) =>
+              p.select<BaseColor>({ ...o, message: "Which base color for the theme?", initialValue: "neutral", options: BASE_COLORS.map((c) => ({ value: c, label: c[0]!.toUpperCase() + c.slice(1), hint: BASE_COLOR_HINTS[c] })) }),
+            )
+          : "neutral");
+  }
+
   let services = flags.services;
   if (!services) {
     services = interactive
@@ -78,7 +94,7 @@ export async function gather(flags: Flags, interactive: boolean, io: Io = {}): P
   const confirm = async (given: boolean | undefined, message: string) => given ?? (interactive ? await ask<boolean>((o) => p.confirm({ ...o, message, initialValue: true })) : false);
   const install = await confirm(flags.install, "Install dependencies with bun?");
   const git = await confirm(flags.git, "Start a git repository?");
-  return { dir, mode, services, install, git };
+  return { dir, mode, services, ...(shadcn && { shadcn }), install, git };
 }
 
 const run = async (cmd: string[], cwd: string) => {
@@ -127,7 +143,8 @@ export async function main(argv: string[], io: Io = {}): Promise<void> {
       return process.exit(1);
     }
   })();
-  p.log.success(`Created ${basename(target)} (${MODES[answers.mode].label.toLowerCase()}${answers.services.length ? `, with ${answers.services.map((s) => SERVICES[s].label).join(", ")}` : ""})`);
+  const included = [...(answers.shadcn ? [`shadcn/ui (${answers.shadcn})`] : []), ...answers.services.map((s) => SERVICES[s].label)];
+  p.log.success(`Created ${basename(target)} (${MODES[answers.mode].label.toLowerCase()}${included.length ? `, with ${included.join(", ")}` : ""})`);
 
   let installed = false;
   if (answers.install) {

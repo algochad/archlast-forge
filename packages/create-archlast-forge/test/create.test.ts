@@ -6,6 +6,7 @@ import { PassThrough } from "node:stream";
 import { Cancelled, gather } from "../src/cli";
 import { scaffold } from "../src/scaffold";
 import { parseFlags } from "../src/options";
+import { BASE_COLORS } from "../src/shadcn";
 import { parseProjectConfig } from "../src/stack";
 
 const fresh = (name = "My Chat") => join(mkdtempSync(join(tmpdir(), "afx-create-")), name);
@@ -66,6 +67,43 @@ describe("scaffold", () => {
     expect(JSON.parse(read(dir, "package.json")).devDependencies["@archlast/forge-cli"]).toBe("^1.2.3");
   });
 
+  test("with shadcn/ui: Tailwind, the components, the chosen theme and the aliases", () => {
+    const dir = fresh("ui");
+    scaffold({ dir, mode: "framework", services: [], shadcn: "zinc", version: "1.2.3" });
+    expect(JSON.parse(read(dir, "components.json"))).toMatchObject({ style: "base-nova", tailwind: { css: "app/styles.css", baseColor: "zinc", cssVariables: true }, aliases: { ui: "@/components/ui", utils: "@/lib/utils" } });
+    const pkg = JSON.parse(read(dir, "package.json"));
+    expect(pkg.dependencies).toMatchObject({ tailwindcss: expect.any(String), "@base-ui/react": expect.any(String), cn: expect.any(String), "@archlast/forge-framework": "^1.2.3" });
+    expect(pkg.devDependencies["bun-plugin-tailwind"]).toBeString();
+    expect(JSON.parse(read(dir, "tsconfig.json")).compilerOptions.paths).toEqual({ "@/*": ["./app/*"] });
+    for (const f of ["app/lib/utils.ts", "app/components/ui/button.tsx", "app/components/ui/card.tsx", "app/components/theme-toggle.tsx", "app/routes/chat.tsx"]) expect(existsSync(join(dir, f)), f).toBe(true);
+    const css = read(dir, "app/styles.css");
+    expect(css).toStartWith('@import "tailwindcss";');
+    expect(css).toMatch(/:root \{[^}]*--background: oklch/);
+    expect(css).toMatch(/\.dark \{[^}]*--background: oklch/);
+    expect(css).not.toContain("/*:root*/");
+    expect(read(dir, "app/root.tsx")).toContain('from "@/components/ui/button"'); // the pages use the components, not the plain stylesheet
+    expect(read(dir, "README.md")).toContain("bunx shadcn@latest add");
+    for (const f of files(dir)) expect(read(dir, f), f).not.toMatch(/__NAME__|__VERSION__/);
+  });
+
+  test("each base color has its own theme, and a plain app has none of it", () => {
+    const themes = BASE_COLORS.map((c) => {
+      const dir = fresh(`c-${c}`);
+      scaffold({ dir, mode: "framework", services: [], shadcn: c });
+      return /--muted-foreground: (oklch\([^)]*\))/.exec(read(dir, "app/styles.css"))![1];
+    });
+    expect(new Set(themes).size).toBe(BASE_COLORS.length);
+    const plain = fresh("plain");
+    scaffold({ dir: plain, mode: "framework", services: [] });
+    expect(existsSync(join(plain, "components.json"))).toBe(false);
+    expect(read(plain, "package.json")).not.toContain("tailwind");
+    expect(read(plain, "app/styles.css")).toContain("--accent:"); // the plain stylesheet
+  });
+
+  test("shadcn/ui is for full-stack apps", () => {
+    expect(() => scaffold({ dir: fresh("nope"), mode: "backend", services: [], shadcn: "neutral" })).toThrow("use --mode framework");
+  });
+
   test("the upload example comes only with storage", () => {
     const dir = fresh("no-files");
     scaffold({ dir, mode: "backend", services: ["postgres"] });
@@ -107,18 +145,28 @@ describe("flags", () => {
     expect(parseFlags(["-y", "x"])).toMatchObject({ yes: true, dir: "x" });
     expect(parseFlags(["x", "--services", "none"]).services).toEqual([]);
     expect(parseFlags(["x", "--template", "framework"]).mode).toBe("framework");
+    expect(parseFlags(["x", "--base-color", "Mist"])).toMatchObject({ baseColor: "mist" });
+    expect(parseFlags(["x", "--no-shadcn"]).shadcn).toBe(false);
+    expect(parseFlags(["x", "--shadcn"]).shadcn).toBe(true);
   });
   test("mistakes are named", () => {
     expect(() => parseFlags(["--mode", "spa"])).toThrow('Unknown mode "spa". Choose framework or backend.');
     expect(() => parseFlags(["--services", "mysql"])).toThrow('Unknown service "mysql"');
+    expect(() => parseFlags(["--base-color", "pink"])).toThrow('Unknown base color "pink". Choose from neutral');
+    expect(() => parseFlags(["--no-shadcn", "--base-color", "zinc"])).toThrow("--no-shadcn");
+    expect(() => parseFlags(["--mode", "backend", "--shadcn"])).toThrow("use --mode framework");
   });
 });
 
 describe("gather (no prompts)", () => {
   test("defaults depend on the mode", async () => {
     const dir = fresh();
-    expect(await gather({ dir, yes: true, help: false }, false)).toEqual({ dir, mode: "framework", services: ["postgres", "redis", "s3", "caddy"], install: false, git: false });
-    expect(await gather({ dir, mode: "backend", yes: true, help: false }, false)).toMatchObject({ mode: "backend", services: ["postgres", "redis", "s3"] });
+    expect(await gather({ dir, yes: true, help: false }, false)).toEqual({ dir, mode: "framework", services: ["postgres", "redis", "s3", "caddy"], shadcn: "neutral", install: false, git: false });
+    expect(await gather({ dir, shadcn: false, yes: true, help: false }, false)).not.toHaveProperty("shadcn");
+    expect(await gather({ dir, baseColor: "zinc", yes: true, help: false }, false)).toMatchObject({ shadcn: "zinc" });
+    const backend = await gather({ dir, mode: "backend", yes: true, help: false }, false);
+    expect(backend).toMatchObject({ mode: "backend", services: ["postgres", "redis", "s3"] });
+    expect(backend).not.toHaveProperty("shadcn"); // there are no pages to style
     expect(await gather({ dir, mode: "backend", services: [], install: true, yes: true, help: false }, false)).toMatchObject({ services: [], install: true });
   });
   test("a missing folder is an error when nothing can ask", async () => {
@@ -162,13 +210,31 @@ describe("gather (prompts)", () => {
     expect(await done).toEqual({ dir, mode: "backend", services: ["redis", "s3"], install: false, git: false });
   });
 
+  test("shadcn/ui is asked about for a full-stack app: a base color to pick, or no", async () => {
+    const pick = terminal();
+    const picked = gather({ dir: fresh("zinc"), install: false, git: false, yes: false, help: false }, true, { input: pick.input, output: pick.output });
+    await Bun.sleep(30);
+    await pick.press("\r", "\r", DOWN, DOWN, "\r", "\r"); // framework, yes, neutral → stone → zinc, the services
+    expect(await picked).toMatchObject({ mode: "framework", shadcn: "zinc" });
+    expect(pick.screen()).toContain("Add shadcn/ui?");
+    expect(pick.screen()).toContain("Taupe");
+
+    const skip = terminal();
+    const skipped = gather({ dir: fresh("plain-ui"), install: false, git: false, yes: false, help: false }, true, { input: skip.input, output: skip.output });
+    await Bun.sleep(30);
+    await skip.press("\r", "n", "\r", "\r"); // framework, no (so no base color), the services
+    const answers = await skipped;
+    expect(answers.mode).toBe("framework");
+    expect(answers).not.toHaveProperty("shadcn");
+  });
+
   test("a full-stack app starts with the production stack ticked; Ctrl-C cancels without a trace", async () => {
     const t = terminal();
     const dir = fresh("plain");
     const done = gather({ dir, install: false, git: false, yes: false, help: false }, true, { input: t.input, output: t.output });
     await Bun.sleep(30);
-    await t.press("\r", "\r");
-    expect(await done).toMatchObject({ mode: "framework", services: ["postgres", "redis", "s3", "caddy"] });
+    await t.press("\r", "\r", "\r", "\r"); // the mode, shadcn/ui (yes), its base color (neutral), the services
+    expect(await done).toMatchObject({ mode: "framework", shadcn: "neutral", services: ["postgres", "redis", "s3", "caddy"] });
 
     const quit = terminal();
     const cancelled = gather({ dir: fresh("never"), yes: false, help: false }, true, { input: quit.input, output: quit.output }).catch((e) => e);

@@ -24,6 +24,8 @@ When run in a terminal, it asks up to five questions, skipping any you answered 
 |---|---|---|
 | Where should we create your project? | a folder name (default `my-app`) | The folder name also becomes the package name and the Docker Compose project name, lowercased and with other characters turned into `-`. |
 | What are you building? | **Full-stack app** or **Backend only** | Full-stack: React pages rendered on the server, file routes and your backend, all in one container. Backend: the engine and its services, for any frontend or none. See [Full-stack apps](framework.html) and [Backends](backend.html). |
+| Add shadcn/ui? (full-stack apps) | yes or no | [shadcn/ui](https://ui.shadcn.com) is Tailwind CSS v4 and ready-made components that you own: they are copied into `app/components/ui`. The starter's pages are written with them. No leaves the plain starter with its own small stylesheet. |
+| Which base color for the theme? (with shadcn/ui) | Neutral, Stone, Zinc, Mauve, Olive, Mist, Taupe | The tint of the grays in the theme: plain, warm, cool, purple, green, blue or brown. It is written into the variables in `app/styles.css`. |
 | Which services will production need? | PostgreSQL, Redis, S3 storage (RustFS), Caddy | PostgreSQL replaces the SQLite file with a shared database. Redis carries reactivity between several servers, and holds the cache and rate limits. S3 storage is for file uploads. Caddy puts HTTPS with automatic certificates in front of the app. A full-stack app starts with all four, so its `compose.yaml` is a production setup. Only what you leave ticked goes into `compose.yaml`; untick them all to keep SQLite, which needs nothing, and the stack is the app alone. A backend starts with PostgreSQL, Redis and S3 storage. |
 | Install dependencies with bun? | yes or no | Runs `bun install` in the new folder. |
 | Start a git repository? | yes or no | Runs `git init`. |
@@ -37,6 +39,8 @@ Flags skip the questions. `--yes` takes the default for everything you did not g
 | Flag | Meaning |
 |---|---|
 | `--mode framework\|backend` (`-m`) | the project mode. The default with `--yes` is `framework`. |
+| `--shadcn` / `--no-shadcn` | full-stack apps: use shadcn/ui or the plain starter. The default is shadcn/ui. |
+| `--base-color neutral\|stone\|zinc\|mauve\|olive\|mist\|taupe` | the shadcn/ui base color. The default is `neutral`. |
 | `--services postgres,redis,s3,caddy` (`-s`) | a comma-separated list, or `none`. The default is `postgres,redis,s3,caddy` for `framework` and `postgres,redis,s3` for `backend`. |
 | `--install` / `--no-install` | run `bun install` afterwards, or not. With `--yes` the default is not. |
 | `--git` / `--no-git` | start a git repository, or not. With `--yes` the default is not. |
@@ -54,7 +58,7 @@ This is the output of the non-interactive form:
 ```
 $ bunx create-archlast-forge my-app --mode framework --yes --no-install --no-git
 │
-◆  Created my-app (full-stack app, with PostgreSQL, Redis, S3 storage (RustFS), Caddy)
+◆  Created my-app (full-stack app, with shadcn/ui (neutral), PostgreSQL, Redis, S3 storage (RustFS), Caddy)
 │
 ◇  Next ───────────────────────────────────────────────────────────────╮
 │                                                                      │
@@ -134,10 +138,13 @@ curl localhost:3000/http/hello
 my-app/
   archlast-forge.json   { "mode": "framework", "services": [] }
   package.json          scripts: dev, build, start, codegen, typecheck, up, down
-  tsconfig.json         for app/ (strict, React JSX)
+  tsconfig.json         for app/ (strict, React JSX; with shadcn/ui, the `@/` alias for app/)
+  components.json       with shadcn/ui: where the shadcn CLI puts components, and your base color
   app/
     root.tsx            the HTML document, the header and footer around every page, the error page
-    styles.css          the starter's styles; imported from root.tsx
+    styles.css          Tailwind and the theme (plain CSS without shadcn/ui); imported from root.tsx
+    components/ui/      with shadcn/ui: button, card, input, label, avatar (add more with `bunx shadcn@latest add`)
+    lib/utils.ts        with shadcn/ui: `cn`, for joining class names
     env.d.ts            declares the file types you may import (.css, .svg, .png)
     routes/
       index.tsx         /

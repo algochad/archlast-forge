@@ -2,6 +2,7 @@
 import { chmodSync, cpSync, existsSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { nameOf } from "./options";
+import { addShadcn, type BaseColor } from "./shadcn";
 import {
   DOCKERIGNORE,
   generateSecrets,
@@ -20,16 +21,20 @@ export interface ScaffoldOptions {
   dir: string;
   mode: Mode;
   services: StackService[];
+  /** Full-stack apps only: use shadcn/ui, with this base color. */
+  shadcn?: BaseColor;
   /** The archlast-forge version the project depends on. Defaults to this package's. */
   version?: string;
 }
 
 /** Writes a new project into `dir` (which may exist but must be empty) and returns its absolute path. */
-export function scaffold({ dir, mode, services, version = VERSION }: ScaffoldOptions): string {
+export function scaffold({ dir, mode, services, shadcn, version = VERSION }: ScaffoldOptions): string {
   const target = resolve(dir);
   if (existsSync(target) && readdirSync(target).length) throw new Error(`${target} isn't empty`);
+  if (shadcn && mode !== "framework") throw new Error("shadcn/ui is for full-stack apps: use --mode framework");
   const name = nameOf(target);
   for (const part of ["base", mode]) cpSync(join(TEMPLATE, part), target, { recursive: true });
+  if (shadcn) addShadcn(target, shadcn);
   renameSync(join(target, "gitignore"), join(target, ".gitignore")); // npm drops .gitignore files from packages
   if (services.includes("s3")) cpSync(join(TEMPLATE, "extras", "files.ts"), join(target, "forge", "files.ts")); // something that uses the storage
 

@@ -39,7 +39,7 @@ Failures print `✗ <message>` to stderr and exit 1. Success exits 0. Progress l
 ## init
 
 ```bash
-archlast-forge init [dir] [--mode framework|backend] [--services postgres,redis,s3,caddy|none] [--yes] [--install|--no-install] [--git|--no-git]
+archlast-forge init [dir] [--mode framework|backend] [--services postgres,redis,s3,caddy|none] [--shadcn|--no-shadcn] [--base-color <name>] [--yes] [--install|--no-install] [--git|--no-git]
 bun create archlast-forge [dir] [same options]
 bunx create-archlast-forge [dir] [same options]
 ```
@@ -51,12 +51,14 @@ All three are the same program (`create-archlast-forge`). `init` forwards everyt
 | `dir` | the new folder, which must be empty or not exist. Its name becomes the project and package name (lowercased; anything but letters, digits, `-` and `_` becomes `-`). |
 | `-m`, `--mode <framework\|backend>` | `framework`: a full-stack React app (SQLite with `--services none`). `backend`: the engine plus services, and no pages. `--template` is an alias. |
 | `-s`, `--services <list>` | any of `postgres`, `redis`, `s3`, `caddy`, comma separated, or `none`. Defaults: `postgres,redis,s3,caddy` for `framework`; `postgres,redis,s3` for `backend`. |
+| `--shadcn`, `--no-shadcn` | full-stack apps only: write the starter with shadcn/ui (Tailwind CSS v4, `components.json`, components in `app/components/ui`) or with its plain stylesheet. Default: shadcn/ui. With `--mode backend` it is an error. |
+| `--base-color <name>` | the shadcn/ui base color: `neutral` (default), `stone`, `zinc`, `mauve`, `olive`, `mist` or `taupe`. It cannot be changed later (that is shadcn's rule for `components.json`). Passing it implies `--shadcn`; with `--no-shadcn` it is an error. |
 | `--install`, `--no-install` | run `bun install` afterwards. When nothing is said: ask, or do not install if not asking. |
 | `--git`, `--no-git` | run `git init -q`. Same defaults. |
 | `-y`, `--yes` | take the default for every question not answered by a flag, and ask nothing. |
 | `-h`, `--help` | print the usage text. |
 
-It asks the questions you did not answer (folder, "What are you building?", "Which services will production need?", install, git) only when both input and output are a terminal, `CI` is unset and `--yes` is not given. Otherwise missing answers take their defaults, except the folder, which has none:
+It asks the questions you did not answer (folder, "What are you building?", "Add shadcn/ui?" and "Which base color for the theme?" (full-stack apps), "Which services will production need?", install, git) only when both input and output are a terminal, `CI` is unset and `--yes` is not given. Otherwise missing answers take their defaults, except the folder, which has none:
 
 ```
 ✗ Which folder? Pass a directory: bun create archlast-forge my-app

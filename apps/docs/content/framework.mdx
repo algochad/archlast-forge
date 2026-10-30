@@ -346,7 +346,18 @@ Rendered on the server, this is in the HTML (`<title>Hello world number 1</title
 - `import logo from "./logo.svg"` gives a hashed URL (`/_app/logo-n759mggn.svg`). Declare the file types you import in `app/env.d.ts` (`declare module "*.svg" { const src: string; export default src; }`). JSON imports work as in any bundler.
 - Files in `public/` are served at the root: `public/robots.txt` is `/robots.txt`. They are cached for an hour in production (`public, max-age=3600`) and not at all in development. Paths with a segment starting with a dot are refused, except `.well-known`. A file in `public/` is only looked up for paths that have a file extension.
 - Path aliases work: with `"paths": { "~/*": ["./app/*"] }` in `tsconfig.json`, `import { hi } from "~/lib/hi"` builds. (TypeScript 7 rejects `baseUrl`; use relative targets in `paths`.)
-- Tailwind, CSS modules and PostCSS are not set up. Plain CSS and anything Bun's bundler handles work; a preprocessor needs a build step of your own that writes a `.css` file.
+- **Tailwind CSS v4** works when the project has Tailwind's Bun plugin: `bun add tailwindcss && bun add -d bun-plugin-tailwind`, and `@import "tailwindcss";` at the top of the stylesheet. The browser build loads the plugin from your project (a project without it builds exactly as before), and Tailwind finds the classes in the files the build reads. The shadcn/ui starter is set up this way.
+- CSS modules and PostCSS are not set up. Plain CSS and anything Bun's bundler handles work; another preprocessor needs a build step of your own that writes a `.css` file.
+
+### shadcn/ui
+
+`bun create archlast-forge` adds [shadcn/ui](https://ui.shadcn.com) to a full-stack app unless you pick the plain starter (`--no-shadcn`). It is the `base-nova` style, built on Base UI, with the base color you chose:
+
+- `components.json` is shadcn's configuration. `bunx shadcn@latest add dialog` reads it and writes the component into `app/components/ui`, importing helpers through the `@/` alias, which `tsconfig.json` points at `app/` (and the build follows).
+- `app/styles.css` has Tailwind, the theme variables for light (`:root`) and dark (`.dark`) and the base styles. Change the look by editing the variables; the components read them.
+- Dark mode follows the system until a visitor uses the toggle in the header, which sets `class="dark"` on `<html>` and remembers it in `localStorage`. A short script in `root.tsx` applies it before the first paint, so there is no flash.
+- The starter's pages use `buttonVariants` for links that look like buttons, and `Card`, `Input`, `Label` and `Avatar`. The class names `msg`, `who` and `chat-empty` in the chat and header are hooks for tests, not styles.
+- The snippets in these docs (`className="container"`, `btn primary`) are written against the plain starter's stylesheet. In a shadcn/ui app use Tailwind classes and the components instead, or create the project with `--no-shadcn` to follow them as written.
 
 ## Errors and status codes
 

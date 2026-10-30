@@ -42,6 +42,17 @@ const ignoreStyles: Bun.BunPlugin = { name: "ignore-styles", setup(b) {
   },
 };
 
+/** Tailwind CSS v4 for projects that install Tailwind's Bun plugin (`bun add -d tailwindcss bun-plugin-tailwind`); projects without it build as before. */
+async function tailwind(root: string): Promise<Bun.BunPlugin[]> {
+  let path: string;
+  try {
+    path = Bun.resolveSync("bun-plugin-tailwind", root);
+  } catch {
+    return [];
+  }
+  return [(await import(path)).default];
+}
+
 const flat = (p: string) => p.replace(/^\.\//, "");
 
 const buildDirOf = (root: string) => join(root, ".forge", "build");
@@ -96,6 +107,7 @@ export async function buildApp(o: { root: string; dev: boolean }): Promise<Build
     minify: !dev,
     naming: "[name]-[hash].[ext]",
     define: { "process.env.NODE_ENV": JSON.stringify(dev ? "development" : "production") },
+    plugins: await tailwind(root),
     metafile: true,
   });
   if (!client.success) throw new BuildError(`The browser bundle failed to build:\n\n${messageOf(client.logs)}`);
