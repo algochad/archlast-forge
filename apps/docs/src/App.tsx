@@ -1,9 +1,8 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, Route, Routes, useLocation } from "react-router";
-import { Contrast, GitHubIcon, Mark, Menu, SearchIcon } from "./icons";
+import { Contrast, Mark, Menu, SearchIcon } from "./icons";
 import { DocPage, NotFound } from "./Doc";
 import { Landing } from "./Landing";
-import { GITHUB } from "./nav";
 import { Search } from "./Search";
 
 const LINKS = [
@@ -65,7 +64,6 @@ function Chrome() {
           <span className="search-label">Search docs</span>
           <kbd className="kbd">{mac ? "⌘ K" : "Ctrl K"}</kbd>
         </button>
-        <a className="icon-btn" href={GITHUB} aria-label="GitHub" rel="noopener"><GitHubIcon /></a>
         <button className="icon-btn" type="button" aria-label="Switch light and dark theme" onClick={toggleTheme}><Contrast /></button>
       </header>
       <Outlet context={() => setMenu(false)} />

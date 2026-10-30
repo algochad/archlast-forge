@@ -232,7 +232,6 @@ export function Landing() {
               <div className="cta">
                 <Link className="btn solid" to="/getting-started">Get started</Link>
                 <Link className="btn" to="/introduction">Read the docs</Link>
-                <a className="btn link" href={GITHUB} rel="noopener">GitHub <Arrow /></a>
               </div>
               <div className="install">
                 <div className="install-tabs" role="tablist">
