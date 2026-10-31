@@ -48,7 +48,7 @@ api/
 `bun run dev` (`archlast-forge dev`) starts the engine in Docker with `forge/` mounted read-only, plus the services in `archlast-forge.json`:
 
 ```
-  archlast-forge 0.5.0  ·  backend  · engine in Docker
+  archlast-forge 0.6.0  ·  backend  · engine in Docker
 
   ➜  API        http://localhost:3000
   ➜  Dashboard  http://localhost:3000/_dashboard
@@ -317,7 +317,7 @@ services:
     build:
       context: .
       args:
-        ENGINE_IMAGE: ${ENGINE_IMAGE:-ghcr.io/algochad/archlast-forge-engine:0.5.0}
+        ENGINE_IMAGE: ${ENGINE_IMAGE:-ghcr.io/algochad/archlast-forge-engine:0.6.0}
     image: api:latest
     restart: unless-stopped
     environment:
@@ -425,7 +425,7 @@ Without Caddy it also has `ALLOW_INSECURE_HTTP=1` and `PORT=3000`. `up` creates 
 ### The image
 
 ```dockerfile
-ARG ENGINE_IMAGE=ghcr.io/algochad/archlast-forge-engine:0.5.0
+ARG ENGINE_IMAGE=ghcr.io/algochad/archlast-forge-engine:0.6.0
 FROM ${ENGINE_IMAGE}
 COPY . /src
 RUN bun /engine/packages/cli/src/index.ts engine prepare
