@@ -207,8 +207,8 @@ export function Drawer({ title, onClose, children }: { title: string; onClose: (
       <div className="drawer" role="dialog" aria-modal="true" aria-label={title} tabIndex={-1} ref={ref} onClick={(e) => e.stopPropagation()}>
         <header>
           <h2>{title}</h2>
-          <Button variant="ghost" onClick={onClose} aria-label="Close">
-            ✕
+          <Button variant="ghost" className="icon-only" onClick={onClose} aria-label="Close">
+            <Icon name="x" size={16} />
           </Button>
         </header>
         <div className="drawer-body">{children}</div>

@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { ago, canWrite, get, post, type Admin } from "../api";
-import { Badge, Button, Empty, ErrorNote, Field, useAction, useAsync } from "../ui";
+import { Badge, Button, Empty, ErrorNote, Field, Skeleton, useAction, useAsync } from "../ui";
 
 type Job = { _id: string; name: string; args: string; scheduledTime: number; state: string; error: string | null; completedTime: number | null };
 type Cron = { name: string; fn: string; schedule: { kind: string; ms?: number; expression?: string }; next: number };
@@ -17,7 +17,10 @@ export function Scheduled({ admin }: { admin: Admin }) {
     <div className="stack">
       <section className="panel" aria-label="Crons">
         <h3>Crons</h3>
-        {crons.data?.length ? (
+        <ErrorNote error={crons.error} />
+        {crons.data === undefined && !crons.error ? (
+          <Skeleton rows={2} />
+        ) : crons.data?.length ? (
           <div className="table-wrap">
             <table>
               <thead>
@@ -61,7 +64,9 @@ export function Scheduled({ admin }: { admin: Admin }) {
           </Field>
         </div>
         <ErrorNote error={jobs.error} />
-        {jobs.data?.length ? (
+        {jobs.data === undefined && !jobs.error ? (
+          <Skeleton rows={4} />
+        ) : jobs.data?.length ? (
           <div className="table-wrap">
             <table>
               <thead>
