@@ -1,4 +1,3 @@
-import { AsyncLocalStorage } from "node:async_hooks";
 import { SnapshotMoved, type ReadCache } from "./read-cache";
 import { isForgeError, TimeoutError } from "../errors";
 import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, type RegisteredFunction, type UserIdentity } from "../functions";
@@ -8,6 +7,17 @@ import { isRetryableConflict, type Db, type DbTx } from "./db/types";
 import { DocStore, type TablesSpec } from "./docstore";
 import { cancelScheduled, schedule } from "./scheduler";
 import type { Storage } from "./storage";
+import { inSpan, logContext, telemetryOf, traced, tracedTx, type CallTelemetry, type TraceParent } from "./telemetry/context";
+
+export { logContext };
+
+/** A function span's attributes, one shared object per function. */
+const functionAttrs = new Map<string, Record<string, string>>();
+const attrsOfFunction = (name: string) => {
+  let a = functionAttrs.get(name);
+  if (!a) functionAttrs.set(name, (a = { "code.namespace": name.startsWith("http ") ? "http" : name.split(":")[0]!, "code.function": name }));
+  return a;
+};
 
 export type CallHeaders = Record<string, string>;
 
@@ -19,6 +29,8 @@ export interface CallResult {
   usedAuth?: boolean;
   /** `JSON.stringify(value)`, made for the size check and reused for the response instead of serializing again. */
   json?: string;
+  /** For a traced call: its spans and who it ran as. */
+  telemetry?: CallTelemetry;
 }
 
 export interface LogEntry {
@@ -29,6 +41,9 @@ export interface LogEntry {
   durationMs?: number;
   ok?: boolean;
   requestId?: string;
+  /** The trace and span it was written in, when the call was traced. */
+  traceId?: string;
+  spanId?: string;
 }
 
 /** One console line from a function, as shown next to a custom function's result. */
@@ -37,9 +52,6 @@ export interface ConsoleLine {
   level: LogEntry["level"];
   message: string;
 }
-
-/** `logs`, when set, also collects the function's console output for the caller. */
-export const logContext = new AsyncLocalStorage<{ name: string; requestId?: string; logs?: ConsoleLine[] }>();
 
 /** `overloaded`: the function runtime has more calls waiting than `MAX_PENDING_CALLS`, so this one was refused without running. */
 export type ErrorKind = "user" | "validation" | "timeout" | "internal" | "overloaded";
@@ -50,16 +62,22 @@ export interface SerializedError {
   /** ForgeError data. */
   data?: unknown;
   stack?: string;
+  /** The error's class name (TypeError, ForgeError). */
+  type?: string;
+  /** What a traced call recorded before it failed. */
+  telemetry?: CallTelemetry;
 }
 
 /** How an error crosses the process boundary; only "user" and "validation" messages are meant for callers. */
 export function serializeError(e: unknown): SerializedError {
   const err = e as Error;
   const message = err?.message ?? String(e);
-  if (isForgeError(err)) return { kind: "user", message, data: err.data };
-  if (err?.name === "ValidationError") return { kind: "validation", message };
-  if (err?.name === "TimeoutError") return { kind: "timeout", message };
-  return { kind: "internal", message, stack: err?.stack };
+  const telemetry = telemetryOf(e);
+  const extra = { type: err?.constructor?.name && err.constructor.name !== "Object" ? err.constructor.name : (err?.name ?? "Error"), ...(telemetry && { telemetry }) };
+  if (isForgeError(err)) return { kind: "user", message, data: err.data, ...extra };
+  if (err?.name === "ValidationError") return { kind: "validation", message, ...extra };
+  if (err?.name === "TimeoutError") return { kind: "timeout", message, stack: err?.stack, ...extra };
+  return { kind: "internal", message, stack: err?.stack, ...extra };
 }
 
 export interface ExecutorOptions {
@@ -104,6 +122,8 @@ export interface RunOptions {
   requestId?: string;
   /** The caller, when the server already resolved it (to key the query cache). `undefined` means resolve it from the headers. */
   identity?: UserIdentity | null;
+  /** Record the call's spans under this span of the server's, and hand them back with the result. */
+  trace?: TraceParent;
 }
 
 export class Executor {
@@ -117,7 +137,12 @@ export class Executor {
   }
 
   private store(tx: DbTx, writes?: Set<string>, cached = true) {
-    return new DocStore(tx, this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes, cached ? this.o.readCache : undefined);
+    return new DocStore(tracedTx(tx, this.system), this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes, cached ? this.o.readCache : undefined);
+  }
+
+  /** OpenTelemetry's name for the database, on db spans. */
+  private get system() {
+    return this.o.db.dialect.name === "postgres" ? "postgresql" : "sqlite";
   }
 
   /** One read-only transaction. Re-run when it would mix cached rows with a newer snapshot (see SnapshotMoved): reads are deterministic. */
@@ -160,11 +185,23 @@ export class Executor {
 
   /** Entry point for requests: resolves identity once for the whole request. */
   async run(name: string, kind: FunctionKind, args: unknown, headers: CallHeaders, opts: RunOptions = {}): Promise<CallResult> {
-    const fn = this.o.functions.get(name);
-    // Same message as a missing function, so internal names don't leak.
-    if (fn?.visibility === "internal" && !opts.allowInternal) throw new ValidationError(`Unknown function "${name}"`);
-    const identity = opts.identity !== undefined ? opts.identity : await this.identityOf(headers);
-    return this.call(name, kind, args, identity, opts.requestId);
+    const out = await traced(opts.trace, name, async () => {
+      const fn = this.o.functions.get(name);
+      // Same message as a missing function, so internal names don't leak.
+      if (fn?.visibility === "internal" && !opts.allowInternal) throw new ValidationError(`Unknown function "${name}"`);
+      const identity = opts.identity !== undefined ? opts.identity : await this.identityOf(headers);
+      this.ranAs(identity);
+      return this.call(name, kind, args, identity, opts.requestId);
+    });
+    // The result is this call's own object (execute builds it), so it can carry its telemetry without a copy.
+    if (out.telemetry) out.value.telemetry = out.telemetry;
+    return out.value;
+  }
+
+  /** Notes who a traced call runs as. */
+  ranAs(identity: UserIdentity | null) {
+    const trace = logContext.getStore()?.trace;
+    if (trace && identity) trace.user = { id: identity.userId, ...((identity.email ?? identity.name) && { name: String(identity.email ?? identity.name) }) };
   }
 
   /** Who is calling: the signed-in user, or null for anonymous requests. */
@@ -217,6 +254,7 @@ export class Executor {
   /** Runs an HTTP action. The caller is resolved from the request's cookie or authorization header, and is anonymous without one. */
   async runHttp(name: string, action: HttpAction, req: Request, headers: CallHeaders, requestId?: string): Promise<Response> {
     const identity = await this.identityOf(headers);
+    this.ranAs(identity);
     const auth = { getUserIdentity: async () => identity };
     const res = await this.logged(name, requestId, undefined, () =>
       withTimeout(Promise.resolve(action.handler(this.actionCtx(auth, identity, requestId) as unknown as ActionCtx, req)), this.limits.actionTimeoutMs, name),
@@ -246,10 +284,15 @@ export class Executor {
 
   async logged<T>(name: string, requestId: string | undefined, logs: ConsoleLine[] | undefined, fn: () => Promise<T>): Promise<T> {
     const start = performance.now();
+    const outer = logContext.getStore();
     const entry = (ok: boolean, message: string) =>
-      this.o.log({ time: Date.now(), name, level: "call", message, ok, requestId, durationMs: Math.round((performance.now() - start) * 10) / 10 });
+      this.o.log({ time: Date.now(), name, level: "call", message, ok, requestId, durationMs: Math.round((performance.now() - start) * 10) / 10, traceId: outer?.trace?.traceId });
+    const context = { name, requestId, logs, trace: outer?.trace, spanId: outer?.spanId };
     try {
-      const out = await logContext.run({ name, requestId, logs }, fn);
+      // A traced call is a span, and what it does nests under it; the module is its namespace on the time-by-code view.
+      const out = context.trace
+        ? await logContext.run(context, () => inSpan(name, "function", attrsOfFunction(name), fn, 1))
+        : await logContext.run(context, fn);
       entry(true, "ok");
       return out;
     } catch (e) {

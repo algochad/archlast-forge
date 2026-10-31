@@ -2,10 +2,10 @@ import { useState } from "react";
 import { ago, canWrite, formatTime, get, post, type Admin, type Doc, type Page } from "../api";
 import { Badge, Button, Drawer, Empty, ErrorNote, Field, Skeleton, useAction, useAsync } from "../ui";
 
-type User = Doc & { email: string; name: string; emailVerified?: boolean; banned?: boolean };
+export type User = Doc & { email: string; name: string; emailVerified?: boolean; banned?: boolean };
 type Session = Doc & { expiresAt: number; ipAddress?: string; userAgent?: string; createdAt: number };
 
-export function Users({ admin }: { admin: Admin }) {
+export function Accounts({ admin }: { admin: Admin }) {
   const [email, setEmail] = useState("");
   const [query, setQuery] = useState("");
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
@@ -68,7 +68,7 @@ export function Users({ admin }: { admin: Admin }) {
   );
 }
 
-function UserDrawer({ user, admin, onClose, onChanged }: { user: User; admin: Admin; onClose: () => void; onChanged: () => void }) {
+export function UserDrawer({ user, admin, onClose, onChanged }: { user: User; admin: Admin; onClose: () => void; onChanged: () => void }) {
   const sessions = useAsync(() => get<Session[]>("sessions", { userId: user._id }), [user._id]);
   const [banned, setBanned] = useState(Boolean(user.banned));
   const { run, busy } = useAction();

@@ -1,6 +1,6 @@
 # Dashboard
 
-The dashboard is a web console served by the engine itself. It shows your data, runs your functions, streams logs, charts the load and manages users, and everything on it is a call to the engine's admin API. There is nothing extra to install or deploy.
+The dashboard is a web console served by the engine itself. It shows how your app is running (every request, its trace, errors, logs and releases: see [observability](observability.html)), shows and edits your data, runs your functions and manages users, and everything on it is a call to the engine's admin API. There is nothing extra to install or deploy.
 
 - **URL:** `/_dashboard` (for example `http://localhost:3000/_dashboard`). `archlast-forge dashboard` prints it, and `dev` prints it on startup.
 - **API:** `/_admin/<op>`, used by the page itself (see [the admin API](#the-admin-api)).
@@ -23,8 +23,8 @@ A successful sign-in sets an `afx_admin` cookie: `HttpOnly`, `SameSite=Strict`, 
 
 | Role | Can |
 |---|---|
-| **viewer** | Open every page and read everything: documents, logs, metrics, users, sessions, schema, the audit log. Cannot change anything. |
-| **admin** | Everything a viewer can, and also: insert, patch, replace and delete documents; run functions (including internal ones) as any user; cancel and retry scheduled jobs; delete files; revoke sessions; ban and unban users; clear the cache; reload the function runtime. |
+| **viewer** | Open every page and read everything: telemetry, documents, users, sessions, schema, the audit log. Cannot change anything (but can mark notifications read). |
+| **admin** | Everything a viewer can, and also: insert, patch, replace and delete documents; run functions (including internal ones) as any user; cancel and retry scheduled jobs; delete files; revoke sessions; ban and unban users; clear the cache; reload the function runtime; resolve and ignore issues; manage SLOs, alert rules and ingest keys. |
 | **owner** | Everything, plus [run your own code](#running-your-own-code) (when `ALLOW_CUSTOM_FUNCTIONS` allows it). |
 
 Buttons a role can't use are hidden, and the server enforces the same rules: a viewer's write answers 403 `Requires the admin role`.
@@ -33,17 +33,33 @@ Buttons a role can't use are hidden, and the server enforces the same rules: a v
 
 ## The pages
 
-The sidebar groups them as Forge, Data, Runtime and Admin. The top bar has a search box, the theme switch and who you are.
+The sidebar groups them as Observe, Performance, Backend and Admin, and its foot says whether the function runtime is up, with its functions, tables and the release it runs (a runtime that failed to load shows its error on every page). The top bar has the search, the alert notifications, the theme switch and who you are.
 
-### Overview
+### Observe and Performance
 
-How the forge is running right now: whether the function runtime loaded (a failed load shows its error), uptime, and whether storage is on. Stat tiles for the last hour: function runs, error rate, p95 latency, query cache hit rate and live queries (with open connections), then your tables, functions (public and internal), crons and runtime processes. Below them, recent activity from this server's log and the latest dashboard changes. It refreshes by itself every few seconds.
+**Overview**, **Requests**, **Errors**, **Logs**, **Users**, **Jobs**, **Spans**, **Hotspots**, **Map**, **Runtime**, **Releases**, **SLOs** and **Metrics** show what the engine records about every request it handles, and what other services send it. [Observability](observability.html#the-pages) describes each one. They share one time range (1H to 30D, or custom), a **Live** switch and, when more than one service reports, a service picker; a request's trace opens from any of them.
+
+Three of them have a view that doesn't need telemetry: **Accounts** on Users, **Queue & crons** on Jobs and **Stream** on Logs, described below. With `TELEMETRY=off` these pages open on that view, and the others say telemetry is off.
+
+### Accounts (Users)
+
+Your app's users (Better Auth's `users` table), 50 to a page, with a status badge: *banned*, *verified* or *unverified*. **Find by email** is an exact match (case-insensitive: the address is lowercased). Click a user for their id, join date and **sessions** (device, IP address, when it started and when it expires). Admins can **Revoke** a session, which signs that device out, and **Ban user**, which sets `banned: true`, signs the user out everywhere and makes new sign-ins fail (see [banned users](auth.html#banned-users)). **Unban** reverses the flag. A user's page under **Activity** has the same account details next to everything they did.
+
+### Queue & crons (Jobs)
+
+**Crons** from `forge/crons.ts` with their schedule (UTC) and next run. **Jobs** from the scheduler, filterable by state (`pending`, `running`, `success`, `failed`, `canceled`), with the function, arguments and error. Admins can **Cancel** a pending job and **Retry** a failed or canceled one. See [scheduling](scheduling.html).
+
+### Stream (Logs)
+
+**Stream · this server** shows function calls and `console` output as they happen (server-sent events), up to the last 500 entries in view, with **Pause** and **Clear**. **Stored · all servers** is the searchable history, kept for `LOG_RETENTION_DAYS`, with each line's trace.
+
+A `call` entry says whether the function succeeded and how long it took; [HTTP endpoints](http.html#limits-rate-limiting-and-metrics) appear as `http GET /path`. The request id is what a caller sees in an error (`Server error (request …)`), and it's the `x-request-id` response header.
 
 ### Data
 
 Browse and edit documents.
 
-- **The table list** groups *Your tables* and *Built in* (Better Auth's tables, marked "Better Auth", and `_storage`), with a live document count for each. System tables like `_logs` and `_admins` aren't listed.
+- **The table list** groups *Your tables* and *Built in* (Better Auth's tables, marked "Better Auth", and `_storage`), with a live document count for each. System tables like `_admins` and `_audit` aren't listed.
 - **A table view** shows documents newest first, 50 to a page, refreshed every few seconds. Columns are `_id`, your fields in schema order, any fields not in the schema, and `_creationTime`. Pick an **index** and fill in values left to right to filter by equality on a prefix of its fields (values parse as JSON when they can: `5`, `true`, otherwise text); **Newest/Oldest** flips the order. **Previous/Next** page through results.
 - **A document** opens in a drawer: its id and creation time, its [relationships](#relationships), and its fields as JSON. Admins can **Patch** (merge the fields you wrote), **Replace** (keep only what's there) or **Delete**; **Add document** inserts one. Every write is validated against the schema, like a write from a function (Better Auth's tables are the exception: they're loosely typed so plugins can add fields). Viewers see the JSON read-only.
 - **Schema** (a toggle in the table header) lists the fields with their types and whether they're optional, which indexes use each field, the indexes (including search indexes), and the table's relations.
@@ -56,10 +72,6 @@ Writes made here publish to live queries and invalidate the [cache](caching.html
 
 Appears when storage is on (`S3_ENDPOINT` and `S3_BUCKET`; otherwise it explains how to set it up). Lists `_storage` records newest first with the id, content type, **size** (read from the object itself) and upload time. **Open** gives a presigned link that lasts ten minutes; **Delete** (admins) removes the record and the object. Documents that referenced the file keep a dangling id. See [storage](storage.html).
 
-### Users
-
-Your app's users (Better Auth's `users` table), 50 to a page, with a status badge: *banned*, *verified* or *unverified*. **Find by email** is an exact match (case-insensitive: the address is lowercased). Click a user for their id, join date and **sessions** (device, IP address, when it started and when it expires). Admins can **Revoke** a session, which signs that device out, and **Ban user**, which sets `banned: true`, signs the user out everywhere and makes new sign-ins fail (see [banned users](auth.html#banned-users)). **Unban** reverses the flag.
-
 ### Functions
 
 Every function in the manifest with a kind badge (query, mutation, action) and an `internal` mark, with a filter box. Select one to see its argument and return types and run it (admins):
@@ -69,26 +81,13 @@ Every function in the manifest with a kind badge (query, mutation, action) and a
 - It runs the real function with the real database, queries included (not through the query cache). Internal functions can be run here too, which clients can't do.
 - **Recent runs** keep the last ten per function, with arguments, result or error, and timing. They are stored in your browser (`localStorage`), not on the server.
 
-### Scheduled
-
-**Crons** from `forge/crons.ts` with their schedule (UTC) and next run. **Jobs** from the scheduler, filterable by state (`pending`, `running`, `success`, `failed`, `canceled`), with the function, arguments and error. Admins can **Cancel** a pending job and **Retry** a failed or canceled one. See [scheduling](scheduling.html).
-
-### Logs
-
-Two sources, switched at the top:
-
-- **Live · this server** streams function calls and `console` output as they happen (server-sent events), up to the last 500 entries in view, with **Pause** and **Clear**.
-- **History · all servers** reads the stored log, filtered by function, level (`call`, `log`, `info`, `warn`, `error`), time range (15 minutes to 7 days) or request id. Up to 500 rows. Logs are kept for `LOG_RETENTION_DAYS` (7 by default).
-
-A `call` row says whether the function succeeded and how long it took; [HTTP endpoints](http.html#limits-rate-limiting-and-metrics) appear as `http GET /path`. Click a request id to see everything that request did. The request id is also what a caller sees in an error (`Server error (request …)`), and it's the `x-request-id` response header.
-
-### Metrics
-
-Over 1 hour, 24 hours or 7 days (30 buckets): function runs and errors, p50 and p95 latency, and subscriptions and connections summed over all servers. These come from the stored call log and from samples every 30 seconds, so a 7-day chart needs `LOG_RETENTION_DAYS` of at least 7. A table lists recent calls on this server by function (count, errors, average time). For scraping, use `/metrics` instead (bearer `METRICS_TOKEN`, or the admin key).
-
 ### Cache
 
-Shown when the query cache is on (`CACHE_TTL_MS`; otherwise the page says how to turn it on). Hit rate, calls served from the cache or by sharing a run already in flight, function runs, entries and memory used, the time saved, entries evicted by writes and for space, and charts over time. A per-function table marks queries that are cached **per user** (they read `ctx.auth`). Admins can **Clear cache**, which empties this server's cache (or the shared Redis cache) and records it in the audit log. See [caching](caching.html).
+Shown when the query cache is on (`CACHE_TTL_MS`; otherwise the page says how to turn it on). Hit rate, calls served from the cache or by sharing a run already in flight, function runs, entries and memory used, the time saved, entries evicted by writes and for space, and charts over the last hour, day or week (from each server's runtime samples, so they need telemetry). A per-function table marks queries that are cached **per user** (they read `ctx.auth`). Admins can **Clear cache**, which empties this server's cache (or the shared Redis cache) and records it in the audit log. See [caching](caching.html).
+
+### Services, Alerts and Ingest keys
+
+The services reporting telemetry, the alert rules over it and the keys other services send it with: see [observability](observability.html#alerts). For scraping by Prometheus, `/metrics` is still there (bearer `METRICS_TOKEN`, or the admin key).
 
 ### Audit
 
@@ -145,18 +144,22 @@ Every change made from the dashboard is recorded in the `_audit` table with the 
 | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc` | Data |
 | `run` | Functions, Data → Run function |
 | `runCustom` | Run function (owners) |
-| `cancelJob`, `retryJob` | Scheduled |
+| `cancelJob`, `retryJob` | Jobs → Queue & crons |
 | `deleteFile` | Files |
 | `revokeSession`, `banUser` | Users |
 | `clearCache` | Cache |
+| `obs.setErrorState` | Errors (resolve, ignore, reopen) |
+| `obs.saveSlo`, `obs.deleteSlo` | SLOs |
+| `obs.saveAlertRule`, `obs.deleteAlertRule`, `obs.testAlert` | Alerts (webhook URLs are left out of the recorded arguments) |
+| `obs.createKey`, `obs.revokeKey` | Ingest keys (the name, never the key) |
 
 The log has no edit or delete in the UI. Because the arguments of data edits are recorded, **the values you type are stored there**, and every role can read the audit page: don't paste a secret into a document edit.
 
 ## Keyboard, search and theme
 
-- **Ctrl or Cmd + K** opens a palette that jumps to a page, a table (in Data) or a function (in Functions).
-- **Alt + 1 … 9 and Alt + 0** jump to the first ten pages in sidebar order: Overview, Data, Files, Users, Functions, Scheduled, Logs, Metrics, Cache and Audit. Settings has no shortcut.
-- The address bar follows the page (`#Data`), so a page can be bookmarked.
+- **Ctrl or Cmd + K** opens a palette that jumps to a page, a table (in Data) or a function (in Functions), and searches telemetry: operations, errors, users, or a trace by its id.
+- **Alt + 1 … 9 and Alt + 0** jump to the first ten pages in sidebar order: Overview, Requests, Errors, Logs, Users, Jobs, Spans, Hotspots, Map and Runtime.
+- The address bar follows the view (`#/requests?kind=query&op=todos:list`), so an operation, a trace or an issue can be bookmarked or sent to someone. Links from older versions (`#Data`) still work.
 - The theme follows your system, or switch it to light or dark from the top bar. It is remembered in your browser.
 
 ## The admin API
@@ -177,11 +180,11 @@ curl -X POST localhost:3000/_admin/banUser -H "x-admin-key: $ADMIN_KEY" -H 'x-fo
 | Role | Operations |
 |---|---|
 | none needed | `login`, `logout`, `me` (who you are, or `null`) |
-| viewer | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env` (names only), `logs`, `recentLogs`, `metrics`, `subscriptions`, `server`, `cache` |
-| admin | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `run`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `clearCache`, `reload` |
+| viewer | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env` (names only), `recentLogs`, `subscriptions`, `server`, `cache`; telemetry: `obs.overview`, `obs.requests`, `obs.jobs`, `obs.operation`, `obs.trace`, `obs.errors`, `obs.error`, `obs.users`, `obs.user`, `obs.spans`, `obs.span`, `obs.hotspots`, `obs.map`, `obs.runtime`, `obs.metrics`, `obs.releases`, `obs.services`, `obs.logs`, `obs.search`, `obs.slos`, `obs.alertRules`, `obs.alertEvents`, `obs.notifications`, `obs.keys`, `obs.source`, and the write `obs.markSeen` |
+| admin | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `run`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `clearCache`, `reload`, `obs.setErrorState`, `obs.saveSlo`, `obs.deleteSlo`, `obs.saveAlertRule`, `obs.deleteAlertRule`, `obs.testAlert`, `obs.createKey`, `obs.revokeKey` |
 | owner | `runCustom` |
 
-`/_admin/logs/stream` is the server-sent event stream behind Live logs. The shapes of each operation's input and output follow the dashboard's usage and may change between versions; treat this as a convenience, not a stable public API.
+The `obs.*` reads take a time range in milliseconds since the epoch (`from`, `to`) and optionally a `service`; with `TELEMETRY=off` they answer 404. `/_admin/logs/stream` is the server-sent event stream behind the log stream. The shapes of each operation's input and output follow the dashboard's usage and may change between versions; treat this as a convenience, not a stable public API.
 
 ## Security notes
 

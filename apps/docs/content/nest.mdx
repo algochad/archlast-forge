@@ -336,6 +336,16 @@ export class MathController {
 - Anything else answers 500 with `Server error (request <id>)`, and the details go to the log, as for any action. In dev, the message is shown.
 - In a gateway or a resolver, errors are reported the way Nest reports them there: an exception event to the socket, a GraphQL error in the response.
 
+## Observability
+
+The dashboard's [observability](observability.html) pages see inside the Nest app:
+
+- A controller's request is named by its route pattern (`GET /reports/:kind`), not by the URL, so every report is one operation with its own latency and errors.
+- Each method of a class decorated with `@Injectable()` or `@Controller()` from `@archlast/forge-runtime/nest` (and `@Resolver()` and `@WebSocketGateway()` from its entries) is a span named `Class.method`, so a trace shows which service a request spent its time in, and **Hotspots** ranks your classes by their own time. Nest's own classes and those of libraries aren't timed.
+- An `HttpException` under 500 is a client error, not an error; anything that answers 500 is grouped into an issue with its stack.
+
+Another NestJS app that runs on its own can report to the same dashboard over OpenTelemetry: see [other services](observability.html#other-services-over-opentelemetry).
+
 ## Limits
 
 - `listen()`, static assets and view engines aren't available: the engine is the server (serve files from `public/` or storage).

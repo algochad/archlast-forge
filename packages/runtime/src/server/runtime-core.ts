@@ -1,7 +1,7 @@
 // The function runtime: forge/ modules, the database, auth and the scheduler. See startCore().
 import { mkdirSync } from "node:fs";
 import { validateFields } from "../values";
-import { adminOp, LogWriter } from "./admin-ops";
+import { adminOp } from "./admin-ops";
 import { createAuth } from "./auth";
 import { AUDITED_COMMANDS, runCommand } from "./cli-ops";
 import { loadConfig, sqlitePath } from "./config";
@@ -17,8 +17,12 @@ import { SchedulerLoop } from "./scheduler";
 import { S3Storage } from "./storage";
 import { migrateSystem } from "./system";
 import { ReadCache } from "./read-cache";
+import { annotate, inSpan, instrumentFetch, spanned, traced, type CallTelemetry } from "./telemetry/context";
+import { MetricAggregator } from "./telemetry/metrics";
+import { instanceId, processSampler } from "./telemetry/sampler";
+import { releaseOf } from "./project";
 
-/** Where a call's log lines go: the server (for the dashboard's live view) and, when the database is up, the `_logs` table. */
+/** Where a call's log lines go: the server, which streams them to the dashboard and keeps them in the telemetry store. */
 let emit: (entry: LogEntry) => void = () => {};
 let patched = false;
 
@@ -33,7 +37,7 @@ function patchConsole() {
     if (ctx) {
       const message = args.map((a) => (typeof a === "string" ? a : Bun.inspect(a))).join(" ");
       const time = Date.now();
-      emit({ time, name: ctx.name, level, message, requestId: ctx.requestId });
+      emit({ time, name: ctx.name, level, message, requestId: ctx.requestId, traceId: ctx.trace?.traceId, spanId: ctx.spanId });
       ctx.logs?.push({ time, level, message });
       original(`[${ctx.name}]`, ...args);
     } else original(...args);
@@ -109,14 +113,30 @@ export async function startCore(opts: {
   serverId: string;
   dev: boolean;
   send(msg: RuntimeMessage): void;
+  /** Report this process's CPU, memory and event loop: in a child process; inline the server reports for both. */
+  sample?: boolean;
 }): Promise<RuntimeCore> {
   const { forgeDir, worker, serverId, send } = opts;
   patchConsole();
-  let logWriter: LogWriter | undefined;
-  emit = (entry: LogEntry) => {
-    send({ t: "log", entry });
-    logWriter?.push(entry);
+  instrumentFetch();
+  emit = (entry: LogEntry) => send({ t: "log", entry });
+  const instance = instanceId(serverId, opts.sample ? worker : undefined);
+  // What forge/ code reaches through `trace` and `metrics` from @archlast/forge-runtime (a global: the project's copy of the package isn't this one).
+  const metrics = new MetricAggregator();
+  (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.telemetry")] = {
+    span: (name: string, fn: () => unknown, attrs?: Record<string, string | number | boolean>) => inSpan(String(name), "custom", attrs, fn, 1),
+    // For @archlast/forge-runtime/nest: the methods of the app's controllers and services, timed per call.
+    wrap: <T extends (...args: any[]) => any>(fn: T, name: string, attrs?: Record<string, string | number | boolean>) => spanned(fn, name, "nest", attrs),
+    annotate: (attrs: Record<string, string | number | boolean>, request?: boolean) => annotate(attrs, request),
+    metric: (type: "counter" | "gauge" | "histogram", name: string, value: number, attrs?: Record<string, string | number | boolean>, unit?: string) => metrics.record(type, name, value, attrs, unit),
   };
+  const sendMetrics = () => {
+    const points = metrics.drain();
+    if (points.length) send({ t: "metrics", points, instance });
+  };
+  const metricsTimer = setInterval(sendMetrics, 5000);
+  const health = opts.sample ? processSampler() : undefined;
+  const sampleTimer = health && setInterval(() => send({ t: "sample", sample: { time: Date.now(), instance, role: "runtime", ...health() } }), 10_000);
   const config = loadConfig(opts.env, opts.dev);
 
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
@@ -125,8 +145,6 @@ export async function startCore(opts: {
   await loadEnv(db);
   const project = await loadProject(forgeDir);
   await db.migrate(tableSpecs(project.tables));
-  logWriter = new LogWriter(db, serverId, config.logRetentionDays * 86400_000);
-
   const storage = config.s3 ? new S3Storage(config.s3) : undefined;
   const exec = new Executor({
     db,
@@ -151,7 +169,10 @@ export async function startCore(opts: {
   };
   const auth = createAuth(exec, project.tables, project.authOptions, config);
   // One scheduler per server: in a runtime pool only the first process polls.
-  const scheduler = worker === 0 ? new SchedulerLoop(exec, db, project.functions, project.crons, config.limits.actionTimeoutMs + 60_000, 500, config.logRetentionDays * 86_400_000) : undefined;
+  const scheduler =
+    worker === 0
+      ? new SchedulerLoop(exec, db, project.functions, project.crons, config.limits.actionTimeoutMs + 60_000, 500, config.logRetentionDays * 86_400_000, config.telemetry ? (trace) => send({ t: "trace", trace }) : undefined)
+      : undefined;
   const deps = { db, exec, functions: project.functions, tables: project.tables, crons: project.crons, storage, serverId };
 
   /** CLI data commands, run here because this process holds the database. */
@@ -183,30 +204,36 @@ export async function startCore(opts: {
   async function handle(msg: HostMessage): Promise<unknown> {
     switch (msg.t) {
       case "call":
-        return exec.run(msg.name, msg.kind, msg.args, msg.headers, { allowInternal: msg.allowInternal, requestId: msg.requestId, identity: msg.identity });
+        return exec.run(msg.name, msg.kind, msg.args, msg.headers, { allowInternal: msg.allowInternal, requestId: msg.requestId, identity: msg.identity, trace: msg.trace });
       case "identity":
         return exec.identityOf(msg.headers);
       case "auth": {
         const { method, url, headers, body } = msg.req;
-        const res = await auth.handler(new Request(url, { method, headers, body }));
+        const { value: res, telemetry } = await traced(msg.trace, "auth", () => auth.handler(new Request(url, { method, headers, body })));
         const text = await res.text();
-        return { status: res.status, headers: [...res.headers], body: text } satisfies SerializedResponse;
+        return { status: res.status, headers: [...res.headers], body: text, ...(telemetry && { telemetry }) } satisfies SerializedResponse;
       }
       case "http": {
         const { method, url, headers, body } = msg.req;
         const found = matchRoute(project.http, method, new URL(url).pathname);
         const answer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({ status, headers: [["content-type", "text/plain"], ...extra], body: new TextEncoder().encode(status === 404 ? "Not found" : "Method not allowed").buffer as ArrayBuffer });
         if (!("route" in found)) return answer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
-        const res = await exec.runHttp(routeName(found.route), found.route.handler, new Request(url, { method, headers, body }), msg.headers, msg.requestId);
+        const route = found.route;
+        let telemetry: CallTelemetry | undefined;
+        const res = await traced(msg.trace, routeName(route), () => {
+          // The route's pattern, for the request's name; a Nest controller names its own, finer one.
+          annotate({ "http.route": route.path ?? `${route.pathPrefix}*` }, true);
+          return exec.runHttp(routeName(route), route.handler, new Request(url, { method, headers, body }), msg.headers, msg.requestId);
+        }).then((r) => ((telemetry = r.telemetry), r.value));
         const out = [...res.headers].filter(([k]) => k !== "content-length");
         if (res.body && ((res as unknown as Record<symbol, unknown>)[STREAM] || res.headers.get("content-type")?.startsWith("text/event-stream")))
-          return { status: res.status, headers: out, body: res.body, stream: true } satisfies HttpResponseMessage;
+          return { status: res.status, headers: out, body: res.body, stream: true, ...(telemetry && { telemetry }) } satisfies HttpResponseMessage;
         const blob = await res.blob();
         const bytes = await blob.arrayBuffer();
         // `new Response("text")` has no content-type header of its own: Bun.serve adds one when it sends. Passing the bytes along loses that,
         // so give text bodies the type the platform would have (binary bodies keep the default, and a handler can always set one).
         if (!out.some(([k]) => k === "content-type") && blob.type.startsWith("text/plain") && isText(bytes)) out.push(["content-type", blob.type]);
-        return { status: res.status, headers: out, body: bytes } satisfies HttpResponseMessage;
+        return { status: res.status, headers: out, body: bytes, ...(telemetry && { telemetry }) } satisfies HttpResponseMessage;
       }
       case "admin":
         if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });
@@ -220,6 +247,7 @@ export async function startCore(opts: {
     tables: project.tables,
     crons: project.crons,
     storage: Boolean(config.s3),
+    release: releaseOf(forgeDir, opts.env),
   };
   function event(msg: HostEvent) {
     const take = (globalThis as Record<symbol, unknown>)[msg.t === "relay" ? RELAY : SOCKETS] as ((msg: HostEvent) => void) | undefined;
@@ -233,7 +261,9 @@ export async function startCore(opts: {
     event,
     async shutdown() {
       scheduler?.stop();
-      await logWriter?.close().catch(() => {});
+      clearInterval(metricsTimer);
+      clearInterval(sampleTimer);
+      sendMetrics();
       await db.close();
     },
   };

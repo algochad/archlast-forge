@@ -94,7 +94,7 @@ export const wrongMutationReturn = mutation({
 export const voidAction = action({ returns: v.null(), handler: async () => {} });
 
 // ---- for safety and query-feature tests ----
-import { ForgeError, internalQuery, paginationOptsValidator } from "../../src/index";
+import { ForgeError, internalQuery, metrics, paginationOptsValidator, trace } from "../../src/index";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -126,6 +126,19 @@ export const slowWrite = mutation({
 export const bigResult = query({ args: { bytes: v.number() }, handler: async (_ctx, { bytes }) => "x".repeat(bytes) });
 
 export const forgeFail = mutation({ handler: () => { throw new ForgeError({ code: "LIMIT", max: 3 }); } });
+
+/** Custom telemetry: a span of the app's own, an attribute on it, and a counter and a gauge. */
+export const exportRows = action({
+  handler: async () => {
+    metrics.counter("todos.exported").add(3, { format: "csv" });
+    metrics.gauge("queue.depth").set(7);
+    return trace.span("export.render", async () => {
+      trace.annotate({ rows: 3 });
+      await sleep(5);
+      return "ok";
+    });
+  },
+});
 
 export const crash = query({ handler: () => { throw new Error("secret internal detail"); } });
 

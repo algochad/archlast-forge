@@ -9,8 +9,10 @@ let cookie: string;
 const get = (path: string, init?: RequestInit) => fetch(`${srv.url}${path}`, { redirect: "manual", ...init });
 const html = async (path: string, init?: RequestInit) => (await get(path, init)).text();
 
+const ADMIN = "a".repeat(32);
+
 beforeAll(async () => {
-  srv = await startFixture();
+  srv = await startFixture({ env: { ADMIN_KEY: ADMIN, DASHBOARD: "on" } });
   cookie = await signUp(srv, "ada@example.com", "Ada");
   // Two messages, so the home page has live data to preload.
   for (const body of ["first", "second"]) {
@@ -166,5 +168,31 @@ describe("the engine around it", () => {
     expect((await get("/health")).status).toBe(200);
     const rpc = await fetch(`${srv.url}/rpc/messages:count`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" });
     expect(((await rpc.json()) as any).result).toBe(2);
+  });
+
+  test("page renders are requests named by their route, with the loaders' calls in their trace; assets are not", async () => {
+    await html("/blog/first-post");
+    await html("/blog/second-post");
+    await get(`/_app/${readBuild(fixture)!.manifest.entry}`);
+    const read = async (op: string, input: object) => (await (await fetch(`${srv.url}/_admin/${op}?input=${encodeURIComponent(JSON.stringify(input))}`, { headers: { "x-admin-key": ADMIN } })).json()) as any;
+    const range = { from: Date.now() - 600_000, to: Date.now() + 60_000 };
+    let pages: any[] = [];
+    for (let i = 0; i < 40 && !(pages.find((o) => o.operation === "GET /blog/:slug")?.count >= 2); i++) {
+      await Bun.sleep(150);
+      pages = (await read("obs.requests", { ...range, kind: "page" })).operations;
+    }
+    // Other tests here open blog pages too: at least these two.
+    expect(pages.find((o) => o.operation === "GET /blog/:slug")?.count).toBeGreaterThanOrEqual(2);
+    expect(pages.some((o) => o.operation.includes("/_app/"))).toBe(false);
+    expect(pages.some((o) => o.operation === "GET (unmatched)")).toBe(true); // a 404 page is one name, whatever the URL was
+    await html("/");
+    let home: any[] = [];
+    for (let i = 0; i < 40 && !home.length; i++) {
+      await Bun.sleep(150);
+      home = (await read("obs.operation", { ...range, kind: "page", operation: "GET /" })).calls.filter((c: any) => c.status === 200);
+    }
+    const trace = await read("obs.trace", { traceId: home[0].trace_id });
+    // The loader's live query, run or answered from the cache, inside the page's trace.
+    expect(trace.spans.some((s: any) => s.name === "messages:list")).toBe(true);
   });
 });

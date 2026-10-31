@@ -6,13 +6,53 @@ import { toPublicError } from "./public-error";
 import { errorResponse, HttpError, readJson } from "./rpc";
 import type { FunctionRuntime } from "./runtime";
 import type { SubscriptionManager } from "./subscriptions";
+import type { TelemetryClient } from "./telemetry/client";
 
 export type AdminContext = { admin: AdminInfo | null; requestId: string };
 
 const RANK: Record<AdminRole, number> = { viewer: 0, admin: 1, owner: 2 };
 
 /** Read operations (viewer) and write operations (admin), all served by the function runtime. */
-const READ_OPS = ["docs", "docsByIds", "references", "counts", "scheduled", "crons", "files", "users", "sessions", "audit", "env", "logs", "metrics"] as const;
+const READ_OPS = ["docs", "docsByIds", "references", "counts", "scheduled", "crons", "files", "users", "sessions", "audit", "env"] as const;
+
+/** The observability pages' reads, answered by the telemetry store (`obs.<name>`), and what changes there with the role it needs. */
+const OBS_READS = [
+  "overview",
+  "requests",
+  "jobs",
+  "operation",
+  "trace",
+  "errors",
+  "error",
+  "users",
+  "user",
+  "spans",
+  "span",
+  "hotspots",
+  "map",
+  "runtime",
+  "metrics",
+  "releases",
+  "services",
+  "logs",
+  "search",
+  "slos",
+  "alertRules",
+  "alertEvents",
+  "notifications",
+  "keys",
+] as const;
+const OBS_WRITES: Record<string, AdminRole> = {
+  setErrorState: "admin",
+  saveSlo: "admin",
+  deleteSlo: "admin",
+  saveAlertRule: "admin",
+  deleteAlertRule: "admin",
+  testAlert: "admin",
+  createKey: "admin",
+  revokeKey: "admin",
+  markSeen: "viewer",
+};
 const WRITE_OPS = ["insertDoc", "patchDoc", "replaceDoc", "deleteDoc", "cancelJob", "retryJob", "deleteFile", "revokeSession", "banUser", "run"] as const;
 
 type Input = Record<string, unknown>;
@@ -27,6 +67,10 @@ export function buildAdminApi(opts: {
   cache: () => object;
   clearCache: () => Promise<number>;
   customFunctions: boolean;
+  /** The telemetry store; without it (TELEMETRY=off) the observability operations say so. */
+  telemetry?: TelemetryClient;
+  /** Lines of the project's source around a stack frame. */
+  source?: (file: string, line: number) => unknown;
 }) {
   const forward = (op: string, role: AdminRole, allowed = true): Operation => ({
     role,
@@ -41,6 +85,24 @@ export function buildAdminApi(opts: {
   for (const op of WRITE_OPS) ops[op] = forward(op, "admin");
   // Arbitrary code runs with the function runtime's privileges, so it takes the top role, not just an admin's.
   ops.runCustom = forward("runCustom", "owner", opts.customFunctions);
+  const telemetry = () => {
+    if (!opts.telemetry) throw new HttpError("NOT_FOUND", "Telemetry is off (TELEMETRY=off), so there is nothing to show here");
+    return opts.telemetry;
+  };
+  for (const op of OBS_READS) ops[`obs.${op}`] = { role: "viewer", write: false, run: (input) => telemetry().call(op, input) };
+  for (const [op, role] of Object.entries(OBS_WRITES))
+    ops[`obs.${op}`] = {
+      role,
+      write: true,
+      run: async (input, ctx) => {
+        const out = await telemetry().call(op, input, ctx.admin.email);
+        // Into the same audit log as data changes (the runtime keeps it); a key's value is never in it, only its name.
+        if (op !== "markSeen")
+          void opts.runtime.admin("recordAudit", { action: `obs.${op}`, target: String(input.id ?? input.name ?? input.fingerprint ?? "") || null, details: JSON.stringify({ ...input, webhook: undefined }).slice(0, 2000) }, ctx.admin.email).catch(() => {});
+        return out;
+      },
+    };
+  ops["obs.source"] = { role: "viewer", write: false, run: (input) => opts.source?.(String(input.file ?? ""), Number(input.line) || 1) ?? null };
   Object.assign(ops, {
     me: { role: null, write: false, run: (_input, ctx) => ctx.admin },
     manifest: { role: "viewer", write: false, run: () => opts.runtime.manifest ?? { functions: [], tables: {}, crons: [], storage: false, error: opts.runtime.loadError } },

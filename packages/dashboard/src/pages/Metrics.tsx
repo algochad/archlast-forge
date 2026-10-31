@@ -1,118 +1,149 @@
-import { useState } from "react";
-import { get, type Log } from "../api";
-import { Empty, ErrorNote, Field, LineChart, Skeleton, useAsync } from "../ui";
+import { Fragment, useState } from "react";
+import { Icon } from "../brand";
+import { Spark, TimeChart } from "../charts";
+import { ago, count } from "../format";
+import { Card, Refreshing } from "../kit";
+import { useObs } from "../obs";
+import { Empty, ErrorNote, Skeleton } from "../ui";
 
-type Bucket = { start: number; calls: number; errors: number; p50: number; p95: number; subscriptions: number | null; connections: number | null };
-const WINDOWS = { "1h": 3600_000, "24h": 86400_000, "7d": 7 * 86400_000 } as const;
+type MetricItem = {
+  name: string;
+  type: "counter" | "gauge" | "histogram";
+  unit: string | null;
+  value: number | null;
+  count: number;
+  min: number | null;
+  max: number | null;
+  lastUpdated: number;
+  lifetime: number | null;
+  series: { attrs: string; points: { t: number; value: number | null }[] }[];
+};
 
-export function Metrics() {
-  const [window, setWindow] = useState<keyof typeof WINDOWS>("1h");
-  const metrics = useAsync(() => get<Bucket[]>("metrics", { windowMs: WINDOWS[window], buckets: 30 }), [window], { interval: 15_000 });
-  const recent = useAsync(() => get<Log[]>("recentLogs"), [], { interval: 5000 });
-  const server = useAsync(() => get<Record<string, number | string>>("server"), [], { interval: 5000 });
-  const b = metrics.data ?? [];
-  const labels = b.map((x) => new Date(x.start).toLocaleTimeString([], window === "7d" ? { month: "short", day: "numeric" } : { hour: "2-digit", minute: "2-digit" }));
-  const perFunction = Object.entries(
-    (recent.data ?? [])
-      .filter((l) => l.level === "call")
-      .reduce<Record<string, { n: number; errors: number; ms: number }>>((acc, l) => {
-        const s = (acc[l.name] ??= { n: 0, errors: 0, ms: 0 });
-        s.n++;
-        if (!l.ok) s.errors++;
-        s.ms += l.durationMs ?? 0;
-        return acc;
-      }, {}),
-  ).sort((x, y) => y[1].n - x[1].n);
+const fmt = (v: number | null | undefined, unit?: string | null) => (v === null || v === undefined ? "—" : `${Math.abs(v) < 10 && !Number.isInteger(v) ? v.toFixed(3) : count(v)}${unit ? ` ${unit}` : ""}`);
+const SERIES = ["var(--viz-1)", "var(--viz-2)", "var(--viz-3)", "var(--viz-4)", "var(--viz-5)", "var(--viz-6)"];
+const label = (attrs: string) => {
+  try {
+    const a = JSON.parse(attrs) as Record<string, unknown>;
+    const parts = Object.entries(a).map(([k, v]) => `${k}=${v}`);
+    return parts.length ? parts.join(", ") : "all";
+  } catch {
+    return attrs;
+  }
+};
 
+export function CustomMetrics() {
+  const m = useObs<{ step: number; list: MetricItem[] }>("metrics");
+  const [open, setOpen] = useState<string | null>(null);
+  if (m.loading && !m.data) return <Skeleton rows={6} />;
+  if (!m.data) return <ErrorNote error={m.error} />;
+  const d = m.data;
+  if (!d.list.length) return <MetricsHowTo />;
   return (
-    <div className="stack">
-      <section className="panel toolbar" aria-label="Server">
-        {server.data &&
-          (
-            [
-              ["server", server.data.serverId],
-              ["connections", server.data.connections],
-              ["subscriptions", server.data.subscriptions],
-              ["runtime processes", server.data.workers],
-              ["uptime", `${Math.round(Number(server.data.uptimeMs) / 60_000)} min`],
-            ] as const
-          ).map(([label, value]) => (
-            <div key={label} className="stat">
-              <span className="muted small">{label}</span>
-              <strong>{String(value)}</strong>
-            </div>
-          ))}
-        <Field label="Window">
-          {(id) => (
-            <select id={id} value={window} onChange={(e) => setWindow(e.target.value as keyof typeof WINDOWS)}>
-              {Object.keys(WINDOWS).map((w) => (
-                <option key={w}>{w}</option>
-              ))}
-            </select>
-          )}
-        </Field>
-      </section>
-      <ErrorNote error={metrics.error} />
-      {metrics.loading && !metrics.data ? (
-        <Skeleton rows={5} />
-      ) : (
-        <div className="charts">
-          <LineChart
-            title="Function runs and errors"
-            labels={labels}
-            series={[
-              { name: "calls", values: b.map((x) => x.calls), color: "var(--accent)" },
-              { name: "errors", values: b.map((x) => x.errors), color: "var(--bad)" },
-            ]}
-          />
-          <LineChart
-            title="Latency"
-            unit=" ms"
-            labels={labels}
-            series={[
-              { name: "p50", values: b.map((x) => (x.calls ? x.p50 : null)), color: "var(--accent)" },
-              { name: "p95", values: b.map((x) => (x.calls ? x.p95 : null)), color: "var(--spark)" },
-            ]}
-          />
-          <LineChart
-            title="Subscriptions and connections (all servers)"
-            labels={labels}
-            series={[
-              { name: "subscriptions", values: b.map((x) => x.subscriptions), color: "var(--accent)" },
-              { name: "connections", values: b.map((x) => x.connections), color: "var(--ok)" },
-            ]}
-          />
-        </div>
-      )}
-      <section className="panel" aria-label="Recent calls by function">
-        <h3>Recent calls on this server</h3>
-        {!perFunction.length ? (
-          <Empty icon="bolt">No calls on this server since it started.</Empty>
-        ) : (
-        <div className="table-wrap">
-          <table>
-            <thead>
-              <tr>
-                <th scope="col">function</th>
-                <th scope="col" className="num">calls</th>
-                <th scope="col" className="num">errors</th>
-                <th scope="col" className="num">avg ms</th>
-              </tr>
-            </thead>
-            <tbody>
-              {perFunction.map(([name, s]) => (
-                <tr key={name}>
-                  <td>{name}</td>
-                  <td className="num">{s.n}</td>
-                  <td className={`num ${s.errors ? "bad" : ""}`}>{s.errors}</td>
-                  <td className="num">{(s.ms / s.n).toFixed(1)}</td>
+    <div className="obs-page">
+      <div className="metric-cards">
+        {d.list.slice(0, 8).map((x) => (
+          <button key={x.name} type="button" className="metric-card" onClick={() => setOpen(x.name)} aria-pressed={open === x.name}>
+            <span className="metric-card-head">
+              <code>{x.name}</code>
+              <span className="badge">{x.type}</span>
+            </span>
+            <strong>{x.type === "histogram" ? fmt(x.count ? (x.value ?? 0) / x.count : null, x.unit) : fmt(x.value, x.unit)}</strong>
+            <Spark values={x.series.length ? x.series[0]!.points.map((p) => p.value) : []} bars={x.type === "counter"} />
+            <span className="faint small">
+              {x.type === "gauge" ? `latest reading · ${ago(x.lastUpdated)}` : x.type === "histogram" ? `average of ${count(x.count)} in this range` : `this range${x.lifetime !== null ? ` · ${count(x.lifetime)} lifetime` : ""}`}
+            </span>
+          </button>
+        ))}
+      </div>
+      <Card title={<>Metrics <span className="badge">{d.list.length}</span> <Refreshing on={m.refreshing} /></>} className="flush">
+        <table className="obs-table">
+          <thead>
+            <tr>
+              <th scope="col">Name</th>
+              <th scope="col">Type</th>
+              <th scope="col" className="num">
+                Value / increase
+              </th>
+              <th scope="col" className="num">
+                Min · max
+              </th>
+              <th scope="col" className="num">
+                Lifetime
+              </th>
+              <th scope="col" className="num">
+                Updated
+              </th>
+            </tr>
+          </thead>
+          <tbody>
+            {d.list.map((x) => (
+              <Fragment key={x.name}>
+                <tr className="clickable" onClick={() => setOpen(open === x.name ? null : x.name)} aria-expanded={open === x.name}>
+                  <td>
+                    <span className="op-name">
+                      <Icon name={open === x.name ? "chevron-down" : "chevron-right"} size={12} />
+                      <code>{x.name}</code>
+                    </span>
+                  </td>
+                  <td>
+                    <span className="badge">{x.type}</span>
+                  </td>
+                  <td className="num mono">{x.type === "histogram" ? `${fmt(x.count ? (x.value ?? 0) / x.count : null, x.unit)} avg` : fmt(x.value, x.unit)}</td>
+                  <td className="num mono">
+                    {fmt(x.min)} · {fmt(x.max)}
+                  </td>
+                  <td className="num mono">{x.lifetime === null ? "—" : fmt(x.lifetime)}</td>
+                  <td className="num muted small">{ago(x.lastUpdated)}</td>
                 </tr>
-              ))}
-            </tbody>
-          </table>
-        </div>
-        )}
-      </section>
+                {open === x.name && (
+                  <tr className="log-expand">
+                    <td colSpan={6}>
+                      <TimeChart
+                        points={x.series[0]!.points.map((p, i) => ({ t: p.t, ...Object.fromEntries(x.series.slice(0, 6).map((s, j) => [`s${j}`, s.points[i]?.value ?? null])) }))}
+                        step={d.step}
+                        height={170}
+                        format={(v) => fmt(v)}
+                        marks={x.series.slice(0, 6).map((s, j) => (x.type === "counter" ? { kind: "line" as const, key: `s${j}`, label: label(s.attrs), color: SERIES[j]!, area: j === 0 } : { kind: "line" as const, key: `s${j}`, label: label(s.attrs), color: SERIES[j]! }))}
+                      />
+                      <div className="viz-legend" style={{ marginTop: "0.4rem" }}>
+                        {x.series.slice(0, 6).map((s, j) => (
+                          <span key={s.attrs}>
+                            <i className="viz-swatch line" style={{ "--c": SERIES[j] } as React.CSSProperties} />
+                            {label(s.attrs)}
+                          </span>
+                        ))}
+                        {x.series.length > 6 && <span className="faint">+{x.series.length - 6} more attribute sets</span>}
+                      </div>
+                    </td>
+                  </tr>
+                )}
+              </Fragment>
+            ))}
+          </tbody>
+        </table>
+      </Card>
     </div>
+  );
+}
+
+function MetricsHowTo() {
+  return (
+    <Card title="No custom metrics yet">
+      <p className="muted" style={{ margin: 0 }}>
+        Record your own numbers from any function, and they show up here per minute, split by their attributes. Other services' OpenTelemetry metrics land here too.
+      </p>
+      <pre className="json">{`import { metrics, mutation } from "@archlast/forge-runtime";
+
+const placed = metrics.counter("orders.placed");
+const depth = metrics.gauge("queue.depth");
+
+export const placeOrder = mutation({
+  handler: async (ctx, args) => {
+    // …
+    placed.add(1, { plan: args.plan });
+    depth.set(await countPending(ctx));
+  },
+});`}</pre>
+    </Card>
   );
 }

@@ -1,13 +1,14 @@
 import type { HTMLBundle, Server, ServerWebSocket } from "bun";
 import { timingSafeEqual } from "node:crypto";
+import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
 import { hostname } from "node:os";
-import { resolve } from "node:path";
+import { extname, relative, resolve } from "node:path";
 import { buildAdminApi } from "./admin-api";
 import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
 import { connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
-import { loadConfig, type Config } from "./config";
+import { loadConfig, telemetryPath, type Config } from "./config";
 import { ForgeError } from "../errors";
 import type { FunctionKind, UserIdentity } from "../functions";
 import type { CallHeaders, LogEntry } from "./executor";
@@ -18,8 +19,18 @@ import { toPublicError } from "./public-error";
 import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./ratelimit";
 import { buildRpc, errorResponse, type Rpc, type SocketData } from "./rpc";
 import { FunctionRuntime } from "./runtime";
-import { QueryRunner, SubscriptionManager } from "./subscriptions";
-import { Tracer } from "./tracing";
+import { QueryRunner, SubscriptionManager, type QueryObserver } from "./subscriptions";
+import { TelemetryClient } from "./telemetry/client";
+import { now as clock } from "./telemetry/context";
+import { OtlpExporter } from "./telemetry/export";
+import { spanId as newSpanId } from "./telemetry/ids";
+import { failureOf } from "./telemetry/outcome";
+import { normalizePath, Telemetry } from "./telemetry/recorder";
+import { processSampler } from "./telemetry/sampler";
+import type { Span } from "./telemetry/types";
+
+// Next to this module, like child.ts: the telemetry store's thread.
+const TELEMETRY_WORKER = new URL(import.meta.url.endsWith(".ts") ? "./telemetry/worker.ts" : "./telemetry/worker.js", import.meta.url);
 
 /** A socket of the RPC protocol, or of a Nest gateway under /http (`gateway`), whose events go to the function runtime. */
 type ServerSocket = SocketData & { gateway?: { sid: string; path: string; headers: [string, string][] } };
@@ -54,6 +65,8 @@ export interface AppEnv {
   rateLimited(): Promise<number | null>;
   /** Long-lived responses (server-sent events) must opt out of the idle timeout. */
   keepAlive(): void;
+  /** Names the route this request matched (`/posts/:id`), so the dashboard groups its requests by route rather than by URL. */
+  route?(pattern: string): void;
 }
 
 export interface ServerOptions {
@@ -97,6 +110,22 @@ const requestIdOf = (given: string | null | undefined) => (given && REQUEST_ID.t
  */
 const lastForwarded = (header: string | null | undefined) => header?.split(",").at(-1)?.trim() || undefined;
 
+const SOURCE_FILES = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
+
+/**
+ * Lines around `line` of a source file named in a stack trace, for the dashboard's error view. Only the project's own code: files under
+ * the directory that holds forge/ (so a full-stack app's app/ too), not dependencies, and only source files.
+ */
+function sourceContext(forgeDir: string, file: string, line: number, around = 6) {
+  const root = resolve(forgeDir, "..");
+  const path = resolve(root, file.replace(/^file:\/\//, ""));
+  const rel = relative(root, path);
+  if (rel.startsWith("..") || rel.split(/[\\/]/).includes("node_modules") || !SOURCE_FILES.has(extname(path)) || !existsSync(path) || statSync(path).size > 2_000_000) return null;
+  const lines = readFileSync(path, "utf8").split("\n");
+  const start = Math.max(1, line - around);
+  return { file: rel.replaceAll("\\", "/"), line, start, lines: lines.slice(start - 1, Math.min(lines.length, line + around)) };
+}
+
 const cookieValue = (cookie: string | null, name: string) =>
   cookie
     ?.split(";")
@@ -133,14 +162,46 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     inline: config.runtimeMode === "inline",
   });
   const metrics = new Metrics();
+  // Telemetry: the store's worker when it is on, and an exporter when a collector is configured; either needs the recorder.
+  if (config.telemetry && !config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
+  const store = config.telemetry
+    ? new TelemetryClient(TELEMETRY_WORKER, { databaseUrl: config.databaseUrl, path: telemetryPath(config), retentionDays: config.logRetentionDays, alerts: true })
+    : undefined;
+  /** Ingest keys checked recently, so an exporter sending every few seconds costs one lookup a minute. */
+  const keys = new Map<string, { at: number; key: { service: string | null } | null }>();
+  const ingestKey = async (key: string) => {
+    const hit = keys.get(key);
+    if (hit && Date.now() - hit.at < 60_000) return hit.key;
+    const found = await store!.call<{ service: string | null } | null>("verifyKey", { key }).catch(() => null);
+    if (keys.size > 1000) keys.clear();
+    keys.set(key, { at: Date.now(), key: found });
+    return found;
+  };
+  const exporter = OtlpExporter.fromEnv(env, config.serviceName);
+  const telemetry =
+    store || exporter
+      ? new Telemetry({
+          service: config.serviceName,
+          instance: serverId,
+          sink: (batch) => store?.write(batch),
+          exporter,
+          tracesPerSecond: config.telemetryTracesPerSecond,
+          detailPerSecond: config.telemetryDetailPerSecond,
+          release: () => runtime.manifest?.release,
+        })
+      : undefined;
   const recentLogs: LogEntry[] = [];
   const logStreams = new Set<(e: LogEntry) => void>();
   runtime.onLog = (e) => {
     recentLogs.push(e);
     if (recentLogs.length > 2500) recentLogs.splice(0, recentLogs.length - 2000); // in steps of 500, not a copy of the array per entry
     if (e.level === "call") metrics.observe(e.name, e.durationMs ?? 0, e.ok ?? false);
+    telemetry?.log(e);
     for (const send of logStreams) send(e);
   };
+  runtime.onTrace = (t) => telemetry?.record(t);
+  runtime.onMetrics = (points, instance) => telemetry?.metricPoints(points, instance);
+  runtime.onSample = (s) => telemetry?.sample(s);
   runtime.onPublish = (topics) => void bus.publish(topics).catch((e) => log("error", "publish failed", { error: String(e) }));
   /** Sockets of Nest gateways, by id: the function runtime sends to and closes them through runtime.onWs. */
   const gatewaySockets = new Map<string, ServerWebSocket<ServerSocket>>();
@@ -150,21 +211,37 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     else ws?.close(msg.code ?? 1000, msg.reason);
   };
   const queries = new QueryRunner(runtime, cache, ttl);
-  const subs = new SubscriptionManager(bus, queries, (e, requestId = crypto.randomUUID()) => {
-    const err = toPublicError(e, requestId, dev);
-    return { error: err.message, data: err.data, requestId: err.requestId };
-  });
+  const subs = new SubscriptionManager(
+    bus,
+    queries,
+    (e, requestId = crypto.randomUUID()) => {
+      const err = toPublicError(e, requestId, dev);
+      return { error: err.message, data: err.data, requestId: err.requestId };
+    },
+    telemetry,
+  );
   // Evicts cache entries, and lets subscriptions notice writes that overlapped their first read. A Redis bus only delivers every topic when caching.
   if (cache || !config.redisUrl) bus.subscribe("*", (topic) => queries.invalidated(topic));
 
-  const tracer = Tracer.fromEnv(env);
-  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, tracer };
+  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, telemetry };
   // Rebuilt after each load; open sockets use whichever is current, so they see functions added by a reload.
   let rpc: Rpc = buildRpc({ functions: [], tables: {}, crons: [], storage: false }, runtime, queries, subs, rpcOpts);
   let loading: Promise<unknown> = Promise.resolve();
   const load = () => {
     const p = runtime.start().then(async (manifest) => {
       rpc = buildRpc(manifest, runtime, queries, subs, rpcOpts);
+      if (manifest.release) telemetry?.release(manifest.release);
+      telemetry?.describe({
+        "telemetry.sdk.name": "archlast-forge",
+        "telemetry.sdk.language": "javascript",
+        "process.runtime.name": "bun",
+        "process.runtime.version": Bun.version,
+        "host.name": hostname(),
+        "deployment.environment.name": dev ? "development" : "production",
+        ...(manifest.release && { "service.version": manifest.release }),
+        "forge.functions": manifest.functions.length,
+        "forge.runtime_mode": config.runtimeMode,
+      });
       await queries.reset().catch((e) => log("error", "cache reset failed", { error: String(e) })); // results from the old code are wrong
       subs.rerunAll();
       return manifest;
@@ -176,17 +253,20 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const reload = () => runtime.stop().then(load);
   let connections = 0;
   let shuttingDown = false;
+  let warnedEcho = false;
   const sockets = new Set<ServerWebSocket<SocketData>>();
 
   const admin = buildAdminApi({
     runtime,
     subs,
     recentLogs,
-    serverInfo: () => ({ serverId, customFunctions: config.customFunctions, connections, subscriptions: subs.size, workers: config.runtimeWorkers, uptimeMs: Math.round(process.uptime() * 1000) }),
+    serverInfo: () => ({ serverId, customFunctions: config.customFunctions, telemetry: Boolean(store), connections, subscriptions: subs.size, workers: config.runtimeWorkers, uptimeMs: Math.round(process.uptime() * 1000) }),
     reload: () => reload(),
     cache: () => ({ ...queries.snapshot(), backend: config.redisUrl ? "redis" : "memory", maxBytes: config.redisUrl ? null : config.cacheMaxBytes }),
     clearCache: () => queries.clear(),
     customFunctions: config.customFunctions,
+    telemetry: store,
+    source: (file, line) => sourceContext(resolve(opts.forgeDir), file, line),
   });
   const adminSessions = new Map<string, { admin: AdminInfo | null; at: number }>();
   async function adminOf(req: Request): Promise<AdminInfo | null> {
@@ -318,6 +398,44 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           return withId(Response.json({ message: (e as Error).message }, { status: 400 }));
         }
       }
+      // OTLP/HTTP ingest: other services' traces, logs and metrics, protobuf or JSON, optionally gzipped.
+      if (path.startsWith("/otlp/v1/") && req.method === "POST") {
+        const signal = path.slice("/otlp/v1/".length);
+        if (!store || !["traces", "logs", "metrics"].includes(signal)) return withId(new Response("Not found", { status: 404 }));
+        const retry = await limited(req, srv, "otlp:");
+        if (retry) return withId(tooMany(retry));
+        // An engine exporting to this one under this one's name: most likely its own exporter, pointed back here by an
+        // OTEL_EXPORTER_OTLP_ENDPOINT meant for other services. It records these requests already, so they would count twice.
+        if (req.headers.get("x-forge-service") === config.serviceName) {
+          if (!warnedEcho) {
+            warnedEcho = true;
+            log(
+              "warn",
+              `ignoring OTLP from an archlast-forge engine named "${config.serviceName}", like this one: point OTEL_EXPORTER_OTLP_ENDPOINT at a collector, not at this app, or give the other engine its own OTEL_SERVICE_NAME`,
+            );
+          }
+          return withId(Response.json({})); // the engine's exporter sends JSON
+        }
+        const key = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "") || req.headers.get("x-api-key") || req.headers.get("x-forge-key");
+        let service: string | null | undefined;
+        if (key && config.adminKey && sameSecret(key, config.adminKey)) service = null;
+        else if (key) service = (await ingestKey(key))?.service;
+        else if (dev) service = null; // in development, local services report without a key
+        if (service === undefined)
+          return withId(Response.json({ message: "Send an ingest key: Authorization: Bearer <key> (create one on the dashboard's Ingest keys page)" }, { status: 401 }));
+        try {
+          let body = await req.arrayBuffer();
+          const encoding = req.headers.get("content-encoding")?.toLowerCase();
+          if (encoding === "gzip") body = Bun.gunzipSync(new Uint8Array(body)).buffer as ArrayBuffer;
+          else if (encoding === "deflate") body = Bun.inflateSync(new Uint8Array(body)).buffer as ArrayBuffer;
+          else if (encoding && encoding !== "identity") return withId(Response.json({ message: `Unsupported content-encoding ${encoding}` }, { status: 415 }));
+          const type = req.headers.get("content-type") ?? "application/x-protobuf";
+          await store.ingest(signal as "traces" | "logs" | "metrics", body, type, service);
+          return withId(type.includes("json") ? Response.json({}) : new Response(new Uint8Array(0), { headers: { "content-type": "application/x-protobuf" } }));
+        } catch (e) {
+          return withId(Response.json({ message: `Could not read the OTLP payload: ${(e as Error).message}` }, { status: 400 }));
+        }
+      }
       if (path === "/metrics") {
         const auth = req.headers.get("authorization")?.replace(/^Bearer /, "");
         const token = env.METRICS_TOKEN || config.adminKey;
@@ -355,14 +473,28 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (retry) return withId(tooMany(retry));
         await loading;
         const body = req.method === "GET" ? undefined : await req.arrayBuffer();
+        // Socket.IO's long-polling requests carry EIO=; their sessions live where its sockets do, on worker 0. They are not requests to record.
+        const worker = routed.searchParams.has("EIO") ? 0 : undefined;
+        const root =
+          worker === undefined
+            ? telemetry?.begin("http", `${req.method} ${normalizePath(routed.pathname)}`, req.method, req.headers.get("traceparent"), requestId, { "url.path": routed.pathname })
+            : undefined;
         try {
-          // Socket.IO's long-polling requests carry EIO=; their sessions live where its sockets do, on worker 0.
-          const worker = routed.searchParams.has("EIO") ? 0 : undefined;
-          const r = await runtime.http({ method: req.method, url: routed.href, headers: [...req.headers], body }, pickAuthHeaders((n) => req.headers.get(n)), requestId, worker);
+          const r = await runtime.http({ method: req.method, url: routed.href, headers: [...req.headers], body }, pickAuthHeaders((n) => req.headers.get(n)), requestId, worker, root && telemetry!.parent(root));
+          if (root) {
+            const route = r.telemetry?.attrs?.["http.route"];
+            root.operation = route ? `${req.method} ${route}` : r.status === 404 ? `${req.method} (unmatched)` : root.operation;
+            telemetry!.end(root, {
+              status: r.status,
+              telemetry: r.telemetry,
+              ...(r.status >= 500 && { error: { type: `HTTP ${r.status}`, message: `${root.operation} answered ${r.status}`, handled: false } }),
+            });
+          }
           // A body on a 204 or 304 is an error in a Response.
           const out = r.body instanceof ReadableStream ? r.body : r.body.byteLength ? r.body : null;
           return withId(new Response(out, { status: r.status, headers: r.headers }));
         } catch (e) {
+          if (root) telemetry!.end(root, failureOf(e));
           return withId(errorResponse(toPublicError(e, requestId, dev, { path })));
         }
       }
@@ -391,12 +523,15 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       if (path.startsWith("/api/auth")) {
         const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
+        const root = telemetry?.begin("auth", `${req.method} ${normalizePath(path)}`, req.method, req.headers.get("traceparent"), requestId);
         try {
           const headers: [string, string][] = [...req.headers].filter(([k]) => k !== CLIENT_IP_HEADER);
           headers.push([CLIENT_IP_HEADER, clientIp(req, srv)]);
-          const r = await runtime.auth({ method: req.method, url: req.url, headers, body });
+          const r = await runtime.auth({ method: req.method, url: req.url, headers, body }, root && telemetry!.parent(root));
+          if (root) telemetry!.end(root, { status: r.status, telemetry: r.telemetry });
           return cors(req, withId(new Response(r.body, { status: r.status, headers: r.headers })));
         } catch (e) {
+          if (root) telemetry!.end(root, { ...failureOf(e), status: 503 });
           const err = toPublicError(e, requestId, dev, { path });
           return cors(req, withId(Response.json({ message: err.message }, { status: 503 })));
         }
@@ -416,26 +551,80 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           const err = toPublicError(e, requestId, dev, { path });
           return err.data !== undefined ? new ForgeError(err.data) : Object.assign(new Error(err.message), { code: err.code, requestId });
         };
-        const res = await opts.app.fetch(req, {
-          requestId,
-          dev,
-          headers,
-          async call(name, kind, args) {
-            try {
-              if (kind === "query") {
-                // A copy: the result may be the object the query cache keeps, and a page is free to change what it gets.
-                const r = await queries.run(name, (args ?? {}) as Record<string, unknown>, headers, requestId);
-                return r.json !== undefined ? JSON.parse(r.json) : structuredClone(r.value);
+        // A page render is a request; the calls its loaders make are its spans. Only documents (and failures) are kept: not assets.
+        const root = telemetry?.begin("page", `${req.method} ${normalizePath(path)}`, req.method, req.headers.get("traceparent"), requestId, { "url.path": path });
+        const spans: Span[] = [];
+        let user: { id: string; name?: string } | undefined;
+        const keep = (obs: QueryObserver | { telemetry?: QueryObserver["telemetry"] }, name: string, started: number) => {
+          if (!root?.detail) return;
+          if (obs.telemetry) {
+            spans.push(...obs.telemetry.spans);
+            user ??= obs.telemetry.user;
+          } else
+            spans.push({
+              traceId: root.traceId,
+              spanId: newSpanId(),
+              parentId: root.spanId,
+              name,
+              type: "cache",
+              kind: 1,
+              start: started,
+              duration: clock() - started,
+              status: 1,
+              attrs: { "forge.cache": (obs as QueryObserver).cache ?? "hit" },
+            });
+        };
+        let res: Response | undefined;
+        try {
+          res = await opts.app.fetch(req, {
+            requestId,
+            dev,
+            headers,
+            async call(name, kind, args) {
+              const started = clock();
+              const obs: QueryObserver = root
+                ? {
+                    get trace() {
+                      return telemetry!.parent(root);
+                    },
+                  }
+                : {};
+              try {
+                if (kind === "query") {
+                  // A copy: the result may be the object the query cache keeps, and a page is free to change what it gets.
+                  const r = await queries.run(name, (args ?? {}) as Record<string, unknown>, headers, requestId, undefined, obs);
+                  keep(obs, name, started);
+                  return r.json !== undefined ? JSON.parse(r.json) : structuredClone(r.value);
+                }
+                const r = await runtime.call(name, kind, args ?? {}, headers, { requestId, trace: obs.trace });
+                keep(r, name, started);
+                return r.value;
+              } catch (e) {
+                keep({ telemetry: failureOf(e).telemetry }, name, started);
+                throw publicError(e);
               }
-              return (await runtime.call(name, kind, args ?? {}, headers, { requestId })).value;
-            } catch (e) {
-              throw publicError(e);
-            }
-          },
-          identity: () => runtime.identity(headers).catch((e) => Promise.reject(publicError(e))),
-          rateLimited: async () => (await limited(req, srv)) ?? null,
-          keepAlive: () => srv.timeout(req, 0),
-        });
+            },
+            identity: () => runtime.identity(headers).catch((e) => Promise.reject(publicError(e))),
+            rateLimited: async () => (await limited(req, srv)) ?? null,
+            keepAlive: () => srv.timeout(req, 0),
+            route: (pattern) => {
+              if (root) root.operation = `${req.method} ${pattern}`;
+            },
+          });
+        } catch (e) {
+          if (root) telemetry!.end(root, { ...failureOf(e), status: 500, spans, user });
+          throw e;
+        }
+        if (root) {
+          const document = res?.headers.get("content-type")?.includes("text/html");
+          telemetry!.end(root, {
+            status: res?.status ?? 404,
+            spans,
+            user,
+            discard: !res || (!document && res.status < 500),
+            ...(res && res.status >= 500 && { error: { type: `HTTP ${res.status}`, message: `${root.operation} answered ${res.status}`, handled: false } }),
+          });
+        }
         if (res) return res;
       }
       return new Response("Not found", { status: 404 });
@@ -486,19 +675,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       throw e;
     });
 
-  // Subscription and connection counts over time, for the dashboard's charts.
-  // The cache counters are totals since start; the chart wants what happened in each interval.
+  // This process's health every 10 seconds, with the connections, subscriptions and cache figures only the server knows. The cache
+  // counters are totals since start; a sample carries what happened since the one before.
   let sampled = { hits: 0, misses: 0, coalesced: 0 };
+  const health = processSampler();
   const sampler = setInterval(() => {
-    if (!runtime.manifest || runtime.loadError) return;
     const c = queries.snapshot();
-    const cache = c.enabled ? { cacheHits: c.hits - sampled.hits, cacheMisses: c.misses - sampled.misses, cacheCoalesced: c.coalesced - sampled.coalesced, cacheEntries: c.entries } : {};
-    const previous = sampled;
+    const cache = c.enabled ? { cacheHits: c.hits - sampled.hits, cacheMisses: c.misses - sampled.misses, cacheShared: c.coalesced - sampled.coalesced, cacheEntries: c.entries } : {};
     sampled = { hits: c.hits, misses: c.misses, coalesced: c.coalesced };
-    void runtime.admin("recordMetric", { server: serverId, subscriptions: subs.size, connections, ...cache }, "system").catch(() => {
-      sampled = previous; // not recorded: count it in the next sample instead
-    });
-  }, 30_000);
+    telemetry?.sample({ time: Date.now(), instance: serverId, role: "server", ...health(), connections, subscriptions: subs.size, inflight: telemetry.inflight, ...cache });
+  }, 10_000);
+  sampler.unref?.();
 
   return {
     url,
@@ -516,7 +703,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       await runtime.stop();
       await bus.close();
       await cache?.close();
-      await tracer?.close();
+      await telemetry?.close();
+      await store?.close();
     },
   };
 }

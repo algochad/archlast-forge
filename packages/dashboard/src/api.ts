@@ -13,6 +13,7 @@ export type Manifest = {
   tables: Record<string, TableInfo>;
   crons: { name: string; fn: string; schedule: { kind: string; ms?: number; expression?: string } }[];
   storage: boolean;
+  release?: string;
   error?: string;
 };
 export type CacheInfo = {

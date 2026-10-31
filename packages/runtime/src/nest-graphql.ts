@@ -1,14 +1,23 @@
 // GraphQL for Nest inside archlast-forge: everything @nestjs/graphql exports, and ForgeGraphQLDriver, which serves the schema with
 // graphql-yoga under /http (POST and GET at `path`, default /graphql) and runs subscriptions with graphql-ws over the engine's sockets at
 // the same path. `GraphQLModule.forRoot({ driver: ForgeGraphQLDriver, autoSchemaFile: true })`.
-import { AbstractGraphQLDriver, type GqlModuleOptions } from "@nestjs/graphql";
+import { AbstractGraphQLDriver, Resolver as NestResolver, type GqlModuleOptions } from "@nestjs/graphql";
 import type { GraphQLSchema } from "graphql";
 import { makeServer } from "graphql-ws";
 import { createYoga, type YogaServerOptions } from "graphql-yoga";
 // By the package's own name, not "./nest": the build keeps nest.ts its own entry then, and its `export *` of @nestjs/common survives.
-import { onSocket, type ForgeSocket, type NestRequest, type NestResponse } from "@archlast/forge-runtime/nest";
+import { onSocket, timeClass, type ForgeSocket, type NestRequest, type NestResponse } from "@archlast/forge-runtime/nest";
 
 export * from "@nestjs/graphql";
+
+/** Nest's `@Resolver()`, timing the resolver's fields for the dashboard. */
+export const Resolver = ((...args: unknown[]) => {
+  const decorate = (NestResolver as (...a: unknown[]) => ClassDecorator)(...args);
+  return (target: Function) => {
+    timeClass(target, "resolver");
+    return decorate(target);
+  };
+}) as typeof NestResolver;
 /** A PubSub for subscriptions, across function runtime processes: `pubSub.publish("noteAdded", note)`, and a resolver returns `pubSub.subscribe("noteAdded")`. */
 export { createPubSub } from "@archlast/forge-runtime/nest";
 

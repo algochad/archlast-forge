@@ -6,6 +6,7 @@ A self-hosted reactive backend for TypeScript apps, in the style of Convex, on B
 - **Functions:** queries, mutations and actions; internal functions; `returns` validators; timeouts and size limits; `ForgeError` for caller-facing errors.
 - **Batteries:** Better Auth sign-in, file storage on S3 or RustFS through presigned URLs, scheduled functions and crons.
 - **Scale:** Redis for cross-server reactivity, caching and rate limits; a pool of function-runtime processes.
+- **Observability, built in:** every request traced (functions, database statements, outbound calls, NestJS classes), errors grouped into issues, logs tied to their trace, latency and Apdex per operation, users, jobs, hotspots, a service map, runtime health, release comparisons, SLOs and alerts, on the dashboard. Other services report to it over OpenTelemetry (OTLP).
 - **Operations:** admin dashboard with accounts, roles and an audit log; Prometheus metrics; structured logs; `/health` and `/ready`; graceful shutdown.
 - **Clients:** React (with TanStack Query), Vue and Svelte. A testing library for your functions.
 - **Two ways to start:** a **full-stack app** (server-rendered React with file routes, loaders and live queries, served by the engine itself), or a **backend** (the engine with PostgreSQL, Redis and S3 storage as one container stack, for any frontend).

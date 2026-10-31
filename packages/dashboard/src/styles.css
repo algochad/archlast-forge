@@ -292,7 +292,7 @@ details.run[open] summary { margin-bottom: 0.5rem; }
 .chart .legend { display: flex; gap: 0.8rem; font: 400 12px var(--font-body); color: var(--muted); }
 .chart .legend i { display: inline-block; width: 10px; height: 3px; border-radius: 2px; vertical-align: middle; }
 .chart svg { width: 100%; height: auto; display: block; }
-.chart .grid { stroke: var(--border); stroke-dasharray: 3 4; }
+.chart .grid { stroke: var(--border); }
 .chart .axis { fill: var(--faint); font: 11px var(--font-mono); }
 .stat { display: grid; gap: 0.1rem; padding-right: 1.25rem; }
 .stat strong { font-family: var(--font-display); }

@@ -1,15 +1,33 @@
 import { useState } from "react";
 import { canWrite, formatBytes, formatDuration, get, hitRate, post, type Admin, type CacheInfo } from "../api";
+import { useTelemetryOn } from "../obs";
 import { Badge, Button, Empty, ErrorNote, LineChart, Segmented, Skeleton, Stat, useAction, useAsync } from "../ui";
 
-type Bucket = { start: number; cacheHits: number | null; cacheMisses: number | null; cacheCoalesced: number | null; cacheEntries: number | null };
+type Bucket = { start: number; cacheHits: number | null; cacheMisses: number | null; cacheCoalesced: number | null };
+type Sums = "cache_hits" | "cache_misses" | "cache_shared";
+type RuntimeSeries = { series: { role?: string; points: ({ t: number } & Partial<Record<Sums, number | null>>)[] }[] };
 const WINDOWS = { "1h": 3600_000, "24h": 86400_000, "7d": 7 * 86400_000 } as const;
 const pct = (n: number | null) => (n === null ? "—" : `${n < 10 && n > 0 ? n.toFixed(1) : Math.round(n)}%`);
 
+/** The servers' cache counters, from the runtime samples each one records every 10 s, summed per time bucket. */
+function buckets(r: RuntimeSeries): Bucket[] {
+  const servers = r.series.filter((s) => s.role === "server");
+  const sum = (i: number, k: Sums) => {
+    const values = servers.map((s) => s.points[i]?.[k]).filter((v): v is number => typeof v === "number");
+    return values.length ? values.reduce((a, b) => a + b, 0) : null;
+  };
+  return (servers[0]?.points ?? []).map((p, i) => ({ start: p.t, cacheHits: sum(i, "cache_hits"), cacheMisses: sum(i, "cache_misses"), cacheCoalesced: sum(i, "cache_shared") }));
+}
+
 export function Cache({ admin }: { admin: Admin }) {
   const [window, setWindow] = useState<keyof typeof WINDOWS>("1h");
+  const telemetry = useTelemetryOn();
   const cache = useAsync(() => get<CacheInfo>("cache"), [], { interval: 4000 });
-  const series = useAsync(() => get<Bucket[]>("metrics", { windowMs: WINDOWS[window], buckets: 30 }), [window], { interval: 15_000 });
+  const series = useAsync(
+    () => (telemetry ? get<RuntimeSeries>("obs.runtime", { from: Date.now() - WINDOWS[window], to: Date.now() }).then(buckets) : Promise.resolve([])),
+    [window, telemetry],
+    { interval: 15_000 },
+  );
   const { run, busy } = useAction();
   const c = cache.data;
   if (cache.loading && !c) return <Skeleton rows={6} />;
@@ -72,22 +90,30 @@ export function Cache({ admin }: { admin: Admin }) {
       <section className="panel stack" aria-label="Hits and misses over time">
         <div className="toolbar">
           <h3>Over time</h3>
-          <span className="muted small">all servers, sampled every 30 s</span>
+          <span className="muted small">all servers, sampled every 10 s</span>
           <span className="push" />
           <Segmented label="Window" value={window} options={Object.keys(WINDOWS).map((w) => ({ value: w as keyof typeof WINDOWS, label: w }))} onChange={setWindow} />
         </div>
-        <ErrorNote error={series.error} />
-        <div className="charts">
-          <LineChart
-            title="Served from cache vs. run"
-            labels={labels}
-            series={[
-              { name: "from cache", values: b.map(bucketServed), color: "var(--ok)" },
-              { name: "function runs", values: b.map((x) => x.cacheMisses), color: "var(--ember)" },
-            ]}
-          />
-          <LineChart title="Hit rate" unit="%" labels={labels} series={[{ name: "hit rate", values: b.map((x) => (x.cacheHits === null ? null : bucketRate(x))), color: "var(--ember)" }]} />
-        </div>
+        {telemetry ? (
+          <>
+            <ErrorNote error={series.error} />
+            <div className="charts">
+              <LineChart
+                title="Served from cache vs. run"
+                labels={labels}
+                series={[
+                  { name: "from cache", values: b.map(bucketServed), color: "var(--ok)" },
+                  { name: "function runs", values: b.map((x) => x.cacheMisses), color: "var(--ember)" },
+                ]}
+              />
+              <LineChart title="Hit rate" unit="%" labels={labels} series={[{ name: "hit rate", values: b.map((x) => (x.cacheHits === null ? null : bucketRate(x))), color: "var(--ember)" }]} />
+            </div>
+          </>
+        ) : (
+          <p className="muted">
+            The history comes from telemetry, which is off on this server (<code>TELEMETRY=off</code>). The numbers above count since it started.
+          </p>
+        )}
       </section>
 
       <section className="panel stack" aria-label="By function">

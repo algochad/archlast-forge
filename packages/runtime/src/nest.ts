@@ -6,6 +6,8 @@ import "reflect-metadata";
 import {
   BadRequestException,
   Catch,
+  Controller as NestController,
+  Injectable as NestInjectable,
   createParamDecorator,
   Global,
   HttpException,
@@ -68,6 +70,54 @@ interface EngineHost {
   relay(topic: string, payload: unknown): void;
 }
 const hostOf = () => (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.host")] as EngineHost | undefined;
+
+/** The engine's telemetry (runtime-core.ts sets it): timing for the app's classes, and the matched route for the request. */
+interface TelemetryBridge {
+  wrap<T extends (...args: any[]) => any>(fn: T, name: string, attrs?: Record<string, string | number | boolean>): T;
+  annotate(attrs: Record<string, string | number | boolean>, request?: boolean): void;
+}
+const telemetry = () => (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.telemetry")] as TelemetryBridge | undefined;
+const TIMED = Symbol.for("archlast-forge.timed");
+
+/**
+ * Times every method of one of the app's classes, so the dashboard shows where requests spend their time, class by class. Classes are the
+ * app's when they are decorated through this package (libraries import Nest's decorators from @nestjs/* directly). It runs when the class
+ * is decorated, before Nest binds route handlers to the methods; Nest keeps a handler's routes, guards and pipes as metadata on the method
+ * itself, so the timed method carries the same metadata.
+ */
+export function timeClass(target: Function, kind: string) {
+  const bridge = telemetry();
+  const proto = target.prototype as Record<string | symbol, unknown> | undefined;
+  if (!bridge || !proto || Object.hasOwn(proto, TIMED)) return;
+  Object.defineProperty(proto, TIMED, { value: true });
+  for (const key of Object.getOwnPropertyNames(proto)) {
+    const d = Object.getOwnPropertyDescriptor(proto, key);
+    if (key === "constructor" || !d || typeof d.value !== "function" || !d.writable) continue;
+    const original = d.value as (...args: unknown[]) => unknown;
+    const timed = bridge.wrap(original, `${target.name}.${key}`, { "code.namespace": target.name, "code.function": key, "nest.kind": kind });
+    for (const meta of Reflect.getOwnMetadataKeys(original)) Reflect.defineMetadata(meta, Reflect.getOwnMetadata(meta, original), timed);
+    Object.defineProperty(timed, "name", { value: original.name });
+    Object.defineProperty(proto, key, { ...d, value: timed });
+  }
+}
+
+/** Nest's `@Injectable()`, timing the class's methods (see timeClass). */
+export const Injectable = ((options?: Parameters<typeof NestInjectable>[0]) => {
+  const decorate = NestInjectable(options);
+  return (target: Function) => {
+    timeClass(target, "provider");
+    return decorate(target);
+  };
+}) as typeof NestInjectable;
+
+/** Nest's `@Controller()`, timing the class's handlers (see timeClass). */
+export const Controller = ((...args: unknown[]) => {
+  const decorate = (NestController as (...a: unknown[]) => ClassDecorator)(...args);
+  return (target: Function) => {
+    timeClass(target, "controller");
+    return decorate(target);
+  };
+}) as typeof NestController;
 const engine = () => {
   const host = hostOf();
   if (!host) throw new Error("This needs the archlast-forge engine (archlast-forge dev or start); createTestBackend runs functions only");
@@ -712,6 +762,8 @@ interface Layer {
   matches: (path: string) => false | { params: Record<string, string> };
   handler: Handler;
   route: boolean;
+  /** The path as the route was declared (`/users/:id`). */
+  pattern: string;
 }
 
 /** The `instance` Nest's adapter base class hands routes to: an Express-style list of layers, run in order. */
@@ -721,7 +773,7 @@ class Router {
     const [path, handler] = (typeof args[0] === "function" ? ["/", args[0]] : args) as [string, Handler];
     // Middleware at the root runs for every path: path-to-regexp's prefix match needs a "/" after "/", so it would match only "/".
     const test = !route && (path === "/" || path === "") ? () => ({ params: {} }) : match(path, { decode: decodeURIComponent, end: route });
-    return { method, route, handler, matches: (p) => test(p) as false | { params: Record<string, string> } };
+    return { method, route, handler, pattern: path || "/", matches: (p) => test(p) as false | { params: Record<string, string> } };
   }
   private add(method: string | undefined, route: boolean, args: unknown[]) {
     this.layers.push(this.layer(method, route, args));
@@ -809,7 +861,11 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
         if (layer.method && layer.method !== req.method) continue;
         const found = layer.matches(path);
         if (!found) continue;
-        if (layer.route) req.params = found.params;
+        if (layer.route) {
+          req.params = found.params;
+          // The request is named after the route it matched, below /http: the mount prefix and Nest's own path.
+          telemetry()?.annotate({ "http.route": `${this.prefix.slice(0, -1)}${layer.pattern}` }, true);
+        }
         return Promise.resolve()
           .then(() => layer.handler(req, res, next))
           .then(

@@ -3,7 +3,7 @@ import type { CronJob, FunctionKind, RegisteredFunction, UserIdentity } from "..
 import { ValidationError } from "../values";
 import type { Db } from "./db/types";
 import { compileCustom, type CustomCodeError } from "./custom";
-import type { ConsoleLine, Executor, LogEntry } from "./executor";
+import type { ConsoleLine, Executor } from "./executor";
 import { indexFor, relationsOf } from "../relations";
 import { tableOf } from "../values";
 import type { TablesSpec } from "./docstore";
@@ -19,11 +19,6 @@ const SESSION_TTL_MS = 12 * 3600_000;
 const sha256 = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex");
 const randomToken = () => Buffer.from(crypto.getRandomValues(new Uint8Array(32))).toString("base64url");
 const newId = (table: string) => `${table}:${crypto.randomUUID().replaceAll("-", "")}`;
-// Log ids in time order (ms, then a random tag per process, then a counter: 32 hex like any id), so inserts append to the primary key
-// index instead of landing on a random page of it. Unique across processes and servers by the tag.
-const logTag = crypto.randomUUID().replaceAll("-", "").slice(0, 8);
-let logCount = 0;
-const logId = () => `_logs:${Date.now().toString(16).padStart(12, "0")}${logTag}${(logCount = (logCount + 1) % 2 ** 48).toString(16).padStart(12, "0")}`;
 
 // ---- admin accounts (the CLI calls these in-process) ----
 
@@ -254,39 +249,16 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
           if (args.banned) for (const session of await s.query("sessions").withIndex("by_userId", (b: any) => b.eq("userId", args.userId)).collect()) await s.delete(session._id);
         });
 
-      // -- logs and metrics --
-      case "logs": {
-        const conds: string[] = [];
-        const params: unknown[] = [];
-        if (args.since) conds.push(`"time" >= ?`), params.push(Number(args.since));
-        if (args.until) conds.push(`"time" <= ?`), params.push(Number(args.until));
-        if (args.name) conds.push(`"name" = ?`), params.push(String(args.name));
-        if (args.level) conds.push(`"level" = ?`), params.push(String(args.level));
-        if (args.requestId) conds.push(`"requestId" = ?`), params.push(String(args.requestId));
-        const where = conds.length ? `WHERE ${conds.join(" AND ")}` : "";
-        return db.query(`SELECT * FROM "_logs" ${where} ORDER BY "time" DESC LIMIT ?`, [...params, Math.min(Number(args.limit) || 200, 2000)]);
-      }
-      case "metrics":
-        return metrics(db, Number(args.windowMs) || 3600_000, Number(args.buckets) || 30);
-      case "recordMetric":
-        await db.execute(`INSERT INTO "_metrics" ("time", "server", "subscriptions", "connections") VALUES (?, ?, ?, ?)`, [
+      // A change made outside the runtime (the observability settings live in the telemetry store), recorded here with the rest.
+      case "recordAudit":
+        await db.execute(`INSERT INTO "_audit" ("_id", "time", "actor", "action", "target", "details") VALUES (?, ?, ?, ?, ?, ?)`, [
+          newId("_audit"),
           Date.now(),
-          String(args.server),
-          Number(args.subscriptions),
-          Number(args.connections),
+          actor,
+          String(args.action),
+          args.target ?? null,
+          String(args.details ?? "{}"),
         ]);
-        await db.execute(`DELETE FROM "_metrics" WHERE "time" < ?`, [Date.now() - 30 * 86400_000]);
-        if (args.cacheHits !== undefined) {
-          await db.execute(`INSERT INTO "_cache_stats" ("time", "server", "hits", "misses", "coalesced", "entries") VALUES (?, ?, ?, ?, ?, ?)`, [
-            Date.now(),
-            String(args.server),
-            Number(args.cacheHits),
-            Number(args.cacheMisses),
-            Number(args.cacheCoalesced),
-            args.cacheEntries === null ? null : Number(args.cacheEntries),
-          ]);
-          await db.execute(`DELETE FROM "_cache_stats" WHERE "time" < ?`, [Date.now() - 30 * 86400_000]);
-        }
         return null;
       // The cache lives in the server process, which has already emptied it; this records the action in the audit log.
       case "clearCache":
@@ -323,106 +295,4 @@ async function identityOf(exec: Executor, userId: string): Promise<UserIdentity>
   const user = (await exec.read((s) => s.get(userId))).value;
   if (!user) throw new ValidationError(`No user ${userId}`);
   return { userId: user._id as UserIdentity["userId"], sessionId: "dashboard", email: user.email, name: user.name };
-}
-
-const percentile = (sorted: number[], p: number) => (sorted.length ? sorted[Math.min(sorted.length - 1, Math.floor(p * sorted.length))]! : 0);
-
-async function metrics(db: Db, windowMs: number, buckets: number) {
-  const now = Date.now();
-  const since = now - windowMs;
-  const size = windowMs / buckets;
-  const calls = await db.query<{ time: number; durationMs: number; ok: unknown }>(
-    `SELECT "time", "durationMs", "ok" FROM "_logs" WHERE "level" = 'call' AND "time" >= ? ORDER BY "time" DESC LIMIT 200000`,
-    [since],
-  );
-  const samples = await db.query<{ time: number; server: string; subscriptions: number; connections: number }>(
-    `SELECT * FROM "_metrics" WHERE "time" >= ? ORDER BY "time"`,
-    [since],
-  );
-  const cacheSamples = await db.query<{ time: number; server: string; hits: number; misses: number; coalesced: number; entries: number | null }>(
-    `SELECT * FROM "_cache_stats" WHERE "time" >= ? ORDER BY "time"`,
-    [since],
-  );
-  return Array.from({ length: buckets }, (_, i) => {
-    const start = since + i * size;
-    const end = start + size;
-    const inBucket = calls.filter((c) => c.time >= start && c.time < end);
-    const durations = inBucket.map((c) => c.durationMs ?? 0).sort((a, b) => a - b);
-    // Latest sample per server in this bucket, summed across servers.
-    const latest = new Map<string, { subscriptions: number; connections: number }>();
-    for (const s of samples) if (s.time >= start && s.time < end) latest.set(s.server, s);
-    const sum = (k: "subscriptions" | "connections") => (latest.size ? [...latest.values()].reduce((n, s) => n + Number(s[k]), 0) : null);
-    // Cache counters are per-interval deltas, so a bucket's total is their sum; entries is the latest reading per server.
-    const cached = cacheSamples.filter((c) => c.time >= start && c.time < end);
-    const entries = new Map<string, number>();
-    for (const c of cached) if (c.entries !== null) entries.set(c.server, Number(c.entries));
-    const total = (k: "hits" | "misses" | "coalesced") => cached.reduce((n, c) => n + Number(c[k]), 0);
-    return {
-      start,
-      cacheHits: cached.length ? total("hits") : null,
-      cacheMisses: cached.length ? total("misses") : null,
-      cacheCoalesced: cached.length ? total("coalesced") : null,
-      cacheEntries: entries.size ? [...entries.values()].reduce((n, v) => n + v, 0) : null,
-      calls: inBucket.length,
-      errors: inBucket.filter((c) => !c.ok).length,
-      p50: percentile(durations, 0.5),
-      p95: percentile(durations, 0.95),
-      subscriptions: sum("subscriptions"),
-      connections: sum("connections"),
-    };
-  });
-}
-
-/** Buffers log entries and writes them in batches; trims entries older than the retention. */
-export class LogWriter {
-  private buffer: (LogEntry & { server: string })[] = [];
-  private timer: Timer;
-  private lastTrim = 0;
-
-  constructor(
-    private db: Db,
-    private server: string,
-    private retentionMs: number,
-  ) {
-    this.timer = setInterval(() => void this.flush().catch((e) => console.error("log flush failed:", e)), 1000);
-  }
-
-  push(entry: LogEntry) {
-    this.buffer.push({ ...entry, server: this.server });
-    if (this.buffer.length > 10_000) this.buffer.splice(0, this.buffer.length - 10_000); // never grow without bound
-  }
-
-  private running?: Promise<void>;
-  private static ROW = "(?, ?, ?, ?, ?, ?, ?, ?, ?)";
-  private static CHUNK = 250;
-  private static FULL = Array(LogWriter.CHUNK).fill(LogWriter.ROW).join(", ");
-
-  /** One drain at a time: when writes are slow, flushes must not pile up in the database's write queue behind each other. */
-  flush(): Promise<void> {
-    return (this.running ??= this.drain().finally(() => (this.running = undefined)));
-  }
-
-  private async drain() {
-    // What is buffered now, in statements of 250 rows; what arrives meanwhile waits for the next second, so a busy server writes its
-    // logs in a few large statements a second rather than a stream of small ones.
-    for (let left = this.buffer.length; left > 0; ) {
-      const chunk = this.buffer.splice(0, Math.min(left, LogWriter.CHUNK));
-      left -= chunk.length;
-      await this.db.transaction("write", (tx) =>
-        tx.execute(
-          `INSERT INTO "_logs" ("_id", "time", "server", "name", "level", "message", "durationMs", "ok", "requestId") VALUES ${chunk.length === LogWriter.CHUNK ? LogWriter.FULL : Array(chunk.length).fill(LogWriter.ROW).join(", ")}`,
-          chunk.flatMap((r) => [logId(), r.time, r.server, r.name, r.level, r.message.slice(0, 4000), r.durationMs ?? null, r.ok === undefined ? null : r.ok, r.requestId ?? null]),
-        ),
-      );
-    }
-    if (Date.now() - this.lastTrim > 3600_000) {
-      this.lastTrim = Date.now();
-      await this.db.execute(`DELETE FROM "_logs" WHERE "time" < ?`, [Date.now() - this.retentionMs]);
-    }
-  }
-
-  async close() {
-    clearInterval(this.timer);
-    await this.flush();
-  }
 }

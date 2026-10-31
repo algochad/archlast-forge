@@ -324,7 +324,7 @@ export const logs = mutation({
 [todos:logs] careful
 ```
 
-Objects are formatted with `Bun.inspect`. Log entries are kept in the database for `LOG_RETENTION_DAYS` (7 by default). Output printed outside a function call (at module load, or from a timer that outlives its call) is written as is, with no function name, and is not kept. Every call also produces one `call` entry with its duration and whether it succeeded, which is what feeds the dashboard and `/metrics`.
+Objects are formatted with `Bun.inspect`. Log lines are kept with the trace of the call that printed them, for `LOG_RETENTION_DAYS` (7 by default), and show on the dashboard's Logs page and on that call's trace. Output printed outside a function call (at module load, or from a timer that outlives its call) is written as is, with no function name, and is not kept. Every call is also recorded as a request with its duration and outcome, which is what feeds the dashboard and `/metrics`; to time parts of a function or count things it does, see [your own spans and metrics](observability.html#your-own-spans-and-metrics).
 
 ## Modules, names and special files
 

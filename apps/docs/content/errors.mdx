@@ -86,7 +86,7 @@ Validators are strict: unknown fields are errors. The messages are made for deve
 Every response carries an `x-request-id` header and, when it is an error, the same value as `requestId` in the body. A server error shows it in the message: `Server error (request 7c6d2958-3)`.
 
 - A client can send its own `x-request-id` (letters, digits, `_`, `.` and `-`, up to 64 characters). The server echoes it, so you can tag a call with an id from your own tracing. Anything else is replaced by a generated one.
-- With `OTEL_EXPORTER_OTLP_ENDPOINT` set, an incoming `traceparent` is continued and each call is a span. See [Configuration](configuration.html).
+- An incoming W3C `traceparent` is continued: the call joins its caller's trace. See [Observability](observability.html).
 
 To find what happened, search for the id:
 
@@ -96,7 +96,7 @@ To find what happened, search for the id:
   {"time":"2026-10-24T13:58:03.110Z","level":"error","msg":"secret detail: db password is hunter2","requestId":"d2469220-1","function":"todos:boom","stack":"Error: secret detail: …\n    at handler (…/forge/todos.ts:69:15)\n …"}
   ```
 
-- **The dashboard's Logs page** filters by request id, function, level and time across all servers. The call's `console.log` lines and a `call` entry (with its duration and whether it succeeded) carry the same id.
+- **The dashboard's search** (Ctrl+K) finds the request by its id and opens its trace: the error, what the call did before it failed, and its `console.log` lines. Its issue on the [Errors](observability.html#the-pages) page has the stack, with the source lines around each frame of your code, and the error's other occurrences.
 - **In dev**, the terminal prints the error with its `requestId` and `function`, and the client sees the real message.
 
 Timeouts are logged as warnings, with the same id.

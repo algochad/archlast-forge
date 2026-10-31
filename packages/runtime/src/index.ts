@@ -1,5 +1,6 @@
 // Browser-safe entry: used by forge/ code and by generated client types. No Bun APIs here.
 export { ForgeError, isForgeError } from "./errors";
+export { metrics, trace, type TelemetryAttributes } from "./telemetry";
 export { paginationOptsValidator, v, ValidationError, type Id, type Infer, type ObjectType, type PropertyValidators, type Validator } from "./values";
 export {
   defineSchema,

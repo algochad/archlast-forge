@@ -23,6 +23,7 @@ async function main() {
     serverId: process.env.ARCHLAST_SERVER_ID ?? "local",
     dev: process.env.ARCHLAST_DEV === "1",
     send,
+    sample: true,
   });
 
   async function answer(msg: HostMessage) {

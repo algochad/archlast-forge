@@ -1,9 +1,11 @@
 import type { Subprocess } from "bun";
 import type { FunctionKind, UserIdentity } from "../functions";
-import { serializeError, type CallHeaders, type CallResult, type ErrorKind, type LogEntry } from "./executor";
+import { serializeError, type CallHeaders, type CallResult, type ErrorKind, type LogEntry, type SerializedError } from "./executor";
 import type { Manifest } from "./project";
 import type { Batch, HostEvent, HostMessage, HttpRequestMessage, HttpResponseMessage, RuntimeMessage, SerializedRequest, SerializedResponse, SocketMessage } from "./protocol";
 import { startCore, type RuntimeCore } from "./runtime-core";
+import type { CallTelemetry, TraceParent } from "./telemetry/context";
+import type { MetricPoint, RuntimeSample, TraceRecord } from "./telemetry/types";
 
 // Next to this module: child.ts in the repo, child.js in the published build.
 const CHILD = new URL(import.meta.url.endsWith(".ts") ? "./child.ts" : "./child.js", import.meta.url).pathname;
@@ -11,6 +13,11 @@ const CHILD = new URL(import.meta.url.endsWith(".ts") ? "./child.ts" : "./child.
 const HARD_TIMEOUT_GRACE_MS = 5000;
 
 export class RuntimeCallError extends Error {
+  /** The class of what was thrown in the function (TypeError, ForgeError). */
+  type?: string;
+  /** What the call recorded before it failed, when it was traced. */
+  telemetry?: CallTelemetry;
+
   constructor(
     message: string,
     readonly kind: ErrorKind,
@@ -18,6 +25,10 @@ export class RuntimeCallError extends Error {
     readonly detail?: string,
   ) {
     super(message);
+  }
+
+  static from(e: SerializedError) {
+    return Object.assign(new RuntimeCallError(e.message, e.kind, e.data, e.stack), { type: e.type, telemetry: e.telemetry });
   }
 }
 
@@ -117,8 +128,7 @@ class InlineWorker implements Worker {
     try {
       return await core.handle({ ...msg, id: 0 } as HostMessage);
     } catch (e) {
-      const err = serializeError(e);
-      throw new RuntimeCallError(err.message, err.kind, err.data, err.stack);
+      throw RuntimeCallError.from(serializeError(e));
     } finally {
       this.inFlight--;
     }
@@ -188,7 +198,7 @@ class RuntimeProcess implements Worker {
       const p = this.pending.get(msg.id);
       this.pending.delete(msg.id);
       clearTimeout(p?.timer);
-      if (!msg.ok) p?.reject(new RuntimeCallError(msg.error.message, msg.error.kind, msg.error.data, msg.error.stack));
+      if (!msg.ok) p?.reject(RuntimeCallError.from(msg.error));
       else if ((msg.value as HttpResponseMessage | undefined)?.stream) {
         // Its bytes follow as chunk messages with the same id.
         const body = new ReadableStream<Uint8Array>({
@@ -288,6 +298,10 @@ export class FunctionRuntime {
   onLog: (entry: LogEntry) => void = () => {};
   /** A gateway sends to, or closes, one of the server's sockets. */
   onWs: (msg: SocketMessage) => void = () => {};
+  /** Traces the runtime started itself (scheduled jobs), custom metrics, and child processes' health samples. */
+  onTrace: (trace: TraceRecord) => void = () => {};
+  onMetrics: (points: Omit<MetricPoint, "service" | "instance">[], instance: string) => void = () => {};
+  onSample: (sample: Omit<RuntimeSample, "service">) => void = () => {};
 
   private workers: Worker[] = [];
   /** Each gateway socket stays with the worker that took its open, because that is where its state is. */
@@ -303,6 +317,9 @@ export class FunctionRuntime {
       if (msg.t === "publish") this.onPublish(msg.topics);
       else if (msg.t === "log") this.onLog(msg.entry);
       else if (msg.t === "ws") this.onWs(msg);
+      else if (msg.t === "trace") this.onTrace(msg.trace);
+      else if (msg.t === "metrics") this.onMetrics(msg.points, msg.instance);
+      else if (msg.t === "sample") this.onSample(msg.sample);
       else if (msg.t === "relay") for (const w of this.workers) if (w.ready) w.event(msg); // to every worker, the sender too: one path for all
     };
     if (this.opts.inline) return new InlineWorker(this.opts, { onMessage });
@@ -398,7 +415,7 @@ export class FunctionRuntime {
     });
   }
 
-  call(name: string, kind: FunctionKind, args: unknown, headers: CallHeaders, opts: { allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null } = {}) {
+  call(name: string, kind: FunctionKind, args: unknown, headers: CallHeaders, opts: { allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null; trace?: TraceParent } = {}) {
     const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
     return this.send({ t: "call", name, kind, args, headers, ...opts }, (kind === "action" ? t.actionMs : t.functionMs) + HARD_TIMEOUT_GRACE_MS) as Promise<CallResult>;
   }
@@ -408,14 +425,14 @@ export class FunctionRuntime {
     return this.send({ t: "identity", headers }, 30_000) as Promise<UserIdentity | null>;
   }
 
-  auth(req: SerializedRequest) {
-    return this.send({ t: "auth", req }, 30_000) as Promise<SerializedResponse>;
+  auth(req: SerializedRequest, trace?: TraceParent) {
+    return this.send({ t: "auth", req, trace }, 30_000) as Promise<SerializedResponse>;
   }
 
   /** `worker` pins the request to one process, where state it needs lives (Socket.IO's long-polling sessions are on worker 0). */
-  http(req: HttpRequestMessage, headers: CallHeaders, requestId: string, worker?: number) {
+  http(req: HttpRequestMessage, headers: CallHeaders, requestId: string, worker?: number, trace?: TraceParent) {
     const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
-    return this.send({ t: "http", req, headers, requestId }, t.actionMs + HARD_TIMEOUT_GRACE_MS, worker) as Promise<HttpResponseMessage>;
+    return this.send({ t: "http", req, headers, requestId, trace }, t.actionMs + HARD_TIMEOUT_GRACE_MS, worker) as Promise<HttpResponseMessage>;
   }
 
   admin<T = unknown>(op: string, args: Record<string, unknown>, actor: string) {

@@ -10,13 +10,6 @@ export async function migrateSystem(db: Db) {
     `CREATE TABLE IF NOT EXISTS "_admin_sessions" ("_id" TEXT PRIMARY KEY, "adminId" TEXT NOT NULL, "expiresAt" ${real} NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS "_audit" ("_id" TEXT PRIMARY KEY, "time" ${real} NOT NULL, "actor" TEXT NOT NULL, "action" TEXT NOT NULL, "target" TEXT, "details" TEXT)`,
     `CREATE INDEX IF NOT EXISTS "afx_audit_time" ON "_audit" ("time")`,
-    `CREATE TABLE IF NOT EXISTS "_logs" ("_id" TEXT PRIMARY KEY, "time" ${real} NOT NULL, "server" TEXT NOT NULL, "name" TEXT NOT NULL, "level" TEXT NOT NULL, "message" TEXT NOT NULL, "durationMs" ${real}, "ok" ${name === "postgres" ? "BOOLEAN" : "INTEGER"}, "requestId" TEXT)`,
-    `CREATE INDEX IF NOT EXISTS "afx_logs_time" ON "_logs" ("time")`,
-    `CREATE INDEX IF NOT EXISTS "afx_logs_name_time" ON "_logs" ("name", "time")`,
-    `CREATE TABLE IF NOT EXISTS "_metrics" ("time" ${real} NOT NULL, "server" TEXT NOT NULL, "subscriptions" INTEGER NOT NULL, "connections" INTEGER NOT NULL)`,
-    `CREATE INDEX IF NOT EXISTS "afx_metrics_time" ON "_metrics" ("time")`,
-    `CREATE TABLE IF NOT EXISTS "_cache_stats" ("time" ${real} NOT NULL, "server" TEXT NOT NULL, "hits" INTEGER NOT NULL, "misses" INTEGER NOT NULL, "coalesced" INTEGER NOT NULL, "entries" INTEGER)`,
-    `CREATE INDEX IF NOT EXISTS "afx_cache_stats_time" ON "_cache_stats" ("time")`,
     `CREATE TABLE IF NOT EXISTS "_env" ("name" TEXT PRIMARY KEY, "value" TEXT NOT NULL, "updatedAt" ${real} NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS "_migrations" ("name" TEXT PRIMARY KEY, "state" TEXT NOT NULL, "cursor" TEXT, "processed" INTEGER NOT NULL, "error" TEXT, "updatedAt" ${real} NOT NULL)`,
   ];
@@ -26,4 +19,6 @@ export async function migrateSystem(db: Db) {
   });
 }
 
+// _logs, _metrics and _cache_stats held function logs and samples before the telemetry store did; they are no longer written, and
+// stay listed so a database from then keeps them out of the data browser. _otel_* are the telemetry store's tables on Postgres.
 export const SYSTEM_TABLES = ["_scheduled_functions", "_admins", "_admin_sessions", "_audit", "_logs", "_metrics", "_cache_stats", "_env", "_migrations", "_search_indexes"];

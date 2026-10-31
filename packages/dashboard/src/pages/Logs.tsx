@@ -1,170 +1,233 @@
-import { useEffect, useState } from "react";
-import { get, type Log, type Manifest } from "../api";
-import { Badge, Button, Empty, ErrorNote, Field, Segmented, Skeleton, useAsync } from "../ui";
+import { Fragment, useEffect, useState } from "react";
+import { get, type Log } from "../api";
+import { Icon } from "../brand";
+import { clock, isoish, ms } from "../format";
+import { Card, Chips, Refreshing, SearchBox, TelemetryOff, TraceLink } from "../kit";
+import { attrsOf, useObs, useTelemetryOn, type LogRow } from "../obs";
+import { href } from "../router";
+import { Badge, Button, Empty, ErrorNote, Segmented, Skeleton } from "../ui";
 
-const RANGES = { "15m": 15 * 60_000, "1h": 3600_000, "24h": 86400_000, "7d": 7 * 86400_000 } as const;
+const LEVELS = [
+  { value: "", label: "All" },
+  { value: "debug", label: "Debug" },
+  { value: "log,info", label: "Info" },
+  { value: "warn", label: "Warn" },
+  { value: "error,fatal", label: "Error" },
+];
 
-function LevelBadge({ log }: { log: Log }) {
-  if (log.level === "call") return <Badge tone={log.ok ? "ok" : "bad"}>{log.ok ? "ok" : "failed"}</Badge>;
-  return <Badge tone={log.level === "error" ? "bad" : log.level === "warn" ? "warn" : "neutral"}>{log.level}</Badge>;
+export function Logs({ params }: { params: URLSearchParams }) {
+  const telemetry = useTelemetryOn();
+  const [mode, setMode] = useState<"history" | "live">(telemetry ? "history" : "live");
+  return (
+    <div className="obs-page">
+      <div className="toolbar-row">
+        <Segmented
+          label="Source"
+          value={mode}
+          onChange={setMode}
+          options={[
+            { value: "history", label: "Stored · all servers" },
+            { value: "live", label: "Stream · this server" },
+          ]}
+        />
+      </div>
+      {mode === "live" ? <Live /> : telemetry ? <History trace={params.get("trace") ?? ""} /> : <TelemetryOff />}
+    </div>
+  );
 }
 
-function LogTable({ logs, onRequest }: { logs: Log[]; onRequest: (id: string) => void }) {
-  if (!logs.length) return <Empty icon="logs">No log entries.</Empty>;
+function History({ trace }: { trace: string }) {
+  const [level, setLevel] = useState("");
+  const [search, setSearch] = useState("");
+  const [before, setBefore] = useState<number | undefined>();
+  const [older, setOlder] = useState<LogRow[]>([]);
+  const logs = useObs<LogRow[]>("logs", { level: level || undefined, search: search || undefined, traceId: trace || undefined, limit: 200 });
+  useEffect(() => {
+    setOlder([]);
+    setBefore(undefined);
+  }, [level, search, trace]);
+  useEffect(() => {
+    if (!before) return;
+    void get<LogRow[]>("obs.logs", { from: 0, to: before, level: level || undefined, search: search || undefined, traceId: trace || undefined, limit: 200 }).then((rows) => setOlder((o) => [...o, ...rows]));
+  }, [before]);
+  const rows = [...(logs.data ?? []), ...older];
   return (
-    <div className="table-wrap">
-      <table>
+    <>
+      <div className="toolbar-row">
+        <Chips label="Level" value={level} onChange={setLevel} options={LEVELS} />
+        {trace && (
+          <a className="chip" aria-checked="true" href={href("logs")}>
+            trace {trace.slice(0, 8)}… <Icon name="x" size={12} />
+          </a>
+        )}
+        <span className="push" />
+        <Refreshing on={logs.refreshing} />
+        <SearchBox value={search} onChange={setSearch} placeholder="Search messages…" />
+      </div>
+      <ErrorNote error={logs.error} />
+      <Card className="flush">
+        {logs.loading && !logs.data ? (
+          <div style={{ padding: "1rem" }}>
+            <Skeleton rows={8} />
+          </div>
+        ) : rows.length ? (
+          <LogTable rows={rows} />
+        ) : (
+          <Empty icon="logs">No log lines in this range. What functions print with console.log, and logs other services send over OTLP, land here.</Empty>
+        )}
+        {rows.length >= 200 && (
+          <div className="pager-row">
+            <span className="muted small">{rows.length} lines</span>
+            <Button variant="ghost" onClick={() => setBefore(Number(rows.at(-1)!.time))}>
+              Load older lines
+            </Button>
+          </div>
+        )}
+      </Card>
+    </>
+  );
+}
+
+function LogTable({ rows }: { rows: LogRow[] }) {
+  const [open, setOpen] = useState<number | null>(null);
+  return (
+    <div className="table-scroll">
+      <table className="obs-table log-table">
         <thead>
           <tr>
-            <th scope="col">time</th>
-            <th scope="col">function</th>
-            <th scope="col">level</th>
-            <th scope="col">message</th>
-            <th scope="col" className="num">
-              ms
-            </th>
-            <th scope="col">request</th>
+            <th scope="col" style={{ width: "1.5rem" }} />
+            <th scope="col">Time</th>
+            <th scope="col">Level</th>
+            <th scope="col">Context</th>
+            <th scope="col">Message</th>
+            <th scope="col">Trace</th>
           </tr>
         </thead>
         <tbody>
-          {logs.map((l, i) => (
-            <tr key={i}>
-              <td className="muted nowrap">{new Date(l.time).toLocaleTimeString()}</td>
-              <td className="nowrap">{l.name}</td>
-              <td>
-                <LevelBadge log={l} />
-              </td>
-              <td>
-                <code className="cell-code">{l.level === "call" && l.ok ? "" : l.message}</code>
-              </td>
-              <td className="num">{l.durationMs ?? ""}</td>
-              <td>
-                {l.requestId && (
-                  <button className="link mono small" onClick={() => onRequest(l.requestId!)} title="Show everything from this request">
-                    {l.requestId.slice(0, 8)}
-                  </button>
+          {rows.map((l, i) => {
+            const a = attrsOf(l.attrs);
+            return (
+              <Fragment key={`${l.id}-${i}`}>
+                <tr className={`log-row ${l.level} clickable`} onClick={() => setOpen(open === i ? null : i)}>
+                  <td>
+                    <Icon name={open === i ? "chevron-down" : "chevron-right"} size={12} />
+                  </td>
+                  <td className="mono nowrap" title={isoish(Number(l.time))}>
+                    {clock(Number(l.time))}
+                  </td>
+                  <td>
+                    <span className={`log-level ${l.level}`}>{l.level}</span>
+                  </td>
+                  <td className="mono small nowrap" title={l.service}>
+                    {l.name}
+                  </td>
+                  <td className="msg mono">{l.message}</td>
+                  <td>{l.trace_id ? <TraceLink id={l.trace_id} /> : <span className="faint">—</span>}</td>
+                </tr>
+                {open === i && (
+                  <tr className="log-expand">
+                    <td />
+                    <td colSpan={5}>
+                      <pre className="json" style={{ maxHeight: "14rem" }}>
+                        {l.message}
+                      </pre>
+                      <dl className="attr-grid" style={{ marginTop: "0.5rem" }}>
+                        <dt>time</dt>
+                        <dd>{isoish(Number(l.time))}</dd>
+                        <dt>service</dt>
+                        <dd>{l.service}</dd>
+                        {l.instance && (
+                          <>
+                            <dt>instance</dt>
+                            <dd>{l.instance}</dd>
+                          </>
+                        )}
+                        {Object.entries(a).map(([k, v]) => (
+                          <Fragment key={k}>
+                            <dt>{k}</dt>
+                            <dd>{String(v)}</dd>
+                          </Fragment>
+                        ))}
+                      </dl>
+                    </td>
+                  </tr>
                 )}
-              </td>
-            </tr>
-          ))}
+              </Fragment>
+            );
+          })}
         </tbody>
       </table>
     </div>
   );
 }
 
-export function Logs({ manifest }: { manifest: Manifest }) {
-  const [mode, setMode] = useState<"live" | "history">("live");
-  const [filters, setFilters] = useState({ name: "", level: "", range: "1h" as keyof typeof RANGES, requestId: "" });
-  return (
-    <section className="panel stack" aria-label="Logs">
-      <Segmented
-        label="Source"
-        value={mode}
-        options={[
-          { value: "live", label: "Live · this server" },
-          { value: "history", label: "History · all servers" },
-        ]}
-        onChange={setMode}
-      />
-      {mode === "live" ? (
-        <Live onRequest={(id) => (setFilters({ ...filters, requestId: id }), setMode("history"))} />
-      ) : (
-        <History manifest={manifest} filters={filters} setFilters={setFilters} />
-      )}
-    </section>
-  );
-}
+type LiveLog = Log & { traceId?: string };
 
-function Live({ onRequest }: { onRequest: (id: string) => void }) {
-  const [logs, setLogs] = useState<Log[]>([]);
+function Live() {
+  const [logs, setLogs] = useState<LiveLog[]>([]);
   const [paused, setPaused] = useState(false);
   const [connected, setConnected] = useState(false);
+  const [calls, setCalls] = useState(true);
   useEffect(() => {
-    get<Log[]>("recentLogs").then((l) => setLogs(l.slice(-200).reverse()), () => {});
+    get<LiveLog[]>("recentLogs").then((l) => setLogs(l.slice(-300).reverse()), () => {});
+  }, []);
+  useEffect(() => {
+    if (paused) return;
     const es = new EventSource("/_admin/logs/stream");
     es.onopen = () => setConnected(true);
     es.onerror = () => setConnected(false);
-    es.onmessage = (e) => !paused && setLogs((l) => [JSON.parse(e.data) as Log, ...l].slice(0, 500));
+    es.onmessage = (e) => setLogs((l) => [JSON.parse(e.data) as LiveLog, ...l].slice(0, 500));
     return () => es.close();
   }, [paused]);
+  const shown = logs.filter((l) => calls || l.level !== "call");
   return (
     <>
-      <div className="toolbar">
-        <Badge tone={connected ? "ok" : "warn"}>{connected ? "streaming" : "connecting…"}</Badge>
+      <div className="toolbar-row">
+        <Badge tone={paused ? "neutral" : connected ? "ok" : "warn"}>{paused ? "paused" : connected ? "streaming" : "connecting…"}</Badge>
         <Button variant="ghost" onClick={() => setPaused(!paused)} aria-pressed={paused}>
-          {paused ? "Resume" : "Pause"}
+          <Icon name={paused ? "play" : "pause"} size={14} /> {paused ? "Resume" : "Pause"}
         </Button>
         <Button variant="ghost" onClick={() => setLogs([])}>
           Clear
         </Button>
+        <label className="check-inline">
+          <input type="checkbox" checked={calls} onChange={(e) => setCalls(e.target.checked)} /> Show function calls
+        </label>
       </div>
-      <LogTable logs={logs} onRequest={onRequest} />
-    </>
-  );
-}
-
-function History({
-  manifest,
-  filters,
-  setFilters,
-}: {
-  manifest: Manifest;
-  filters: { name: string; level: string; range: keyof typeof RANGES; requestId: string };
-  setFilters: (f: typeof filters) => void;
-}) {
-  const logs = useAsync(
-    () =>
-      get<Log[]>("logs", {
-        name: filters.name || undefined,
-        level: filters.level || undefined,
-        requestId: filters.requestId || undefined,
-        since: filters.requestId ? undefined : Date.now() - RANGES[filters.range],
-        limit: 500,
-      }),
-    [JSON.stringify(filters)],
-  );
-  return (
-    <>
-      <div className="toolbar">
-        <Field label="Function">
-          {(id) => (
-            <select id={id} value={filters.name} onChange={(e) => setFilters({ ...filters, name: e.target.value })}>
-              <option value="">all</option>
-              {manifest.functions.map((f) => (
-                <option key={f.name}>{f.name}</option>
-              ))}
-            </select>
-          )}
-        </Field>
-        <Field label="Level">
-          {(id) => (
-            <select id={id} value={filters.level} onChange={(e) => setFilters({ ...filters, level: e.target.value })}>
-              <option value="">all</option>
-              {["call", "log", "info", "warn", "error"].map((l) => (
-                <option key={l}>{l}</option>
-              ))}
-            </select>
-          )}
-        </Field>
-        <Field label="Range">
-          {(id) => (
-            <select id={id} value={filters.range} onChange={(e) => setFilters({ ...filters, range: e.target.value as keyof typeof RANGES })}>
-              {Object.keys(RANGES).map((r) => (
-                <option key={r}>{r}</option>
-              ))}
-            </select>
-          )}
-        </Field>
-        <Field label="Request id">
-          {(id) => <input id={id} value={filters.requestId} placeholder="any" onChange={(e) => setFilters({ ...filters, requestId: e.target.value })} />}
-        </Field>
-        <Button variant="ghost" onClick={logs.reload} className="push">
-          Refresh
-        </Button>
-      </div>
-      <ErrorNote error={logs.error} />
-      {logs.loading && !logs.data ? <Skeleton rows={5} /> : <LogTable logs={logs.data ?? []} onRequest={(id) => setFilters({ ...filters, requestId: id })} />}
+      <Card className="flush">
+        {shown.length ? (
+          <div className="table-scroll">
+            <table className="obs-table log-table">
+              <thead>
+                <tr>
+                  <th scope="col">Time</th>
+                  <th scope="col">Level</th>
+                  <th scope="col">Function</th>
+                  <th scope="col">Message</th>
+                  <th scope="col" className="num">
+                    Duration
+                  </th>
+                  <th scope="col">Trace</th>
+                </tr>
+              </thead>
+              <tbody>
+                {shown.map((l, i) => (
+                  <tr key={i} className={`log-row ${l.level === "call" ? (l.ok ? "" : "error") : l.level}`}>
+                    <td className="mono nowrap">{clock(l.time)}</td>
+                    <td>{l.level === "call" ? <span className={`log-level ${l.ok ? "" : "error"}`}>{l.ok ? "ok" : "failed"}</span> : <span className={`log-level ${l.level}`}>{l.level}</span>}</td>
+                    <td className="mono small nowrap">{l.name}</td>
+                    <td className="msg mono">{l.level === "call" && l.ok ? <span className="faint">call</span> : l.message}</td>
+                    <td className="num mono">{l.durationMs !== undefined ? ms(l.durationMs) : ""}</td>
+                    <td>{l.traceId ? <TraceLink id={l.traceId} /> : <span className="faint">—</span>}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <Empty icon="logs">Waiting for log lines from this server…</Empty>
+        )}
+      </Card>
     </>
   );
 }

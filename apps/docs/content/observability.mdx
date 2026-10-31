@@ -1,0 +1,175 @@
+# Observability
+
+The engine records what it does, and the [dashboard](dashboard.html) shows it: every request with its latency and outcome, a trace of what each one did inside (the functions it ran, its database statements, the calls it made out), errors grouped into issues, logs tied to the request that printed them, the health of every process, and how each release changed things. Other services can send their own OpenTelemetry data to the same place. There is nothing to install or configure; `TELEMETRY=off` turns it all off.
+
+## What is recorded
+
+| | Recorded as |
+|---|---|
+| A call to a function over `/rpc` (HTTP or a WebSocket subscription) | A request of its kind (`query`, `mutation`, `action`), named by the function. A query answered from the [cache](caching.html) is a request too, marked as a hit. |
+| A live query running again after a write | A `live` request, so you can see what reactivity costs. |
+| An [HTTP endpoint](http.html), or a [Nest](nest.html) controller | An `http` request named by its route pattern (`GET /users/:id`), not by the URL. |
+| A sign-in, sign-up or session check (`/api/auth`) | An `auth` request. |
+| A page of a [full-stack app](framework.html) | A `page` request named by its route (`GET /posts/:id`); a page nothing matched is `GET (unmatched)`. Assets aren't recorded. |
+| A scheduled function or a cron run | A `job` or `cron`, with the time it waited in the queue after it was due. |
+| A request from another service over [OTLP](#other-services-over-opentelemetry) | An `http`, `server` or `consumer` request of that service. |
+
+Inside a request, the trace has a span for each function (nested calls included), each database statement (`SELECT todos`, with its SQL and the rows it returned), each outbound `fetch` (`POST api.stripe.com`), each method of your Nest classes, and each span you make yourself. A `fetch` from a function carries a W3C `traceparent` header, so a service that is traced too continues the same trace; a call that arrives with one joins the caller's.
+
+Errors are recorded with their class, message and stack. **Handled** errors are the ones thrown on purpose (a `ForgeError`, failed argument validation); **unhandled** ones are crashes, timeouts and answers of 500 or more. A 4xx answer from an HTTP endpoint (a Nest `HttpException`, say) isn't an error: it counts as a client error.
+
+## Where it lives
+
+- **On SQLite**, in its own file, `DATA_DIR/telemetry.db`, next to `app.db`. Telemetry never queues behind your app's writes (SQLite has one writer) or holds them up, and `archlast-forge backup` doesn't include it.
+- **On Postgres**, in `_otel_*` tables of the app's database, shared by every server. They are not in the data browser.
+- A thread of its own writes it and answers the dashboard's questions, so a slow chart over 30 days doesn't delay a request.
+- **Kept for:** requests, traces and logs, `LOG_RETENTION_DAYS` (7 by default); statistics, metrics, runtime samples and issues, 30 days (or `LOG_RETENTION_DAYS`, if that is longer). Statistics older than two days are folded from minutes into hours, so a 30-day chart stays quick.
+
+## Sampling
+
+Every request is **counted**: the totals, rates and percentiles (from a histogram per minute and operation, accurate to a few percent) include all of them, cached or not, sampled or not.
+
+What is sampled, on a busy server, is detail:
+
+- **Spans.** Up to `TELEMETRY_DETAIL_PER_SECOND` requests a second (200) are recorded with every span. Past that, a share that keeps to that rate is, and the rest run untraced. That is what keeps the cost low (see [what it costs](#what-it-costs)). Span statistics (the Spans and Hotspots pages) are then estimates: each recorded request stands for the ones like it that weren't.
+- **Kept traces.** Up to `TELEMETRY_TRACES_PER_SECOND` (25) ordinary traces a second are kept, and as many again for errors and slow requests (over four times their [Apdex threshold](#apdex-and-impact)). Past a budget, a trace is kept with the chance that keeps to it, and stored with a weight of one over that chance, so counts read from kept traces (per user, per error) stay unbiased. A request that came with a sampled `traceparent` is always recorded in detail.
+
+On a quiet app, which is most of them, everything is recorded and kept. An error on a busy server is always counted and grouped, with its stack; if it wasn't one of the requests recorded in detail, its trace is the request alone.
+
+## The pages
+
+The dashboard's **Observe** and **Performance** sections, and **Services**, **Alerts** and **Ingest keys** under Admin. They share one time range (1H to 30D, or a custom one), a **Live** switch that refreshes as data arrives, and a service picker when more than one service reports.
+
+- **Overview**: requests by status class, latency (average and p95), the operations furthest over their latency budget, the busiest ones, where the time goes, errors handled and unhandled, open issues, jobs, and the last release with its verdict. A regression gets a banner.
+- **Requests**: every operation with its latency (average and p95), failure rate, [Apdex and impact](#apdex-and-impact). An operation's page has its numbers, the shape of its latency (and a note when it has two speeds, like cache hits and misses), its weekly rhythm (traffic or p95 by day and hour, in your time zone) and its recent calls.
+- **A trace**: the request's details, how it compares with the other calls of its operation, a waterfall of its spans (or a flame graph) with the **critical path** marked (the spans that decided how long it took), the logs it wrote, and the time spent in each span's own code. A statement or call repeated five or more times back to back under one parent is called out as a **repeated span** (an N+1), with what batching it would save.
+- **Errors**: grouped into **issues**, one per bug: the error's class and the shape of its stack, with messages, ids, paths and dependency frames taken out (the fingerprint is [Traceway's](#credits)). Or switch to grouping by message. An issue can be resolved (it reopens if it happens again) or ignored. Its page has its occurrences over time, the latest one with a link to its trace, the stack with the **source lines** of your code around each frame, and the users it affected.
+- **Logs**: what your functions printed (and what other services sent), with the trace each line belongs to, searchable and filtered by level; or the live stream of this server, function calls included.
+- **Users**: the people who made requests, with their latency, failure rate and volume, and by customer (email domain). A user's page joins their account (sessions, ban) with everything they did, grouped into actions, and the errors they hit. **Accounts** is the list of your app's users, as before.
+- **Jobs**: runs, failures, duration and time in the queue for each scheduled function and cron; **Queue & crons** is the scheduler's queue, where jobs can be cancelled and retried.
+- **Spans**: every kind of step inside requests (database statements, outbound calls, functions, Nest methods, your spans) with its latency and failure rate, and a chart of p95 against volume where the busy and slow ones stand out.
+- **Hotspots**: where the time goes, by code: each module, Nest class and dependency by the time spent in its **own** code (with what it waited on subtracted), and its methods.
+- **Map**: clients, services, the scheduler, databases and external hosts, with the traffic between them; links with more than 1% errors are red.
+- **Runtime**: every process (the server, and each function-runtime process when they run apart from it: in development, or with `RUNTIME_WORKERS` above 1) with CPU, memory, heap and event-loop delay, and connections, live queries, the query cache's hit rate and requests in flight over time.
+- **Releases**: each release against the 30 minutes of traffic before and after it: error rate, latency, the operations that moved most, and what changed in the code (spans that are new, or run more often or longer, per request). The verdict is *Regression* (the error rate up by more than a point, or by half from above 2%; or the average or p95 latency up by more than 25%), *Improvement*, *Stable*, *Measuring* (fewer than 20 requests on a side so far) or *Too little traffic* (still fewer when the 30 minutes are over).
+- **SLOs**, **Metrics**, **Services**, **Alerts** and **Ingest keys**: below.
+
+### Apdex and impact
+
+Each operation gets an Apdex score: the share of requests that were fast enough, where *satisfied* is at most a threshold T and *tolerating* at most 2T (counted as half), and server errors count as frustrated. T depends on the kind: 250 ms for queries and live re-runs, 400 ms for mutations, 1 s for actions, 750 ms for HTTP endpoints, auth, pages and requests from other services, 2 s for jobs.
+
+**Impact** ranks operations by how much they need attention, from 0 to 1: the worst of the inverted Apdex and four floors, so that a problem shows however good the rest looks. The floors are for the share of *frustrated* requests (slower than 2T, or failed: over 10%, 20% or 33%), a p99 over 3, 6 or 8 seconds, more than a quarter of the answers being 4xx, and a large number of frustrated requests. Its sentence says which one it is ("P99 latency is 9.2s"). The score is [Traceway's](#credits).
+
+## Your own spans and metrics
+
+From any function, `trace` and `metrics` from `@archlast/forge-runtime`:
+
+```ts
+import { action, metrics, trace, v } from "@archlast/forge-runtime";
+
+const placed = metrics.counter("orders.placed");
+const basket = metrics.histogram("orders.basket_size", { unit: "items" });
+const depth = metrics.gauge("queue.depth");
+
+export const checkout = action({
+  args: { cartId: v.id("carts") },
+  handler: async (ctx, { cartId }) => {
+    const quote = await trace.span("pricing.quote", async () => {
+      trace.annotate({ cartId });
+      return price(cartId);
+    });
+    placed.add(1, { plan: quote.plan });
+    basket.record(quote.items.length);
+    depth.set(await pending(ctx));
+  },
+});
+```
+
+- **`trace.span(name, fn, attrs?)`** runs `fn` as a span; what it does (queries, fetches, other spans) nests under it. It shows on the Spans page, and its first word (before a `.`) is its code unit on Hotspots.
+- **`trace.annotate(attrs, { request: true }?)`** adds attributes to the running span, or to the request.
+- **Counters** add up per minute, **gauges** keep their last reading per minute, **histograms** keep the count, sum, minimum and maximum. Attributes split a metric into series (at most 200 per metric and minute). Names start with a letter and use letters, digits, `.`, `_`, `-` and `/`.
+- Outside the engine (`createTestBackend`, a browser) spans just run their function and metrics do nothing.
+
+## Releases
+
+A release is what the engine runs, named by the first of these that is set: `FORGE_RELEASE`, `RELEASE`, `OTEL_SERVICE_VERSION`, `SOURCE_VERSION`, `SOURCE_COMMIT`, `GIT_COMMIT`, `COMMIT_SHA`, `GITHUB_SHA`, `RENDER_GIT_COMMIT`, `VERCEL_GIT_COMMIT_SHA`, `RAILWAY_GIT_COMMIT_SHA`, `COOLIFY_GIT_COMMIT_SHA` (a full commit hash is shortened to 7 characters). Without any of them, it is a hash of the files in `forge/`, so every deploy of different code is a release of its own, and in development so is every edit. Another service's release is its `service.version`. Its time is when it was first seen.
+
+## Other services over OpenTelemetry
+
+Any service with an OpenTelemetry SDK can report to the engine: a NestJS or Express API, a worker, the server half of a frontend. Its requests, errors, spans, logs and metrics appear on every page next to the engine's own, under its own name.
+
+- **Endpoints:** `POST /otlp/v1/traces`, `/otlp/v1/logs` and `/otlp/v1/metrics`, OTLP over HTTP, as protobuf (the SDKs' default) or JSON, optionally compressed with gzip or deflate. The exporters' base URL is `https://your-app/otlp`.
+- **Keys:** create one on the **Ingest keys** page (shown once; stored as a hash) and send it as `Authorization: Bearer <key>`. A key can be tied to a service name, which then overrides what the exporter says. The admin key works too. In development, a service can send without one.
+
+```bash
+OTEL_EXPORTER_OTLP_ENDPOINT=https://your-app.example.com/otlp
+OTEL_EXPORTER_OTLP_HEADERS=Authorization=Bearer%20afk_...
+OTEL_SERVICE_NAME=billing-api
+OTEL_RESOURCE_ATTRIBUTES=service.version=$GIT_COMMIT
+```
+
+For a NestJS app, the Node SDK with its automatic instrumentations, started before the app:
+
+```ts
+// instrumentation.ts, imported first in main.ts
+import { NodeSDK } from "@opentelemetry/sdk-node";
+import { getNodeAutoInstrumentations } from "@opentelemetry/auto-instrumentations-node";
+import { OTLPTraceExporter } from "@opentelemetry/exporter-trace-otlp-proto";
+
+new NodeSDK({
+  serviceName: "billing-api",
+  traceExporter: new OTLPTraceExporter({ url: "https://your-app.example.com/otlp/v1/traces", headers: { Authorization: `Bearer ${process.env.FORGE_KEY}` } }),
+  instrumentations: [getNodeAutoInstrumentations()],
+}).start();
+```
+
+What the engine reads from OpenTelemetry's conventions: `SERVER` spans are requests and `CONSUMER` spans are jobs; `http.route` and `http.request.method` name them; `http.response.status_code` and the span status say how they ended; `exception` events are errors (with `exception.type`, `.message` and `.stacktrace`); `enduser.id` (or `user.id`, `user.email`) is the user; `db.system` client spans are database calls and `http.*` client spans are outbound calls; `code.namespace` is a span's code unit. Cumulative counters become per-minute increases.
+
+## Exporting to your own collector
+
+With `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) set, the engine also sends every request to that collector as OTLP/HTTP JSON, kept or not, with the spans recorded for it (all of them, below the [detail rate](#sampling)), and the headers in `OTEL_EXPORTER_OTLP_HEADERS`. `OTEL_SERVICE_NAME` names the engine there and here (`archlast-forge` by default). This works with `TELEMETRY=off` too.
+
+The variable is for a collector, not for this app: it has its requests already. If it points here anyway (say, from an `.env` shared with the services that report to it), the engine ignores what an engine of its own `OTEL_SERVICE_NAME` sends it, and says so in its log once.
+
+## NestJS inside the engine
+
+When a [Nest app](nest.html) is mounted in `forge/http.ts`, its controllers' routes name their requests (`GET /reports/:kind`), and every method of your controllers, services, resolvers and gateways is a span (`ReportsController.get`, `RenderService.render`), so Hotspots shows which classes burn the time. That needs the decorators from `@archlast/forge-runtime/nest` (`@Injectable`, `@Controller`, and `@Resolver` and `@WebSocketGateway` from their entries), which is how the engine tells your classes from those of libraries. A method that returns a promise is timed until it settles.
+
+## SLOs
+
+An objective over traffic you already record: **latency** (X% of requests under T ms) or **availability** (X% without server errors), for one operation or all of them, over a rolling 7, 14, 28, 30 or 90 days. Its page shows the SLI (the share that met it), the **error budget** left (how much of the window may still miss it: 100% is untouched, 0% or less is breached), and the **burn rate** over the last hour (1× spends the budget exactly by the window's end). *At risk* is less than a quarter of the budget left, or burning at 2× or more.
+
+## Alerts
+
+A rule watches one number over the last 1, 5, 10, 15, 30 or 60 minutes: the server error rate, the failure rate (4xx and 5xx), p95 or average latency, the request count (all requests, or one operation's, or one service's), or an SLO's burn rate. Rules are checked every minute. When one starts or stops holding, it records an event (the bell in the top bar counts the new ones) and, if it has a webhook, posts JSON to it:
+
+```json
+{ "text": "Checkout errors: error rate is 7.31% (> 5) over the last 5 min", "state": "firing", "value": 7.31, "time": "2026-10-31T09:12:00.000Z",
+  "rule": { "id": "rule_…", "name": "Checkout errors", "metric": "error_rate", "threshold": 5, "comparator": ">", "service": null, "operation": "orders:checkout" } }
+```
+
+`text` is what Slack and Discord incoming webhooks show as it is; `state` is `firing` or `resolved`. A window with no requests has no rate or latency, so a rule on one keeps its state until requests come (a request count is 0, and can fire). An SLO's burn-rate rules are deleted with it. **Send a test** on the rule's form checks the webhook.
+
+## Configuration
+
+| Variable | Default | |
+|---|---|---|
+| `TELEMETRY` | `on` | `off` records nothing and serves none of the pages above (the dashboard's other pages work as before). |
+| `TELEMETRY_DETAIL_PER_SECOND` | `200` | Requests a second recorded with every span; past it, a share that keeps to it. |
+| `TELEMETRY_TRACES_PER_SECOND` | `25` | Traces kept a second, for ordinary requests and again for errors and slow ones. |
+| `LOG_RETENTION_DAYS` | `7` | How long requests, traces and logs are kept. |
+| `OTEL_SERVICE_NAME` | `archlast-forge` | The engine's name on these pages and in exported traces. |
+| `FORGE_RELEASE` | | The [release](#releases) name, when your platform doesn't set one of the variables read for it. |
+| `OTEL_EXPORTER_OTLP_ENDPOINT`, `…_HEADERS` | | [Export](#exporting-to-your-own-collector) to a collector too. |
+
+The pages need the dashboard (`DASHBOARD=on` in production) and a viewer; changing SLOs, rules, keys and issue states needs an admin, and is in the [audit log](dashboard.html#audit-log).
+
+## What it costs
+
+In a load test against a server on one core, where every request called a query that read the database, the server answered about 4,300 requests a second with telemetry on and 4,100 with it off, averaged over three runs each: the machine's noise from run to run was larger than the difference. Calls answered from the cache: about 14,500 a second with it, 15,000 without.
+
+Recording a request costs the server about 2 µs when the cache answered it and 7 µs with three spans; tracing a function call measured the same as not tracing it. Writing happens on telemetry's own thread, in batches once a second. Past `TELEMETRY_DETAIL_PER_SECOND`, most requests run untraced, which is what keeps the cost flat as load grows.
+
+## Credits
+
+The error fingerprint and the impact score are ported from [Traceway](https://github.com/tracewayapp/traceway) (MIT License, © 2026 dusanstanojeviccs), an open-source OpenTelemetry-native observability platform; the notice ships with `@archlast/forge-runtime` in `THIRD_PARTY_NOTICES.md`.

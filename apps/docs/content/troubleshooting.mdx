@@ -187,14 +187,14 @@ The per-IP budget (`RATE_LIMIT_PER_MINUTE`, 1200 a minute) is used up. If real u
 Outside dev, any error that is not a `ForgeError` or an argument error reaches the caller with only a request id. The details are in the server log under that id:
 
 ```bash
-docker compose logs app | grep abc-12      # or open the dashboard's Logs page and filter by request id
+docker compose logs app | grep abc-12      # or paste the id into the dashboard's search (Ctrl+K) to open its trace
 ```
 
 ```json
 {"time":"2026-10-24T14:04:08.038Z","level":"error","msg":"secret detail: password=hunter2","requestId":"defae1e1-1","function":"zz:boom","stack":"Error: …"}
 ```
 
-The same id is in the `x-request-id` header of every response and on the dashboard's Logs page. Things that become `Server error`: a bug in your function, a result above `MAX_RESULT_BYTES`, a missing `S3_*` setting (`Storage is not configured: set S3_ENDPOINT and S3_BUCKET`), and database errors. To see messages directly while debugging, reproduce it in dev, where they are returned as they are.
+The same id is in the `x-request-id` header of every response and on the request's trace in the dashboard. Things that become `Server error`: a bug in your function, a result above `MAX_RESULT_BYTES`, a missing `S3_*` setting (`Storage is not configured: set S3_ENDPOINT and S3_BUCKET`), and database errors. To see messages directly while debugging, reproduce it in dev, where they are returned as they are.
 
 ### `415 Send application/json`
 
@@ -390,7 +390,7 @@ Redis carries write notifications between servers, the shared cache and rate-lim
 
 ### Everything is slow
 
-Check the dashboard's Metrics page for the slow function, then its query: a `filter` without `withIndex` scans the table. Add an index that starts with the field you compare by equality (`q.eq`), then order and range on the next fields. Look at the Cache page's hit rate; a query that reads `ctx.auth` is cached per user and so shared less. See [Reading data](queries.html).
+Check the dashboard's Requests page for the slow operation (sort by p95 or impact), then open one of its slow calls: the trace shows which statement or call took the time, and flags a statement repeated in a loop. Hotspots shows which code burns the most time overall. A `filter` without `withIndex` scans the table. Add an index that starts with the field you compare by equality (`q.eq`), then order and range on the next fields. Look at the Cache page's hit rate; a query that reads `ctx.auth` is cached per user and so shared less. See [Reading data](queries.html).
 
 ### High memory
 
@@ -423,10 +423,12 @@ Follow them with `archlast-forge logs app` (or `docker compose logs -f app`), an
 
 **The dashboard** (`/_dashboard`; on in dev and in the generated stack):
 
-- **Logs**: a live stream from this server and a history across all servers, filtered by function, level, time or request id. The history keeps `LOG_RETENTION_DAYS` days.
-- **Metrics**: calls, errors, p50 and p95 per function; subscriptions and connections over time.
+- **Search** (Ctrl+K): a request id or trace id opens that request's trace, with its error and logs.
+- **Requests** and **Errors**: latency, failures and issues per operation, each with its traces. See [Observability](observability.html).
+- **Logs**: a live stream from this server and a history across all servers, by level and text, each line linked to its trace. The history keeps `LOG_RETENTION_DAYS` days.
+- **Runtime**: CPU, memory, event-loop delay and connections per process.
 - **Cache**: hit rate and per-function counters.
-- **Scheduled**: crons with their next run, jobs with errors, retry and cancel.
+- **Jobs**: runs and failures per job; **Queue & crons** has crons with their next run, jobs with errors, retry and cancel.
 - **Settings**: the registered functions and tables, live subscriptions, and a button to reload the runtime. If your last deploy changed nothing visible, check here that the functions you expect are listed.
 
 **Health endpoints:** `GET /health` (liveness, `{"ok":true}`) and `GET /ready` (readiness; `503` with the load error while starting or shutting down). **`GET /metrics`** is Prometheus text, behind `Authorization: Bearer <METRICS_TOKEN or ADMIN_KEY>`.

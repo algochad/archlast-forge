@@ -319,6 +319,25 @@ interface MigrationResult { cursor: string; isDone: boolean; processed: number }
 
 A migration is an internal mutation that pages through one table; `archlast-forge migrate --run-migrations` runs it in batches, one transaction each, and returns a patch to apply or nothing. Guide: [Migrations and data](migrations.html).
 
+### Spans and metrics
+
+```ts
+import { metrics, trace } from "@archlast/forge-runtime";
+
+type TelemetryAttributes = Record<string, string | number | boolean>;
+const trace: {
+  span<T>(name: string, fn: () => T | Promise<T>, attrs?: TelemetryAttributes): Promise<T>; // fn's work nests under the span
+  annotate(attrs: TelemetryAttributes, opts?: { request?: boolean }): void; // on the running span, or on the request
+};
+const metrics: {
+  counter(name: string, opts?: { unit?: string }): { add(value?: number, attrs?: TelemetryAttributes): void }; // summed per minute
+  gauge(name: string, opts?: { unit?: string }): { set(value: number, attrs?: TelemetryAttributes): void }; // last value per minute
+  histogram(name: string, opts?: { unit?: string }): { record(value: number, attrs?: TelemetryAttributes): void }; // count, sum, min, max per minute
+};
+```
+
+Names start with a letter and use letters, digits, `.`, `_`, `-` and `/` (up to 128 characters); a value must be a finite number; a metric keeps its first type. Up to 200 attribute sets per metric and minute; past that, new ones count under no attributes. Outside the engine (`createTestBackend`, a browser) spans just run `fn` and metrics do nothing. Guide: [Observability](observability.html#your-own-spans-and-metrics).
+
 ### Testing
 
 ```ts
@@ -339,7 +358,7 @@ The calls on the object itself are anonymous; `withIdentity` creates a `users` d
 
 ### NestJS (`@archlast/forge-runtime/nest`)
 
-Everything `@nestjs/common` exports (`Controller`, `Get`, `Post`, `Body`, `Param`, `Query`, `Injectable`, `Module`, `HttpException` and the rest), and from `@nestjs/core` `APP_FILTER`, `APP_GUARD`, `APP_INTERCEPTOR`, `APP_PIPE`, `BaseExceptionFilter`, `ModuleRef` and `Reflector`. rxjs is exported as `rxjs`. Explained in [NestJS](nest.html). Its own exports:
+Everything `@nestjs/common` exports (`Controller`, `Get`, `Post`, `Body`, `Param`, `Query`, `Injectable`, `Module`, `HttpException` and the rest), and from `@nestjs/core` `APP_FILTER`, `APP_GUARD`, `APP_INTERCEPTOR`, `APP_PIPE`, `BaseExceptionFilter`, `ModuleRef` and `Reflector`. rxjs is exported as `rxjs`. `Injectable` and `Controller` (and `Resolver` and `WebSocketGateway` from the entries below) are Nest's, plus timing: each method of a class they decorate is a span in [telemetry](observability.html#nestjs-inside-the-engine). Explained in [NestJS](nest.html). Its own exports:
 
 ```ts
 function nest(http: { route(spec: HttpRoute): void }, options: NestOptions | Type): void;
@@ -809,6 +828,7 @@ Everything the engine answers on its one port.
 | `WS /rpc` | Live queries (above). |
 | `* /http/*` | Your routes from `forge/http.ts`. |
 | `* /api/auth/*` | Better Auth (sign-up, sign-in, sign-out, session, ...). |
+| `POST /otlp/v1/traces`, `/otlp/v1/logs`, `/otlp/v1/metrics` | OpenTelemetry from other services, with an ingest key. See [Observability](observability.html#other-services-over-opentelemetry). |
 | `POST /_cli` | The CLI's data commands. |
 | `/_admin/*` | The dashboard's API. |
 | `GET /_dashboard` | The dashboard (when enabled). |
@@ -843,8 +863,8 @@ Authentication is a session cookie (`afx_admin`, from `POST /_admin/login` with 
 | Role | Operations |
 |---|---|
 | any signed-in admin | `me` |
-| `viewer` (reads) | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env`, `logs`, `metrics`, `subscriptions`, `recentLogs`, `server`, `cache`; `GET /_admin/logs/stream` (server-sent events) |
-| `admin` (changes) | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `run`, `clearCache`, `reload` |
+| `viewer` (reads) | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env`, `subscriptions`, `recentLogs`, `server`, `cache`; `GET /_admin/logs/stream` (server-sent events); the telemetry reads `obs.*` and `obs.markSeen` (listed in [Dashboard](dashboard.html#the-admin-api)) |
+| `admin` (changes) | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `run`, `clearCache`, `reload`, `obs.setErrorState`, `obs.saveSlo`, `obs.deleteSlo`, `obs.saveAlertRule`, `obs.deleteAlertRule`, `obs.testAlert`, `obs.createKey`, `obs.revokeKey` |
 | `owner` | `runCustom` (also needs `ALLOW_CUSTOM_FUNCTIONS`) |
 
 Errors use the same `{ "error": { ... } }` body as `/rpc`. Guide: [Dashboard](dashboard.html).

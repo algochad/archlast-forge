@@ -3,6 +3,11 @@ import { validateFields, ValidationError } from "../values";
 import type { Db, DbTx } from "./db/types";
 export { migrateSystem as migrateScheduler } from "./system";
 import type { Executor } from "./executor";
+import { now, telemetryOf, traced, type CallTelemetry } from "./telemetry/context";
+import { spanId, traceId } from "./telemetry/ids";
+import { handledKind, statusOf } from "./telemetry/recorder";
+import type { TraceRecord } from "./telemetry/types";
+import { serializeError } from "./executor";
 
 const T = `"_scheduled_functions"`;
 const COLS = `("_id", "_creationTime", "name", "args", "scheduledTime", "state")`;
@@ -53,6 +58,8 @@ export class SchedulerLoop {
     private pollMs = 500,
     /** How long finished jobs are kept for the dashboard. */
     private retentionMs = 7 * 86_400_000,
+    /** Each job that ran, as a trace. */
+    private onTrace?: (trace: TraceRecord) => void,
   ) {
     const now = Date.now();
     this.crons = crons.map((job) => ({ job, next: nextRun(job.schedule, now) }));
@@ -114,8 +121,8 @@ export class SchedulerLoop {
     }
     const room = SchedulerLoop.MAX_RUNNING - this.inflight.size;
     if (room <= 0) return [];
-    const due = await this.db.query<{ _id: string; name: string; args: string }>(
-      `SELECT "_id", "name", "args" FROM ${T} WHERE "state" = 'pending' AND "scheduledTime" <= ? ORDER BY "scheduledTime" LIMIT ?`,
+    const due = await this.db.query<{ _id: string; name: string; args: string; scheduledTime: number }>(
+      `SELECT "_id", "name", "args", "scheduledTime" FROM ${T} WHERE "state" = 'pending' AND "scheduledTime" <= ? ORDER BY "scheduledTime" LIMIT ?`,
       [now, room + this.inflight.size],
     );
     return due
@@ -152,31 +159,84 @@ export class SchedulerLoop {
   private claim = (tx: DbTx, id: string, to: string) =>
     tx.query(`UPDATE ${T} SET "state" = ?, "completedTime" = ? WHERE "_id" = ? AND "state" = 'pending' RETURNING "_id"`, [to, Date.now(), id]);
 
-  private async runJob({ _id, name, args }: { _id: string; name: string; args: string }) {
+  private async runJob({ _id, name, args, scheduledTime }: { _id: string; name: string; args: string; scheduledTime: number }) {
     const fn = this.functions.get(name);
     const parsed = JSON.parse(args);
+    // A job is a trace of its own: the scheduler's run of it is the root, the function's work nests under it.
+    const parent = this.onTrace ? { traceId: traceId(), parentId: spanId() } : undefined;
+    const start = now();
+    let ran = false;
+    let failure: unknown;
+    let telemetry: CallTelemetry | undefined;
+    const inTrace = async <T>(work: () => Promise<T>) => {
+      try {
+        const out = await traced(parent, name, work);
+        telemetry = out.telemetry;
+        return out.value;
+      } catch (e) {
+        telemetry = telemetryOf(e);
+        throw e;
+      }
+    };
     try {
       if (!fn) throw new Error(`Unknown function "${name}"`);
       if (fn.kind === "mutation") {
-        await this.exec.logged(name, undefined, undefined, () =>
-          this.exec.mutate(async (store, tx, after) => {
-            if (!(await this.claim(tx, _id, "success")).length) return;
-            validateFields(fn.args, parsed, "args");
-            await this.exec.timed(this.exec.invokeMutation(fn, parsed, store, tx, after, null), name);
-          }),
+        await inTrace(() =>
+          this.exec.logged(name, undefined, undefined, () =>
+            this.exec.mutate(async (store, tx, after) => {
+              if (!(await this.claim(tx, _id, "success")).length) return;
+              ran = true;
+              validateFields(fn.args, parsed, "args");
+              await this.exec.timed(this.exec.invokeMutation(fn, parsed, store, tx, after, null), name);
+            }),
+          ),
         );
       } else {
         if (!(await this.exec.mutate((_s, tx) => this.claim(tx, _id, "running"))).length) return;
+        ran = true;
         try {
-          await this.exec.call(name, "action", parsed, null, `scheduled:${_id}`);
+          await inTrace(() => this.exec.call(name, "action", parsed, null, `scheduled:${_id}`));
           await this.finish(_id, "success", null, "running");
         } catch (e) {
+          failure = e;
           await this.finish(_id, "failed", (e as Error).message, "running");
         }
       }
     } catch (e) {
+      ran = true;
+      failure = e;
       // The failed mutation rolled back its claim, so the job is still pending.
       await this.finish(_id, "failed", (e as Error).message, "pending");
     }
+    if (ran && parent) this.emit(_id, name, Number(scheduledTime), start, parent, failure, telemetry);
+  }
+
+  private emit(id: string, name: string, scheduledTime: number, start: number, parent: { traceId: string; parentId: string }, failure: unknown, telemetry?: CallTelemetry) {
+    const err = failure === undefined ? undefined : serializeError(failure);
+    const cron = id.startsWith("_scheduled_functions:cron:") ? id.slice("_scheduled_functions:cron:".length).replace(/:\d+$/, "") : undefined;
+    const duration = now() - start;
+    const status = statusOf(err?.kind);
+    const attrs = { "job.id": id, "job.queue": cron ? `cron ${cron}` : "scheduler", ...(cron && { "job.cron": cron }) };
+    this.onTrace!({
+      request: {
+        traceId: parent.traceId,
+        spanId: parent.parentId,
+        time: start,
+        duration,
+        service: "",
+        kind: cron ? "cron" : "job",
+        operation: name,
+        method: cron ? "CRON" : "SCHEDULED",
+        status,
+        error: err && { type: err.type ?? "Error", message: err.message, stack: err.stack, handled: handledKind(err.kind) },
+        weight: 1,
+        queueWait: Math.max(0, start - scheduledTime),
+        attrs,
+      },
+      spans: [
+        { traceId: parent.traceId, spanId: parent.parentId, name, type: "job", kind: 5, start, duration, status: err ? 2 : 1, error: err?.message, attrs: { ...attrs, "forge.kind": cron ? "cron" : "job" } },
+        ...(telemetry?.spans ?? []),
+      ],
+    });
   }
 }

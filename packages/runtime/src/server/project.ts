@@ -1,4 +1,4 @@
-import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
 import type { AuthOptions, CronJob, FunctionKind, HttpRoute, RegisteredFunction } from "../functions";
@@ -127,4 +127,24 @@ export interface Manifest {
   tables: TablesSpec;
   crons: CronJob[];
   storage: boolean;
+  /** What is deployed: a version the environment names, or a hash of the forge/ code. Telemetry compares traffic either side of a change. */
+  release?: string;
+}
+
+/** Variables deploy platforms and CI set to the commit being deployed, in the order they are trusted. */
+const RELEASE_VARS = ["FORGE_RELEASE", "RELEASE", "OTEL_SERVICE_VERSION", "SOURCE_VERSION", "SOURCE_COMMIT", "GIT_COMMIT", "COMMIT_SHA", "GITHUB_SHA", "RENDER_GIT_COMMIT", "VERCEL_GIT_COMMIT_SHA", "RAILWAY_GIT_COMMIT_SHA", "COOLIFY_GIT_COMMIT_SHA"];
+
+/** The release a runtime runs: the deploy's commit when the environment says it (shortened like git does), else a hash of forge/'s files. */
+export function releaseOf(forgeDir: string, env: Record<string, string | undefined>): string {
+  for (const name of RELEASE_VARS) {
+    const v = env[name]?.trim();
+    if (v) return /^[0-9a-f]{40}$/i.test(v) ? v.slice(0, 7).toLowerCase() : v.slice(0, 64);
+  }
+  const hasher = new Bun.CryptoHasher("sha256");
+  const files = [...new Bun.Glob("**/*.{ts,tsx,js,mjs,json}").scanSync({ cwd: forgeDir })]
+    .map((f) => f.replaceAll("\\", "/"))
+    .filter((f) => !f.split("/").some((seg) => seg === "node_modules" || seg === "_generated" || seg.startsWith(".")))
+    .sort();
+  for (const f of files) hasher.update(f).update(readFileSync(join(forgeDir, f)));
+  return hasher.digest("hex").slice(0, 7);
 }

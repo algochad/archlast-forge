@@ -41,6 +41,9 @@ function stage(dir: string, dist: boolean) {
   mkdirSync(target, { recursive: true });
   for (const entry of dist ? ["dist"] : ["src", "template"]) if (existsSync(join(src, entry))) cpSync(join(src, entry), join(target, entry), { recursive: true });
   cpSync(join(ROOT, "LICENSE"), join(target, "LICENSE"));
+  // Code ported from other projects keeps their license notices with it.
+  const notices = existsSync(join(src, "THIRD_PARTY_NOTICES.md"));
+  if (notices) cpSync(join(src, "THIRD_PARTY_NOTICES.md"), join(target, "THIRD_PARTY_NOTICES.md"));
   if (existsSync(join(src, "README.md"))) cpSync(join(src, "README.md"), join(target, "README.md"));
   else
     writeFileSync(
@@ -64,7 +67,7 @@ function stage(dir: string, dist: boolean) {
     ...(exportsOut && { exports: exportsOut }),
     dependencies: pin(pkg.dependencies),
     peerDependencies: pin(pkg.peerDependencies),
-    files: dist ? ["dist"] : ["src", "template"].filter((f) => existsSync(join(src, f))),
+    files: [...(dist ? ["dist"] : ["src", "template"].filter((f) => existsSync(join(src, f)))), ...(notices ? ["THIRD_PARTY_NOTICES.md"] : [])],
     publishConfig: { access: "public" },
   };
   writeFileSync(join(target, "package.json"), JSON.stringify(out, null, 2) + "\n");
@@ -106,7 +109,7 @@ async function smoke(mode: "framework" | "backend") {
   await probe.stop(true);
   const server = Bun.spawn(["bunx", "archlast-forge", "start", "--no-docker"], {
     cwd: app,
-    env: { ...process.env, PORT: port, DATA_DIR: join(app, "data"), BETTER_AUTH_SECRET: "x".repeat(40), ALLOW_INSECURE_HTTP: "1", ARCHLAST_NO_DOCKER: "1", BETTER_AUTH_URL: `http://localhost:${port}` },
+    env: { ...process.env, PORT: port, DATA_DIR: join(app, "data"), BETTER_AUTH_SECRET: "x".repeat(40), ALLOW_INSECURE_HTTP: "1", ARCHLAST_NO_DOCKER: "1", BETTER_AUTH_URL: `http://localhost:${port}`, ADMIN_KEY: "k".repeat(32), DASHBOARD: "on" },
     stdout: "inherit",
     stderr: "inherit",
   });
@@ -133,7 +136,18 @@ async function smoke(mode: "framework" | "backend") {
       const hello = (await (await fetch(`${base}/http/hello`)).json()) as any;
       if (!String(hello.message).startsWith("Hello from")) throw new Error(`unexpected /http/hello: ${JSON.stringify(hello)}`);
     }
-    console.log(`✓ smoke test (${mode}): scaffolded, installed from tarballs, typechecked${mode === "framework" ? ", built" : ""} and served ${app}`);
+    // Telemetry from the packed engine (its store runs on a worker the build ships next to the server): the call above, read back through
+    // the dashboard's API, and the dashboard itself, bundled from the packed source.
+    const range = encodeURIComponent(JSON.stringify({ from: Date.now() - 600_000, to: Date.now() + 60_000 }));
+    let ops: { operation: string }[] = [];
+    for (let i = 0; i < 40 && !ops.some((o) => o.operation === "messages:list"); i++) {
+      await Bun.sleep(250);
+      ops = ((await (await fetch(`${base}/_admin/obs.requests?input=${range}`, { headers: { "x-admin-key": "k".repeat(32) } })).json()) as any).operations ?? [];
+    }
+    if (!ops.some((o) => o.operation === "messages:list")) throw new Error(`the call isn't in the packed engine's telemetry: ${JSON.stringify(ops)}`);
+    const dashboard = await fetch(`${base}/_dashboard`);
+    if (!dashboard.ok || !(await dashboard.text()).includes('<div id="root">')) throw new Error("the dashboard isn't served");
+    console.log(`✓ smoke test (${mode}): scaffolded, installed from tarballs, typechecked${mode === "framework" ? ", built" : ""}, served ${app}, and read its telemetry back`);
   } finally {
     server.kill();
     await server.exited;

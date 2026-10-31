@@ -1,6 +1,8 @@
 import type { FunctionKind, UserIdentity } from "../functions";
 import type { CallHeaders, CallResult, LogEntry, SerializedError } from "./executor";
 import type { Manifest } from "./project";
+import type { CallTelemetry, TraceParent } from "./telemetry/context";
+import type { MetricPoint, RuntimeSample, TraceRecord } from "./telemetry/types";
 
 export interface SerializedRequest {
   method: string;
@@ -13,6 +15,7 @@ export interface SerializedResponse {
   status: number;
   headers: [string, string][];
   body: string;
+  telemetry?: CallTelemetry;
 }
 
 /** An HTTP action's request and response. Bodies are bytes: IPC uses structured clone, so they cross as they are. */
@@ -29,6 +32,7 @@ export interface HttpResponseMessage {
   /** A stream for a response that is sent as it is written (`stream`): across IPC its bytes follow as `chunk` messages. */
   body: ArrayBuffer | ReadableStream<Uint8Array>;
   stream?: true;
+  telemetry?: CallTelemetry;
 }
 
 /** Server → function runtime, with no answer: the sockets of Nest gateways and GraphQL subscriptions under /http. */
@@ -46,10 +50,10 @@ export type SocketMessage = { t: "ws"; op: "send"; sid: string; data: string | A
 
 /** Server → function runtime. */
 export type HostMessage = { id: number } & (
-  | { t: "call"; name: string; kind: FunctionKind; args: unknown; headers: CallHeaders; allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null }
+  | { t: "call"; name: string; kind: FunctionKind; args: unknown; headers: CallHeaders; allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null; trace?: TraceParent }
   | { t: "identity"; headers: CallHeaders }
-  | { t: "auth"; req: SerializedRequest }
-  | { t: "http"; req: HttpRequestMessage; headers: CallHeaders; requestId?: string }
+  | { t: "auth"; req: SerializedRequest; trace?: TraceParent }
+  | { t: "http"; req: HttpRequestMessage; headers: CallHeaders; requestId?: string; trace?: TraceParent }
   | { t: "admin"; op: string; args?: Record<string, unknown>; actor: string }
 );
 
@@ -66,4 +70,10 @@ export type RuntimeMessage =
   | { t: "log"; entry: LogEntry }
   | { t: "chunk"; id: number; data?: ArrayBuffer; end?: true; error?: string }
   | { t: "relay"; topic: string; payload: unknown }
+  /** A trace the runtime started itself (a scheduled job), finished. */
+  | { t: "trace"; trace: TraceRecord }
+  /** Custom metrics recorded since the last of these, as they stand now. */
+  | { t: "metrics"; points: Omit<MetricPoint, "service" | "instance">[]; instance: string }
+  /** The runtime process's own CPU, memory and event loop, every 10 seconds (in a child process; inline it is the server's). */
+  | { t: "sample"; sample: Omit<RuntimeSample, "service"> }
   | SocketMessage;

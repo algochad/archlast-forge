@@ -542,7 +542,7 @@ crons.cron("empty the trash", "0 3 * * *", internal.maintenance.purgeTrash); // 
 export default crons;
 ```
 
-Cron expressions are evaluated in UTC. Check the registered jobs and their next run on the dashboard's Scheduled page. In testing, the prune job on a three-second interval removed old rows and left a `success` entry per run on the Scheduled page. A batch that returns exactly `BATCH` means there is more; a backlog clears over the next runs. The `filter` in `purgeTrash` scans the table in creation order, which is fine for a table that is mostly live; on a big one, add an index on `deleted` and range over it, because a scan stops at 100,000 documents.
+Cron expressions are evaluated in UTC. Check the registered jobs and their next run on the dashboard's Jobs page (Queue & crons). In testing, the prune job on a three-second interval removed old rows and left a `success` entry per run on the Scheduled page. A batch that returns exactly `BATCH` means there is more; a backlog clears over the next runs. The `filter` in `purgeTrash` scans the table in creation order, which is fine for a table that is mostly live; on a big one, add an index on `deleted` and range over it, because a scan stops at 100,000 documents.
 
 ## Send an email from a scheduled action
 
@@ -815,7 +815,7 @@ Against a local listener, `place` ended as `shipped` a moment later; pointing th
 
 - The `from` check in `advance` is a compare-and-set. A step that runs twice, or an order that was changed by hand, is left alone.
 - An action that dies mid-way (the server stops) is marked failed by the scheduler once its lease expires (the action timeout plus a minute); the order would be stuck in `placed`. A cron that looks for orders in an old non-final status finds those.
-- Retrying a failed order is a decision for the code, not the engine: the dashboard's Scheduled page can retry a failed job, but a payment retry must send the same idempotency key.
+- Retrying a failed order is a decision for the code, not the engine: the dashboard's Jobs page (Queue & crons) can retry a failed job, but a payment retry must send the same idempotency key.
 - To watch it, query `orders.mine` from the page: status changes arrive live.
 
 ## Admin-only functions
@@ -1020,7 +1020,7 @@ Run it with `bun test`. The three tests above passed in about a second. Notes: t
    `archlast-forge migrate --status` lists data migrations (`pending`, `running`, `done`, with counts) and `--run-migrations` runs the pending ones; they work in batches, one transaction each, and resume where a failure stopped.
 4. **Back up.** `archlast-forge backup before-deploy.db` takes a consistent copy of SQLite while the engine runs; for Postgres use `pg_dump`.
 5. **Deploy.** `archlast-forge up` rebuilds the image, replaces the container and waits until it reports healthy. A single container restarts, so expect a few seconds when requests fail and clients reconnect on their own. Behind a load balancer with several servers, replace them one at a time: on `SIGTERM` a server turns `/ready` unhealthy, drains for up to ten seconds and closes its sockets so clients move to another one.
-6. **Watch.** `archlast-forge logs app` for the startup line; `GET /ready`; the dashboard's Logs and Metrics pages for errors after the deploy.
+6. **Watch.** `archlast-forge logs app` for the startup line; `GET /ready`; the dashboard's Releases page, which compares errors and latency before and after the deploy, and its Errors page.
 7. **Roll back by redeploying the previous version**, which only works if the data still matches it. That is why step 2 matters, and why step 4 exists. If the new version already wrote data the old schema rejects, restore the backup (`archlast-forge import` for a JSON Lines export, or put the SQLite copy back).
 
 If startup fails the schema check, the log lists up to ten documents and the message tells you to fix them with a migration or set `SCHEMA_CHECK=off`. Use that switch to get the app back up while you write the migration, not as a habit. More in [Troubleshooting](troubleshooting.html).

@@ -1,6 +1,6 @@
 # Authentication
 
-[Better Auth](https://better-auth.com) runs inside the engine. Its data lives in your database as ordinary documents, in the `users`, `sessions`, `accounts` and `verifications` tables, so it is reactive, visible in the [dashboard](dashboard.html#users) and covered by your backups. Email and password sign-in works out of the box, with no setup.
+[Better Auth](https://better-auth.com) runs inside the engine. Its data lives in your database as ordinary documents, in the `users`, `sessions`, `accounts` and `verifications` tables, so it is reactive, visible in the [dashboard](dashboard.html#accounts-users) and covered by your backups. Email and password sign-in works out of the box, with no setup.
 
 ```bash
 curl -X POST localhost:3000/api/auth/sign-up/email \
@@ -251,7 +251,7 @@ Per-user data of your own (profile, settings, avatar) goes in your own table key
 
 ## Banned users
 
-In the dashboard's Users page, **Ban user** sets `banned: true` on the user, deletes all of their sessions, and from then on refuses new sessions: signing in fails with 401 `FAILED_TO_CREATE_SESSION`. **Unban** clears the flag. It is recorded in the audit log. The field is named `banned` like the admin plugin's, so the two agree. Your own `databaseHooks.session.create.before` still runs for everyone who isn't banned.
+In the dashboard's Users page (Accounts), **Ban user** sets `banned: true` on the user, deletes all of their sessions, and from then on refuses new sessions: signing in fails with 401 `FAILED_TO_CREATE_SESSION`. **Unban** clears the flag. It is recorded in the audit log. The field is named `banned` like the admin plugin's, so the two agree. Your own `databaseHooks.session.create.before` still runs for everyone who isn't banned.
 
 ## Email verification and password reset
 

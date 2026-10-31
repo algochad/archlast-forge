@@ -48,6 +48,14 @@ export interface Config {
   logRetentionDays: number;
   /** Refuse to start when stored documents don't match the schema. */
   schemaCheck: boolean;
+  /** Record requests, traces, logs and runtime health for the dashboard's observability pages. */
+  telemetry: boolean;
+  /** Whole traces kept per second, for ordinary requests and again for errors and slow ones; past it they are sampled. */
+  telemetryTracesPerSecond: number;
+  /** Requests per second recorded with every span; past it, a share that keeps to this rate (span statistics are then weighted estimates). */
+  telemetryDetailPerSecond: number;
+  /** The engine's name in telemetry (OpenTelemetry's service.name). */
+  serviceName: string;
 }
 
 export class ConfigError extends Error {
@@ -131,7 +139,13 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     logFormat,
     logRetentionDays: int("LOG_RETENTION_DAYS", 7, 1),
     schemaCheck: bool(env.SCHEMA_CHECK, !dev),
+    telemetry: bool(env.TELEMETRY, true),
+    telemetryTracesPerSecond: int("TELEMETRY_TRACES_PER_SECOND", 25, 1),
+    telemetryDetailPerSecond: int("TELEMETRY_DETAIL_PER_SECOND", 200, 1),
+    serviceName: env.OTEL_SERVICE_NAME || "archlast-forge",
   };
 }
 
 export const sqlitePath = (c: Config) => join(c.dataDir, "app.db");
+/** The telemetry store's own file on SQLite, so telemetry writes never queue behind the app's (or hold them up). */
+export const telemetryPath = (c: Config) => join(c.dataDir, "telemetry.db");

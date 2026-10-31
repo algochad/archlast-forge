@@ -4,6 +4,17 @@ import type { Cache } from "./cache";
 import type { CallHeaders } from "./executor";
 import { log } from "./logger";
 import type { FunctionRuntime } from "./runtime";
+import type { CallTelemetry, TraceParent } from "./telemetry/context";
+import { failureOf } from "./telemetry/outcome";
+import type { Telemetry } from "./telemetry/recorder";
+
+/** Filled in by a query run for whoever records it: how the cache answered, and what the run recorded when it executed. */
+export interface QueryObserver {
+  trace?: TraceParent;
+  cache?: "hit" | "miss" | "shared";
+  telemetry?: CallTelemetry;
+  user?: { id: string; name?: string };
+}
 
 export type QueryUpdate = { value: unknown } | { error: string; data?: unknown; requestId?: string };
 
@@ -99,11 +110,12 @@ export class QueryRunner {
    * Runs a query through the cache. `raw`, when given, is the call's arguments exactly as they arrived (the JSON text of an HTTP call):
    * the cache is keyed by it, so a hit needs no parsing at all; the same text always means the same arguments.
    */
-  async run(name: string, args: Args, headers: CallHeaders, requestId?: string, raw?: string): Promise<Result> {
+  async run(name: string, args: Args, headers: CallHeaders, requestId?: string, raw?: string, obs?: QueryObserver): Promise<Result> {
     const cache = this.cache;
     if (!cache) {
       const start = this.seq;
-      const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId });
+      const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId, trace: obs?.trace });
+      if (obs) obs.telemetry = r.telemetry;
       const topics = r.topics ?? [];
       return { value: r.value, topics, clean: this.untouched(topics, start) };
     }
@@ -111,6 +123,7 @@ export class QueryRunner {
     const stats = this.statsOf(name);
     // Queries that read ctx.auth are cached per caller. Who the caller is gets resolved fresh each time, so a revoked session stops matching.
     const identity = this.perUser.has(name) ? await this.runtime.identity(headers) : undefined;
+    if (obs && identity) obs.user = { id: identity.userId, ...((identity.email ?? identity.name) && { name: String(identity.email ?? identity.name) }) };
     // Per user, not per session: someone signed in on two devices has two sessions and the same results. (The session id stays out of the key.)
     const who = identity === undefined ? name : JSON.stringify([name, identity && { userId: identity.userId, email: identity.email, name: identity.name }]);
     const key = raw !== undefined ? `${who}\u0000${raw}` : `${who}\u0001${JSON.stringify(argsOf(args) ?? {})}`;
@@ -119,6 +132,7 @@ export class QueryRunner {
     if (hit) {
       stats.hits++;
       stats.hitMs += performance.now() - began;
+      if (obs) obs.cache = "hit";
       return hit;
     }
     const running = this.inflight.get(key);
@@ -127,10 +141,12 @@ export class QueryRunner {
       const shared = await running.catch(() => undefined);
       if (shared?.clean) {
         stats.coalesced++;
+        if (obs) obs.cache = "shared";
         return shared;
       }
     }
-    const mine = this.execute(name, args, headers, requestId, identity, key, cache);
+    if (obs) obs.cache = "miss";
+    const mine = this.execute(name, args, headers, requestId, identity, key, cache, obs);
     this.inflight.set(key, mine);
     try {
       return await mine;
@@ -141,9 +157,10 @@ export class QueryRunner {
     }
   }
 
-  private async execute(name: string, args: Args, headers: CallHeaders, requestId: string | undefined, identity: UserIdentity | null | undefined, key: string, cache: Cache) {
+  private async execute(name: string, args: Args, headers: CallHeaders, requestId: string | undefined, identity: UserIdentity | null | undefined, key: string, cache: Cache, obs?: QueryObserver) {
     const start = this.seq;
-    const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId, ...(identity !== undefined && { identity }) });
+    const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId, trace: obs?.trace, ...(identity !== undefined && { identity }) });
+    if (obs) obs.telemetry = r.telemetry;
     const topics = r.topics ?? [];
     // First sighting of a per-caller query: its result belongs to this caller, and the next call will be keyed by caller.
     const unkeyed = Boolean(r.usedAuth) && identity === undefined;
@@ -223,6 +240,8 @@ export class SubscriptionManager {
     private bus: Bus,
     private queries: QueryRunner,
     private describeError: (e: unknown, requestId?: string) => QueryUpdate = (e) => ({ error: (e as Error).message }),
+    /** Records each run: the first as the subscription's request, the rest as live re-runs after writes. */
+    private telemetry?: Telemetry,
   ) {}
 
   /** Yields the result, then a new result after each relevant write. Unchanged results aren't re-sent. */
@@ -250,6 +269,7 @@ export class SubscriptionManager {
     this.subs.add(sub);
     signal?.addEventListener("abort", () => wake?.());
     let last: string | undefined;
+    let first = true;
     try {
       while (!signal?.aborted) {
         if (!dirty) {
@@ -259,8 +279,15 @@ export class SubscriptionManager {
         }
         dirty = false;
         let update: QueryUpdate;
+        const tel = this.telemetry;
+        const root = tel?.begin(first ? "query" : "live", name, first ? "WS" : "LIVE", undefined, requestId);
+        const obs: QueryObserver | undefined = root && { get trace() { return tel!.parent(root); } };
+        let recorded = !root;
+        first = false;
         try {
-          const r = await this.queries.run(name, args, headers, requestId);
+          const r = await this.queries.run(name, args, headers, requestId, undefined, obs);
+          if (root) this.telemetry!.end(root, { status: 200, telemetry: obs!.telemetry, cache: obs!.cache, user: obs!.user });
+          recorded = true;
           // The read set can change with the data, so re-record topics on every run.
           for (const [t, off] of unsubs) if (!r.topics.includes(t)) (off(), unsubs.delete(t));
           const added = r.topics.filter((t) => !unsubs.has(t));
@@ -275,6 +302,7 @@ export class SubscriptionManager {
           if (r.clean === false) dirty = true;
           update = { value: r.value };
         } catch (e) {
+          if (!recorded) this.telemetry!.end(root!, failureOf(e));
           update = this.describeError(e, requestId);
         }
         const hash = String(Bun.hash(JSON.stringify(update)));

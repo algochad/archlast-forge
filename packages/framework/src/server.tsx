@@ -190,6 +190,19 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       return result;
     }
     const context = result;
+    // The engine names this request by the route it matched, so /posts/1 and /posts/2 are one route in its telemetry. A page nothing
+    // matched is one name too, or every URL a crawler tries would be a route of its own.
+    env.route?.(
+      context.statusCode === 404
+        ? "(unmatched)"
+        : context.matches
+            .map((m) => m.route.path ?? "")
+            .filter(Boolean)
+            .join("/")
+            .replace(/\/{2,}/g, "/")
+            .replace(/^\/?/, "/")
+            .replace(/(.)\/$/, "$1"),
+    );
     // The page renders with the same errors the browser will be handed: what a visitor may see, and nothing else.
     const errors = serializeErrors(context.errors, { dev, requestId: env.requestId, log });
     context.errors = reviveErrors(errors);

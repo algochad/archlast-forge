@@ -16,8 +16,9 @@ import type { CallHeaders } from "./executor";
 import type { Manifest } from "./project";
 import { toPublicError, type PublicCode } from "./public-error";
 import type { FunctionRuntime } from "./runtime";
-import type { QueryRunner, SubscriptionManager } from "./subscriptions";
-import type { Tracer } from "./tracing";
+import type { QueryObserver, QueryRunner, SubscriptionManager } from "./subscriptions";
+import { failureOf } from "./telemetry/outcome";
+import type { Telemetry } from "./telemetry/recorder";
 
 /** What a call needs from its HTTP request or WebSocket handshake. */
 export type Context = { headers: CallHeaders; requestId: string; traceparent?: string };
@@ -90,7 +91,7 @@ export interface SocketData extends Context {
 export interface RpcOptions {
   dev: boolean;
   maxSubscriptionsPerConnection: number;
-  tracer?: Tracer;
+  telemetry?: Telemetry;
 }
 
 /** The calls and subscriptions of every public function in the manifest. Internal functions aren't reachable. */
@@ -103,8 +104,13 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
   return {
     /** Args are validated in the function runtime. */
     async call(name: string, req: Request, url: URL, ctx: Context): Promise<Response> {
+      const kind = kinds.get(name);
+      // Each call to a function that exists is a request (calls to unknown names are not, so they can't flood the operation list).
+      const tel = opts.telemetry;
+      const root = kind && tel?.begin(kind, name, req.method, ctx.traceparent, ctx.requestId);
+      // The trace parent only when the query runs: a cache hit makes no ids.
+      const obs: QueryObserver = root ? { get trace() { return tel!.parent(root); } } : {};
       try {
-        const kind = kinds.get(name);
         if (!kind) throw new HttpError("NOT_FOUND", `No function "${name}"`);
         if (req.method === "GET" ? kind !== "query" : req.method !== "POST") throw new HttpError("METHOD_NOT_ALLOWED", `Call ${name} with ${kind === "query" ? "GET or POST" : "POST"}`);
         requireJson(req);
@@ -112,15 +118,18 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
         // A query's cache entry is keyed by the raw arguments and keeps its encoded response body: a hit parses, serializes and encodes nothing.
         const run = async (): Promise<string | Uint8Array<ArrayBuffer>> => {
           if (kind !== "query") {
-            const r = await runtime.call(name, kind, parseJson(raw), ctx.headers, { requestId: ctx.requestId });
+            const r = await runtime.call(name, kind, parseJson(raw), ctx.headers, { requestId: ctx.requestId, trace: obs.trace });
+            obs.telemetry = r.telemetry;
             return `{"result":${r.json ?? JSON.stringify(r.value) ?? "null"}}`;
           }
-          const r = await queries.run(name, () => parseJson(raw), ctx.headers, ctx.requestId, raw);
+          const r = await queries.run(name, () => parseJson(raw), ctx.headers, ctx.requestId, raw, obs);
           return (r.body ??= encoder.encode(`{"result":${(r.json ??= JSON.stringify(r.value) ?? "null")}}`));
         };
-        const body = await (opts.tracer ? opts.tracer.span(name, ctx.traceparent, { "forge.function": name, "forge.request_id": ctx.requestId }, run) : run());
+        const body = await run();
+        if (root) opts.telemetry!.end(root, { status: 200, telemetry: obs.telemetry, cache: obs.cache, user: obs.user });
         return new Response(body, { headers: { "content-type": JSON_TYPE, "x-request-id": ctx.requestId } });
       } catch (e) {
+        if (root) opts.telemetry!.end(root, { ...failureOf(e), cache: obs.cache, user: obs.user });
         if (e instanceof HttpError) return errorResponse({ message: e.message, code: e.code, requestId: ctx.requestId });
         return errorResponse(toPublicError(e, ctx.requestId, opts.dev, { function: name }));
       }

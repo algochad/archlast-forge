@@ -108,7 +108,7 @@ try {
 | Rate limited | `Error("Too many requests")` with `code` `TOO_MANY_REQUESTS` and `retryAfter` (seconds, from `Retry-After`) | | 429 |
 | Server unreachable | The browser's `TypeError` (`Failed to fetch`) | none | none |
 
-Every error from the server carries `requestId`; log it or show it to users, since it's the key to the server's log (and the dashboard's [Logs](dashboard.html#logs)). Failures of live queries arrive as `{ error, data?, requestId }` updates; the hooks turn them into the same `ForgeError`/`Error` shapes. See [errors](errors.html) for how functions raise them.
+Every error from the server carries `requestId`; log it or show it to users, since it's the key to the server's log and to the call's trace on the dashboard (paste it into its [search](dashboard.html#keyboard-search-and-theme)). Failures of live queries arrive as `{ error, data?, requestId }` updates; the hooks turn them into the same `ForgeError`/`Error` shapes. See [errors](errors.html) for how functions raise them.
 
 ### Using the client outside the browser
 

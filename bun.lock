@@ -198,6 +198,7 @@
         "@types/bun": "1.4.3",
         "@types/cors": "^2.8.19",
         "expect-type": "^1.4.0",
+        "protobufjs": "7.6.6",
         "socket.io-client": "^4.8.4",
       },
     },

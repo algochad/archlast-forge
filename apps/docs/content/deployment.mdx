@@ -184,7 +184,8 @@ The ingress must pass WebSocket upgrades on `/rpc` and keep idle connections ope
 | `METRICS_TOKEN` | a separate bearer token | otherwise `/metrics` uses `ADMIN_KEY` |
 | `RATE_LIMIT_PER_MINUTE`, `MAX_REQUEST_BYTES`, `FUNCTION_TIMEOUT_MS` | tuned to your traffic | see [Limits](limits.html) |
 | `LOG_FORMAT` | `json` (the default in production) | one JSON object per line |
-| `OTEL_EXPORTER_OTLP_ENDPOINT` | your collector | traces |
+| `FORGE_RELEASE` | the commit, if your platform doesn't set `GIT_COMMIT`, `GITHUB_SHA` or the like | names the [release](observability.html#releases) |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | your collector, if you have one | traces, also exported |
 
 Bad combinations fail at startup with a message, rather than running half configured. Each of these is real output of `archlast-forge start --no-docker` with the variable set:
 
@@ -303,8 +304,8 @@ Without `DATABASE_URL` the engine stores data in a SQLite file (`bun:sqlite`, WA
 ### Logs
 
 - **Server logs** go to stdout and stderr, one JSON object per line in production (`{"time":…,"level":"warn","msg":…,"requestId":…}`), readable text in development (`LOG_FORMAT=pretty|json` overrides). Collect them with your platform (`docker logs`, `archlast-forge logs`, journald).
-- **Request ids:** every response carries `x-request-id`. A request may bring its own (letters, digits, `.`, `_` and `-`, at most 64 characters); otherwise one is generated. A `Server error (request <id>)` shown to a visitor is that id: search the logs for it to find the real error and stack.
-- **Function logs** (`console.log` in your functions, and one entry per call) are batched into the database and shown in the dashboard's log view, with live streaming. They are kept for `LOG_RETENTION_DAYS` (7).
+- **Request ids:** every response carries `x-request-id`. A request may bring its own (letters, digits, `.`, `_` and `-`, at most 64 characters); otherwise one is generated. A `Server error (request <id>)` shown to a visitor is that id: paste it into the dashboard's search (Ctrl+K) to open the request's trace, with the error, its stack and the logs it wrote, or search the server logs for it.
+- **Function logs** (`console.log` in your functions) go to the telemetry store with the trace they belong to, and to the dashboard's live stream. They are kept for `LOG_RETENTION_DAYS` (7).
 - Page renders log failures as `render failed (request <id>): …`, and loader errors with the stack and the route.
 
 ### Prometheus
@@ -345,9 +346,18 @@ histogram_quantile(0.95, sum by (le) (rate(forge_function_duration_ms_bucket[5m]
 forge_process_resident_bytes > 1.5e9
 ```
 
-### Tracing
+### Telemetry
 
-With `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for the full URL) set, each function call through `/rpc` is a span, exported over OTLP/HTTP as JSON to `<endpoint>/v1/traces` every two seconds (batches of up to 1,000). `OTEL_SERVICE_NAME` names the service (default `archlast-forge`). Spans are `SERVER` kind, named after the function, with the attributes `forge.function` and `forge.request_id`; an incoming W3C `traceparent` header is continued, so a call joins its caller's trace. There is no OpenTelemetry SDK in the process, and no child spans inside the function runtime, no spans for page renders or `/http` routes (those are logged and counted in metrics). A failing exporter logs `trace export failed` as a warning and drops the batch.
+The engine records every request it handles, with traces, errors, logs, runtime samples and releases, and shows them on the dashboard: see [Observability](observability.html). What that means for a deployment:
+
+- **Where:** on SQLite, `DATA_DIR/telemetry.db`, next to `app.db` on the same volume; `archlast-forge backup` copies `app.db` only, so a restore starts telemetry afresh. On Postgres, `_otel_*` tables in the app's database, shared by every server; `pg_dump --exclude-table='_otel_*'` leaves them out of a backup.
+- **Size:** bounded by `LOG_RETENTION_DAYS` for requests, traces and logs, and 30 days for statistics; how many traces are kept is capped by `TELEMETRY_TRACES_PER_SECOND`, whatever the traffic.
+- **Other services** send OpenTelemetry to `https://your-app/otlp` with an ingest key from the dashboard. Each request counts against `RATE_LIMIT_PER_MINUTE` for its client IP (a counter of its own) and must fit in `MAX_REQUEST_BYTES`; behind a proxy, pass `/otlp/*` through like any other path.
+- `TELEMETRY=off` turns all of it off.
+
+### Exporting traces
+
+With `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for the full URL) set, the engine also sends every request to that collector, over OTLP/HTTP as JSON to `<endpoint>/v1/traces` every two seconds (batches of up to 1,000 spans), with `OTEL_EXPORTER_OTLP_HEADERS`. `OTEL_SERVICE_NAME` names the service (default `archlast-forge`). The request is a `SERVER` span named after its operation (`todos:list`, `GET /users/:id`), with `forge.request_id`, `forge.kind` and `http.response.status_code`; under it are the spans recorded for it (functions, database statements, outbound calls, Nest methods, your own), all of them below `TELEMETRY_DETAIL_PER_SECOND`. An incoming W3C `traceparent` header is continued, so a call joins its caller's trace. There is no OpenTelemetry SDK in the process. A failing exporter logs `trace export failed` as a warning and drops that batch.
 
 ```yaml
     environment:
@@ -357,7 +367,7 @@ With `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for 
 
 ### The dashboard
 
-At `/_dashboard` (when `DASHBOARD=on`): live logs, the call log, scheduled jobs and crons, connection and subscription charts (sampled every 30 s into the database), cache statistics, and your data. Sign in with the admin key or a dashboard account. See [Dashboard](dashboard.html).
+At `/_dashboard` (when `DASHBOARD=on`): requests, traces, errors, logs, users, jobs and the rest of [observability](observability.html), and your data, functions, files and cache. Sign in with the admin key or a dashboard account. See [Dashboard](dashboard.html).
 
 ## Backups and monitoring
 
