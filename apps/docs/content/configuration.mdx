@@ -62,6 +62,7 @@ If you serve a frontend from another origin, list it in `TRUSTED_ORIGINS` and cr
 | Variable | Default | Accepted | What it does |
 |---|---|---|---|
 | `DATABASE_URL` | unset: SQLite at `DATA_DIR/app.db` | `postgres://…` or `postgresql://…` | Use Postgres instead of the SQLite file. Any other scheme fails at startup. Required when `REPLICAS` is above 1. |
+| `DATABASE_POOL_SIZE` | twice the CPU cores | integer ≥ 1 | Postgres connections each function-runtime process may open. A server opens `RUNTIME_WORKERS` of these pools plus 3 connections for telemetry, so the total is `REPLICAS × (RUNTIME_WORKERS × DATABASE_POOL_SIZE + 3)`; keep it under Postgres's `max_connections` (100 by default). See [Tuning](deployment.html#tuning). |
 | `SCHEMA_CHECK` | on outside dev, off in dev | boolean | At startup, validate every stored document against the schema and refuse to start if some do not match. `SCHEMA_CHECK=off` skips the scan, which can take a while on big tables. [Migrations](migrations.html) shows how to fix mismatches. |
 | `REPLICAS` | `1` | integer ≥ 1 | The number of servers you run. It does not start any; it declares your intent so that a multi-server setup missing its shared pieces fails at startup. Above 1 it requires `REDIS_URL` and a Postgres `DATABASE_URL`. |
 

@@ -1,5 +1,5 @@
 import type { RedisClient } from "bun";
-import { connectRedis } from "./bus";
+import { answered, connectRedis } from "./bus";
 
 /** What the cache holds right now. `null` where the backend can't say cheaply (Redis manages its own memory). */
 export interface CacheStats {
@@ -126,18 +126,23 @@ export class RedisCache implements Cache {
     return new RedisCache(await connectRedis(url));
   }
 
+  /** A miss when Redis doesn't answer in time: the query runs instead of the call failing or waiting. */
   async get<T>(key: string) {
-    const raw = await this.redis.get(P + key);
+    const raw = await answered(this.redis.get(P + key)).catch(() => null);
     return raw === null ? undefined : (JSON.parse(raw) as T);
   }
 
+  /** Not kept when Redis doesn't answer in time; the caller already has its result. */
   async set(key: string, value: unknown, { ttlMs, topics = [] }: { ttlMs: number; topics?: string[] }) {
-    await this.redis.send("SET", [P + key, JSON.stringify(value), "PX", String(ttlMs)]);
-    for (const t of topics) {
-      await this.redis.send("SADD", [`${P}tag:${t}`, key]);
-      await this.redis.send("PEXPIRE", [`${P}tag:${t}`, String(ttlMs)]);
-    }
-    return true;
+    const store = async () => {
+      await this.redis.send("SET", [P + key, JSON.stringify(value), "PX", String(ttlMs)]);
+      for (const t of topics) {
+        await this.redis.send("SADD", [`${P}tag:${t}`, key]);
+        await this.redis.send("PEXPIRE", [`${P}tag:${t}`, String(ttlMs)]);
+      }
+      return true;
+    };
+    return answered(store()).catch(() => false);
   }
 
   async del(key: string) {

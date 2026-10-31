@@ -156,7 +156,9 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
       live.set(id, stop);
       void (async () => {
         try {
-          for await (const data of subs.subscribe(name, m.args ?? {}, ws.data.headers, stop.signal, requestId)) send(ws, { type: "data", id, data });
+          // A value comes with its JSON, built once for every subscriber of the query, so a fan-out to many sockets serializes it once.
+          for await (const { json, ...data } of subs.subscribe(name, m.args ?? {}, ws.data.headers, stop.signal, requestId))
+            json === undefined ? send(ws, { type: "data", id, data }) : void ws.send(`{"type":"data","id":${JSON.stringify(id)},"data":{"value":${json}}}`);
         } catch (e) {
           if (!stop.signal.aborted) send(ws, { type: "error", id, error: toPublicError(e, requestId, opts.dev, { function: name }) });
         } finally {

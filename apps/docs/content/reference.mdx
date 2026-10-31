@@ -842,11 +842,12 @@ Everything the engine answers on its one port.
 |---|---|---|
 | `forge_function_calls_total` | counter | `function` |
 | `forge_function_errors_total` | counter | `function` |
-| `forge_function_duration_ms` | histogram (buckets 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 ms) | `function` |
+| `forge_function_duration_ms` | histogram (buckets 0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000 ms) | `function` |
 | `forge_cache_hits_total`, `forge_cache_misses_total`, `forge_cache_coalesced_total`, `forge_cache_skipped_total` | counters, when the cache is on | `function` |
 | `forge_cache_invalidated_entries_total`, `forge_cache_evictions_total` | counters, when the cache is on | |
 | `forge_cache_entries`, `forge_cache_bytes` | gauges | |
 | `forge_subscriptions`, `forge_websocket_connections`, `forge_runtime_workers`, `forge_process_resident_bytes` | gauges | |
+| `forge_event_loop_delay_ms` | gauge: how late the process ran timers in its last 10-second sample (`stat` is `p99` or `max`), each process: the server, and function-runtime processes when they run apart | `process`, `role`, `stat` |
 
 ### /_cli
 

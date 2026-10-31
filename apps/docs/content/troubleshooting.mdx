@@ -384,7 +384,7 @@ SQLite in WAL mode appends to `app.db-wal` and folds it back into `app.db` at ch
 
 ### Redis problems after startup
 
-Redis carries write notifications between servers, the shared cache and rate-limit counters. If it goes away, cross-server updates stop. Check `redis-cli ping` from the engine's network. To drop cached query results, clear the cache on the dashboard's Cache page.
+Redis carries write notifications between servers, the shared cache and rate-limit counters. If it goes away, cross-server updates stop; each server counts rate limits on its own (and logs `rate limits are counted per server until Redis answers again` once a minute) and the shared cache reads as empty, so calls keep being answered, a little slower. A Redis command on a request's path waits at most a second. Check `redis-cli ping` from the engine's network. To drop cached query results, clear the cache on the dashboard's Cache page.
 
 ## Performance and memory
 

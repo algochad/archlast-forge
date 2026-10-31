@@ -20,6 +20,8 @@ export interface Config {
   hostname: string;
   dataDir: string;
   databaseUrl?: string;
+  /** Postgres connections each function-runtime process may open (DATABASE_POOL_SIZE); twice the CPU cores by default. */
+  databasePoolSize: number;
   redisUrl?: string;
   s3?: { endpoint: string; publicEndpoint?: string; bucket: string; accessKeyId?: string; secretAccessKey?: string; region?: string };
   adminKey?: string;
@@ -102,6 +104,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     hostname: env.HOST ?? "0.0.0.0",
     dataDir: env.DATA_DIR ?? "./data",
     databaseUrl,
+    databasePoolSize: int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1),
     redisUrl: env.REDIS_URL || undefined,
     s3: env.S3_ENDPOINT
       ? {

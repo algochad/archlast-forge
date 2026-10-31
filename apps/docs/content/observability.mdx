@@ -98,7 +98,7 @@ A release is what the engine runs, named by the first of these that is set: `FOR
 
 Any service with an OpenTelemetry SDK can report to the engine: a NestJS or Express API, a worker, the server half of a frontend. Its requests, errors, spans, logs and metrics appear on every page next to the engine's own, under its own name.
 
-- **Endpoints:** `POST /otlp/v1/traces`, `/otlp/v1/logs` and `/otlp/v1/metrics`, OTLP over HTTP, as protobuf (the SDKs' default) or JSON, optionally compressed with gzip or deflate. The exporters' base URL is `https://your-app/otlp`.
+- **Endpoints:** `POST /otlp/v1/traces`, `/otlp/v1/logs` and `/otlp/v1/metrics`, OTLP over HTTP, as protobuf (the SDKs' default) or JSON, optionally compressed with gzip or deflate (decompressed on the telemetry thread, up to 32 MiB a request). The exporters' base URL is `https://your-app/otlp`.
 - **Keys:** create one on the **Ingest keys** page (shown once; stored as a hash) and send it as `Authorization: Bearer <key>`. A key can be tied to a service name, which then overrides what the exporter says. The admin key works too. In development, a service can send without one.
 
 ```bash

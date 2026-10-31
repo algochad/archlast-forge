@@ -9,8 +9,11 @@ import { buildQueries } from "./queries";
 import { buildSettings } from "./settings";
 import { migrateTelemetry, TelemetryStore } from "./store";
 import type { TelemetryBatch } from "./types";
+import { gunzipSync, inflateSync } from "node:zlib";
 
 declare const self: Worker;
+/** The most an OTLP body may decompress to. */
+const MAX_DECOMPRESSED = 32 * 1024 * 1024;
 
 export type WorkerInit = { t: "init"; databaseUrl?: string; path?: string; retentionDays: number; alerts: boolean };
 export type WorkerRequest = WorkerInit | { t: "write"; batch: TelemetryBatch } | { t: "call"; id: number; op: string; args: Record<string, unknown>; actor?: string };
@@ -36,8 +39,11 @@ const ACTOR_OPS = new Set(["saveSlo", "saveAlertRule", "createKey"]);
 
 async function call(op: string, args: Record<string, unknown>, actor = "system"): Promise<unknown> {
   if (op === "ingest") {
-    const { signal, body, contentType, service } = args as { signal: Signal; body: ArrayBuffer; contentType: string; service?: string | null };
-    const payload = parse(signal, new Uint8Array(body), contentType);
+    const { signal, body, contentType, service, encoding } = args as { signal: Signal; body: ArrayBuffer; contentType: string; service?: string | null; encoding?: "gzip" | "deflate" };
+    // Here, not on the server's thread; and capped, because a few KB of gzip can expand to gigabytes.
+    const opts = { maxOutputLength: MAX_DECOMPRESSED };
+    const bytes = encoding === "gzip" ? gunzipSync(body, opts) : encoding === "deflate" ? inflateSync(body, opts) : new Uint8Array(body);
+    const payload = parse(signal, bytes, contentType);
     const batch = signal === "traces" ? ingest.traces(payload, service) : signal === "logs" ? ingest.logs(payload, service) : ingest.metrics(payload, service);
     await write(batch);
     return { traces: batch.traces?.length ?? 0, spans: (batch.traces ?? []).reduce((n, t) => n + t.spans.length, 0) + (batch.spans?.length ?? 0), logs: batch.logs?.length ?? 0, metrics: batch.metrics?.length ?? 0 };

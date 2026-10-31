@@ -140,7 +140,7 @@ export async function startCore(opts: {
   const config = loadConfig(opts.env, opts.dev);
 
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : createSqliteDb(sqlitePath(config));
+  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl, config.databasePoolSize) : createSqliteDb(sqlitePath(config));
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);

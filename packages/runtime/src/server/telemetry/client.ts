@@ -55,9 +55,9 @@ export class TelemetryClient {
     });
   }
 
-  /** Decodes and stores an OTLP export; the body moves to the worker rather than being copied. */
-  ingest(signal: "traces" | "logs" | "metrics", body: ArrayBuffer, contentType: string, service?: string | null) {
-    return this.call<{ traces: number; spans: number; logs: number; metrics: number }>("ingest", { signal, body, contentType, service }, undefined, [body]);
+  /** Decodes and stores an OTLP export; the body moves to the worker rather than being copied, and is decompressed there. */
+  ingest(signal: "traces" | "logs" | "metrics", body: ArrayBuffer, contentType: string, service?: string | null, encoding?: "gzip" | "deflate") {
+    return this.call<{ traces: number; spans: number; logs: number; metrics: number }>("ingest", { signal, body, contentType, service, encoding }, undefined, [body]);
   }
 
   /** Waits (a little) for what was sent to be written, then ends the worker. Calling it again does nothing. */

@@ -1,6 +1,9 @@
 import type { CacheSnapshot } from "./subscriptions";
 
-const BUCKETS = [5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
+const BUCKETS = [0.5, 1, 2.5, 5, 10, 25, 50, 100, 250, 500, 1000, 2500, 5000, 10000];
+
+/** The last event-loop delay a process reported (it samples every 10 s), by its telemetry instance id. */
+export type LoopDelays = Map<string, { role: string; p99: number; max: number }>;
 
 /** Per-function call counters and latency histograms, rendered in Prometheus text format. */
 export class Metrics {
@@ -17,7 +20,7 @@ export class Metrics {
     });
   }
 
-  render(gauges: { subscriptions: number; connections: number; workers: number }, cache?: CacheSnapshot) {
+  render(gauges: { subscriptions: number; connections: number; workers: number }, cache?: CacheSnapshot, loops?: LoopDelays) {
     const label = (name: string) => `function="${name.replace(/["\\\n]/g, "_")}"`;
     const lines = [
       "# HELP forge_function_calls_total Function calls.",
@@ -43,6 +46,13 @@ export class Metrics {
       `forge_runtime_workers ${gauges.workers}`,
       "# TYPE forge_process_resident_bytes gauge",
       `forge_process_resident_bytes ${process.memoryUsage().rss}`,
+      ...(loops?.size
+        ? [
+            "# HELP forge_event_loop_delay_ms How late each process ran its timers over its last 10 s sample: time any request there waited on top of its own work.",
+            "# TYPE forge_event_loop_delay_ms gauge",
+            ...[...loops].flatMap(([p, l]) => [`forge_event_loop_delay_ms{process="${p}",role="${l.role}",stat="p99"} ${l.p99}`, `forge_event_loop_delay_ms{process="${p}",role="${l.role}",stat="max"} ${l.max}`]),
+          ]
+        : []),
     ];
     return lines.join("\n") + "\n";
   }

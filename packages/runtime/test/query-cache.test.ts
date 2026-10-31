@@ -7,7 +7,7 @@ import { QueryRunner } from "../src/server/subscriptions";
 type Call = { name: string; args: unknown; identity?: UserIdentity | null };
 
 /** A function runtime that answers from memory and records how often it really ran. */
-function setup(opts: { delayMs?: number; peruser?: string[]; topics?: string[]; cache?: MemoryCache } = {}) {
+function setup(opts: { delayMs?: number; peruser?: string[]; topics?: string[]; cache?: MemoryCache | null } = {}) {
   const calls: Call[] = [];
   let version = 0;
   const runtime = {
@@ -22,7 +22,7 @@ function setup(opts: { delayMs?: number; peruser?: string[]; topics?: string[]; 
       return { value: { name, seen, who: who && "userId" in who ? who.userId : null }, topics: opts.topics ?? ["todos"], usedAuth: peruser };
     },
   } as unknown as FunctionRuntime;
-  const runner = new QueryRunner(runtime, opts.cache ?? new MemoryCache(), 60_000);
+  const runner = new QueryRunner(runtime, opts.cache === null ? undefined : (opts.cache ?? new MemoryCache()), 60_000, true);
   return { runner, calls, bump: () => version++ };
 }
 
@@ -58,6 +58,21 @@ describe("QueryRunner cache", () => {
     expect(new Set(results.map((r) => JSON.stringify(r.value))).size).toBe(1);
     const s = runner.snapshot();
     expect([s.misses, s.coalesced]).toEqual([1, 4]);
+  });
+
+  test("without a cache, identical calls still share one execution and its JSON, but never a run a write overlapped", async () => {
+    const { runner, calls, bump } = setup({ delayMs: 40, cache: null });
+    const results = await Promise.all(Array.from({ length: 5 }, () => runner.run("todos:list", {}, {})));
+    expect(calls.length).toBe(1);
+    expect(new Set(results.map((r) => r.json)).size).toBe(1);
+    const first = runner.run("todos:list", {}, {});
+    await Bun.sleep(10);
+    bump();
+    runner.invalidated("todos");
+    const second = await runner.run("todos:list", {}, {});
+    await first;
+    expect(calls.length).toBe(3);
+    expect((second.value as { seen: number }).seen).toBe(1);
   });
 
   test("a call woken by a write never shares a run the write overlapped", async () => {

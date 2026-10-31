@@ -2,7 +2,7 @@ import { ArchlastForgeClient, queryKey } from "@archlast/forge-client";
 import { getFunctionName, isForgeError } from "@archlast/forge-runtime";
 import type { AppEnv, AppHost } from "@archlast/forge-runtime/server";
 import { dehydrate, QueryClient } from "@tanstack/react-query";
-import { existsSync, statSync } from "node:fs";
+import { stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { preinit, preloadModule } from "react-dom";
 import { renderToReadableStream } from "react-dom/server";
@@ -56,21 +56,16 @@ function inside(base: string, urlPath: string): string | undefined {
   return full.startsWith(base + sep) ? full : undefined;
 }
 
-const isFile = (path: string) => {
-  try {
-    return statSync(path).isFile();
-  } catch {
-    return false;
-  }
-};
+// Async: a request for a file must not stop the event loop on the disk.
+const isFile = (path: string) => stat(path).then((s) => s.isFile(), () => false);
 
-function fileResponse(path: string, req: Request, o: { cache: string; precompressed: boolean }): Response {
+async function fileResponse(path: string, req: Request, o: { cache: string; precompressed: boolean }): Promise<Response> {
   const headers: Record<string, string> = { "cache-control": o.cache, "x-content-type-options": "nosniff" };
   const accepted = req.headers.get("accept-encoding") ?? "";
   if (o.precompressed) {
     headers.vary = "accept-encoding";
     for (const [encoding, ext] of [["br", "br"], ["gzip", "gz"]] as const) {
-      if (new RegExp(`\\b${encoding}\\b`).test(accepted) && isFile(`${path}.${ext}`)) {
+      if (new RegExp(`\\b${encoding}\\b`).test(accepted) && (await isFile(`${path}.${ext}`))) {
         const file = Bun.file(`${path}.${ext}`);
         return new Response(file, { headers: { ...headers, "content-encoding": encoding, "content-type": Bun.file(path).type } });
       }
@@ -150,7 +145,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     await load(build);
   }
 
-  function asset(path: string, req: Request, env: AppEnv): Response | undefined {
+  async function asset(path: string, req: Request, env: AppEnv): Promise<Response | undefined> {
     if (dev && path === "/_app/__dev.js") return new Response(DEV_SCRIPT, { headers: { "content-type": "text/javascript; charset=utf-8", "cache-control": "no-store" } });
     if (dev && path === "/_app/__events") {
       env.keepAlive();
@@ -158,7 +153,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     }
     if (!loaded) return undefined;
     const file = inside(loaded.clientDir, path.slice("/_app".length));
-    if (!file || !isFile(file)) return new Response("Not found", { status: 404 });
+    if (!file || !(await isFile(file))) return new Response("Not found", { status: 404 });
     return fileResponse(file, req, { cache: dev ? "no-cache" : "public, max-age=31536000, immutable", precompressed: !dev });
   }
 
@@ -245,7 +240,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       // Files in public/ have extensions; pages don't need a lookup on disk.
       if (/\.[^/]+$/.test(path)) {
         const file = inside(publicDir, path);
-        if (file && isFile(file)) return fileResponse(file, req, { cache: dev ? "no-cache" : "public, max-age=3600", precompressed: false });
+        if (file && (await isFile(file))) return fileResponse(file, req, { cache: dev ? "no-cache" : "public, max-age=3600", precompressed: false });
       }
       return page(req, env, url);
     },

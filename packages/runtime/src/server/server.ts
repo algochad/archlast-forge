@@ -1,6 +1,6 @@
 import type { HTMLBundle, Server, ServerWebSocket } from "bun";
 import { timingSafeEqual } from "node:crypto";
-import { existsSync, mkdirSync, readFileSync, statSync } from "node:fs";
+import { mkdirSync } from "node:fs";
 import { hostname } from "node:os";
 import { extname, relative, resolve } from "node:path";
 import { buildAdminApi } from "./admin-api";
@@ -13,7 +13,7 @@ import { ForgeError } from "../errors";
 import type { FunctionKind, UserIdentity } from "../functions";
 import type { CallHeaders, LogEntry } from "./executor";
 import { log, setLogFormat } from "./logger";
-import { Metrics } from "./metrics";
+import { Metrics, type LoopDelays } from "./metrics";
 import type { Manifest } from "./project";
 import { toPublicError } from "./public-error";
 import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./ratelimit";
@@ -116,12 +116,14 @@ const SOURCE_FILES = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mt
  * Lines around `line` of a source file named in a stack trace, for the dashboard's error view. Only the project's own code: files under
  * the directory that holds forge/ (so a full-stack app's app/ too), not dependencies, and only source files.
  */
-function sourceContext(forgeDir: string, file: string, line: number, around = 6) {
+async function sourceContext(forgeDir: string, file: string, line: number, around = 6) {
   const root = resolve(forgeDir, "..");
   const path = resolve(root, file.replace(/^file:\/\//, ""));
   const rel = relative(root, path);
-  if (rel.startsWith("..") || rel.split(/[\\/]/).includes("node_modules") || !SOURCE_FILES.has(extname(path)) || !existsSync(path) || statSync(path).size > 2_000_000) return null;
-  const lines = readFileSync(path, "utf8").split("\n");
+  if (rel.startsWith("..") || rel.split(/[\\/]/).includes("node_modules") || !SOURCE_FILES.has(extname(path))) return null;
+  const f = Bun.file(path);
+  if (!(await f.exists()) || f.size > 2_000_000) return null;
+  const lines = (await f.text()).split("\n");
   const start = Math.max(1, line - around);
   return { file: rel.replaceAll("\\", "/"), line, start, lines: lines.slice(start - 1, Math.min(lines.length, line + around)) };
 }
@@ -201,7 +203,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   };
   runtime.onTrace = (t) => telemetry?.record(t);
   runtime.onMetrics = (points, instance) => telemetry?.metricPoints(points, instance);
-  runtime.onSample = (s) => telemetry?.sample(s);
+  /** Each process's last event-loop delay, for /metrics: this server's own, and its function-runtime processes' when they run apart. */
+  const loops: LoopDelays = new Map();
+  runtime.onSample = (s) => {
+    loops.set(s.instance, { role: s.role, p99: s.loopP99, max: s.loopMax });
+    telemetry?.sample(s);
+  };
   runtime.onPublish = (topics) => void bus.publish(topics).catch((e) => log("error", "publish failed", { error: String(e) }));
   /** Sockets of Nest gateways, by id: the function runtime sends to and closes them through runtime.onWs. */
   const gatewaySockets = new Map<string, ServerWebSocket<ServerSocket>>();
@@ -210,7 +217,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (msg.op === "send") ws?.send(msg.data);
     else ws?.close(msg.code ?? 1000, msg.reason);
   };
-  const queries = new QueryRunner(runtime, cache, ttl);
+  const queries = new QueryRunner(runtime, cache, ttl, Boolean(cache) || !config.redisUrl);
   const subs = new SubscriptionManager(
     bus,
     queries,
@@ -424,13 +431,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (service === undefined)
           return withId(Response.json({ message: "Send an ingest key: Authorization: Bearer <key> (create one on the dashboard's Ingest keys page)" }, { status: 401 }));
         try {
-          let body = await req.arrayBuffer();
           const encoding = req.headers.get("content-encoding")?.toLowerCase();
-          if (encoding === "gzip") body = Bun.gunzipSync(new Uint8Array(body)).buffer as ArrayBuffer;
-          else if (encoding === "deflate") body = Bun.inflateSync(new Uint8Array(body)).buffer as ArrayBuffer;
-          else if (encoding && encoding !== "identity") return withId(Response.json({ message: `Unsupported content-encoding ${encoding}` }, { status: 415 }));
+          if (encoding && !["gzip", "deflate", "identity"].includes(encoding)) return withId(Response.json({ message: `Unsupported content-encoding ${encoding}` }, { status: 415 }));
           const type = req.headers.get("content-type") ?? "application/x-protobuf";
-          await store.ingest(signal as "traces" | "logs" | "metrics", body, type, service);
+          // The telemetry thread decompresses it: inflating here would hold up every request.
+          await store.ingest(signal as "traces" | "logs" | "metrics", await req.arrayBuffer(), type, service, encoding === "identity" ? undefined : (encoding as "gzip" | "deflate" | undefined));
           return withId(type.includes("json") ? Response.json({}) : new Response(new Uint8Array(0), { headers: { "content-type": "application/x-protobuf" } }));
         } catch (e) {
           return withId(Response.json({ message: `Could not read the OTLP payload: ${(e as Error).message}` }, { status: 400 }));
@@ -440,7 +445,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const auth = req.headers.get("authorization")?.replace(/^Bearer /, "");
         const token = env.METRICS_TOKEN || config.adminKey;
         if (token ? !(auth && sameSecret(auth, token)) : !dev) return new Response("Not found", { status: 404 });
-        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: config.runtimeWorkers }, queries.snapshot()), { headers: { "content-type": "text/plain; version=0.0.4" } });
+        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: config.runtimeWorkers }, queries.snapshot(), loops), { headers: { "content-type": "text/plain; version=0.0.4" } });
       }
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
 
@@ -683,7 +688,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     const c = queries.snapshot();
     const cache = c.enabled ? { cacheHits: c.hits - sampled.hits, cacheMisses: c.misses - sampled.misses, cacheShared: c.coalesced - sampled.coalesced, cacheEntries: c.entries } : {};
     sampled = { hits: c.hits, misses: c.misses, coalesced: c.coalesced };
-    telemetry?.sample({ time: Date.now(), instance: serverId, role: "server", ...health(), connections, subscriptions: subs.size, inflight: telemetry.inflight, ...cache });
+    const h = health();
+    loops.set(serverId, { role: "server", p99: h.loopP99, max: h.loopMax });
+    telemetry?.sample({ time: Date.now(), instance: serverId, role: "server", ...h, connections, subscriptions: subs.size, inflight: telemetry.inflight, ...cache });
   }, 10_000);
   sampler.unref?.();
 

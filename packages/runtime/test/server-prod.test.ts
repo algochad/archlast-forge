@@ -63,7 +63,31 @@ test("health, readiness and metrics", async () => {
   const metrics = await (await get("/metrics", undefined, { authorization: "Bearer root-key" })).text();
   expect(metrics).toContain('forge_function_calls_total{function="todos:crash"}');
   expect(metrics).toContain("forge_subscriptions");
+  // A latency histogram per function, fine enough below a millisecond for its p50 and p90: buckets ascend, and the counts are cumulative.
+  const buckets = [...metrics.matchAll(/forge_function_duration_ms_bucket\{function="todos:forgeFail",le="([^"]+)"\} (\d+)/g)].map((m) => [m[1]!, Number(m[2])] as const);
+  expect(buckets.map(([le]) => le).slice(0, 4)).toEqual(["0.5", "1", "2.5", "5"]);
+  expect(buckets.at(-1)).toEqual(["+Inf", Number(/forge_function_duration_ms_count\{function="todos:forgeFail"\} (\d+)/.exec(metrics)![1])]);
+  expect(buckets.every(([, n], i) => i === 0 || n >= buckets[i - 1]![1])).toBe(true);
 });
+
+test("in process mode, a worker that dies is replaced, and calls keep being answered", async () => {
+  const s = await startServer({ forgeDir: fixture, env: prodEnv({ DATA_DIR: tempDir(), RUNTIME_WORKERS: "2" }) });
+  const call = () => fetch(`${s.url}/rpc/todos:events?args=%7B%7D`).then((r) => r.status);
+  const workers = (s.runtime as unknown as { workers: { proc?: { pid: number } }[] }).workers;
+  try {
+    const victim = workers[0]!.proc!.pid;
+    process.kill(victim, "SIGKILL");
+    // The other worker answers meanwhile; a call that was on the dead one fails rather than hanging.
+    const during = await Promise.all(Array.from({ length: 10 }, call));
+    expect(during.filter((code) => code === 200).length).toBeGreaterThan(0);
+    for (let i = 0; i < 100 && (workers[0]?.proc?.pid ?? victim) === victim; i++) await Bun.sleep(100);
+    expect(workers[0]!.proc!.pid).not.toBe(victim);
+    for (let i = 0; i < 50 && (await call()) !== 200; i++) await Bun.sleep(100);
+    expect(await Promise.all(Array.from({ length: 10 }, call))).toEqual(Array(10).fill(200));
+  } finally {
+    await s.stop({ graceful: false });
+  }
+}, 30_000);
 
 test("in process mode, a call that blocks the runtime is killed, and the runtime comes back", async () => {
   const s = await startServer({ forgeDir: fixture, env: prodEnv({ DATA_DIR: tempDir(), RUNTIME_MODE: "process" }) });

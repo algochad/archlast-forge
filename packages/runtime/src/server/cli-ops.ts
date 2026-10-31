@@ -22,7 +22,7 @@ export interface ProjectDb {
 export async function openProject(forgeDir: string, env: Record<string, string | undefined> = process.env, dev = true): Promise<ProjectDb> {
   const config = loadConfig({ ...env, ALLOW_INSECURE_HTTP: "1", BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET || "cli" }, dev);
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : createSqliteDb(sqlitePath(config));
+  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl, config.databasePoolSize) : createSqliteDb(sqlitePath(config));
   await migrateSystem(db);
   for (const { name, value } of await db.query<{ name: string; value: string }>(`SELECT "name", "value" FROM "_env"`)) env[name] ??= value;
   const project = await loadProject(forgeDir);
@@ -173,7 +173,7 @@ export { addAdmin, listAdmins, removeAdmin, type AdminRole };
 export async function openDb(env: Record<string, string | undefined> = process.env) {
   const config = loadConfig({ ...env, ALLOW_INSECURE_HTTP: "1", BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET || "cli" }, true);
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl) : createSqliteDb(sqlitePath(config));
+  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl, config.databasePoolSize) : createSqliteDb(sqlitePath(config));
   await migrateSystem(db);
   return db;
 }

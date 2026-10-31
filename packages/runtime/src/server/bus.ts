@@ -63,6 +63,13 @@ export async function connectRedis(url: string) {
   return client;
 }
 
+/** A Redis command on a request's path: rejects after `ms` rather than waiting out a reconnect, which Bun's client queues commands for. */
+export function answered<T>(command: Promise<T>, ms = 1000): Promise<T> {
+  let timer: Timer;
+  const late = new Promise<never>((_, reject) => (timer = setTimeout(() => reject(new Error(`Redis didn't answer within ${ms} ms`)), ms)));
+  return Promise.race([command, late]).finally(() => clearTimeout(timer));
+}
+
 const TOPIC = "archlast-forge:t:";
 const ALL = "archlast-forge:all";
 

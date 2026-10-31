@@ -675,6 +675,9 @@ describe("the engine", () => {
       body: Bun.gzipSync(encode("ExportTraceServiceRequest", nestExport(Date.now(), { fail: true }))),
     });
     expect(res.status).toBe(200);
+    // 50 KB of gzip that would inflate to 64 MB is refused, past the cap, instead of being expanded.
+    const bomb = await fetch(`${srv.url}/otlp/v1/traces`, { method: "POST", headers: { "content-type": "application/x-protobuf", "content-encoding": "gzip" }, body: Bun.gzipSync(new Uint8Array(64 * 1024 * 1024)) });
+    expect(bomb.status).toBe(400);
     const map = await eventually(
       () => get("obs.map", range()),
       (m) => m.services.some((s: any) => s.service === "billing-api"),

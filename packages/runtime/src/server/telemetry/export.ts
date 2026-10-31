@@ -73,7 +73,13 @@ export class OtlpExporter {
     }
   }
 
-  async flush() {
+  /** One flush at a time: a collector that is slow to answer must not get a pile of them. */
+  flush(): Promise<void> {
+    return (this.flushing ??= this.send().finally(() => (this.flushing = undefined)));
+  }
+  private flushing?: Promise<void>;
+
+  private async send() {
     if (this.dropped) {
       log("warn", "trace export queue full; spans dropped", { dropped: this.dropped });
       this.dropped = 0;
@@ -90,7 +96,7 @@ export class OtlpExporter {
       };
       // x-forge-service: an engine that receives its own service's spans (this exporter pointed back at it) knows it has them already.
       const headers = { "content-type": "application/json", "x-forge-service": this.service, ...this.headers };
-      const ok = await fetch(this.endpoint, { method: "POST", headers, body: JSON.stringify(body) }).then(
+      const ok = await fetch(this.endpoint, { method: "POST", headers, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) }).then(
         (r) => r.ok || (log("warn", "trace export failed", { status: r.status }), false),
         (e) => (log("warn", "trace export failed", { error: String(e) }), false),
       );

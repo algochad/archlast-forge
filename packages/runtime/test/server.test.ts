@@ -152,3 +152,29 @@ test("CLI commands reach the database through the running server", async () => {
   expect(rows).not.toContain("a-long-password!");
   expect(rows).not.toContain('"hi"');
 });
+
+test("with the cache off, a write re-runs a query once for all its subscribers, and they all get the result", async () => {
+  const s = await startServer({ forgeDir: fixture, dev: true, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), CACHE_TTL_MS: "0" } });
+  const call = async (name: string, args: object) =>
+    ((await (await fetch(`${s.url}/rpc/${name}`, { method: "POST", body: JSON.stringify(args), headers: { "content-type": "application/json" } })).json()) as any).result;
+  const runs = async () => Number(/forge_function_calls_total\{function="todos:listByList"\} (\d+)/.exec(await (await fetch(`${s.url}/metrics`)).text())?.[1] ?? 0);
+  try {
+    const listId = await call("todos:createList", { name: "shared" });
+    const clients = Array.from({ length: 30 }, () => {
+      const ws = new WebSocket(`${s.url.replace("http", "ws")}/rpc`);
+      const updates: any[] = [];
+      ws.addEventListener("open", () => ws.send(JSON.stringify({ type: "subscribe", id: "1", name: "todos:listByList", args: { listId } })));
+      ws.addEventListener("message", (e) => (JSON.parse(String(e.data)) as any).type === "data" && updates.push(JSON.parse(String(e.data)).data));
+      return { ws, updates };
+    });
+    await until(() => clients.every((c) => c.updates.length === 1));
+    const before = await runs();
+    await call("todos:add", { listId, title: "for everyone" });
+    await until(() => clients.every((c) => c.updates.length === 2));
+    expect(clients.every((c) => c.updates[1].value[0].title === "for everyone")).toBe(true);
+    expect((await runs()) - before).toBeLessThanOrEqual(2);
+    for (const c of clients) c.ws.close();
+  } finally {
+    await s.stop();
+  }
+});

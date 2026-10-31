@@ -291,6 +291,22 @@ REPLICAS=3                    # declares intent; startup fails if the above are 
 - **`RUNTIME_WORKERS`** runs several function-runtime processes per server, for CPU-heavy functions, and switches `RUNTIME_MODE` to `process`. It is separate from scaling out.
 - The scale-out path is covered by startup checks and the Redis/PostgreSQL integration tests (`bun run test:all`), not by an end-to-end run of several app containers; see [Backends](backend.html#scaling-the-stack) for what was and wasn't run.
 
+### Tuning
+
+The defaults are the values to start from; this is what each was measured to do, with [`benchmarks/load`](https://github.com/algochad/archlast-forge/tree/master/benchmarks/load) on a 4-vCPU shared VM (the server pinned to its cores, the load generator on its own, 64 connections; expect a quarter up or down between runs). Requests a second are one server's.
+
+| Setting | Use | Why |
+|---|---|---|
+| `RUNTIME_MODE`, `RUNTIME_WORKERS` | inline (the default) on SQLite; workers for CPU-heavy functions | Inline on one core: 4,300–4,800 uncached reads a second. One to three worker processes on three cores: 2,100–4,000. In process mode every call crosses to a worker and back (about twice the CPU per call), and the server's one thread does the HTTP and that hop for all of them. Writes stay at 2,500–4,600 a second either way: SQLite has one writer. A worker adds a core for running functions, which pays off when they compute rather than read. |
+| `CACHE_TTL_MS` | on (60 s, the default) | Cached reads: 10,700–13,900 a second on one core, against 4,300–4,800 uncached. With 1,000 clients watching one query, a write runs it once and delivers it with p99 under 400 ms. |
+| `REPLICAS` with Postgres and Redis | more servers for more throughput | Uncached reads: 590–690 a second with one server, 800–960 with two (Postgres and Redis sharing one core). One server's CPU is the limit, about 0.9 ms of it per call that reads Postgres; Postgres was at 75% of its core with two servers, so a third would need it on more cores. |
+| `DATABASE_POOL_SIZE` | the default, twice the cores | With Postgres on one core, 8, 16 and 32 connections a process gave the same throughput (1,080–1,240 a second); 64 dropped it to 233 as Postgres contended. Keep `REPLICAS × (RUNTIME_WORKERS × DATABASE_POOL_SIZE + 3)` under Postgres's `max_connections`: 3 servers with 4 workers on 4-core hosts need 105, over the default 100. |
+| `MAX_PENDING_CALLS` | the default, 1,000 | At about 0.25 ms of CPU a call, 1,000 calls waiting is a quarter of a second of queue before new calls get 503 with `Retry-After: 1`. Lower it to refuse sooner under overload; raise it only for slow calls that mostly wait. |
+| `FUNCTION_TIMEOUT_MS` | the default, 10 s | The calls measured took milliseconds. The timeout bounds a function that hangs; lower it if a stuck call should fail sooner. |
+| `RATE_LIMIT_PER_MINUTE` | per client IP, for your clients (the default is 1,200) | A limit for abuse, not for capacity: the benchmark ran with it off, since all its load came from one address. With Redis it is shared across servers; while Redis is down each server counts on its own. |
+
+What to expect at load: at 2,000 uncached reads a second on one core (under half its capacity) requests took 1.5 ms at the median and 56–110 ms at p99, and the server's event loop ran late by 28–33 ms at p99. On the same machine a server that does nothing but answer showed p99 of 16–96 ms: the host's own noise, which sets the floor for any measurement here. `forge_event_loop_delay_ms` in `/metrics` shows the delay on your servers.
+
 ### The local database
 
 Without `DATABASE_URL` the engine stores data in a SQLite file (`bun:sqlite`, WAL mode) at `DATA_DIR/app.db`, on the volume at `/data`.
@@ -315,7 +331,7 @@ Without `DATABASE_URL` the engine stores data in a SQLite file (`bun:sqlite`, WA
 ```
 forge_function_calls_total{function="posts:list"} 1
 forge_function_errors_total{function="posts:list"} 0
-forge_function_duration_ms_bucket{function="posts:list",le="5"} 1     # buckets 5 to 10000 ms, +Inf, _sum, _count
+forge_function_duration_ms_bucket{function="posts:list",le="5"} 1     # buckets 0.5 to 10000 ms, +Inf, _sum, _count
 forge_cache_hits_total / _misses_total / _coalesced_total / _skipped_total{function=…}
 forge_cache_invalidated_entries_total 0
 forge_cache_evictions_total 0
@@ -325,6 +341,8 @@ forge_subscriptions 0
 forge_websocket_connections 0
 forge_runtime_workers 1
 forge_process_resident_bytes 60526592
+forge_event_loop_delay_ms{process="967b85d4c73e:342261",role="server",stat="p99"} 9.019391     # each process, from its last 10 s
+forge_event_loop_delay_ms{process="967b85d4c73e:342261",role="server",stat="max"} 62.567368
 ```
 
 HTTP routes count as functions named `http <METHOD> <route>`. Counters reset when the process restarts, and each server reports on its own; scrape every replica.
@@ -344,6 +362,7 @@ Queries worth alerting on (standard PromQL over the series above; the thresholds
 sum(rate(forge_function_errors_total[5m])) / sum(rate(forge_function_calls_total[5m])) > 0.02
 histogram_quantile(0.95, sum by (le) (rate(forge_function_duration_ms_bucket[5m]))) > 500
 forge_process_resident_bytes > 1.5e9
+max(forge_event_loop_delay_ms{stat="p99"}) > 100
 ```
 
 ### Telemetry

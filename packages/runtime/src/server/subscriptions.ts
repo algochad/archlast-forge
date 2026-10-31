@@ -84,6 +84,11 @@ export class QueryRunner {
     private runtime: FunctionRuntime,
     private cache: Cache | undefined,
     private ttlMs: number,
+    /**
+     * Identical calls share one execution even without a cache. That is safe only when every write's topics reach `invalidated()`, so
+     * that a run a write overlapped is never shared: true unless several servers share a Redis bus with the cache off.
+     */
+    private coalesce = Boolean(cache),
   ) {}
 
   invalidated(topic: string) {
@@ -112,28 +117,32 @@ export class QueryRunner {
    */
   async run(name: string, args: Args, headers: CallHeaders, requestId?: string, raw?: string, obs?: QueryObserver): Promise<Result> {
     const cache = this.cache;
-    if (!cache) {
+    // Without a cache, a query that reads ctx.auth runs on its own: sharing it would mean resolving the caller first, for little gain.
+    if (!cache && (!this.coalesce || this.perUser.has(name))) {
       const start = this.seq;
       const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId, trace: obs?.trace });
       if (obs) obs.telemetry = r.telemetry;
+      if (r.usedAuth) this.perUser.add(name);
       const topics = r.topics ?? [];
-      return { value: r.value, topics, clean: this.untouched(topics, start) };
+      return { value: r.value, topics, clean: this.untouched(topics, start), json: r.json ?? JSON.stringify(r.value) ?? "null" };
     }
     const began = performance.now();
     const stats = this.statsOf(name);
     // Queries that read ctx.auth are cached per caller. Who the caller is gets resolved fresh each time, so a revoked session stops matching.
-    const identity = this.perUser.has(name) ? await this.runtime.identity(headers) : undefined;
+    const identity = cache && this.perUser.has(name) ? await this.runtime.identity(headers) : undefined;
     if (obs && identity) obs.user = { id: identity.userId, ...((identity.email ?? identity.name) && { name: String(identity.email ?? identity.name) }) };
     // Per user, not per session: someone signed in on two devices has two sessions and the same results. (The session id stays out of the key.)
     const who = identity === undefined ? name : JSON.stringify([name, identity && { userId: identity.userId, email: identity.email, name: identity.name }]);
     const key = raw !== undefined ? `${who}\u0000${raw}` : `${who}\u0001${JSON.stringify(argsOf(args) ?? {})}`;
-    if (this.evicting) await this.invalidating; // a pending eviction must land before we read the cache
-    const hit = await cache.get<Result>(key);
-    if (hit) {
-      stats.hits++;
-      stats.hitMs += performance.now() - began;
-      if (obs) obs.cache = "hit";
-      return hit;
+    if (cache) {
+      if (this.evicting) await this.invalidating; // a pending eviction must land before we read the cache
+      const hit = await cache.get<Result>(key);
+      if (hit) {
+        stats.hits++;
+        stats.hitMs += performance.now() - began;
+        if (obs) obs.cache = "hit";
+        return hit;
+      }
     }
     const running = this.inflight.get(key);
     if (running) {
@@ -145,7 +154,7 @@ export class QueryRunner {
         return shared;
       }
     }
-    if (obs) obs.cache = "miss";
+    if (obs && cache) obs.cache = "miss";
     const mine = this.execute(name, args, headers, requestId, identity, key, cache, obs);
     this.inflight.set(key, mine);
     try {
@@ -157,7 +166,7 @@ export class QueryRunner {
     }
   }
 
-  private async execute(name: string, args: Args, headers: CallHeaders, requestId: string | undefined, identity: UserIdentity | null | undefined, key: string, cache: Cache, obs?: QueryObserver) {
+  private async execute(name: string, args: Args, headers: CallHeaders, requestId: string | undefined, identity: UserIdentity | null | undefined, key: string, cache: Cache | undefined, obs?: QueryObserver) {
     const start = this.seq;
     const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId, trace: obs?.trace, ...(identity !== undefined && { identity }) });
     if (obs) obs.telemetry = r.telemetry;
@@ -172,8 +181,8 @@ export class QueryRunner {
     // The entry is the object the caller gets, so the JSON a response builds from it (`json`) stays with the entry.
     const json = r.json ?? JSON.stringify(r.value) ?? "null";
     const result: Result & { clean: boolean } = { value: r.value, topics, clean: clean && !unkeyed, json };
-    const kept = clean && !unkeyed && (await cache.set(key, result, { ttlMs: this.ttlMs, topics, size: json.length * 3 }));
-    if (!kept) stats.skipped++;
+    const kept = cache && clean && !unkeyed && (await cache.set(key, result, { ttlMs: this.ttlMs, topics, size: json.length * 3 }));
+    if (cache && !kept) stats.skipped++;
     return result;
   }
 
@@ -235,6 +244,12 @@ const DEBOUNCE_MS = 50;
 
 export class SubscriptionManager {
   private subs = new Set<Subscription>();
+  /**
+   * Subscriptions a write woke, re-run together when the debounce ends: all at once, their identical queries are running at the same time
+   * and share one execution (QueryRunner), instead of each finishing before the next one's own timer fires.
+   */
+  private due = new Set<Subscription>();
+  private dueTimer?: Timer;
 
   constructor(
     private bus: Bus,
@@ -245,10 +260,9 @@ export class SubscriptionManager {
   ) {}
 
   /** Yields the result, then a new result after each relevant write. Unchanged results aren't re-sent. */
-  async *subscribe(name: string, args: unknown, headers: CallHeaders, signal?: AbortSignal, requestId?: string): AsyncGenerator<QueryUpdate> {
+  async *subscribe(name: string, args: unknown, headers: CallHeaders, signal?: AbortSignal, requestId?: string): AsyncGenerator<QueryUpdate & { json?: string }> {
     let dirty = true;
     let wake: (() => void) | undefined;
-    let timer: Timer | undefined;
     const unsubs = new Map<string, () => void>();
     const sub: Subscription = {
       name,
@@ -261,9 +275,12 @@ export class SubscriptionManager {
       },
     };
     const onEvent = () => {
-      timer ??= setTimeout(() => {
-        timer = undefined;
-        sub.rerun();
+      this.due.add(sub);
+      this.dueTimer ??= setTimeout(() => {
+        this.dueTimer = undefined;
+        const woken = [...this.due];
+        this.due.clear();
+        for (const s of woken) s.rerun();
       }, DEBOUNCE_MS);
     };
     this.subs.add(sub);
@@ -278,7 +295,8 @@ export class SubscriptionManager {
           continue;
         }
         dirty = false;
-        let update: QueryUpdate;
+        let update: QueryUpdate & { json?: string };
+        let hash: string;
         const tel = this.telemetry;
         const root = tel?.begin(first ? "query" : "live", name, first ? "WS" : "LIVE", undefined, requestId);
         const obs: QueryObserver | undefined = root && { get trace() { return tel!.parent(root); } };
@@ -300,19 +318,22 @@ export class SubscriptionManager {
           sub.topics = r.topics;
           // A write that landed while the query ran may have been published before this subscription listened for it.
           if (r.clean === false) dirty = true;
-          update = { value: r.value };
+          // Subscribers of one query share its result object, so its JSON is built, and hashed, once for all of them.
+          const json = (r.json ??= JSON.stringify(r.value) ?? "null");
+          update = { value: r.value, json };
+          hash = ((r as { hash?: string }).hash ??= String(Bun.hash(json)));
         } catch (e) {
           if (!recorded) this.telemetry!.end(root!, failureOf(e));
           update = this.describeError(e, requestId);
+          hash = String(Bun.hash(JSON.stringify(update)));
         }
-        const hash = String(Bun.hash(JSON.stringify(update)));
         if (hash !== last && !signal?.aborted) {
           last = hash;
           yield update;
         }
       }
     } finally {
-      clearTimeout(timer);
+      this.due.delete(sub);
       for (const off of unsubs.values()) off();
       this.subs.delete(sub);
     }
