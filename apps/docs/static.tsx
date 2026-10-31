@@ -98,7 +98,7 @@ export async function writeStatic(dist: string) {
     [
       "# archlast-forge",
       "",
-      `> ${plain(summary)} It runs as one container on your own servers and needs Bun 1.4.3 or later.`,
+      `> ${plain(summary)} It runs as one container on your own servers and needs Bun 1.4.4 or later.`,
       "",
       "Every page below is Markdown. Add `.md` to a page's address to get its source. `llms-full.txt` has all of them in one file.",
       "",

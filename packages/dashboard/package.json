@@ -26,7 +26,7 @@
     "typecheck": "bun check"
   },
   "devDependencies": {
-    "@types/bun": "1.4.3",
+    "@types/bun": "1.4.4",
     "@types/react": "19",
     "@types/react-dom": "19"
   },
@@ -37,6 +37,6 @@
     "react-dom": "19.3.1"
   },
   "engines": {
-    "bun": ">=1.4.3"
+    "bun": ">=1.4.4"
   }
 }

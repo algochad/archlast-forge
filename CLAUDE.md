@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Commands
 
-Bun 1.4.3 (pinned in `mise.toml` and `packageManager`). Run everything from the repo root unless noted.
+Bun 1.4.4 (pinned in `mise.toml` and `packageManager`). Run everything from the repo root unless noted.
 
 ```bash
 bun install

@@ -19,7 +19,7 @@ Find the message or symptom, read the cause, apply the fix. The messages here ar
 
 ### `bun: command not found`, or errors that mention an old Bun
 
-The CLI is a Bun program and every package declares `"engines": { "bun": ">=1.4.3" }`. It does not run on Node.js. Check with `bun --version`; install or switch with [mise](https://mise.jdx.dev) (`mise use bun@1.4.3`) or Bun's own installer. In a container the engine image carries its own Bun, so this only affects your machine.
+The CLI is a Bun program and every package declares `"engines": { "bun": ">=1.4.4" }`. It does not run on Node.js, and 1.4.3 and older are not supported: they lack the security fixes of 1.4.4 (TLS, WebSockets, the database clients, the package manager). Check with `bun --version`; install or switch with [mise](https://mise.jdx.dev) (`mise use bun@1.4.4`) or Bun's own installer. In a container the engine image carries its own Bun, so this only affects your machine.
 
 ### `bun install failed in …/forge (exit 1)`
 
@@ -437,7 +437,7 @@ Follow them with `archlast-forge logs app` (or `docker compose logs -f app`), an
 
 ### Why Bun?
 
-The engine is written for it. SQLite is `bun:sqlite`, and the build, the S3 and Redis clients, password hashing and the test runner come from the runtime, which keeps dependencies and moving parts down. Packages ship TypeScript source that Bun runs directly. The consequence is that the engine needs Bun (1.4.3 or newer) and does not run on Node.js. Your functions are TypeScript running on Bun; browsers get ordinary JavaScript.
+The engine is written for it. SQLite is `bun:sqlite`, and the build, the S3 and Redis clients, password hashing and the test runner come from the runtime, which keeps dependencies and moving parts down. Packages ship TypeScript source that Bun runs directly. The consequence is that the engine needs Bun (1.4.4 or newer) and does not run on Node.js. Your functions are TypeScript running on Bun; browsers get ordinary JavaScript.
 
 ### SQLite or Postgres?
 

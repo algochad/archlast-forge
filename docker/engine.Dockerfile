@@ -1,6 +1,6 @@
 # The archlast-forge engine: server, function runtime, dashboard and CLI.
 # Build: archlast-forge engine build   (or: docker build -f docker/engine.Dockerfile -t archlast-forge/engine:<version> .)
-FROM oven/bun:1.4.3-slim
+FROM oven/bun:1.4.4-slim
 WORKDIR /engine
 COPY . .
 # Workspace install from the lockfile; the apps aren't part of the engine.

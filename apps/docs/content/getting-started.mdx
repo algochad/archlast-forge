@@ -4,7 +4,7 @@ This page takes you from nothing to a running project, a first change, the dashb
 
 ## Prerequisites
 
-- **[Bun](https://bun.sh) 1.4.3 or later.** Check with `bun --version`. The project pins 1.4.3 in `mise.toml`; if you use [mise](https://mise.jdx.dev), `mise use bun@1.4.3` installs it. Node.js is not needed: the engine uses Bun's SQLite, HTTP server and Redis and S3 clients.
+- **[Bun](https://bun.sh) 1.4.4 or later.** Check with `bun --version`. The project pins 1.4.4 in `mise.toml`; if you use [mise](https://mise.jdx.dev), `mise use bun@1.4.4` installs it. Bun 1.4.3 and older are not supported: 1.4.4 fixes security issues in them, in TLS, WebSockets, the database clients and the package manager, among them CVE-2026-111497. Node.js is not needed: the engine uses Bun's SQLite, HTTP server and Redis and S3 clients.
 - **Docker, sometimes.** You do not need it to develop a full-stack app on SQLite. You need it to run services (PostgreSQL, Redis, storage) during development, to develop in backend mode (the engine runs in a container, unless you pass `--no-docker`), and to deploy with `bun run up`. `DOCKER=podman` switches the binary.
 - A modern browser for the app and the dashboard.
 

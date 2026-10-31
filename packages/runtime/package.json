@@ -34,7 +34,7 @@
     "build": "rm -rf dist && bun build ./src/index.ts ./src/server/index.ts ./src/server/child.ts ./src/server/telemetry/worker.ts ./src/testing.ts ./src/nest.ts ./src/nest-websockets.ts ./src/nest-microservices.ts ./src/nest-graphql.ts --root ./src --outdir ./dist --target bun --splitting --packages external && tsc -p tsconfig.build.json"
   },
   "devDependencies": {
-    "@types/bun": "1.4.3",
+    "@types/bun": "1.4.4",
     "@types/cors": "^2.8.19",
     "expect-type": "^1.4.0",
     "protobufjs": "7.6.6",
@@ -68,6 +68,6 @@
     "zod": "4.6.7"
   },
   "engines": {
-    "bun": ">=1.4.3"
+    "bun": ">=1.4.4"
   }
 }
