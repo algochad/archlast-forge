@@ -1,9 +1,9 @@
 // The pieces observability pages are built from: the page head with the range and service controls, cards, headline numbers,
 // tags for kinds, methods and statuses, and links between pages.
-import { useEffect, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Icon, type IconName } from "./brand";
 import { useCountUp } from "./charts";
-import { count, delta as deltaOf, pct, splitOperation, trendTone } from "./format";
+import { ago, count, delta as deltaOf, pct, splitOperation, trendTone } from "./format";
 import { PRESETS, useObs, useRange, type Preset } from "./obs";
 import { href } from "./router";
 
@@ -303,4 +303,31 @@ export function BackLink({ to, children }: { to: string; children: ReactNode }) 
 
 export function Refreshing({ on }: { on: boolean }) {
   return <span className={`refreshing${on ? " on" : ""}`} aria-hidden={!on} />;
+}
+
+/**
+ * Telemetry is kept for days, but a page shows one window. After a quiet spell (a restart in the morning) the default hour is empty, which reads
+ * as lost data: say when the last request was, and offer the smallest window that holds it.
+ */
+export function QuietRange() {
+  const r = useRange();
+  const now = useObs<{ count: number }>("requests", {}, { live: false });
+  const quiet = now.data !== undefined && now.data.count === 0;
+  // Fixed for the page's life: arguments that change on every render would refetch forever.
+  const month = useMemo(() => ({ from: Date.now() - 30 * 86_400_000, to: Date.now() + 60_000 }), []);
+  const ever = useObs<{ operations: { lastSeen: number }[] }>("requests", quiet ? month : null, { range: false, live: false });
+  const last = Math.max(0, ...(ever.data?.operations ?? []).map((o) => o.lastSeen));
+  if (!quiet || !last) return null;
+  const { from, to } = r.resolve();
+  const wider = (Object.entries(PRESETS) as [Preset, number][]).find(([, width]) => width > to - from && width >= Date.now() - last + 60_000);
+  return (
+    <p className="note">
+      No requests in this range. The last one was {ago(last)}, and it is still stored.{" "}
+      {wider && (
+        <button type="button" className="link" onClick={() => r.set({ preset: wider[0] })}>
+          Show the last {wider[0]}
+        </button>
+      )}
+    </p>
+  );
 }

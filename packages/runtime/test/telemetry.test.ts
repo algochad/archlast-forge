@@ -761,6 +761,41 @@ describe("the engine in production", () => {
   });
 });
 
+// The dashboard reads what the store kept, so stopping the engine and starting it again on the same data directory must not empty it.
+describe.each([
+  ["in production", false, { BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", DASHBOARD: "on" }],
+  ["in dev, with the runtime in a child process", true, {}],
+] as const)("a restart %s", (_name, dev, extra) => {
+  test("keeps the requests, and a version's first appearance", async () => {
+    const dir = tempDir();
+    const ADMIN = "r".repeat(32);
+    const boot = () => startServer({ forgeDir: join(import.meta.dir, "fixture"), dev, env: { ...process.env, ...extra, PORT: "0", DATA_DIR: dir, ADMIN_KEY: ADMIN, LOG_FORMAT: "json" } });
+    const get = async (srv: RunningServer, op: string) => {
+      const input = { from: Date.now() - 3600_000, to: Date.now() + 60_000 };
+      return (await (await fetch(`${srv.url}/_admin/${op}?input=${encodeURIComponent(JSON.stringify(input))}`, { headers: { "x-admin-key": ADMIN } })).json()) as any;
+    };
+    const call = (srv: RunningServer, name: string, args: object = {}) => fetch(`${srv.url}/rpc/${name}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args) });
+
+    const first = await boot();
+    for (let i = 0; i < 5; i++) await call(first, "todos:createList", { name: `l${i}` });
+    let before = await get(first, "obs.requests");
+    for (let i = 0; i < 40 && before.count < 5; i++) before = (await Bun.sleep(150), await get(first, "obs.requests"));
+    expect(before.count).toBe(5);
+    const [release] = (await get(first, "obs.releases")) as { version: string; at: number }[];
+    await first.stop();
+
+    await Bun.sleep(1100); // so a release stamped again at the restart would differ
+    const second = await boot();
+    try {
+      expect((await get(second, "obs.requests")).count).toBe(5);
+      const [again] = (await get(second, "obs.releases")) as { version: string; at: number }[];
+      expect(again).toMatchObject({ version: release!.version, at: release!.at });
+    } finally {
+      await second.stop({ graceful: false });
+    }
+  });
+});
+
 describe.if(Boolean(process.env.TEST_POSTGRES_URL))("the engine on Postgres", () => {
   let srv: RunningServer;
   beforeAll(async () => {

@@ -37,7 +37,7 @@ The sidebar groups them as Observe, Performance, Backend and Admin, and its foot
 
 ### Observe and Performance
 
-**Overview**, **Requests**, **Errors**, **Logs**, **Users**, **Jobs**, **Spans**, **Hotspots**, **Map**, **Runtime**, **Releases**, **SLOs** and **Metrics** show what the engine records about every request it handles, and what other services send it. [Observability](observability.html#the-pages) describes each one. They share one time range (1H to 30D, or custom), a **Live** switch and, when more than one service reports, a service picker; a request's trace opens from any of them.
+**Overview**, **Requests**, **Errors**, **Logs**, **Users**, **Jobs**, **Spans**, **Hotspots**, **Map**, **Runtime**, **Releases**, **SLOs** and **Metrics** show what the engine records about every request it handles, and what other services send it. [Observability](observability.html#the-pages) describes each one. They share one time range (1H to 30D, or custom), a **Live** switch and, when more than one service reports, a service picker; a request's trace opens from any of them. What they show is stored, not held in memory: stopping and starting the engine on the same data directory keeps it. Each page shows one range though, the last hour by default, so after a quiet spell the page says when the last request was and offers the range that holds it.
 
 Three of them have a view that doesn't need telemetry: **Accounts** on Users, **Queue & crons** on Jobs and **Stream** on Logs, described below. With `TELEMETRY=off` these pages open on that view, and the others say telemetry is off.
 
@@ -83,7 +83,7 @@ Every function in the manifest with a kind badge (query, mutation, action) and a
 
 ### Cache
 
-Shown when the query cache is on (`CACHE_TTL_MS`; otherwise the page says how to turn it on). Hit rate, calls served from the cache or by sharing a run already in flight, function runs, entries and memory used, the time saved, entries evicted by writes and for space, and charts over the last hour, day or week (from each server's runtime samples, so they need telemetry). A per-function table marks queries that are cached **per user** (they read `ctx.auth`). Admins can **Clear cache**, which empties this server's cache (or the shared Redis cache) and records it in the audit log. See [caching](caching.html).
+Shown when the query cache is on (`CACHE_TTL_MS`; otherwise the page says how to turn it on). Hit rate, calls served from the cache or by sharing a run already in flight, function runs, the time saved, and charts, over the page's time range (from each server's runtime samples and the recorded requests, so they survive a restart; with `TELEMETRY=off` they count since the server started). Entries and memory used, and entries evicted by writes and for space, are the server's own state right now, so they start again from zero with it. A per-function table marks queries that are cached **per user** (they read `ctx.auth`). Admins can **Clear cache**, which empties this server's cache (or the shared Redis cache) and records it in the audit log. See [caching](caching.html).
 
 ### Services, Alerts and Ingest keys
 

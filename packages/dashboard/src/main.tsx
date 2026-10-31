@@ -5,7 +5,7 @@ import { createRoot } from "react-dom/client";
 import { get, login, logout, post, type Admin, type Manifest } from "./api";
 import { Avatar, Icon, Logo, Wordmark, type IconName } from "./brand";
 import { ago } from "./format";
-import { PageHead, TelemetryOff } from "./kit";
+import { PageHead, QuietRange, TelemetryOff } from "./kit";
 import { RangeProvider, TelemetryOn, useObs } from "./obs";
 import { Alerts } from "./pages/Alerts";
 import { Audit } from "./pages/Audit";
@@ -34,6 +34,9 @@ import { href, navigate, useRoute } from "./router";
 import { Badge, Button, ErrorNote, Field, Skeleton, ToastProvider, useAsync } from "./ui";
 
 type PageDef = { label: string; icon: IconName; group?: string; blurb: string; observe?: boolean };
+
+/** Pages whose content is requests: when the range holds none, say where the stored ones are (QuietRange). */
+const HOLDS_REQUESTS = new Set(["overview", "requests", "errors", "users", "hotspots", "spans", "map", "releases", "cache"]);
 
 /** Every page; those without a group are reached from other pages (a trace). Observability pages take the range controls. */
 const PAGES: Record<string, PageDef> = {
@@ -279,7 +282,8 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
           </div>
         </header>
         <main id="main" className="content" tabIndex={-1}>
-          <PageHead title={def.label} blurb={def.blurb} icon={def.icon} controls={Boolean(def.observe) && telemetry !== false} />
+          <PageHead title={def.label} blurb={def.blurb} icon={def.icon} controls={(Boolean(def.observe) || page === "cache") && telemetry !== false} />
+          {telemetry === true && HOLDS_REQUESTS.has(page) && <QuietRange />}
           {m?.error && <p className="note error">The function runtime failed to load: {m.error}</p>}
           <ErrorNote error={manifest.error} />
           <Boundary key={`${page}:${route.params.toString()}`}>
