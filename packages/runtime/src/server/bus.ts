@@ -102,7 +102,8 @@ export class RedisBus extends MemoryBus {
       off();
       if (!this.hasListeners(topic)) {
         const channel = topic === "*" ? ALL : TOPIC + topic;
-        void (this.pending.get(topic) ?? Promise.resolve()).then(() => (this.hasListeners(topic) ? undefined : this.sub.unsubscribe(channel)));
+        // A channel left subscribed only delivers topics nobody listens to; and close() rejects an unsubscribe still in flight.
+        void (this.pending.get(topic) ?? Promise.resolve()).then(() => (this.hasListeners(topic) ? undefined : this.sub.unsubscribe(channel))).catch(() => {});
         this.pending.delete(topic);
       }
     };
