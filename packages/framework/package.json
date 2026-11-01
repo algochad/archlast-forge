@@ -1,6 +1,6 @@
 {
   "name": "@archlast/forge-framework",
-  "version": "0.8.0",
+  "version": "0.9.0",
   "description": "Full-stack React for archlast-forge: file routes, loaders, server rendering and the build.",
   "license": "MIT",
   "repository": {
