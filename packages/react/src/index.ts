@@ -1,4 +1,5 @@
 import {
+  pageArgs,
   queryKey,
   syncQuery,
   updateError,
@@ -15,7 +16,7 @@ import { getFunctionName, type FunctionArgs, type FunctionReference, type Functi
 import { QueryClient, QueryClientProvider, skipToken, useQueryClient, useQuery as useTanstackQuery } from "@tanstack/react-query";
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 
-export { ArchlastForgeClient, ForgeError, type ClientOptions, type QueryUpdate } from "@archlast/forge-client";
+export { ArchlastForgeClient, ForgeError, pageArgs, windowArgs, type ClientOptions, type QueryUpdate } from "@archlast/forge-client";
 
 const ClientContext = createContext<ArchlastForgeClient | null>(null);
 
@@ -84,6 +85,32 @@ export function usePaginatedQuery<R extends PaginatedQuery>(ref: R, args: Pagina
     status,
     isLoading: status === "LoadingFirstPage" || status === "LoadingMore",
     loadMore: useCallback((n: number) => setNumItems((x) => x + n), []),
+  };
+}
+
+/**
+ * Live numbered page: page `page` (from 1) of `pageSize` items, for "page 3 of 10" tables. The query is the same as for
+ * `usePaginatedQuery` (it takes `paginationOpts` and returns `.paginate(paginationOpts)`); here it skips to the page in the database
+ * and counts the range. The page number is yours to keep (state, or the URL); the previous page stays on screen while the next one loads.
+ */
+export function useNumberedPage<R extends PaginatedQuery>(ref: R, args: PaginatedArgs<R> | "skip", opts: { page: number; pageSize: number }) {
+  const result = useQuery(ref as unknown as PublicQuery, ...([args === "skip" ? "skip" : pageArgs(args, opts.page, opts.pageSize)] as [any])) as
+    | { page: PaginatedItem<R>[]; isDone: boolean; total?: number }
+    | undefined;
+  const [last, setLast] = useState(result);
+  useEffect(() => {
+    if (result) setLast(result);
+  }, [result]);
+  const shown = args === "skip" ? undefined : (result ?? last);
+  const total = shown?.total;
+  return {
+    results: shown?.page ?? [],
+    /** Documents in the whole range, and the pages they make (at least 1); undefined until the first result. */
+    total,
+    pageCount: total === undefined ? undefined : Math.max(1, Math.ceil(total / opts.pageSize)),
+    hasNextPage: shown ? !shown.isDone : false,
+    /** True until this page's result arrives (`results` meanwhile shows the last page). */
+    isLoading: args !== "skip" && !result,
   };
 }
 

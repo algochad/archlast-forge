@@ -1,7 +1,7 @@
 // Compile-time only (checked by `bun check`): hook signatures come from function references.
 import type { FunctionReference, Id, PaginationOptions, PaginationResult } from "@archlast/forge-runtime";
 import { expectTypeOf } from "expect-type";
-import { useAction, useMutation, usePaginatedQuery, useQuery, useUploadFile } from "../src/index";
+import { pageArgs, useAction, useMutation, useNumberedPage, usePaginatedQuery, useQuery, useUploadFile } from "../src/index";
 
 type Todo = { _id: Id<"todos">; title: string };
 declare const api: {
@@ -48,6 +48,17 @@ export function Component() {
   expectTypeOf(results).toEqualTypeOf<Todo[]>();
   expectTypeOf(loadMore).parameters.toEqualTypeOf<[n: number]>();
   expectTypeOf(status).toEqualTypeOf<"LoadingFirstPage" | "CanLoadMore" | "LoadingMore" | "Exhausted">();
+
+  // The same query, as numbered pages.
+  const table = useNumberedPage(api.todos.page, { listId }, { page: 2, pageSize: 20 });
+  expectTypeOf(table.results).toEqualTypeOf<Todo[]>();
+  expectTypeOf(table.total).toEqualTypeOf<number | undefined>();
+  expectTypeOf(table.pageCount).toEqualTypeOf<number | undefined>();
+  expectTypeOf(table.hasNextPage).toEqualTypeOf<boolean>();
+  useNumberedPage(api.todos.page, "skip", { page: 1, pageSize: 20 });
+  // @ts-expect-error a query that isn't paginated
+  useNumberedPage(api.todos.listByList, { listId }, { page: 1, pageSize: 20 });
+  expectTypeOf(pageArgs({ listId }, 3, 20).paginationOpts).toEqualTypeOf<{ numItems: number; cursor: null; offset: number; withTotal: boolean }>();
 
   const upload = useUploadFile(api.todos.uploadUrl);
   expectTypeOf(upload).returns.toEqualTypeOf<Promise<Id<"_storage">>>();

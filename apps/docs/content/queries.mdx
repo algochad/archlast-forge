@@ -234,10 +234,10 @@ export const page = query({
 });
 ```
 
-`paginationOptsValidator` is `v.object({ numItems: v.number(), cursor: v.union(v.string(), v.null()) })`. A page is requested with `{ numItems, cursor }`: `cursor` is `null` for the first page and the previous result's `continueCursor` after that. The result is:
+`paginationOptsValidator` is `v.object({ numItems: v.number(), cursor: v.union(v.string(), v.null()), offset: v.optional(v.number()), withTotal: v.optional(v.boolean()) })`. A page is requested with `{ numItems, cursor }`: `cursor` is `null` for the first page and the previous result's `continueCursor` after that. The same query also serves pages by number, with `offset` and `withTotal` ([Numbered pages](#numbered-pages)). The result is:
 
 ```ts
-{ page: Doc[], isDone: boolean, continueCursor: string }
+{ page: Doc[], isDone: boolean, continueCursor: string, total?: number }   // total: with withTotal
 ```
 
 ```json
@@ -257,7 +257,19 @@ export const page = query({
 
 ### Numbered pages
 
-For a table with page numbers ("142 patients · page 3 of 10", a jump to any page), skip to the page and take it, and count the range for the total:
+For a table with page numbers ("142 patients · page 3 of 10", a jump to any page), use the paginated query you already have. `paginationOpts` takes `offset`, the matching documents to pass over before the page, and `withTotal: true`, which adds `total`, the number of documents in the range:
+
+```ts
+export const list = query({
+  args: { paginationOpts: paginationOptsValidator },
+  handler: (ctx, { paginationOpts }) => ctx.db.query("patients").withIndex("by_name").paginate(paginationOpts),
+});
+// page 3 of 20: { numItems: 20, cursor: null, offset: 40, withTotal: true }  →  { page, isDone, continueCursor, total }
+```
+
+So one query serves both kinds of paging: cursors for feeds and infinite lists (`usePaginatedQuery`), offsets for numbered pages (`useNumberedPage`, which asks for `total` and gives `pageCount`; see [Clients](clients.html#usenumberedpage)). Outside React, `pageArgs(args, page, pageSize)` from `@archlast/forge-client` builds those arguments. A `continueCursor` from a numbered page carries on with keyset paging.
+
+Inside a function, `skip(n)` is the same thing as a step of the query, here with the total counted separately:
 
 ```ts
 export const patients = query({
@@ -270,6 +282,8 @@ export const patients = query({
 });
 ```
 
+- **`offset` and `skip(n)` work the same way**, and add up on a first page. An `offset` counts from the `cursor` when there is one; `skip()` places only the first page. `offset` must be a non-negative integer (`paginate() offset must be a non-negative integer, got -1`), and the two together at most 100,000 (`paginate() passes over at most 100000 documents, got 100001; go further with a cursor`).
+- **`total` is the whole range**: every document the index range holds after the filters, whatever the cursor, offset or skip. Without a `filter()` it is one `COUNT`; with one, a scan within the 100,000 limit.
 - **The database skips, unless a filter has to see them.** Without `filter()`, `skip(n)` is an `OFFSET` over the index range: the skipped documents are never loaded, and they don't count toward the scan limit. SQLite and Postgres still step over `n` index entries, so a deep page costs more than the first, but only in the index. With a `filter()`, `n` counts documents that pass every filter (wherever `skip` is in the chain), so they are scanned, and they count toward the 100,000 a query looks through.
 - **It counts in the query's order**: the index's, or reversed with `order("desc")`. Sort by an index whose order is stable, such as a name, then `_creationTime`.
 - **`include()` joins only the documents returned**, not the skipped ones (an `include()` before a `filter()` still runs on what the filter looks at).

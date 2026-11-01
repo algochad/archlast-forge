@@ -5,7 +5,7 @@ import { afterAll, beforeAll, expect, test } from "bun:test";
 import { mkdtempSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { ArchlastForgeClient, queryKey, syncQuery, type QueryUpdate } from "../src/index";
+import { ArchlastForgeClient, pageArgs, queryKey, syncQuery, windowArgs, type QueryUpdate } from "../src/index";
 
 const fixture = join(import.meta.dir, "../../runtime/test/fixture");
 const api = anyApi;
@@ -118,4 +118,10 @@ test("a rate-limited call says so, and how long to wait", async () => {
     c.close();
     await limited.stop({ graceful: false });
   }
+});
+
+test("pageArgs asks for numbered page N with its total; windowArgs for the first n of a growing list", () => {
+  expect(pageArgs({ listId: "lists:1" }, 3, 20)).toEqual({ listId: "lists:1", paginationOpts: { numItems: 20, cursor: null, offset: 40, withTotal: true } });
+  expect(windowArgs({}, 30)).toEqual({ paginationOpts: { numItems: 30, cursor: null } });
+  expect(() => pageArgs({}, 0, 20)).toThrow("page must be an integer from 1, got 0");
 });

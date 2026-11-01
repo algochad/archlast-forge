@@ -96,6 +96,26 @@ describe("in a real browser", () => {
     expect(problems.concat(missing.problems).filter((p) => !p.includes("status of 404") && !p.includes("status of 500"))).toEqual([]);
   });
 
+  run("numbered pages and a growing list from one paginated query: rendered on the server, then live", async () => {
+    const add = (from: number, count: number) => fetch(`${srv.url}/rpc/items:add`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from, count }) });
+    await add(1, 7);
+    const { page, problems } = await open("/pages?page=2");
+    // The server rendered page 2 with its total, and the first window of the list; hydration kept it.
+    expect(await page.textContent("#table")).toBe("4,5,6");
+    expect(await page.textContent("#where")).toBe("page 2 of 3 (7 items)");
+    expect(await page.textContent("#list")).toBe("1,2");
+    await page.click("#next");
+    await page.waitForFunction(() => document.querySelector("#table")?.textContent === "7");
+    expect(await page.textContent("#where")).toBe("page 3 of 3 (7 items), last");
+    // Live: new items fill the last page and the count follows.
+    await add(8, 2);
+    await page.waitForFunction(() => document.querySelector("#table")?.textContent === "7,8,9");
+    expect(await page.textContent("#where")).toBe("page 3 of 3 (9 items), last");
+    await page.click("#more");
+    await page.waitForFunction(() => document.querySelector("#list")?.textContent === "1,2,3,4");
+    expect(problems).toEqual([]);
+  });
+
   run("signing in updates the page in place, and the next loader sees the new user straight away", async () => {
     const { page, problems } = await open("/sign-in");
     expect(await page.textContent("#who")).toBe("Signed out");

@@ -18,6 +18,13 @@ test("the testing library runs functions, identities and scheduled work in memor
   expect(((await t.query(api.todos.events)) as any[]).map((e) => e.kind)).toEqual(["later"]);
   expect(await t.run(async (ctx) => (await (ctx.db as any).query("lists").collect()).length)).toBe(1);
   expect(await t.run(async (ctx) => (await (ctx.db as any).query("lists").skip(1).collect()).length)).toBe(0);
+  // paginationOptsValidator takes numbered pages as well as cursors.
+  expect(await t.query(api.todos.todosPage, { listId, paginationOpts: { numItems: 5, cursor: null, offset: 0, withTotal: true } })).toMatchObject({
+    page: [{ title: "milk" }],
+    isDone: true,
+    total: 1,
+  });
+  expect(await t.query(api.todos.todosPage, { listId, paginationOpts: { numItems: 5, cursor: null, offset: 1 } })).toMatchObject({ page: [], isDone: true });
   await t.close();
 });
 

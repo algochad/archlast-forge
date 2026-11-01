@@ -226,6 +226,34 @@ for (const [label, make] of dbAdapters) {
       await expect(read((s) => byN(s).skip(60_000).skip(60_000).take(1))).rejects.toThrow("skip() passes over at most 100000 documents, got 120000");
     });
 
+    test("paginate takes a cursor, an offset or both, and can count the range", async () => {
+      db = await make();
+      await db.migrate(specs);
+      for (let n = 1; n <= 10; n++) await write((s) => s.insert("notes", { body: `note ${n}`, tag: n % 2 ? "odd" : "even", n }));
+      const ns = (r: any) => r.page.map((d: any) => d.n);
+      const page = (opts: any, q = (s: DocStore) => s.query("notes").withIndex("by_n")) => read((s) => q(s).paginate(opts)) as Promise<any>;
+
+      // Numbered: page 2 of 4, with the total; a cursor from it carries on with keyset paging.
+      const p2 = await page({ numItems: 3, cursor: null, offset: 3, withTotal: true });
+      expect(ns(p2)).toEqual([4, 5, 6]);
+      expect(p2).toMatchObject({ isDone: false, total: 10 });
+      expect(ns(await page({ numItems: 3, cursor: p2.continueCursor }))).toEqual([7, 8, 9]);
+      expect(await page({ numItems: 3, cursor: null, offset: 9, withTotal: true })).toMatchObject({ page: [expect.objectContaining({ n: 10 })], isDone: true, total: 10 });
+      expect(await page({ numItems: 3, cursor: null, offset: 30 })).toMatchObject({ page: [], isDone: true });
+      // An offset counts from the cursor; skip() and an offset add up on the first page.
+      expect(ns(await page({ numItems: 2, cursor: p2.continueCursor, offset: 1 }))).toEqual([8, 9]);
+      expect(ns(await page({ numItems: 2, cursor: null, offset: 2 }, (s) => s.query("notes").withIndex("by_n").skip(1)))).toEqual([4, 5]);
+      // Without withTotal there is no total; with a filter, the total counts what passes it.
+      expect(await page({ numItems: 2, cursor: null })).not.toHaveProperty("total");
+      const evens = await page({ numItems: 2, cursor: null, offset: 2, withTotal: true }, (s) => s.query("notes").withIndex("by_n").filter((d: any) => d.tag === "even"));
+      expect(ns(evens)).toEqual([6, 8]);
+      expect(evens.total).toBe(5);
+      expect((await page({ numItems: 2, cursor: null, withTotal: true }, (s) => s.query("notes").withIndex("by_n").skip(4))).total).toBe(10); // the range, not what's left
+
+      await expect(page({ numItems: 2, cursor: null, offset: -1 })).rejects.toThrow("paginate() offset must be a non-negative integer, got -1");
+      await expect(page({ numItems: 2, cursor: null, offset: 100_001 })).rejects.toThrow("paginate() passes over at most 100000 documents, got 100001");
+    });
+
     test("skip with include joins only the documents returned", async () => {
       db = await make();
       await db.migrate(specs);

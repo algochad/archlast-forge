@@ -291,4 +291,10 @@ export type PaginatedItem<R extends PaginatedQuery> = FunctionReturn<R> extends 
  * Args for a growing window: one live query for the first `numItems` items. Loading more widens the window,
  * so every loaded item stays live and nothing is duplicated or skipped when items are inserted or removed.
  */
-export const windowArgs = (args: object, numItems: number) => ({ ...args, paginationOpts: { numItems, cursor: null } });
+export const windowArgs = <A extends object>(args: A, numItems: number) => ({ ...args, paginationOpts: { numItems, cursor: null } });
+
+/** Args for numbered page `page` (from 1) of `pageSize` items, with the total: `{ page, isDone, continueCursor, total }`. */
+export function pageArgs<A extends object>(args: A, page: number, pageSize: number) {
+  if (!Number.isInteger(page) || page < 1) throw new Error(`page must be an integer from 1, got ${page}`);
+  return { ...args, paginationOpts: { numItems: pageSize, cursor: null, offset: (page - 1) * pageSize, withTotal: true } };
+}

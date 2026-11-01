@@ -236,8 +236,8 @@ interface SearchQuery<D, T> {
   collect(): Promise<D[]>;              // at most 1024
 }
 
-interface PaginationOptions { numItems: number; cursor: string | null }
-interface PaginationResult<D> { page: D[]; isDone: boolean; continueCursor: string }
+interface PaginationOptions { numItems: number; cursor: string | null; offset?: number; withTotal?: boolean }   // a cursor, an offset or both
+interface PaginationResult<D> { page: D[]; isDone: boolean; continueCursor: string; total?: number }        // total: with withTotal
 
 type IncludeSpec<T> = { [key: string]: ReferenceField<T> | ReverseRule };
 type ReverseRule = { table: TableNames; index: string; take?: number; order?: "asc" | "desc"; include?: IncludeSpec; count?: boolean };
@@ -457,7 +457,7 @@ The module also exports `loadConfig(env, dev)` and `ConfigError` (configuration 
 ## @archlast/forge-client
 
 ```ts
-import { ArchlastForgeClient, ForgeError, queryKey, syncQuery, windowArgs, toClientError, updateError } from "@archlast/forge-client";
+import { ArchlastForgeClient, ForgeError, queryKey, syncQuery, windowArgs, pageArgs, toClientError, updateError } from "@archlast/forge-client";
 import type { QueryUpdate, ClientOptions, SessionUser, ErrorBody, PublicQuery, PublicMutation, PublicAction, PaginatedQuery, PaginatedArgs, PaginatedItem } from "@archlast/forge-client";
 ```
 
@@ -514,12 +514,13 @@ function toClientError(e: ErrorBody): Error & { code?: string; requestId?: strin
 function updateError(u: { error: string; data?: unknown; requestId?: string }): Error;
 function queryKey(ref: FunctionReference<"query">, args: unknown): readonly ["archlast-forge", string, unknown];
 function syncQuery(queryClient: QueryClient, client: ArchlastForgeClient, ref: PublicQuery, args): () => void;
-const windowArgs: (args: object, numItems: number) => object;   // { ...args, paginationOpts: { numItems, cursor: null } }
+function windowArgs<A extends object>(args: A, numItems: number): A & { paginationOpts };          // { numItems, cursor: null }
+function pageArgs<A extends object>(args: A, page: number, pageSize: number): A & { paginationOpts }; // { numItems: pageSize, cursor: null, offset: (page - 1) * pageSize, withTotal: true }
 ```
 
 **Errors.** A call that fails rejects with a `ForgeError` (its `data` is what the function threw) when the server sent `data`, otherwise with an `Error` carrying the server's message. Both have `code` (`BAD_REQUEST`, `TIMEOUT`, `INTERNAL_SERVER_ERROR`, ...) and `requestId`. A response that is not JSON rejects with `"<status> <statusText>"`. `updateError` does the same for a failed live update.
 
-`queryKey` is the TanStack Query key used for a live query: `["archlast-forge", name, args]`. `syncQuery` pushes live results into a `QueryClient` under that key. `windowArgs` and the `Paginated*` types back [`usePaginatedQuery`](#react-hooks): a query is paginated when it takes `paginationOpts` and returns `.paginate(paginationOpts)`.
+`queryKey` is the TanStack Query key used for a live query: `["archlast-forge", name, args]`. `syncQuery` pushes live results into a `QueryClient` under that key. `windowArgs`, `pageArgs` and the `Paginated*` types back [`usePaginatedQuery` and `useNumberedPage`](#react-hooks): a query is paginated when it takes `paginationOpts` and returns `.paginate(paginationOpts)`. `pageArgs` throws for a `page` below 1.
 
 Guide: [Clients](clients.html).
 
@@ -529,9 +530,9 @@ Peer dependency: `react ^19.3.1`. It includes TanStack Query; live results are s
 
 ```ts
 import {
-  ArchlastForgeProvider, useArchlastForge, useQuery, usePaginatedQuery, useMutation, useAction,
+  ArchlastForgeProvider, useArchlastForge, useQuery, usePaginatedQuery, useNumberedPage, useMutation, useAction,
   useUploadFile, useAuth, useSession, updateError,
-  ArchlastForgeClient, ForgeError,
+  ArchlastForgeClient, ForgeError, windowArgs, pageArgs,
 } from "@archlast/forge-react";
 import type { ClientOptions, QueryUpdate, LocalStore, PaginationStatus } from "@archlast/forge-react";
 ```
@@ -562,6 +563,22 @@ function usePaginatedQuery<R extends PaginatedQuery>(
 ```
 
 `usePaginatedQuery` keeps one live window: `loadMore(n)` widens it by `n` items, so everything loaded stays up to date and nothing is duplicated or skipped when items are inserted. New `args` start over from `initialNumItems`. While a wider window loads, `results` keeps showing the previous one.
+
+```ts
+function useNumberedPage<R extends PaginatedQuery>(
+  ref: R,
+  args: PaginatedArgs<R> | "skip",
+  opts: { page: number; pageSize: number },   // page from 1
+): {
+  results: PaginatedItem<R>[];
+  total: number | undefined;      // documents in the range; undefined until the first result
+  pageCount: number | undefined;  // Math.max(1, Math.ceil(total / pageSize))
+  hasNextPage: boolean;
+  isLoading: boolean;             // until this page arrives; results shows the last page meanwhile
+};
+```
+
+`useNumberedPage` reads the same paginated query as page `page`: `pageArgs(args, page, pageSize)`, so the database skips to it and counts the range. The caller keeps the page number.
 
 ```ts
 function useMutation<R extends PublicMutation>(ref: R): ((...args: OptionalArgs<R>) => Promise<FunctionReturn<R>>) & {
@@ -596,7 +613,7 @@ function useSession(): /* Better Auth session state: { data, error, isPending, i
 Peer dependency: `vue 3`.
 
 ```ts
-import { archlastForge, useArchlastForge, useQuery, useMutation, useAction, useSession, ArchlastForgeClient, ForgeError } from "@archlast/forge-vue";
+import { archlastForge, useArchlastForge, useQuery, useMutation, useAction, useSession, ArchlastForgeClient, ForgeError, windowArgs, pageArgs } from "@archlast/forge-vue";
 
 const archlastForge: (client: ArchlastForgeClient) => { install(app: App): void };    // app.use(archlastForge(client))
 function useArchlastForge(): ArchlastForgeClient;     // throws "Install the plugin first: app.use(archlastForge(client))"
@@ -615,14 +632,14 @@ function useAction<R extends PublicAction>(action: R): (...args: OptionalArgs<R>
 function useSession(): Ref</* Better Auth session state */>;
 ```
 
-`useQuery` subscribes immediately. `args` may be a ref or a getter; the subscription restarts when its value changes, and `"skip"` unsubscribes and clears `data`. It stops with the component (or effect scope). `isLoading` is a computed ref, true until the first result or error (a function you called, `isLoading()`, on `0.1.0`). There is no paginated hook for Vue: build one with `windowArgs` from `@archlast/forge-client`.
+`useQuery` subscribes immediately. `args` may be a ref or a getter; the subscription restarts when its value changes, and `"skip"` unsubscribes and clears `data`. It stops with the component (or effect scope). `isLoading` is a computed ref, true until the first result or error (a function you called, `isLoading()`, on `0.1.0`). Paginate with `useQuery` and `windowArgs` (a growing list) or `pageArgs` (numbered pages, with `total`), re-exported here.
 
 ## @archlast/forge-svelte
 
 No dependency on Svelte itself: the stores follow the Svelte store contract, so `$store` works in Svelte 4 and 5.
 
 ```ts
-import { query, session, ArchlastForgeClient, ForgeError } from "@archlast/forge-svelte";
+import { query, session, ArchlastForgeClient, ForgeError, windowArgs, pageArgs } from "@archlast/forge-svelte";
 
 interface Readable<T> { subscribe(run: (value: T) => void): () => void }
 type QueryState<T> = { data: T | undefined; error: Error | undefined; isLoading: boolean };

@@ -137,5 +137,5 @@ export function validateFields(fields: Record<string, Validator>, value: Record<
   check(objectSchema(fields), defined, path);
 }
 
-/** Args validator for paginated queries: `args: { paginationOpts: paginationOptsValidator }`. */
-export const paginationOptsValidator = v.object({ numItems: v.number(), cursor: v.union(v.string(), v.null()) });
+/** Args validator for paginated queries: `args: { paginationOpts: paginationOptsValidator }`. Takes cursors and numbered pages (`offset`, `withTotal`). */
+export const paginationOptsValidator = v.object({ numItems: v.number(), cursor: v.union(v.string(), v.null()), offset: v.optional(v.number()), withTotal: v.optional(v.boolean()) });

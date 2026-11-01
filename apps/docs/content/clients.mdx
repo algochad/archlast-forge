@@ -4,10 +4,10 @@ Every client is a thin layer over `ArchlastForgeClient` from `@archlast/forge-cl
 
 | Package | Gives you |
 |---|---|
-| `@archlast/forge-client` | `ArchlastForgeClient`, `ForgeError`, `queryKey` and `syncQuery` (TanStack Query), `windowArgs` |
-| `@archlast/forge-react` | The client re-exported, `ArchlastForgeProvider`, `useQuery`, `usePaginatedQuery`, `useMutation`, `useAction`, `useUploadFile`, `useAuth`, `useSession`, `useArchlastForge` |
-| `@archlast/forge-vue` | `archlastForge` plugin, `useQuery`, `useMutation`, `useAction`, `useSession`, `useArchlastForge` |
-| `@archlast/forge-svelte` | `query` and `session` stores |
+| `@archlast/forge-client` | `ArchlastForgeClient`, `ForgeError`, `queryKey` and `syncQuery` (TanStack Query), `windowArgs` and `pageArgs` (arguments for the two kinds of paging) |
+| `@archlast/forge-react` | The client re-exported, `ArchlastForgeProvider`, `useQuery`, `usePaginatedQuery`, `useNumberedPage`, `useMutation`, `useAction`, `useUploadFile`, `useAuth`, `useSession`, `useArchlastForge`, `windowArgs`, `pageArgs` |
+| `@archlast/forge-vue` | `archlastForge` plugin, `useQuery`, `useMutation`, `useAction`, `useSession`, `useArchlastForge`, `windowArgs`, `pageArgs` |
+| `@archlast/forge-svelte` | `query` and `session` stores, `windowArgs`, `pageArgs` |
 
 References come from the generated `api` (`import { api } from "../forge/_generated/api"`). The types only accept **public** functions: an `internal*` reference is a type error, and the server answers 404 for it anyway.
 
@@ -181,6 +181,20 @@ const { results, status, isLoading, loadMore } = usePaginatedQuery(api.messages.
 
 `loadMore(n)` doesn't fetch another page: it **widens one live window** by `n` items, so every loaded item stays live and nothing is skipped or duplicated when items are inserted or removed. Cost grows with the window, so don't load thousands. New arguments reset the window to `initialNumItems`; `"skip"` is accepted in place of the arguments. While a wider window loads, the previous results stay visible.
 
+### `useNumberedPage`
+
+The same query as numbered pages, for tables with "page 3 of 10" and a jump to any page:
+
+```tsx
+const [page, setPage] = useState(1);
+const { results, total, pageCount, hasNextPage, isLoading } = useNumberedPage(api.patients.list, {}, { page, pageSize: 20 });
+<p>{total} patients · page {page} of {pageCount}</p>
+<button disabled={page === 1} onClick={() => setPage(page - 1)}>Previous</button>
+<button disabled={!hasNextPage} onClick={() => setPage(page + 1)}>Next</button>
+```
+
+It asks for page `page` (from 1) with `paginationOpts: { numItems: pageSize, cursor: null, offset: (page - 1) * pageSize, withTotal: true }`: the database skips to the page ([Numbered pages](queries.html#numbered-pages)), and the result counts the range. The page number is yours to keep, in state or in the URL. `total` and `pageCount` (at least 1) are `undefined` until the first result. While another page loads, `results` shows the last one and `isLoading` is `true`. The page is live: inserts and deletes re-run it, so it always shows the current page `page`, and `total` follows. `"skip"` is accepted in place of the arguments, and a `page` below 1 throws.
+
 ### `useMutation` and optimistic updates
 
 ```tsx
@@ -350,7 +364,8 @@ const { data: found } = useQuery(api.messages.search, () => (term.value ? { text
 
 - `useQuery(ref, args?)` returns `{ data, error, isLoading }`. `data`, `error` and `isLoading` are refs (`isLoading` is `true` until the first result or error; templates unwrap it, scripts read `.value`). On `0.1.0` `isLoading` was a function you called, `isLoading()`. `args` can be a plain object, a ref or a getter, or `"skip"`. It re-subscribes when the arguments change and stops when the component or effect scope is disposed.
 - A failing query sets `error` and keeps the last `data`; a later good result clears `error`.
-- `useMutation(ref)` and `useAction(ref)` return plain functions. There are no optimistic updates, pagination hook or upload hook in the Vue package: for those, call `useArchlastForge()` for the client and use `client.uploadFile(...)`, or build a window with `windowArgs` from `@archlast/forge-client`.
+- `useMutation(ref)` and `useAction(ref)` return plain functions. There are no optimistic updates or upload hook in the Vue package: call `useArchlastForge()` for the client and use `client.uploadFile(...)`.
+- Paginate with `useQuery` and the argument helpers, which take a paginated query like the React hooks do: `useQuery(api.patients.list, () => pageArgs({}, page.value, 20))` is numbered page `page` with `data.value.total`, and `useQuery(api.messages.list, () => windowArgs({}, size.value))` a growing list (raise `size` to load more).
 - Auth: `useSession()` is a ref of Better Auth's session state, and `useArchlastForge().auth` is the Better Auth client (`.signIn.email(...)`).
 - `useArchlastForge()` throws `Install the plugin first: app.use(archlastForge(client))` when the plugin is missing.
 
@@ -378,6 +393,7 @@ const { data: found } = useQuery(api.messages.search, () => (term.value ? { text
 ```
 
 - `query(client, ref, args?)` is a store of `{ data, error, isLoading }`. The server subscription opens with the first subscriber and closes with the last, so unused stores cost nothing. Arguments are fixed for a store: for different arguments make a new store (for example inside a `$:` statement or keyed block).
+- Paginate with the argument helpers: `$: rows = query(client, api.patients.list, pageArgs({}, page, 20))` is numbered page `page` (with `$rows.data.total`), and `query(client, api.messages.list, windowArgs({}, size))` a growing list.
 - `session(client)` is a store of Better Auth's session state.
 - Mutations and actions are `client.mutation(...)` and `client.action(...)`; the Svelte package has no wrappers for them, and no optimistic updates.
 - The stores only use the standard store contract (`subscribe`), so they work with `$store` syntax in Svelte 4 and 5 without depending on Svelte.

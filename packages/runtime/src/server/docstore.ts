@@ -276,10 +276,9 @@ export class DocStore {
     };
 
     /** Every matching document, a batch at a time, for aggregates. */
-    const each = async (visit: (doc: Doc) => void) => {
+    const each = async (visit: (doc: Doc) => void, skip = offset) => {
       let cursor: unknown[] | undefined;
       let seen = 0;
-      let skip = offset;
       for (;;) {
         const batch = await run(SCAN_BATCH * 4, cursor);
         for (const d of await scanned(batch.docs)) {
@@ -291,6 +290,18 @@ export class DocStore {
         if (seen >= MAX_SCAN) throw new ValidationError(`Aggregates scan at most ${MAX_SCAN} documents of "${table}"; narrow the range with withIndex()`);
         cursor = keyOf(batch.keyFields, batch.docs.at(-1)!);
       }
+    };
+
+    /** How many documents the range holds after the filters, before any skip. */
+    const total = async () => {
+      if (hasFilter()) {
+        let n = 0;
+        await each(() => n++, 0);
+        return n;
+      }
+      const p = plan();
+      const [row] = await this.select(table, `SELECT COUNT(*) AS "n" FROM "${table}" ${p.where}`, p.params, [p.read]);
+      return Number(row?.n ?? 0);
     };
 
     const numbers = async (name: string, field: string) => {
@@ -342,16 +353,7 @@ export class DocStore {
         if (!Number.isInteger(n) || n < 0) throw new ValidationError(`take() expects a non-negative integer, got ${n}`);
         return finish((await matches(n)).docs);
       },
-      count: async () => {
-        if (hasFilter()) {
-          let n = 0;
-          await each(() => n++);
-          return n;
-        }
-        const p = plan();
-        const [row] = await this.select(table, `SELECT COUNT(*) AS "n" FROM "${table}" ${p.where}`, p.params, [p.read]);
-        return Math.max(0, Number(row?.n ?? 0) - offset);
-      },
+      count: async () => Math.max(0, (await total()) - offset),
       sum: async (field: string) => (await numbers("sum", field)).reduce((a, b) => a + b, 0),
       avg: async (field: string) => {
         const xs = await numbers("avg", field);
@@ -365,21 +367,25 @@ export class DocStore {
         const xs = await numbers("max", field);
         return xs.length ? xs.reduce((a, b) => Math.max(a, b)) : null;
       },
-      paginate: async ({ numItems, cursor }: { numItems: number; cursor: string | null }) => {
+      paginate: async ({ numItems, cursor, offset: extra = 0, withTotal }: { numItems: number; cursor: string | null; offset?: number; withTotal?: boolean }) => {
         if (!Number.isInteger(numItems) || numItems < 1 || numItems > MAX_PAGE) throw new ValidationError(`paginate() numItems must be an integer from 1 to ${MAX_PAGE}`);
+        if (!Number.isInteger(extra) || extra < 0) throw new ValidationError(`paginate() offset must be a non-negative integer, got ${extra}`);
         const keyLength =
           indexFields()
             .slice(eqs.length)
             .filter((f) => f !== "_creationTime").length + 2;
         const after = cursor === null ? undefined : decodeCursor(cursor, keyLength);
-        // skip() places the first page; a cursor already says where the next one starts.
-        const { docs, keyFields } = await matches(numItems + 1, after, after ? 0 : offset);
+        // skip() places the first page; a cursor already says where the next one starts. An offset counts from wherever the page starts.
+        const skip = (after ? 0 : offset) + extra;
+        if (skip > MAX_SCAN) throw new ValidationError(`paginate() passes over at most ${MAX_SCAN} documents, got ${skip}; go further with a cursor`);
+        const { docs, keyFields } = await matches(numItems + 1, after, skip);
         const page = docs.slice(0, numItems);
         const last = page.at(-1);
         return {
           page: await finish(page),
           isDone: docs.length <= numItems,
           continueCursor: last ? encodeCursor(keyOf(keyFields, last)) : (cursor ?? encodeCursor([])),
+          ...(withTotal === true && { total: await total() }),
         };
       },
     };

@@ -35,16 +35,23 @@ export interface UpperBoundBuilder<D, F extends keyof D> extends IndexRange {
   lte(field: F, value: D[F]): IndexRange;
 }
 
+/** One page: keyset (`cursor`, for feeds and infinite lists) or numbered (`offset`, for "page 3 of 10"), or both. */
 export interface PaginationOptions {
   numItems: number;
   /** null for the first page, then the previous page's `continueCursor`. */
   cursor: string | null;
+  /** Matching documents to pass over before the page, counted from `cursor` (or the start): page N is `offset: (N - 1) * numItems`. */
+  offset?: number;
+  /** Also count the documents in the range (the whole range, not the page), as `total`. */
+  withTotal?: boolean;
 }
 
 export interface PaginationResult<D> {
   page: D[];
   isDone: boolean;
   continueCursor: string;
+  /** With `withTotal`: how many documents the range holds. */
+  total?: number;
 }
 
 // ---- relationships ----

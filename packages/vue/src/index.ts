@@ -2,7 +2,7 @@ import { ArchlastForgeClient, updateError, type PublicAction, type PublicMutatio
 import { getFunctionName, type FunctionArgs, type FunctionReturn, type OptionalArgs } from "@archlast/forge-runtime";
 import { computed, getCurrentScope, inject, onScopeDispose, ref, shallowRef, toValue, watch, type App, type MaybeRefOrGetter, type Ref } from "vue";
 
-export { ArchlastForgeClient, ForgeError } from "@archlast/forge-client";
+export { ArchlastForgeClient, ForgeError, pageArgs, windowArgs } from "@archlast/forge-client";
 
 const KEY = Symbol("archlast-forge");
 

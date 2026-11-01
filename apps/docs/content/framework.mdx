@@ -188,6 +188,8 @@ export const loader = async ({ ctx }: LoaderArgs) => {
 // in the component: usePaginatedQuery(api.messages.list, {}, { initialNumItems: 30 })
 ```
 
+`windowArgs({}, 30)` and `pageArgs({}, page, 20)` from `@archlast/forge-react` build exactly what the hooks ask for: `ctx.query(api.patients.list, pageArgs({}, page, 20))` seeds `useNumberedPage(api.patients.list, {}, { page, pageSize: 20 })`, so a numbered page read from the URL renders on the server.
+
 Everything in the cache goes into the page twice, once rendered and once as JSON in `window.__FORGE__`, so seed what the first screen needs and nothing more. On the server the call goes through the query cache like any other query (see [Caching](caching.html)); in the browser it is one HTTP call (calls in the same tick are batched). Only public queries can be passed; the types reject `internal` references. Errors are covered under [Errors and status codes](#errors-and-status-codes).
 
 ### `ctx.viewer()`
