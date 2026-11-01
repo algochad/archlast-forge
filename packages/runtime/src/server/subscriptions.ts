@@ -6,6 +6,7 @@ import { log } from "./logger";
 import type { FunctionRuntime } from "./runtime";
 import type { CallTelemetry, TraceParent } from "./telemetry/context";
 import { failureOf } from "./telemetry/outcome";
+import { lazyValue } from "./wire";
 import type { Telemetry } from "./telemetry/recorder";
 
 /** Filled in by a query run for whoever records it: how the cache answered, and what the run recorded when it executed. */
@@ -202,7 +203,8 @@ export class QueryRunner {
       obs.telemetry = r.telemetry;
       if (r.usedAuth) this.perUser.add(name);
       const topics = r.topics ?? [];
-      return { value: r.value, topics, clean: this.untouched(topics, start), json: r.json ?? JSON.stringify(r.value) ?? "null" };
+      // `value` is read on demand: a result that crossed from the runtime process is its JSON text until something asks for the object.
+      return lazyValue({ topics, clean: this.untouched(topics, start), json: r.json ?? JSON.stringify(r.value) ?? "null" }, () => r.value);
     }
     const began = performance.now();
     const stats = this.statsOf(name);
@@ -216,6 +218,9 @@ export class QueryRunner {
       if (this.evicting) await this.invalidating; // a pending eviction must land before we read the cache
       const hit = await cache.get<Result>(key);
       if (hit) {
+        // An entry read back from a shared cache holds the JSON text and not the object: parse it if someone asks.
+        const stored: Partial<Result> = hit;
+        if (!("value" in stored) && stored.json !== undefined) lazyValue(hit, () => JSON.parse(stored.json!));
         stats.hits++;
         stats.hitMs += performance.now() - began;
         obs.cache = "hit";
@@ -258,7 +263,7 @@ export class QueryRunner {
     const clean = this.untouched(topics, start);
     // The entry is the object the caller gets, so the JSON a response builds from it (`json`) stays with the entry.
     const json = r.json ?? JSON.stringify(r.value) ?? "null";
-    const result: Result & { clean: boolean } = { value: r.value, topics, clean: clean && !unkeyed, json };
+    const result = lazyValue({ topics, clean: clean && !unkeyed, json }, () => r.value) as Result & { clean: boolean };
     const kept = cache && clean && !unkeyed && (await cache.set(key, result, { ttlMs: this.ttlMs, topics, size: json.length * 3 }));
     if (cache && !kept) stats.skipped++;
     return result;
@@ -401,7 +406,7 @@ export class SubscriptionManager {
           if (r.clean === false) dirty = true;
           // Subscribers of one query share its result object, so its JSON is built, and hashed, once for all of them.
           const json = (r.json ??= JSON.stringify(r.value) ?? "null");
-          update = { value: r.value, json };
+          update = lazyValue({ json }, () => r.value);
           hash = ((r as { hash?: string }).hash ??= String(Bun.hash(json)));
         } catch (e) {
           if (!recorded) this.telemetry!.end(root!, failureOf(e));

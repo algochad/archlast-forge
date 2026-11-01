@@ -177,3 +177,13 @@ export const searchNotes = query({
   handler: (ctx, { text, tag }) =>
     ctx.db.query("notes").withSearchIndex("search_body", (q) => (tag === undefined ? q.search("body", text) : q.search("body", text).eq("tag", tag))).take(10),
 });
+
+/** A large answer after some work, to see what a busy runtime process does with results the pipe to the server must carry. */
+export const bigAnswer = query({
+  args: { rows: v.number(), ms: v.number(), seed: v.number() },
+  handler: (_ctx, { rows, ms, seed }) => {
+    const end = Date.now() + ms;
+    while (Date.now() < end);
+    return Array.from({ length: rows }, (_, i) => ({ id: `row:${seed}:${i}`, name: "Santos, Maria", pad: "x".repeat(300), n: i, when: 1_700_000_000_000 + i, ok: i % 2 === 0, none: null }));
+  },
+});

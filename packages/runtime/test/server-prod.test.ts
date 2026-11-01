@@ -243,3 +243,33 @@ test("in process mode a burst of heavy queries is answered as each finishes, and
     await s.stop({ graceful: false });
   }
 }, 30_000);
+
+test("in process mode large answers from a busy runtime reach the server as they are produced, intact", async () => {
+  const s = await startServer({ forgeDir: fixture, env: prodEnv({ DATA_DIR: tempDir(), RUNTIME_MODE: "process", FUNCTION_TIMEOUT_MS: "30000" }) });
+  try {
+    const rows = 1500; // about 700 KB of JSON each
+    const calls = 40; // 40 x 25 ms of work: one second of computing in all
+    const started = performance.now();
+    const answers = await Promise.all(
+      Array.from({ length: calls }, async (_, seed) => {
+        const res = await fetch(`${s.url}/rpc/todos:bigAnswer?args=${encodeURIComponent(JSON.stringify({ rows, ms: 25, seed }))}`);
+        const body = (await res.json()) as { result: { id: string; n: number; when: number; ok: boolean; none: null }[] };
+        return { at: performance.now() - started, status: res.status, seed, body };
+      }),
+    );
+    expect(answers.every((a) => a.status === 200)).toBe(true);
+    // Intact: every value survives the trip as JSON, numbers, booleans and nulls included.
+    for (const a of answers) {
+      expect(a.body.result.length).toBe(rows);
+      expect(a.body.result[7]).toMatchObject({ id: `row:${a.seed}:7`, n: 7, when: 1_700_000_000_007, ok: false, none: null });
+    }
+    // As they are produced: the median answer comes back within the time it took to make them, not after everything has been made and then sent.
+    const at = answers.map((a) => a.at).sort((x, y) => x - y);
+    const [first, median, last] = [at[0]!, at[Math.floor(calls / 2)]!, at.at(-1)!];
+    // (Released 0.7.0: the first at about 0.85 of the last and the median at 0.95, all in a clump; now about 0.3 and 0.6.)
+    expect(first).toBeLessThan(last * 0.6);
+    expect(median).toBeLessThan(last * 0.85);
+  } finally {
+    await s.stop({ graceful: false });
+  }
+}, 60_000);

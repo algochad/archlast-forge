@@ -76,7 +76,25 @@ The drop with writes is what the cache can no longer hold, not the cost of writi
 ### A burst (200 different users call one function in the same instant, 1 worker)
 
 - Census of one unit (about 23 ms each): base answers at least 90% of the 200 together at 4.8 s (first at 71 ms, p10 4.8 s). This engine: first 70 ms, p10 0.5 s, p50 2.4 s, last 4.5 s.
-- Census of all 500 beds (550 KB, about 180 ms each): base failed 199 of 200 (166 with "Function runtime was restarted because a call didn't finish in time", 33 timeouts) and killed the runtime. This engine serves about 70 and refuses the rest with the retryable 503, and does not restart it. In this extreme case the answers still reach the clients together near the end: the server's main thread is busy receiving 550 KB results and flushing telemetry (below).
+- Census of all 500 beds (550 KB, about 180 ms each), 0.6.1: failed 199 of 200 (166 with "Function runtime was restarted because a call didn't finish in time", 33 timeouts) and killed the runtime. 0.7.0: serves 87–97 and refuses the rest with the retryable 503, without a restart, but the answers arrive together near the end (median served call 11.4–11.9 s; the first tenth of all answers at 11.2–11.6 s). After 0.7.0, with results sent as JSON text and the drain gate (below): 73–112 served (mean 95 over 7 runs), median served call 7.6–12.4 s (median of runs 9.0 s), the first tenth of answers at 2.5–5.6 s. The same number of calls get served; they are answered while they are made instead of after, and the process that refuses a stale call does it at the deadline. The pipe, not the server, is what remains (see the next section).
+
+### Large answers from a busy runtime process
+
+A result is moved from the runtime process to the server through a pipe that a busy process can only write to between its own turns (about 4 MB a second here). Until 0.7.0 each result crossed as the object and as its JSON, with its topics as an array of strings, and nothing stopped a process from running ahead of what the pipe had taken. The arrival times of the same 40 calls, each doing some work and returning a large answer, 3 runs each:
+
+| answer | 0.7.0: first · median · last | now: first · median · last |
+| ------ | ---------------------------- | -------------------------- |
+| 1,500 rows (about 700 KB), 25 ms of work | 1.57–1.85 · 1.70–1.95 · 1.81–2.07 s | 0.44–0.49 · 0.95–0.98 · 1.52–1.57 s |
+| 3,000 rows (about 1.4 MB), 60 ms of work | 3.5–3.9 · 3.7–4.2 · 3.8–4.3 s | 0.90–0.98 · 1.88–2.08 · 3.07–3.46 s |
+| 300 rows (about 140 KB), 10 ms of work, 150 calls | 0.14–0.25 · 0.97–1.13 · 1.8–2.3 s | 0.11–0.19 · 0.97–1.03 · 1.8–2.0 s |
+
+The median answer comes back 45–55% sooner and the first 3–4× sooner for large answers, and nothing changes for ordinary ones. What changed (the reasons are in `docs/decisions.md`): a result crosses as its JSON text and its topics as one string; large results are messages of their own and no queued query starts while more than 4 MB of results are unreported by the pipe; a call past its deadline is dropped on every turn and by a timer; and the 10 s process sampler reads the heap with `process.memoryUsage()` (0.02 ms) instead of `heapStats()`, which walked the heap on the main thread: 36 ms at 27 MB of live objects, 180 ms at 109 MB, 490 ms at 281 MB, in every process. `server-prod.test.ts` has the first row as a test: it fails on 0.7.0 five times of five and passes on the new code five of five.
+
+### Checks that nothing got slower (0.7.0 against the same code with those changes, interleaved)
+
+- Closed-loop mixed load, 5-bed database, 100 clients, 4 rounds each: 2% writes 1,716 req/s (1,473 · 1,683 · 1,824 · 1,885) against 1,560 (1,464 · 1,424 · 1,704 · 1,648); 10% writes 587 against 604. Per-operation p50 and p99 are comparable, some a little better and some a little worse.
+- Stress scenario with the migrated app, 1 worker, 5 rounds each with the first 20 s left out: no errors in any of the 10 runs. Median of the runs' p95 / p99 for a chart open 71 / 221 ms against 158 / 339 ms. Individual runs overlap a lot (p95 58–463 ms against 85–441 ms), so this shows no regression, not a measured gain. Including the cold start, 6 rounds each: the same throughput and server CPU; the "Server is busy" refusals that sometimes happen when 300 clients connect in the same instant came up in one run of six on the new code and two of six on 0.7.0.
+- Everything off (`TELEMETRY=off` and no sampler) did not lower any tail beyond noise, in the stress scenario or the burst.
 
 ### Correctness
 
@@ -85,8 +103,8 @@ The drop with writes is what the cache can no longer hold, not the cost of writi
 ## Not done, and found on the way
 
 - **Postgres, Redis and several servers were not run**: this machine has no Docker, Postgres or Redis. A function-runtime process allows up to 32 queries in flight so a Postgres-backed one still overlaps its waits; that path has no test beyond the in-memory ones.
-- **Telemetry flush on the server's main thread.** With telemetry on, the once-a-second flush hands traces to the worker thread by structured clone. A heavy call records up to 2,000 spans (`MAX_SPANS`) and 25 traces a second are kept, so a workload of heavy queries can stall the server for seconds (30% of the server's time in a profile of the census burst). Lowering `TELEMETRY_TRACES_PER_SECOND` is the lever today.
-- **A result crosses IPC twice**: as the object and as its JSON, and the server only uses the JSON. Measured round trip: 0.51 ms against 0.08 ms for 34 KB, 4.4 ms against 0.7 ms for 273 KB. Sending only the JSON (parsed on demand) would cut it about 6×; not done here, since it changes what a result is across the process boundary.
+- **Observability is not what held the burst back.** With everything off (`TELEMETRY=off` and the process sampler disabled), three runs each: the stress scenario's p99 for a chart open was 292 ms against 314 ms with it on, inside a run-to-run spread of 76–446 ms; the 200-user full-census burst had the same p10 and p50 (10.9–11.7 s against 11.0–12.0 s) and the same 113–121 refusals. An earlier version of this file blamed the telemetry flush; a profile suggested it and the experiment refuted it. The one observability cost that was real, the sampler's `heapStats()`, is gone (above).
+- **Big results still cost a busy process time to move.** The census of 500 beds returns 550 KB, and a busy runtime process pushes about 4 MB a second through the pipe, so a burst of those is bound by the pipe (the first tenth of answers now arrives in 2.5–5.6 s, the median served call still in 7.6–12.4 s). Results that big are the app's to shrink; the engine now keeps the wait where a deadline can refuse a call instead of in the pipe.
 - **The app's `shiftOf`** builds an `Intl.DateTimeFormat` on every call: 8–9% of the runtime's time in the profiles. A cached formatter fixes it (`packages/shared/src/shifts.ts` in the app).
 - **The cold start**: 300 callers connecting at once each need their session resolved and their access checked, two round trips each. After that they are kept.
 - **Across servers**, a deactivation is seen as soon as the Redis bus delivers the write, as for any cached result. The old per-user cache skipped the handler's check on a hit in the same way, so nothing got weaker.

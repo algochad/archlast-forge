@@ -1,8 +1,9 @@
 import { describe, expect, test } from "bun:test";
 import type { UserIdentity } from "../src/functions";
-import { MemoryCache } from "../src/server/cache";
+import { MemoryCache, type Cache } from "../src/server/cache";
 import type { FunctionRuntime } from "../src/server/runtime";
 import { QueryRunner } from "../src/server/subscriptions";
+import { lazyValue } from "../src/server/wire";
 
 type Call = { name: string; args: unknown; identity?: UserIdentity | null; access?: string };
 
@@ -31,6 +32,79 @@ function setup(opts: { delayMs?: number; peruser?: string[]; topics?: string[]; 
   const runner = new QueryRunner(runtime, opts.cache === null ? undefined : (opts.cache ?? new MemoryCache()), 60_000, true);
   return { runner, calls, bump: () => version++ };
 }
+
+/** A shared cache like Redis: what is stored is the JSON of the entry, and what comes back is parsed from it. */
+class JsonCache implements Cache {
+  stored = new Map<string, string>();
+  async get<T>(key: string) {
+    const raw = this.stored.get(key);
+    return raw === undefined ? undefined : (JSON.parse(raw) as T);
+  }
+  async set(key: string, value: unknown) {
+    this.stored.set(key, JSON.stringify(value));
+    return true;
+  }
+  async del(key: string) {
+    this.stored.delete(key);
+  }
+  async invalidate() {
+    return 0;
+  }
+  async clear() {
+    const n = this.stored.size;
+    this.stored.clear();
+    return n;
+  }
+  stats() {
+    return { entries: this.stored.size, bytes: null, evictions: 0 };
+  }
+  async close() {}
+}
+
+describe("a result that crosses from the runtime process as JSON text", () => {
+  const sent = { beds: [{ id: 1 }, { id: 2 }] };
+  const setupLazy = (cache: Cache) => {
+    const parsed = { count: 0 };
+    const runtime = {
+      manifest: { functions: [{ name: "beds:list" }] },
+      call: async () => lazyValue({ topics: ["beds"], json: JSON.stringify(sent) }, () => (parsed.count++, JSON.parse(JSON.stringify(sent)))),
+    } as unknown as FunctionRuntime;
+    return { runner: new QueryRunner(runtime, cache, 60_000, true), parsed };
+  };
+
+  test("is parsed only when its object is read, and once", async () => {
+    const { runner, parsed } = setupLazy(new MemoryCache());
+    for (let i = 0; i < 3; i++) expect((await runner.run("beds:list", {}, {})).json).toBe(JSON.stringify(sent)); // a miss, then hits: the text is all they use
+    expect(parsed.count).toBe(0);
+    const r = await runner.run("beds:list", {}, {});
+    expect(r.value).toEqual(sent);
+    expect(r.value).toBe(r.value);
+    expect(parsed.count).toBe(1);
+  });
+
+  test("leaves the object out of what a shared cache stores, and still answers `value` from what comes back", async () => {
+    const cache = new JsonCache();
+    const { runner, parsed } = setupLazy(cache);
+    await runner.run("beds:list", {}, {}); // miss: stored
+    const [entry] = [...cache.stored.values()];
+    expect(JSON.parse(entry!)).toEqual({ topics: ["beds"], clean: true, json: JSON.stringify(sent) }); // one copy of the data, not two
+    const hit = await runner.run("beds:list", {}, {});
+    expect(hit.json).toBe(JSON.stringify(sent));
+    expect(runner.snapshot().hits).toBe(1);
+    expect(hit.value).toEqual(sent); // parsed from the entry's JSON
+    expect(hit.value).toBe(hit.value);
+    expect(parsed.count).toBe(0); // the runtime's own object was never needed
+  });
+
+  test("an entry an older server wrote, which has both, is used as it is", async () => {
+    const cache = new JsonCache();
+    await cache.set("beds:list\u0000{}", { value: sent, topics: ["beds"], clean: true, json: JSON.stringify(sent) });
+    const { runner } = setupLazy(cache);
+    const hit = await runner.run("beds:list", {}, {}, undefined, "{}");
+    expect(hit.value).toEqual(sent);
+    expect(runner.snapshot().hits).toBe(1);
+  });
+});
 
 describe("QueryRunner cache", () => {
   test("the second identical call is a hit; different args are separate entries", async () => {

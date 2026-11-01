@@ -4,6 +4,7 @@ import { serializeError, type CallHeaders, type CallResult, type ErrorKind, type
 import type { Manifest } from "./project";
 import type { Batch, HostEvent, HostMessage, HttpRequestMessage, HttpResponseMessage, RuntimeMessage, SerializedRequest, SerializedResponse, SocketMessage } from "./protocol";
 import { startCore, type RuntimeCore } from "./runtime-core";
+import { fromWire } from "./wire";
 import type { CallTelemetry, TraceParent } from "./telemetry/context";
 import type { MetricPoint, RuntimeSample, TraceRecord } from "./telemetry/types";
 
@@ -239,7 +240,7 @@ class RuntimeProcess implements Worker {
           cancel: () => (this.streams.delete(msg.id), this.event({ t: "cancel", id: msg.id })), // the client left: the handler hears it in the child
         });
         p?.resolve({ ...(msg.value as HttpResponseMessage), body });
-      } else p?.resolve(msg.value);
+      } else p?.resolve(fromWire(msg.value));
       return;
     }
     if (msg.t === "chunk") {
