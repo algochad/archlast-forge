@@ -1,6 +1,6 @@
-import { redirect, useViewer, type LoaderArgs } from "@archlast/forge-framework";
+import { redirect, useTimeZone, useViewer, type LoaderArgs } from "@archlast/forge-framework";
 import { ForgeError, useMutation, usePaginatedQuery } from "@archlast/forge-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { api } from "../../forge/_generated/api";
 
 const PAGE = 30;
@@ -15,6 +15,9 @@ export const loader = async ({ ctx }: LoaderArgs) => {
 
 export default function Chat() {
   const viewer = useViewer();
+  // Times are formatted in the visitor's zone: the server renders in the one the browser last told it, and the browser starts from the same, so the page hydrates cleanly.
+  const timeZone = useTimeZone();
+  const clock = useMemo(() => new Intl.DateTimeFormat("en-US", { timeStyle: "short", timeZone }), [timeZone]);
   const { results, status, loadMore } = usePaginatedQuery(api.messages.list, {}, { initialNumItems: PAGE });
   const send = useMutation(api.messages.send);
   const [body, setBody] = useState("");
@@ -52,7 +55,7 @@ export default function Chat() {
           {messages.length === 0 && <li className="chat-empty">No messages yet. Say hello, then open this page in another window.</li>}
           {messages.map((m) => (
             <li key={m._id} className={`msg${m.authorId === viewer?.userId ? " mine" : ""}`}>
-              <small>{m.authorName}</small>
+              <small>{m.authorName} · <time dateTime={new Date(m._creationTime).toISOString()}>{clock.format(m._creationTime)}</time></small>
               <p>{m.body}</p>
             </li>
           ))}

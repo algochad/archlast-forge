@@ -20,5 +20,6 @@ export {
 export { useLoaderData } from "./loader-data";
 export { forgeContext, type LoaderArgs, type LoaderContext, type Viewer } from "./context";
 export { useViewer } from "./providers";
+export { useNow, useTimeZone } from "./time";
 export { DefaultErrorBoundary, DefaultLayout } from "./default-root";
 export type { RouteModule } from "./route-objects";

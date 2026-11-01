@@ -244,6 +244,75 @@ export function Breadcrumbs() {
 
 `useRouteLoaderData("routes/blog/_layout")` reads another route's loader data by route id, from a child or from the root. It is `undefined` when that route is not on the page.
 
+## Times and the clock
+
+The server renders the page in its own time zone and at its own moment. The browser hydrates it a few seconds later, in the visitor's zone. If the two renders produce different text, React cannot patch it up: it reports an error, throws away the server's HTML and renders the page again in the browser. Three things cause it:
+
+| Cause | Example | Server renders | Browser's hydrating render |
+|---|---|---|---|
+| **Time zone** | `new Date(ts).toLocaleString()` | the server's zone (UTC in a container) | the visitor's zone |
+| **The clock** | `Date.now()` or `new Date()` while rendering ("3 hours ago", "day 2 of the stay") | the moment it rendered | a later moment, often another minute |
+| **Arguments from the clock** | `useQuery(api.events.since, { from: Date.now() - DAY })` | the key the loader seeded, so the data | another key, so no data yet |
+
+What happens, as checked in Chromium with the server in UTC and the browser in another zone: in production the console shows `Minified React error #418`; in development it names the component and prints the two texts (`+` client, `-` server). React discards the server's HTML under the nearest boundary, which in the pages checked was everything inside `<body>`, and renders it again. The visitor sees the time change under them, and the elements are new ones, so focus, a text selection or anything typed into them before hydration is lost. The server's HTML bought nothing. The error goes to `window` as an error event (so error trackers see it), and the framework adds a console warning that points here. In development it also shows a notice on the page (click to dismiss).
+
+None of this needs a flag or a provider. The fix is to render the same text on both sides:
+
+### `useTimeZone()` and `useNow()`
+
+```tsx
+import { useNow, useTimeZone } from "@archlast/forge-framework";
+
+function Admission({ at }: { at: number }) {
+  const timeZone = useTimeZone();      // "Asia/Manila"
+  const now = useNow();                // milliseconds, rounded down to the minute
+  const when = new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone }).format(at);
+  return (
+    <p>
+      {when} · day {Math.floor((now - at) / 86_400_000) + 1}
+    </p>
+  );
+}
+```
+
+- `useTimeZone()` is the visitor's IANA zone name. Pass it to `Intl.DateTimeFormat` (or to any library that takes a zone name, like `formatInTimeZone` in date-fns-tz). Pass the locale too: the server's default locale is not the visitor's either.
+- `useNow(interval = 60_000)` is the current time in milliseconds, rounded down to `interval`, and the component renders again each time the interval turns. All components that ask for the same interval share one timer, and the ticks line up with the clock. Use a shorter interval (`useNow(1000)`) for a ticking clock and a longer one for dates.
+- While the browser hydrates, both return what the server rendered with (its instant and its zone for this visitor), so the first render matches the HTML. Right after hydration they switch to the browser's own zone and time. That is an ordinary update, not a mismatch: the text changes in place and nothing is discarded.
+- They need no provider. Outside a page the framework rendered (a component test, say) `useTimeZone()` is the runtime's zone (set `TZ`) and `useNow()` follows `Date.now()`, so fake timers work.
+
+**How the server knows the zone.** The first time a component calls `useTimeZone()`, the browser sets a cookie, `forge-tz=Asia/Manila` (`Path=/`, one year, `SameSite=Lax`, `Secure` on https). From then on every page request carries it, and the server formats in that zone. The cookie holds the zone name and nothing else, it is validated before it is used (it must be a zone the runtime knows), and the page renderer is the only thing that reads it. Pages that never call `useTimeZone()` never set it. The page stays `cache-control: private, no-cache` with `vary: cookie`.
+
+The visit that has no cookie yet (the first one, or after the visitor cleared cookies) is rendered in UTC on the server and in the hydrating render, and then moves to the visitor's zone as soon as the page is hydrated. That one shows UTC for a moment; the cookie makes every later page load right from the first byte. Navigations inside the app run in the browser, so they are in the visitor's zone from the start.
+
+### Arguments that come from the clock
+
+A range like "the last 24 hours" is an argument, and an argument that depends on `Date.now()` differs between the server's render and the browser's, so the cache key differs too. Work it out once in the loader, return it, and read it with `useLoaderData`: both renders then use the one value.
+
+```tsx
+// Snapped to the minute so that calls in the same minute share a cache entry.
+const lastDay = () => Math.floor((Date.now() - 86_400_000) / 60_000) * 60_000;
+
+export const loader = async ({ ctx }: LoaderArgs) => {
+  const from = lastDay();
+  await ctx.query(api.events.since, { from });
+  return { from };
+};
+
+export default function Range() {
+  const { from } = useLoaderData<typeof loader>();
+  const events = useQuery(api.events.since, { from });
+  // ...
+}
+```
+
+The loader's result is in the page (`window.__FORGE__.hydration`), so the browser reads exactly the value the server used. After a client-side navigation the loader runs in the browser and works out a fresh one. The window then stays fixed until the next navigation or revalidation; that is the point.
+
+### What to avoid
+
+- **`suppressHydrationWarning` on the element.** It silences the error but keeps the server's text, so the wrong zone stays on screen, and it covers only one level and only text and attributes: it does nothing for the argument case, where the data itself is missing.
+- **`useEffect` to set the formatted time into state.** It works, but the server's HTML then has no time at all (or a placeholder), which is what `useTimeZone()` avoids.
+- **Putting the viewer's zone in a query or a loader.** The zone is for display. Keep dates in the database as timestamps and format them in the component.
+
 ## The viewer and sign-in
 
 `useViewer()` gives components the signed-in user (`Viewer | null`). It is part of the server-rendered HTML (`window.__FORGE__.viewer`), so a header can say "Hi Ada" with no flash, and it follows sign-in and sign-out without a reload.
@@ -458,11 +527,13 @@ The `forge/` half of a full-stack app can use NestJS the same way a backend does
    |---|---|
    | `dev` | `true` in development; the browser shows error details only then |
    | `viewer` | the signed-in user or `null` |
+   | `now` | the server's clock in milliseconds when it rendered: what `useNow()` returns while the browser hydrates |
+   | `timeZone` | the zone the server formatted times in (from the `forge-tz` cookie, otherwise `UTC`): what `useTimeZone()` returns while the browser hydrates |
    | `queries` | the dehydrated live cache: every `ctx.query` result, with its key |
    | `hydration` | `loaderData` by route id, `actionData` (always `null`) and the sanitized `errors` |
 
    The JSON is escaped so it cannot break out of the `<script>` element.
-6. The browser loads `/_app/entry.client-<hash>.js`, rebuilds the router with the embedded data, loads the code of the routes on this page, and hydrates the whole document. Then it takes over navigation, and live queries connect over the WebSocket at `/rpc`.
+6. The browser loads `/_app/entry.client-<hash>.js`, rebuilds the router with the embedded data, loads the code of the routes on this page, and hydrates the whole document, using the server's `now` and `timeZone` for that first render (see [Times and the clock](#times-and-the-clock)). Then it takes over navigation, and live queries connect over the WebSocket at `/rpc`.
 
 If `window.__FORGE__` is missing (the page was not rendered by the engine, for instance a cached copy of the HTML served by something else) the browser entry throws `This page wasn't rendered by archlast-forge: window.__FORGE__ is missing.`
 
@@ -697,7 +768,7 @@ The `ErrorBoundary` in `root.tsx` above handles both. To test it: `GET /anything
 - Saving a file in `app/` rebuilds the app (a fifth of a second for the starter) and the browser reloads, over a server-sent-events connection at `/_app/__events`. A new file in `routes/` is a new page, with no restart. A save that only touches `public/` reloads without a rebuild. The previous build is kept for a moment so a page that is still open can fetch its files.
 - A build error appears over the page (dark overlay; `Esc` dismisses it) and in the terminal, and fixing the file reloads the page. While the build is broken, every page request answers `500` with the error, instead of serving the last good build.
 - Editing a file in `forge/` regenerates `forge/_generated`, restarts only your functions (`✓ function runtime restarted (tasks.ts)`), and then rebuilds the app, because the generated types changed. Open WebSocket connections stay up and subscriptions re-run. Changing `forge/package.json` or the lockfile installs dependencies first.
-- Errors show details in development: the real message and the stack in the error page.
+- Errors show details in development: the real message and the stack in the error page. A hydration mismatch (the server's HTML and the browser's first render differ) shows a notice in the corner of the page, and in the console, with a pointer to [Times and the clock](#times-and-the-clock).
 - Services you chose (PostgreSQL, Redis, storage) run in Docker with their ports on localhost, and stop when you do; their data stays in Docker volumes. With `--no-docker` they are not started and the app uses SQLite (set `DATABASE_URL`, `REDIS_URL` or `S3_*` yourself to use others).
 - `--port <n>` changes the port. Development trusts `http://localhost:<port>` for sign-in. Setting `TRUSTED_ORIGINS` yourself replaces that default.
 
@@ -774,6 +845,7 @@ The code is small enough to read (`packages/framework/src`):
 | `server.tsx` | `createApp`: the `AppHost` the engine calls for every request it doesn't own; static files, rendering, errors |
 | `client.tsx` | `startClient`: restores the cache, builds the browser router, hydrates the document |
 | `context.ts`, `providers.tsx`, `state.ts` | the loader context, the viewer store, and the shape of `window.__FORGE__` |
+| `time.tsx`, `hydration.ts` | `useTimeZone` and `useNow` with the `forge-tz` cookie; what the browser says when a hydration mismatch is reported |
 | `dev.ts` | the file watcher, live reload events, the error overlay |
 
 The engine side is `AppHost` in `packages/runtime/src/server/server.ts`: `fetch(req, env)` where `env` offers `call` (run a public function as the caller), `identity`, `rateLimited`, `keepAlive` and the request id. The CLI loads the framework package from your project at run time (`packages/cli/src/app.ts`), so a backend project never installs React.

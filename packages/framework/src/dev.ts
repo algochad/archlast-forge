@@ -13,6 +13,16 @@ export const DEV_SCRIPT = `(() => {
     overlay.innerHTML = '<div style="max-width:960px;margin:0 auto"><div style="font:600 18px system-ui,sans-serif;color:#ff6b6b;margin-bottom:14px">' + esc(title) + '</div><pre style="margin:0;white-space:pre-wrap;font:13px/1.55 ui-monospace,SFMono-Regular,Menlo,monospace">' + esc(message) + '</pre><div style="margin-top:22px;font:12px system-ui,sans-serif;color:#9a9aa3">Fix it and save: this page reloads by itself. Esc dismisses.</div></div>';
     document.body.append(overlay);
   };
+  let note;
+  const notice = (title, message) => {
+    note?.remove();
+    note = document.createElement("div");
+    note.setAttribute("style", "position:fixed;right:16px;bottom:16px;z-index:2147483646;max-width:460px;background:#1c1c22;color:#f4f4f5;border:1px solid #ff6b6b;border-radius:10px;padding:14px 16px;box-shadow:0 8px 30px rgba(0,0,0,.4);cursor:pointer");
+    note.innerHTML = '<div style="font:600 14px system-ui,sans-serif;color:#ff6b6b;margin-bottom:6px">' + esc(title) + '</div><div style="white-space:pre-wrap;font:12px/1.5 system-ui,sans-serif">' + esc(message) + '</div><div style="margin-top:8px;font:11px system-ui,sans-serif;color:#9a9aa3">Click to dismiss.</div>';
+    note.onclick = () => { note.remove(); note = undefined; };
+    document.body.append(note);
+  };
+  window.__forgeNotice = notice;
   addEventListener("keydown", (e) => e.key === "Escape" && hide());
   if (window.__FORGE_ERROR__) show(window.__FORGE_ERROR__.title, window.__FORGE_ERROR__.message);
   let lost = false;

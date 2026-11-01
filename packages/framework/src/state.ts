@@ -4,6 +4,9 @@ import type { Viewer } from "./context";
 /** What the server writes into the page: `window.__FORGE__`. */
 export interface PageState {
   dev: boolean;
+  /** The instant the server rendered the page, and the time zone it formatted in: the browser's hydrating render uses both (see time.tsx). */
+  now: number;
+  timeZone: string;
   viewer: Viewer | null;
   queries: DehydratedState;
   hydration: { loaderData: Record<string, unknown>; actionData: Record<string, unknown> | null; errors: Record<string, SerializedError> | null };
@@ -15,6 +18,8 @@ export type SerializedError = { kind: "response"; status: number; statusText: st
 declare global {
   interface Window {
     __FORGE__?: PageState;
+    /** Development only (the dev script defines it): a note on top of the page that doesn't block it. */
+    __forgeNotice?: (title: string, message: string) => void;
   }
 }
 

@@ -653,6 +653,8 @@ From the framework:
 ```ts
 function useLoaderData<L extends (...args: never[]) => unknown>(): Awaited<ReturnType<L>>;   // useLoaderData<typeof loader>()
 function useViewer(): Viewer | null;
+function useTimeZone(): string;                       // the visitor's IANA zone, "UTC" until the browser has told the server
+function useNow(interval?: number): number;          // ms, rounded down to interval (60_000 by default), re-renders when it turns
 const forgeContext: RouterContext<LoaderContext>;     // args.context.get(forgeContext)
 function DefaultLayout(props: { children: ReactNode }): ReactElement;
 function DefaultErrorBoundary(): ReactElement;
@@ -684,6 +686,7 @@ interface RouteModule {
 - `ctx.query(ref, args)` runs a public query as the signed-in user and stores the result in the page's live cache, so `useQuery(ref, args)` in the component has its data on the first render and stays live afterwards. On the server it calls the engine in-process; in the browser it goes over HTTP.
 - `ctx.viewer()` returns the signed-in user or `null`. In the browser it asks the server, so it is right just after a sign-in or sign-out.
 - `useViewer()` is the signed-in user, rendered on the server and kept current after sign-in and sign-out without a reload.
+- `useTimeZone()` and `useNow()` give a server-rendered page the same text on the server and in the browser's hydrating render, then follow the browser's own zone and clock. They read the `forge-tz` cookie the browser sets once `useTimeZone` has been used. See [Times and the clock](framework.html#times-and-the-clock).
 - `DefaultLayout` is the `<html>` document used when `app/root.tsx` has no `Layout`. `DefaultErrorBoundary` is shown for routes without an `ErrorBoundary`: `404 Page not found`, `401`/`403 Not allowed`, otherwise `Something went wrong`.
 - Hooks from `@archlast/forge-react` (`useQuery`, `useMutation`, `useAuth`, ...) work in pages; the provider is already set up.
 

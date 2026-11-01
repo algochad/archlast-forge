@@ -5,6 +5,7 @@ import { hydrateRoot } from "react-dom/client";
 import { createBrowserRouter, matchRoutes, RouterContextProvider } from "react-router";
 import { RouterProvider } from "react-router/dom";
 import { createViewerStore, forgeContext, type LoaderContext, type Viewer, type ViewerStore } from "./context";
+import { reportRecoverableError } from "./hydration";
 import { Providers } from "./providers";
 import { toRouteObjects, type ManifestNode } from "./route-objects";
 import { reviveErrors } from "./state";
@@ -54,10 +55,13 @@ export async function startClient(manifest: ManifestNode) {
     hydrationData: { loaderData: state.hydration.loaderData, actionData: state.hydration.actionData, errors: reviveErrors(state.hydration.errors) },
     getContext: () => new RouterContextProvider(new Map([[forgeContext, ctx]])),
   });
+  // The server's instant and zone, so this first render says what the server's HTML says; the hooks move to the browser's own right after.
+  const time = { now: state.now ?? Date.now(), timeZone: state.timeZone ?? "UTC" };
   hydrateRoot(
     document,
-    <Providers client={client} queryClient={queryClient} viewer={viewer} dev={state.dev}>
+    <Providers client={client} queryClient={queryClient} viewer={viewer} dev={state.dev} time={time}>
       <RouterProvider router={router} />
     </Providers>,
+    { onRecoverableError: (error) => reportRecoverableError(error, window.__forgeNotice) },
   );
 }

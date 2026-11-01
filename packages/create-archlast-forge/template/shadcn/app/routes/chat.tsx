@@ -1,6 +1,6 @@
-import { redirect, useViewer, type LoaderArgs } from "@archlast/forge-framework";
+import { redirect, useTimeZone, useViewer, type LoaderArgs } from "@archlast/forge-framework";
 import { ForgeError, useMutation, usePaginatedQuery } from "@archlast/forge-react";
-import { useEffect, useRef, useState, type FormEvent } from "react";
+import { useEffect, useMemo, useRef, useState, type FormEvent } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,9 @@ export const loader = async ({ ctx }: LoaderArgs) => {
 
 export default function Chat() {
   const viewer = useViewer();
+  // Times are formatted in the visitor's zone: the server renders in the one the browser last told it, and the browser starts from the same, so the page hydrates cleanly.
+  const timeZone = useTimeZone();
+  const clock = useMemo(() => new Intl.DateTimeFormat("en-US", { timeStyle: "short", timeZone }), [timeZone]);
   const { results, status, loadMore } = usePaginatedQuery(api.messages.list, {}, { initialNumItems: PAGE });
   const send = useMutation(api.messages.send);
   const [body, setBody] = useState("");
@@ -58,7 +61,7 @@ export default function Chat() {
             const mine = m.authorId === viewer?.userId;
             return (
               <li key={m._id} className={cn("msg max-w-[80%] rounded-2xl px-3.5 py-2", mine ? "mine self-end bg-primary text-primary-foreground" : "self-start bg-muted")}>
-                <small className="block text-xs opacity-70">{m.authorName}</small>
+                <small className="block text-xs opacity-70">{m.authorName} · <time dateTime={new Date(m._creationTime).toISOString()}>{clock.format(m._creationTime)}</time></small>
                 <p className="[overflow-wrap:anywhere]">{m.body}</p>
               </li>
             );

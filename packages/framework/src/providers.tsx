@@ -3,6 +3,7 @@ import { ArchlastForgeProvider } from "@archlast/forge-react";
 import type { QueryClient } from "@tanstack/react-query";
 import { createContext, useContext, useSyncExternalStore, type ReactNode } from "react";
 import { createViewerStore, type Viewer, type ViewerStore } from "./context";
+import { TimeContext, type TimeState } from "./time";
 
 const ViewerContext = createContext<ViewerStore>(createViewerStore(null));
 /** Dev mode shows error details; production doesn't. */
@@ -16,11 +17,13 @@ export function useViewer(): Viewer | null {
   return useSyncExternalStore(store.subscribe, store.get, store.get);
 }
 
-export function Providers(props: { client: ArchlastForgeClient; queryClient: QueryClient; viewer: ViewerStore; dev: boolean; children?: ReactNode }) {
+export function Providers(props: { client: ArchlastForgeClient; queryClient: QueryClient; viewer: ViewerStore; dev: boolean; time?: TimeState; children?: ReactNode }) {
   return (
     <ArchlastForgeProvider client={props.client} queryClient={props.queryClient}>
       <DevContext.Provider value={props.dev}>
-        <ViewerContext.Provider value={props.viewer}>{props.children}</ViewerContext.Provider>
+        <ViewerContext.Provider value={props.viewer}>
+          <TimeContext.Provider value={props.time}>{props.children}</TimeContext.Provider>
+        </ViewerContext.Provider>
       </DevContext.Provider>
     </ArchlastForgeProvider>
   );

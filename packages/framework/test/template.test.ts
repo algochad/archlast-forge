@@ -117,6 +117,32 @@ function suite(label: string, name: string, shadcn?: BaseColor) {
         expect(problems).toEqual([]);
       });
 
+      run("message times are in the visitor's zone, from a server in another one, and the page hydrates without a complaint", async () => {
+        const serverZone = process.env.TZ;
+        process.env.TZ = "UTC"; // the server renders in UTC; the visitor is in Los Angeles
+        try {
+          const context = await browser!.newContext({ timezoneId: "America/Los_Angeles" });
+          const page = await context.newPage();
+          const problems: string[] = [];
+          page.on("console", (m) => ["error", "warning"].includes(m.type()) && !/WebSocket is closed before the connection is established/.test(m.text()) && problems.push(`${m.type()}: ${m.text().slice(0, 300)}`));
+          page.on("pageerror", (e) => problems.push(`pageerror: ${e.message.slice(0, 300)}`));
+          await page.goto(`${srv.url}/sign-in`, { waitUntil: "networkidle" });
+          await page.fill("#email", "ada@example.com");
+          await page.fill("#password", "correct horse battery");
+          await page.click("button:has-text('Sign in')");
+          await page.waitForURL("**/chat");
+          await page.goto(`${srv.url}/chat`, { waitUntil: "networkidle" }); // a server-rendered load, with the messages preloaded by the loader
+          const sent = await page.getAttribute(".msg time", "datetime");
+          const here = new Intl.DateTimeFormat("en-US", { timeStyle: "short", timeZone: "America/Los_Angeles" }).format(new Date(sent!));
+          expect(await page.textContent(".msg time")).toBe(here);
+          expect(problems).toEqual([]);
+          await context.close();
+        } finally {
+          if (serverZone === undefined) delete process.env.TZ;
+          else process.env.TZ = serverZone;
+        }
+      });
+
       run("signing out returns to the home page and closes the chat", async () => {
         const { page, problems } = await visitor();
         await page.goto(`${srv.url}/sign-in`, { waitUntil: "networkidle" });
