@@ -157,9 +157,9 @@ const me = await ctx.auth.getUserIdentity();
 // { userId: Id<"users">, sessionId: string, email: string, name: string } | null
 ```
 
-`null` means the caller is anonymous. Identity is resolved once per request from the session cookie or `Authorization` header, before the function's transaction starts. Actions pass it on: `ctx.runQuery` and `ctx.runMutation` from an action run as the same user. Scheduled functions and crons have no user, so `getUserIdentity()` returns `null` there.
+`null` means the caller is anonymous. Identity is resolved once per request from the session cookie or `Authorization` header, before the function's transaction starts. The server remembers who a session belongs to while the session and user rows are unchanged, so the object is shared between calls and read-only (assigning to it throws); copy it if you need to change it. Actions pass it on: `ctx.runQuery` and `ctx.runMutation` from an action run as the same user. Scheduled functions and crons have no user, so `getUserIdentity()` returns `null` there.
 
-A query that calls `getUserIdentity()` is cached per user instead of being shared. Authorization is always yours to write: check the identity in the function and throw a `ForgeError` when it is not allowed. See [Authentication](auth.html).
+A query that calls `getUserIdentity()` is cached per user instead of being shared. Authorization is always yours to write: check the identity in the function and throw a `ForgeError` when it is not allowed. See [Authentication](auth.html). If the check is all the query does with the caller, declare it as `access` and the result is shared: see [Sharing a query between users](#sharing-a-query-between-users).
 
 ### `ctx.storage`
 
@@ -210,8 +210,37 @@ Because queries are re-run and cached, they must be **deterministic functions of
 
 - Do not call `fetch`, read files or call anything outside the database. Use an action.
 - Do not depend on `Date.now()` or `Math.random()`. A query is not re-run when time passes, and its result may be served from the [cache](caching.html) for up to `CACHE_TTL_MS` (60 s by default, in dev too). To filter by "now", take the time as an argument (rounded, so cache entries are shared) or store a flag with a scheduled function.
-- A query that reads `ctx.auth` gets one cache entry per user. One that does not read it is shared by everyone, so it must not return anything user-specific.
+- A query that reads `ctx.auth` gets one cache entry per user. One that does not read it is shared by everyone, so it must not return anything user-specific. One that only *checks* the caller can declare that check as `access` and stay shared (below).
 - Reads are limited: a `filter` or aggregate that scans more than 100,000 documents fails (see [Reading data](queries.html#limits)).
+
+### Sharing a query between users
+
+Most apps start every function with a check: is someone signed in, is that person active, do they have the right role. The data the query returns is the same for everyone who passes. The engine can't tell a check from a use of the identity, so by default it caches such a query once per user: 300 signed-in staff mean 300 runs of the same query, and again after every change it reads.
+
+Move the check into `access` and say so:
+
+```ts
+import { ForgeError, query } from "@archlast/forge-runtime";
+
+export const beds = query({
+  args: {},
+  access: async (ctx) => {
+    const me = await ctx.auth.getUserIdentity();
+    const user = me && (await ctx.db.get(me.userId));
+    if (!user || user.banned) throw new ForgeError("Not allowed");
+  },
+  handler: async (ctx) => ctx.db.query("admissions").withIndex("by_status", (q) => q.eq("status", "ACTIVE")).collect(),
+});
+```
+
+`access` takes the same `ctx` and arguments as the handler. It runs for **every caller, every time the query is served or pushed**, and a throw refuses the caller. The handler runs once for everyone who passes, and its result is cached and shared like any query without `ctx.auth`. Two rules follow:
+
+- **The handler can't call `ctx.auth.getUserIdentity()`.** It throws, because a result that depended on the caller could not be shared. A query whose data differs by caller (the caller's own tasks, a role-specific view) stays as it was, without `access`.
+- **`access` decides who may see the result, not what it contains.** Everyone who passes gets the same value. To return less to some callers, use two queries.
+
+Refusing takes effect at once. What the check read is watched like any other read: deactivating the user, changing their role, or ending their session evicts the kept check, so the next call runs it again and is refused. A live subscription is woken by the same write and receives the error. The check is kept for a caller while those rows are unchanged (at most `CACHE_TTL_MS`, and never past the end of the session), so a cache hit costs no trip to the function runtime. A refusal is never kept.
+
+A migration is usually mechanical: a query that starts with `await requireUser(ctx);` and ignores the result becomes `access: requireUser`. A function that uses the value it returns (`const me = await requireUser(ctx)`, then `me.role` in the data) depends on the caller and should stay as it is. The Cache page marks the queries that are still **per user**. Calling an `access` query from an action with `ctx.runQuery` runs the check as the action's user, then the handler.
 
 ## Mutations
 

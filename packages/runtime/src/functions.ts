@@ -230,33 +230,47 @@ export interface RegisteredFunction<K extends FunctionKind = FunctionKind, Args 
   readonly args: PropertyValidators;
   readonly returns?: Validator;
   readonly handler: (ctx: any, args: any) => unknown;
+  /** Queries only: who may run this query, checked for every caller on every serve. When set, the result is shared by every caller that passes. */
+  readonly access?: (ctx: any, args: any) => unknown;
   readonly [fnTypes]?: { args: Args; return: Return };
 }
 
 /** What a handler may return for a `returns` validator; returning nothing counts as null. */
 type HandlerReturn<V extends Validator<any, false>> = Infer<V> | (null extends Infer<V> ? void : never);
 
+/**
+ * A query may split who can run it from what it returns. `access` runs for every caller each time the query is served or pushed, and
+ * throws (a ForgeError, say) to refuse; the handler then returns the same result for everyone who passes, so one run, and one cache entry, serve all
+ * of them. The handler can't read `ctx.auth` (it would make the result depend on the caller); `access` can.
+ */
+type AccessFor<K extends FunctionKind, A extends PropertyValidators> = K extends "query" ? { access?: (ctx: QueryCtx, args: ObjectType<A>) => unknown } : {};
+
 interface FunctionBuilder<K extends FunctionKind, Vis extends Visibility> {
-  <A extends PropertyValidators = {}, R = unknown>(def: {
-    args?: A;
-    handler: (ctx: CtxFor<K>, args: ObjectType<A>) => R;
-  }): RegisteredFunction<K, ObjectType<A>, Awaited<R>, Vis>;
+  <A extends PropertyValidators = {}, R = unknown>(
+    def: {
+      args?: A;
+      handler: (ctx: CtxFor<K>, args: ObjectType<A>) => R;
+    } & AccessFor<K, A>,
+  ): RegisteredFunction<K, ObjectType<A>, Awaited<R>, Vis>;
   // Last, so a mismatch reports this overload's error rather than "unknown property returns".
   /** With `returns`, the validator is the function's return type and is checked at runtime (a mismatch rolls back a mutation). */
-  <A extends PropertyValidators = {}, V extends Validator<any, false> = Validator<any, false>>(def: {
-    args?: A;
-    returns: V;
-    handler: (ctx: CtxFor<K>, args: ObjectType<A>) => HandlerReturn<V> | Promise<HandlerReturn<V>>;
-  }): RegisteredFunction<K, ObjectType<A>, Infer<V>, Vis>;
+  <A extends PropertyValidators = {}, V extends Validator<any, false> = Validator<any, false>>(
+    def: {
+      args?: A;
+      returns: V;
+      handler: (ctx: CtxFor<K>, args: ObjectType<A>) => HandlerReturn<V> | Promise<HandlerReturn<V>>;
+    } & AccessFor<K, A>,
+  ): RegisteredFunction<K, ObjectType<A>, Infer<V>, Vis>;
 }
 
 const define = <K extends FunctionKind, Vis extends Visibility>(kind: K, visibility: Vis): FunctionBuilder<K, Vis> =>
-  ((def: { args?: PropertyValidators; returns?: Validator; handler: RegisteredFunction["handler"] }) => ({
+  ((def: { args?: PropertyValidators; returns?: Validator; handler: RegisteredFunction["handler"]; access?: RegisteredFunction["access"] }) => ({
     kind,
     visibility,
     args: def.args ?? {},
     returns: def.returns,
     handler: def.handler,
+    ...(def.access && { access: def.access }),
   })) as FunctionBuilder<K, Vis>;
 
 export const query = define("query", "public");

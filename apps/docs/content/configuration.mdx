@@ -99,7 +99,7 @@ These are explained one by one, with what happens when each is hit, in [Limits a
 | `MAX_REQUEST_BYTES` | `8388608` (8 MiB) | 1 | An HTTP request body and a WebSocket message. |
 | `RATE_LIMIT_PER_MINUTE` | `1200` (off in dev) | 0 | Requests per client IP per minute. `0` turns rate limiting off. |
 | `MAX_SUBSCRIPTIONS_PER_CONNECTION` | `200` | 1 | Live queries one WebSocket may hold. |
-| `MAX_PENDING_CALLS` | `1000` | 1 | Calls waiting for the function runtime before new ones get `503`. |
+| `MAX_PENDING_CALLS` | `1000` | 1 | Calls waiting for the function runtime before new ones get `503`. Queries are also refused earlier, once their estimated wait passes `FUNCTION_TIMEOUT_MS` (see [limits](limits.html#overload)). |
 | `TRUST_PROXY` | off | | Take the client IP from `X-Forwarded-For` for rate limiting. Only behind a proxy that overwrites that header. |
 
 Raise limits only when you have a reason. A larger `MAX_REQUEST_BYTES` lets a single client hold more memory, and a larger `FUNCTION_TIMEOUT_MS` lets one slow query occupy the runtime for longer. Keep work that needs more than ten seconds in an action.
@@ -145,7 +145,7 @@ Every response carries an `x-request-id` header. A request id sent in by the cal
 | Variable | Default | Accepted | What it does |
 |---|---|---|---|
 | `RUNTIME_MODE` | `inline` outside dev; `process` in dev or when `RUNTIME_WORKERS` is above 1 | `process`, `inline` | `inline` runs your functions inside the server process: no message passing per call, about twice the throughput on one core. A function that blocks the event loop for longer than its timeout plus 5 seconds makes a watchdog kill the whole process, so run it under something that restarts it (the engine container does). `process` runs functions in child processes that are restarted alone on a code change or a hang. |
-| `RUNTIME_WORKERS` | `1` | integer ≥ 1 | Function runtime processes per server, used round-robin. Needs `process` mode (setting it above 1 selects it). Only the first runs the scheduler, migrations and the schema check. Helps CPU-heavy functions more than write-heavy ones, because SQLite writes share one lock. |
+| `RUNTIME_WORKERS` | `1` | integer ≥ 1 | Function runtime processes per server. A call goes to the process with the fewest calls waiting, so one slow call holds up only what is queued behind it. Needs `process` mode (setting it above 1 selects it). Only the first runs the scheduler, migrations and the schema check. Helps CPU-heavy functions more than write-heavy ones, because SQLite writes share one lock. |
 
 `RUNTIME_MODE=inline` is refused in dev (it could not reload code), and refused together with `RUNTIME_WORKERS` above 1.
 

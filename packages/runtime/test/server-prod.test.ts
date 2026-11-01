@@ -219,3 +219,27 @@ test("past MAX_PENDING_CALLS new calls get a quick 503, and a runtime that is be
     await s.stop({ graceful: false });
   }
 });
+
+test("in process mode a burst of heavy queries is answered as each finishes, and calls that waited past the time limit are refused, not run", async () => {
+  const s = await startServer({ forgeDir: fixture, env: prodEnv({ DATA_DIR: tempDir(), RUNTIME_MODE: "process", FUNCTION_TIMEOUT_MS: "400" }) });
+  try {
+    const started = performance.now();
+    const calls = Array.from({ length: 60 }, async (_, i) => {
+      const res = await fetch(`${s.url}/rpc/todos:spin?args=${encodeURIComponent(JSON.stringify({ ms: 10 + i / 100 }))}`); // 60 different calls of ~10 ms: 600 ms of work in all
+      return { at: performance.now() - started, status: res.status, error: ((await res.json()) as any).error?.code as string | undefined };
+    });
+    const done = await Promise.all(calls);
+    const served = done.filter((d) => d.status === 200).sort((a, b) => a.at - b.at);
+    const refused = done.filter((d) => d.status !== 200);
+    // Answers leave as they are ready: the first long before the last (all together at the end is the old behaviour).
+    expect(served.length).toBeGreaterThan(10);
+    expect(served[0]!.at).toBeLessThan(served.at(-1)!.at / 2);
+    // The calls that could not start within the 400 ms limit were told so, retryably, and none of them timed out or restarted the runtime.
+    expect(refused.length).toBeGreaterThan(0);
+    expect(refused.every((d) => d.error === "SERVICE_UNAVAILABLE")).toBe(true);
+    expect(Math.max(...done.map((d) => d.at))).toBeLessThan(2500);
+    expect((await fetch(`${s.url}/rpc/todos:events?args=%7B%7D`)).status).toBe(200);
+  } finally {
+    await s.stop({ graceful: false });
+  }
+}, 30_000);

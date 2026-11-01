@@ -49,6 +49,26 @@ export const failAfterInsert = mutation({
 
 export const whoami = query({ handler: (ctx) => ctx.auth.getUserIdentity() });
 
+/** Who may see a list is checked per caller; the list itself is the same for everyone who passes, so it is run and cached once. */
+export const sharedList = query({
+  args: { listId: v.id("lists") },
+  access: async (ctx) => {
+    const me = await ctx.auth.getUserIdentity();
+    const user = me ? ((await ctx.db.get(me.userId)) as { banned?: boolean } | null) : null;
+    if (!user) throw new ForgeError("Sign in to continue");
+    if (user.banned) throw new ForgeError("This account is deactivated");
+  },
+  handler: (ctx, { listId }) => ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).collect(),
+});
+
+/** A mistake the engine refuses to run: a shared result that asks who is calling. */
+export const sharedPeek = query({ access: () => {}, handler: (ctx) => ctx.auth.getUserIdentity() });
+
+export const deactivate = mutation({
+  args: { userId: v.id("users") },
+  handler: (ctx, { userId }) => ctx.db.patch(userId, { banned: true } as never),
+});
+
 export const logEvent = mutation({
   args: { kind: v.string() },
   handler: (ctx, { kind }) => ctx.db.insert("events", { kind, at: Date.now() }),

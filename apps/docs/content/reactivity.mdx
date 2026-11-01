@@ -130,7 +130,7 @@ A client that can't keep up isn't buffered without bound. It is disconnected and
 
 - **Index every live query.** A query with `withIndex(…eq…)` listens for a narrow prefix and scans a small range. One without listens for the table and re-runs on every write to it.
 - **Keep results small.** Each change re-sends the full result. Return the fields a screen shows, paginate, and use `take`.
-- **Share work by sharing arguments.** With the query cache on, identical `(function, args)` subscriptions run once per change and share the result. A query that takes the viewer's id as an argument can't be shared. A query that reads `ctx.auth` is cached per user. See [Caching](caching.html).
+- **Share work by sharing arguments.** With the query cache on, identical `(function, args)` subscriptions run once per change and share the result. A query that takes the viewer's id as an argument can't be shared. A query that reads `ctx.auth` is cached per user; if it only checks the caller, an [`access` check](functions.html#sharing-a-query-between-users) makes it shared. See [Caching](caching.html).
 - **Don't put changing noise in the result.** A `lastSeen: Date.now()` in the return value makes every re-run a different result, so every re-run is sent.
 - **Split hot and cold data.** A single query that joins a rarely-changing list with a counter that changes every second re-runs every second. Two queries re-run independently.
 - **Debounce your own writes.** The server batches re-runs per subscription, but a client that writes on every keystroke still produces a commit per keystroke.

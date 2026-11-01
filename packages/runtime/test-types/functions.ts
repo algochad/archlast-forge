@@ -30,3 +30,13 @@ export const listsWithTodos = query({
   handler: (ctx) =>
     ctx.db.query("lists").include({ todos: { table: "todos", index: "by_list", include: { comments: { table: "comments", index: "by_todo" }, list: "listId" } }, open: { table: "todos", index: "by_list", count: true } }).collect(),
 });
+
+/** `access` sees the same arguments as the handler, and a mutation takes none. */
+export const guarded = query({
+  args: { listId: v.id("lists") },
+  access: async (ctx, { listId }) => {
+    const me = await ctx.auth.getUserIdentity();
+    if (!me || !(await ctx.db.get(listId))) throw new Error("no");
+  },
+  handler: (ctx, { listId }) => ctx.db.query("todos").withIndex("by_list", (q) => q.eq("listId", listId)).collect(),
+});

@@ -52,7 +52,7 @@ The **function runtime** owns everything about your app: it loads the modules in
 
 Both modes run the same `runtime-core.ts`, so behaviour is identical; only the hosting differs. The price of `inline`: a function that never yields blocks the server too. A watchdog thread then kills the whole process after the call's timeout plus 5 seconds, so run it under something that restarts it (the engine container's restart policy does). `inline` is refused in development, because it cannot reload code.
 
-With `RUNTIME_WORKERS=n`, the server keeps `n` runtime processes and sends calls round-robin; only the first one runs the scheduler, migrations and the schema check.
+With `RUNTIME_WORKERS=n`, the server keeps `n` runtime processes and sends each call to the one with the fewest calls waiting; only the first one runs the scheduler, migrations and the schema check.
 
 ### Database
 
@@ -188,7 +188,7 @@ A write that lands while a query is running could be published before the new su
 
 Who is calling is decided once per request, in the function runtime, from the `cookie` or `authorization` header, before the transaction begins. `ctx.auth.getUserIdentity()` returns `{ userId, sessionId, email, name }` or `null`. Better Auth owns sign-up, sign-in and sessions (`/api/auth/*`); its `users`, `sessions`, `accounts` and `verifications` tables are part of every schema, and writes to them publish topics like any other write. Authorization is code you write: the first line of most functions is a check, as in the tutorial's `requireUser`.
 
-A query that calls `getUserIdentity` is cached per user, and the session is read on every call, so a revoked session stops working immediately.
+A query that calls `getUserIdentity` is cached per user, and who the caller is gets re-checked whenever the session or user rows change, so a revoked session or a deactivated user stops working immediately. A query that only checks the caller can declare the check as `access` and be cached once for everyone ([how](functions.html#sharing-a-query-between-users)).
 
 ## Pages in full-stack mode
 

@@ -123,7 +123,7 @@ export const tableSpecs = (tables: TablesSpec) =>
   Object.entries(tables).map(([name, t]) => ({ name, indexes: t.indexes, searchIndexes: t.searchIndexes }));
 
 export interface Manifest {
-  functions: { name: string; kind: FunctionKind; visibility: "public" | "internal"; args: Record<string, unknown>; returns?: unknown }[];
+  functions: { name: string; kind: FunctionKind; visibility: "public" | "internal"; args: Record<string, unknown>; returns?: unknown; access?: true }[];
   tables: TablesSpec;
   crons: CronJob[];
   storage: boolean;

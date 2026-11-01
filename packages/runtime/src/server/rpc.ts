@@ -118,7 +118,9 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
         // A query's cache entry is keyed by the raw arguments and keeps its encoded response body: a hit parses, serializes and encodes nothing.
         const run = async (): Promise<string | Uint8Array<ArrayBuffer>> => {
           if (kind !== "query") {
-            const r = await runtime.call(name, kind, parseJson(raw), ctx.headers, { requestId: ctx.requestId, trace: obs.trace });
+            // A caller the server already knows goes along, so the function runtime needn't look them up again.
+            const known = queries.known(ctx.headers);
+            const r = await runtime.call(name, kind, parseJson(raw), ctx.headers, { requestId: ctx.requestId, trace: obs.trace, ...(known !== undefined && { identity: known }) });
             obs.telemetry = r.telemetry;
             return `{"result":${r.json ?? JSON.stringify(r.value) ?? "null"}}`;
           }

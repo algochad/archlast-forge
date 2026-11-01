@@ -20,7 +20,7 @@ export class Metrics {
     });
   }
 
-  render(gauges: { subscriptions: number; connections: number; workers: number }, cache?: CacheSnapshot, loops?: LoopDelays) {
+  render(gauges: { subscriptions: number; connections: number; workers: number; backlog?: { waiting: number; waitMs: number }[] }, cache?: CacheSnapshot, loops?: LoopDelays) {
     const label = (name: string) => `function="${name.replace(/["\\\n]/g, "_")}"`;
     const lines = [
       "# HELP forge_function_calls_total Function calls.",
@@ -44,6 +44,16 @@ export class Metrics {
       `forge_websocket_connections ${gauges.connections}`,
       "# TYPE forge_runtime_workers gauge",
       `forge_runtime_workers ${gauges.workers}`,
+      ...(gauges.backlog?.length
+        ? [
+            "# HELP forge_runtime_queue_waiting Queries waiting in each function-runtime process.",
+            "# TYPE forge_runtime_queue_waiting gauge",
+            ...gauges.backlog.map((b, i) => `forge_runtime_queue_waiting{worker="${i}"} ${b.waiting}`),
+            "# HELP forge_runtime_queue_wait_ms About how long each process would take to clear its waiting queries, from its recent pace (0 when it has none to go by).",
+            "# TYPE forge_runtime_queue_wait_ms gauge",
+            ...gauges.backlog.map((b, i) => `forge_runtime_queue_wait_ms{worker="${i}"} ${Math.round(b.waitMs)}`),
+          ]
+        : []),
       "# TYPE forge_process_resident_bytes gauge",
       `forge_process_resident_bytes ${process.memoryUsage().rss}`,
       ...(loops?.size

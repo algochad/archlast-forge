@@ -49,9 +49,24 @@ export type HostEvent =
 export type SocketMessage = { t: "ws"; op: "send"; sid: string; data: string | ArrayBuffer } | { t: "ws"; op: "close"; sid: string; code?: number; reason?: string };
 
 /** Server → function runtime. */
-export type HostMessage = { id: number } & (
-  | { t: "call"; name: string; kind: FunctionKind; args: unknown; headers: CallHeaders; allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null; trace?: TraceParent }
-  | { t: "identity"; headers: CallHeaders }
+export type HostMessage = {
+  id: number;
+  /** For a query: when waiting for its turn in the process has gone on as long as it may (epoch ms). A call still queued then isn't run. */
+  deadline?: number;
+} & (
+  | {
+      t: "call";
+      name: string;
+      kind: FunctionKind;
+      args: unknown;
+      headers: CallHeaders;
+      allowInternal?: boolean;
+      requestId?: string;
+      identity?: UserIdentity | null;
+      trace?: TraceParent;
+      access?: "only" | "skip";
+    }
+  | { t: "identity"; headers: CallHeaders; detail?: boolean }
   | { t: "auth"; req: SerializedRequest; trace?: TraceParent }
   | { t: "http"; req: HttpRequestMessage; headers: CallHeaders; requestId?: string; trace?: TraceParent }
   | { t: "admin"; op: string; args?: Record<string, unknown>; actor: string }

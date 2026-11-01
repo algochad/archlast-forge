@@ -4,21 +4,27 @@ import { MemoryCache } from "../src/server/cache";
 import type { FunctionRuntime } from "../src/server/runtime";
 import { QueryRunner } from "../src/server/subscriptions";
 
-type Call = { name: string; args: unknown; identity?: UserIdentity | null };
+type Call = { name: string; args: unknown; identity?: UserIdentity | null; access?: string };
 
 /** A function runtime that answers from memory and records how often it really ran. */
-function setup(opts: { delayMs?: number; peruser?: string[]; topics?: string[]; cache?: MemoryCache | null } = {}) {
+function setup(opts: { delayMs?: number; peruser?: string[]; topics?: string[]; cache?: MemoryCache | null; pinned?: boolean; shared?: string[]; refuse?: string[] } = {}) {
   const calls: Call[] = [];
   let version = 0;
   const runtime = {
-    manifest: { functions: [{ name: "todos:list" }, { name: "me:get" }] },
-    identity: async (headers: Record<string, string>) => (headers.who ? ({ userId: headers.who, sessionId: "s", email: "", name: headers.who } as UserIdentity) : null),
-    call: async (name: string, _kind: string, args: unknown, headers: Record<string, string>, o: { identity?: UserIdentity | null } = {}) => {
-      calls.push({ name, args, identity: o.identity });
+    manifest: { functions: [{ name: "todos:list" }, { name: "me:get" }, ...(opts.shared ?? []).map((name) => ({ name, access: true }))] },
+    identity: async (headers: Record<string, string>) => (headers.cookie ? ({ userId: headers.cookie, sessionId: "s", email: "", name: headers.cookie } as UserIdentity) : null),
+    identityDetail: async (headers: Record<string, string>) => ({ identity: await runtime.identity(headers), ...(opts.pinned && { topics: [`sessions:${headers.cookie}`] }) }),
+    call: async (name: string, _kind: string, args: unknown, headers: Record<string, string>, o: { identity?: UserIdentity | null; access?: string } = {}) => {
+      calls.push({ name, args, identity: o.identity, access: o.access });
+      if (o.access === "only") {
+        const who = o.identity && "userId" in o.identity ? String(o.identity.userId) : "";
+        if (!who || opts.refuse?.includes(who)) throw new Error("refused");
+        return { value: null, topics: [`users:${who}`] };
+      }
       const seen = version;
       if (opts.delayMs) await Bun.sleep(opts.delayMs);
       const peruser = opts.peruser?.includes(name);
-      const who = peruser ? (o.identity !== undefined ? o.identity : headers.who ? { userId: headers.who } : null) : undefined;
+      const who = peruser ? (o.identity !== undefined ? o.identity : headers.cookie ? { userId: headers.cookie } : null) : undefined;
       return { value: { name, seen, who: who && "userId" in who ? who.userId : null }, topics: opts.topics ?? ["todos"], usedAuth: peruser };
     },
   } as unknown as FunctionRuntime;
@@ -90,9 +96,22 @@ describe("QueryRunner cache", () => {
     expect((third.value as { seen: number }).seen).toBe(1);
   });
 
+  test("callers waiting on a run that a write overlapped share one new run, instead of each starting their own", async () => {
+    const { runner, calls, bump } = setup({ delayMs: 30 });
+    const first = runner.run("todos:list", {}, {});
+    await Bun.sleep(5);
+    const waiting = Array.from({ length: 9 }, () => runner.run("todos:list", {}, {}));
+    await Bun.sleep(5);
+    bump(); // a write commits while the first run is reading
+    runner.invalidated("todos");
+    const results = await Promise.all([first, ...waiting]);
+    expect(calls.length).toBe(2); // the overlapped run, and one more for all nine waiters
+    for (const r of results.slice(1)) expect((r.value as { seen: number }).seen).toBe(1);
+  });
+
   test("queries that read ctx.auth are cached per caller once the first run reveals it", async () => {
     const { runner, calls } = setup({ peruser: ["me:get"] });
-    const as = (who?: string) => runner.run("me:get", {}, who ? { who } : {});
+    const as = (who?: string) => runner.run("me:get", {}, who ? { cookie: who } : {});
     await as("ada"); // unknown to be per-caller: runs, isn't kept
     expect(runner.snapshot().entries).toBe(0);
     expect(((await as("ada")).value as { who: string }).who).toBe("ada"); // keyed now: miss, stored
@@ -110,13 +129,72 @@ describe("QueryRunner cache", () => {
   test("reset forgets cached results and which queries are per-caller", async () => {
     const { runner, calls } = setup({ peruser: ["me:get"] });
     await runner.run("todos:list", {}, {});
-    await runner.run("me:get", {}, { who: "ada" });
+    await runner.run("me:get", {}, { cookie: "ada" });
     await runner.reset();
     expect(runner.snapshot().entries).toBe(0);
     await runner.run("todos:list", {}, {});
     expect(calls.length).toBe(3);
-    await runner.run("me:get", {}, { who: "ada" });
+    await runner.run("me:get", {}, { cookie: "ada" });
     expect(calls.at(-1)!.identity).toBeUndefined(); // not known to be per-caller again until it runs
+  });
+
+  describe("a query with access", () => {
+    const options = { shared: ["lists:get"], pinned: true };
+    const as = (runner: QueryRunner, who?: string) => runner.run("lists:get", {}, who ? { cookie: who } : {});
+
+    test("runs once for everyone who passes, and each caller's check is kept while what it read is unchanged", async () => {
+      const { runner, calls } = setup(options);
+      for (const who of ["ada", "bo", "ada", "bo", "ada"]) expect(((await as(runner, who)).value as { name: string }).name).toBe("lists:get");
+      expect(calls.filter((c) => c.access === "skip").length).toBe(1); // one run of the handler
+      expect(calls.filter((c) => c.access === "only").length).toBe(2); // one check each, then remembered
+      expect(calls.filter((c) => c.access === "skip").every((c) => c.identity === undefined)).toBe(true);
+      const f = runner.snapshot().functions.find((f) => f.name === "lists:get")!;
+      expect([f.misses, f.hits, f.perUser]).toEqual([1, 4, false]);
+    });
+
+    test("a write to what the check read ends it, and a refusal is final and not kept", async () => {
+      const { runner, calls } = setup({ ...options, refuse: ["bo"] });
+      await as(runner, "ada");
+      runner.invalidated("users:ada");
+      await as(runner, "ada");
+      expect(calls.filter((c) => c.access === "only").length).toBe(2);
+      await expect(as(runner, "bo")).rejects.toThrow("refused");
+      await expect(as(runner, "bo")).rejects.toThrow("refused");
+      expect(calls.filter((c) => c.access === "only" && c.identity && "userId" in c.identity && c.identity.userId === "bo").length).toBe(2);
+      expect(calls.filter((c) => c.access === "skip").length).toBe(1);
+    });
+
+    test("ending the caller's session ends the kept check, and a caller that can't be pinned to topics is checked every time", async () => {
+      const pinned = setup(options);
+      await as(pinned.runner, "ada");
+      pinned.runner.invalidated("sessions:ada");
+      await as(pinned.runner, "ada");
+      expect(pinned.calls.filter((c) => c.access === "only").length).toBe(2);
+      const loose = setup({ shared: ["lists:get"] });
+      await as(loose.runner, "ada");
+      await as(loose.runner, "ada");
+      expect(loose.calls.filter((c) => c.access === "only").length).toBe(2);
+    });
+
+    test("the topics of a check reach the observer, so a subscription watches them", async () => {
+      const { runner } = setup(options);
+      const obs: { access?: string[] } = {};
+      await runner.run("lists:get", {}, { cookie: "ada" }, undefined, undefined, obs);
+      expect(obs.access).toEqual(["sessions:ada", "users:ada"]);
+    });
+
+    test("callers who are signed in are looked up once while their session stands", async () => {
+      const { runner } = setup({ ...options, peruser: ["me:get"] });
+      const resolved: string[] = [];
+      const detail = (runner as unknown as { runtime: { identityDetail: (h: Record<string, string>) => Promise<unknown> } }).runtime.identityDetail;
+      (runner as unknown as { runtime: { identityDetail: unknown } }).runtime.identityDetail = (h: Record<string, string>) => (resolved.push(h.cookie!), detail(h));
+      await runner.run("me:get", {}, { cookie: "ada" }); // reveals the query reads ctx.auth
+      for (let i = 0; i < 3; i++) await runner.run("me:get", {}, { cookie: "ada" });
+      expect(resolved).toEqual(["ada"]);
+      runner.invalidated("sessions:ada");
+      await runner.run("me:get", {}, { cookie: "ada" });
+      expect(resolved).toEqual(["ada", "ada"]);
+    });
   });
 
   test("results too big for the cache count as skipped, not hits", async () => {

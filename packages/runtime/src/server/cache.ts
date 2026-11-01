@@ -42,6 +42,11 @@ export class MemoryCache implements Cache {
   ) {}
 
   async get<T>(key: string) {
+    return this.getNow<T>(key);
+  }
+
+  /** The same without a promise, for callers that sit on a hot path. */
+  getNow<T>(key: string) {
     const e = this.entries.get(key);
     if (!e) return undefined;
     if (e.expires <= Date.now()) {

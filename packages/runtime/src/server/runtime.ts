@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import type { FunctionKind, UserIdentity } from "../functions";
-import { serializeError, type CallHeaders, type CallResult, type ErrorKind, type LogEntry, type SerializedError } from "./executor";
+import { serializeError, type CallHeaders, type CallResult, type ErrorKind, type IdentityDetail, type LogEntry, type SerializedError } from "./executor";
 import type { Manifest } from "./project";
 import type { Batch, HostEvent, HostMessage, HttpRequestMessage, HttpResponseMessage, RuntimeMessage, SerializedRequest, SerializedResponse, SocketMessage } from "./protocol";
 import { startCore, type RuntimeCore } from "./runtime-core";
@@ -33,7 +33,7 @@ export class RuntimeCallError extends Error {
 }
 
 type Omit2<T, K extends keyof any> = T extends unknown ? Omit<T, K> : never;
-type Pending = { resolve(v: unknown): void; reject(e: Error): void; timer?: Timer };
+type Pending = { resolve(v: unknown): void; reject(e: Error): void; timer?: Timer; /** A query: short, so it counts toward the backlog the process is expected to clear. */ short?: boolean };
 
 interface Options {
   forgeDir: string;
@@ -52,6 +52,10 @@ interface Options {
 interface Worker {
   proc?: unknown;
   ready: boolean;
+  /** Calls waiting on this process or running in it. */
+  readonly load: number;
+  /** Queries waiting, and about how long they would take to clear (0 when there is no recent pace to go by). */
+  readonly backlog: { waiting: number; waitMs: number };
   started?: Promise<Manifest>;
   start(): Promise<Manifest>;
   stop(): Promise<void>;
@@ -71,6 +75,12 @@ class InlineWorker implements Worker {
   ready = false;
   started?: Promise<Manifest>;
   private inFlight = 0;
+  get load() {
+    return this.inFlight;
+  }
+  get backlog() {
+    return { waiting: this.inFlight, waitMs: 0 };
+  }
   private watchdog?: globalThis.Worker;
   private beat?: Timer;
 
@@ -142,7 +152,22 @@ class RuntimeProcess implements Worker {
   ready = false;
   started?: Promise<Manifest>;
   private pending = new Map<number, Pending>();
+  get load() {
+    return this.pending.size;
+  }
+  get backlog() {
+    return { waiting: this.shortPending, waitMs: this.gapMs && performance.now() - this.gapAt < 3000 ? this.shortPending * this.gapMs : 0 };
+  }
   private seq = 0;
+  /** Queries sent and not yet answered. */
+  private shortPending = 0;
+  /**
+   * How long the process takes per queued call under sustained load: the average time between answers over a window (batched answers arrive
+   * together, so single gaps mean nothing). Not trusted until a window has five answers, and not once it is stale, so a burst after quiet is let in.
+   */
+  private gapMs = 0;
+  private gapAt = 0;
+  private window = { start: 0, answers: 0 };
   /** When the process last answered anything: a call that waits past its deadline in a process that is still answering is queued, not stuck. */
   private lastResultAt = Date.now();
 
@@ -198,6 +223,14 @@ class RuntimeProcess implements Worker {
       const p = this.pending.get(msg.id);
       this.pending.delete(msg.id);
       clearTimeout(p?.timer);
+      if (p?.short) {
+        const now = performance.now();
+        const w = this.window;
+        if (!w.start) (w.start = now, (w.answers = 0));
+        else if (++w.answers >= 5) (this.gapMs = (now - w.start) / w.answers, (this.gapAt = now));
+        if (now - w.start > 2000) this.window = { start: now, answers: 0 };
+        if (--this.shortPending === 0) this.window = { start: 0, answers: 0 }; // quiet: the next burst starts a new window
+      }
       if (!msg.ok) p?.reject(RuntimeCallError.from(msg.error));
       else if ((msg.value as HttpResponseMessage | undefined)?.stream) {
         // Its bytes follow as chunk messages with the same id.
@@ -265,17 +298,24 @@ class RuntimeProcess implements Worker {
     const proc = this.proc;
     if (!proc) return Promise.reject(new RuntimeCallError("Function runtime is not running", "internal"));
     if (this.pending.size >= (this.opts.maxPending ?? 1000)) return Promise.reject(new RuntimeCallError("Server is busy, try again", "overloaded"));
+    const short = (msg.t === "call" && msg.kind === "query") || msg.t === "identity";
+    // A call that would wait longer than a function may run is going to time out; saying so now frees its caller, and the process, for calls that can still finish.
+    if (short && this.gapMs && performance.now() - this.gapAt < 3000 && this.shortPending * this.gapMs > (this.opts.timeouts?.functionMs ?? 10_000)) return Promise.reject(new RuntimeCallError("Server is busy, try again", "overloaded"));
     const id = ++this.seq;
     const sentAt = Date.now();
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        const p = this.pending.get(id);
         this.pending.delete(id);
+        if (p?.short) this.shortPending--;
         reject(new RuntimeCallError(`Timed out after ${hardTimeoutMs} ms`, "timeout"));
         // Restart only a process that has answered nothing since this call went in (a synchronous loop). One that is merely behind keeps its other calls.
         if (this.lastResultAt < sentAt) onHang();
       }, hardTimeoutMs);
-      this.pending.set(id, { resolve, reject, timer });
-      this.enqueue(proc, { ...msg, id } as HostMessage);
+      this.pending.set(id, { resolve, reject, timer, short });
+      if (short) this.shortPending++;
+      // A queued query that hasn't started within a function's time limit would time out anyway: the process refuses it then, not the hard timeout later.
+      this.enqueue(proc, { ...msg, id, ...(short && { deadline: sentAt + (this.opts.timeouts?.functionMs ?? 10_000) }) } as HostMessage);
     });
   }
 
@@ -285,6 +325,9 @@ class RuntimeProcess implements Worker {
       p.reject(new RuntimeCallError(message, "internal"));
     }
     this.pending.clear();
+    this.shortPending = 0;
+    this.gapMs = 0;
+    this.window = { start: 0, answers: 0 };
     for (const stream of this.streams.values()) stream.error(new Error(message));
     this.streams.clear();
   }
@@ -319,7 +362,7 @@ export class FunctionRuntime {
       else if (msg.t === "ws") this.onWs(msg);
       else if (msg.t === "trace") this.onTrace(msg.trace);
       else if (msg.t === "metrics") this.onMetrics(msg.points, msg.instance);
-      else if (msg.t === "sample") this.onSample(msg.sample);
+      else if (msg.t === "sample") this.onSample({ ...msg.sample, inflight: this.workers[index]?.load }); // calls waiting in that process, for the Runtime page
       else if (msg.t === "relay") for (const w of this.workers) if (w.ready) w.event(msg); // to every worker, the sender too: one path for all
     };
     if (this.opts.inline) return new InlineWorker(this.opts, { onMessage });
@@ -358,6 +401,11 @@ export class FunctionRuntime {
     const w = this.spawn(index);
     this.workers[index] = w;
     await w.start().catch((e) => console.error(`function runtime ${index} failed to restart: ${e.message}`));
+  }
+
+  /** Each process's waiting queries, for /metrics and the busy warning. */
+  backlog() {
+    return this.workers.map((w) => w.backlog);
   }
 
   start(): Promise<Manifest> {
@@ -402,7 +450,16 @@ export class FunctionRuntime {
       if (!live.length) throw new RuntimeCallError("Function runtime is restarting", "internal");
     }
     const wanted = index === undefined ? undefined : this.workers[index];
-    return wanted?.ready ? wanted : live[this.next++ % live.length]!;
+    if (wanted?.ready) return wanted;
+    // The process with the fewest calls waiting; ties go round in turn. A long call holds up only what is queued behind it, so a process that is
+    // free should get the next call instead of the one whose turn it is.
+    const turn = this.next++;
+    let best = live[turn % live.length]!;
+    for (let i = 1; i < live.length; i++) {
+      const w = live[(turn + i) % live.length]!;
+      if (w.load < best.load) best = w;
+    }
+    return best;
   }
 
   private async send(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, index?: number) {
@@ -415,7 +472,7 @@ export class FunctionRuntime {
     });
   }
 
-  call(name: string, kind: FunctionKind, args: unknown, headers: CallHeaders, opts: { allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null; trace?: TraceParent } = {}) {
+  call(name: string, kind: FunctionKind, args: unknown, headers: CallHeaders, opts: { allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null; trace?: TraceParent; access?: "only" | "skip" } = {}) {
     const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
     return this.send({ t: "call", name, kind, args, headers, ...opts }, (kind === "action" ? t.actionMs : t.functionMs) + HARD_TIMEOUT_GRACE_MS) as Promise<CallResult>;
   }
@@ -423,6 +480,11 @@ export class FunctionRuntime {
   /** Resolves the caller from request headers; null when anonymous. */
   identity(headers: CallHeaders) {
     return this.send({ t: "identity", headers }, 30_000) as Promise<UserIdentity | null>;
+  }
+
+  /** The same with what the answer rests on (see IdentityDetail). */
+  identityDetail(headers: CallHeaders) {
+    return this.send({ t: "identity", headers, detail: true }, 30_000) as Promise<IdentityDetail>;
   }
 
   auth(req: SerializedRequest, trace?: TraceParent) {

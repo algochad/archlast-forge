@@ -204,9 +204,9 @@ export async function startCore(opts: {
   async function handle(msg: HostMessage): Promise<unknown> {
     switch (msg.t) {
       case "call":
-        return exec.run(msg.name, msg.kind, msg.args, msg.headers, { allowInternal: msg.allowInternal, requestId: msg.requestId, identity: msg.identity, trace: msg.trace });
+        return exec.run(msg.name, msg.kind, msg.args, msg.headers, { allowInternal: msg.allowInternal, requestId: msg.requestId, identity: msg.identity, trace: msg.trace, access: msg.access });
       case "identity":
-        return exec.identityOf(msg.headers);
+        return msg.detail ? exec.identityDetailOf(msg.headers) : exec.identityOf(msg.headers);
       case "auth": {
         const { method, url, headers, body } = msg.req;
         const { value: res, telemetry } = await traced(msg.trace, "auth", () => auth.handler(new Request(url, { method, headers, body })));
@@ -243,7 +243,7 @@ export async function startCore(opts: {
 
   scheduler?.start();
   const manifest: Manifest = {
-    functions: [...project.functions].map(([name, fn]) => ({ name, kind: fn.kind, visibility: fn.visibility ?? "public", args: fn.args, returns: fn.returns })),
+    functions: [...project.functions].map(([name, fn]) => ({ name, kind: fn.kind, visibility: fn.visibility ?? "public", args: fn.args, returns: fn.returns, ...(fn.access && { access: true }) })),
     tables: project.tables,
     crons: project.crons,
     storage: Boolean(config.s3),

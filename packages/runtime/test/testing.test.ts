@@ -19,3 +19,14 @@ test("the testing library runs functions, identities and scheduled work in memor
   expect(await t.run(async (ctx) => (await (ctx.db as any).query("lists").collect()).length)).toBe(1);
   await t.close();
 });
+
+test("a query with access checks the caller in the testing library too, and its handler can't ask who is calling", async () => {
+  const t = await createTestBackend(join(import.meta.dir, "fixture"));
+  const listId = await t.mutation(api.todos.createList, { name: "shared" });
+  await t.mutation(api.todos.add, { listId, title: "milk" });
+  await expect(t.query(api.todos.sharedList, { listId })).rejects.toThrow("Sign in to continue");
+  const ada = await t.withIdentity({ email: "ada@example.com", name: "Ada" });
+  expect(await ada.query(api.todos.sharedList, { listId })).toMatchObject([{ title: "milk" }]);
+  await expect(ada.query(api.todos.sharedPeek)).rejects.toThrow("declares access");
+  await t.close();
+});

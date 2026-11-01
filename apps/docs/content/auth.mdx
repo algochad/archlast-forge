@@ -113,7 +113,7 @@ interface UserIdentity {
 
 `getUserIdentity()` is available in queries, mutations, actions and [HTTP handlers](http.html#who-is-calling). It returns `null` for anonymous callers, and also for a cookie that is forged, expired or revoked. It carries only these four fields. For anything else (`emailVerified`, `image`, `role`), read the user: `await ctx.db.get(identity.userId)`.
 
-Remember that a query which reads `ctx.auth` is cached per user, not shared (see [caching](caching.html)).
+Remember that a query which reads `ctx.auth` is cached per user, not shared (see [caching](caching.html)). If it only checks who the caller is, put the check in `access` and the result is shared; see [Sharing a query between users](functions.html#sharing-a-query-between-users).
 
 ### How the caller is resolved
 

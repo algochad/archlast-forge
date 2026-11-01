@@ -1,7 +1,7 @@
 import type { HTMLBundle, Server, ServerWebSocket } from "bun";
 import { timingSafeEqual } from "node:crypto";
 import { mkdirSync } from "node:fs";
-import { hostname } from "node:os";
+import { availableParallelism, hostname } from "node:os";
 import { extname, relative, resolve } from "node:path";
 import { buildAdminApi } from "./admin-api";
 import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
@@ -445,7 +445,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const auth = req.headers.get("authorization")?.replace(/^Bearer /, "");
         const token = env.METRICS_TOKEN || config.adminKey;
         if (token ? !(auth && sameSecret(auth, token)) : !dev) return new Response("Not found", { status: 404 });
-        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: config.runtimeWorkers }, queries.snapshot(), loops), { headers: { "content-type": "text/plain; version=0.0.4" } });
+        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: config.runtimeWorkers, backlog: runtime.backlog() }, queries.snapshot(), loops), { headers: { "content-type": "text/plain; version=0.0.4" } });
       }
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
 
@@ -609,7 +609,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
                 throw publicError(e);
               }
             },
-            identity: () => runtime.identity(headers).catch((e) => Promise.reject(publicError(e))),
+            identity: () => queries.who(headers).then((c) => c.identity, (e) => Promise.reject(publicError(e))),
             rateLimited: async () => (await limited(req, srv)) ?? null,
             keepAlive: () => srv.timeout(req, 0),
             route: (pattern) => {
@@ -684,7 +684,16 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   // counters are totals since start; a sample carries what happened since the one before.
   let sampled = { hits: 0, misses: 0, coalesced: 0 };
   const health = processSampler();
+  let warnedBusy = 0;
   const sampler = setInterval(() => {
+    // A function runtime with seconds of queries waiting is the ceiling of the app: say so before callers start seeing "busy" and timeouts.
+    const backlog = runtime.backlog();
+    const busy = backlog.findIndex((b) => b.waitMs > 2000);
+    if (busy >= 0 && Date.now() - warnedBusy > 60_000) {
+      warnedBusy = Date.now();
+      const cores = availableParallelism();
+      log("warn", `function runtime ${busy} has ${backlog[busy]!.waiting} queries waiting, about ${(backlog[busy]!.waitMs / 1000).toFixed(1)} s of work${cores > backlog.length ? `. This machine has ${cores} cores and runs ${backlog.length} function runtime${backlog.length === 1 ? "" : "s"}: RUNTIME_WORKERS=${Math.min(cores - 1, 4)} would spread them` : ""}. Queries that every user runs alike can share one run (see \`access\` in the docs)`);
+    }
     const c = queries.snapshot();
     const cache = c.enabled ? { cacheHits: c.hits - sampled.hits, cacheMisses: c.misses - sampled.misses, cacheShared: c.coalesced - sampled.coalesced, cacheEntries: c.entries } : {};
     sampled = { hits: c.hits, misses: c.misses, coalesced: c.coalesced };

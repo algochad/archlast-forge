@@ -159,3 +159,15 @@ query({
     return null;
   },
 });
+
+// A query that declares `access` is called and typed like any other.
+expectTypeOf<FunctionArgs<typeof api.functions.guarded>>().toEqualTypeOf<{ listId: Id<"lists"> }>();
+expectTypeOf<FunctionReturn<typeof api.functions.guarded>>().toEqualTypeOf<Doc<"todos">[]>();
+mutation({
+  args: {},
+  // @ts-expect-error access belongs to queries
+  access: () => {},
+  handler: () => null,
+});
+// @ts-expect-error the arguments of access are the handler's
+query({ args: { n: v.number() }, access: (_ctx, { n }: { n: string }) => n, handler: () => null });

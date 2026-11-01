@@ -21,6 +21,13 @@ const attrsOfFunction = (name: string) => {
 
 export type CallHeaders = Record<string, string>;
 
+/** Who is calling. `topics` and `until`, when given, are what that answer stays true while: a write to one of them, or the time, ends it. */
+export interface IdentityDetail {
+  identity: UserIdentity | null;
+  topics?: string[];
+  until?: number;
+}
+
 export interface CallResult {
   value: unknown;
   /** Read topics, for queries. */
@@ -124,11 +131,17 @@ export interface RunOptions {
   identity?: UserIdentity | null;
   /** Record the call's spans under this span of the server's, and hand them back with the result. */
   trace?: TraceParent;
+  /**
+   * For a query that declares `access`, which half the server wants: `"only"` runs the check as the caller and answers with what it read;
+   * `"skip"` runs the handler alone, for a caller the server has already checked. Without it both run, as for a call from an action.
+   */
+  access?: "only" | "skip";
 }
 
 export class Executor {
   /** Set once Better Auth is created; resolves the caller from cookie/authorization headers. */
   resolveIdentity: (headers: CallHeaders) => Promise<UserIdentity | null> = async () => null;
+  identityDetail: (headers: CallHeaders) => Promise<IdentityDetail> = async () => ({ identity: null });
 
   private limits: NonNullable<ExecutorOptions["limits"]>;
 
@@ -189,9 +202,10 @@ export class Executor {
       const fn = this.o.functions.get(name);
       // Same message as a missing function, so internal names don't leak.
       if (fn?.visibility === "internal" && !opts.allowInternal) throw new ValidationError(`Unknown function "${name}"`);
-      const identity = opts.identity !== undefined ? opts.identity : await this.identityOf(headers);
+      const mode = fn?.access ? opts.access : undefined;
+      const identity = mode === "skip" ? null : opts.identity !== undefined ? opts.identity : await this.identityOf(headers);
       this.ranAs(identity);
-      return this.call(name, kind, args, identity, opts.requestId);
+      return this.call(name, kind, args, identity, opts.requestId, mode);
     });
     // The result is this call's own object (execute builds it), so it can carry its telemetry without a copy.
     if (out.telemetry) out.value.telemetry = out.telemetry;
@@ -209,31 +223,58 @@ export class Executor {
     return headers.cookie || headers.authorization ? this.resolveIdentity(headers) : Promise.resolve(null);
   }
 
-  async call(name: string, kind: FunctionKind, args: unknown, identity: UserIdentity | null, requestId?: string): Promise<CallResult> {
+  /** The same with what the answer rests on, for a server that keeps it. */
+  identityDetailOf(headers: CallHeaders): Promise<IdentityDetail> {
+    return headers.cookie || headers.authorization ? this.identityDetail(headers) : Promise.resolve({ identity: null });
+  }
+
+  async call(name: string, kind: FunctionKind, args: unknown, identity: UserIdentity | null, requestId?: string, mode?: "only" | "skip"): Promise<CallResult> {
     const fn = this.o.functions.get(name);
     if (!fn) throw new ValidationError(`Unknown function "${name}"`);
     if (fn.kind !== kind) throw new ValidationError(`"${name}" is a ${fn.kind}, not a ${kind}`);
-    return this.execute(fn, name, args, identity, requestId);
+    return this.execute(fn, name, args, identity, requestId, undefined, mode);
   }
 
   /** Runs a function object directly, like the dashboard's custom functions, with the validation, limits, transaction and logging of any call. */
-  async execute(fn: RegisteredFunction, name: string, args: unknown, identity: UserIdentity | null, requestId?: string, logs?: ConsoleLine[]): Promise<CallResult> {
+  async execute(fn: RegisteredFunction, name: string, args: unknown, identity: UserIdentity | null, requestId?: string, logs?: ConsoleLine[], mode?: "only" | "skip"): Promise<CallResult> {
     const kind = fn.kind;
     args ??= {};
     validateFields(fn.args, args as Record<string, unknown>, "args");
     let usedAuth = false;
-    const auth = {
-      getUserIdentity: async () => {
-        usedAuth = true;
-        return identity;
-      },
-    };
+    const caller = { getUserIdentity: async () => identity };
+    const shared = kind === "query" && fn.access !== undefined;
+    const auth = shared
+      ? {
+          getUserIdentity: async (): Promise<never> => {
+            throw new Error(`${name} declares access, so its handler can't read ctx.auth: its result is shared by every caller that passes. Read the caller in access.`);
+          },
+        }
+      : {
+          getUserIdentity: async () => {
+            usedAuth = true;
+            return identity;
+          },
+        };
     const { functionTimeoutMs, actionTimeoutMs } = this.limits;
+    if (shared && mode === "only") {
+      // Only the check: what it reads is what a push to this caller must watch, besides the result's own reads.
+      const { reads } = await this.logged(
+        name,
+        requestId,
+        logs,
+        () => this.read((store) => withTimeout(Promise.resolve(fn.access!({ db: store.reader(), auth: caller, storage: this.storage(store) }, args)), functionTimeoutMs, name)),
+        true,
+      );
+      return { value: null, topics: [...reads], json: "null" };
+    }
     const result = await this.logged(name, requestId, logs, async () => {
       if (kind === "query") {
         const { value, reads } = await this.read((store) =>
           withTimeout(
-            (async () => checkReturn(fn, await fn.handler({ db: store.reader(), auth, storage: this.storage(store) }, args)))(),
+            (async () => {
+              if (shared && mode !== "skip") await fn.access!({ db: store.reader(), auth: caller, storage: this.storage(store) }, args);
+              return checkReturn(fn, await fn.handler({ db: store.reader(), auth, storage: this.storage(store) }, args));
+            })(),
             functionTimeoutMs,
             name,
           ),
@@ -282,16 +323,18 @@ export class Executor {
     return checkReturn(fn, await fn.handler(ctx, args)); // inside the transaction, so a bad value rolls back
   }
 
-  async logged<T>(name: string, requestId: string | undefined, logs: ConsoleLine[] | undefined, fn: () => Promise<T>): Promise<T> {
+  /** `access`: the check of a query that declares one, which is logged only when it refuses, and is a span of its own. */
+  async logged<T>(name: string, requestId: string | undefined, logs: ConsoleLine[] | undefined, fn: () => Promise<T>, access = false): Promise<T> {
     const start = performance.now();
     const outer = logContext.getStore();
     const entry = (ok: boolean, message: string) =>
+      (!access || !ok) &&
       this.o.log({ time: Date.now(), name, level: "call", message, ok, requestId, durationMs: Math.round((performance.now() - start) * 10) / 10, traceId: outer?.trace?.traceId });
     const context = { name, requestId, logs, trace: outer?.trace, spanId: outer?.spanId };
     try {
       // A traced call is a span, and what it does nests under it; the module is its namespace on the time-by-code view.
       const out = context.trace
-        ? await logContext.run(context, () => inSpan(name, "function", attrsOfFunction(name), fn, 1))
+        ? await logContext.run(context, () => inSpan(access ? `${name} (access)` : name, "function", attrsOfFunction(name), fn, 1))
         : await logContext.run(context, fn);
       entry(true, "ok");
       return out;

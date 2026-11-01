@@ -1,4 +1,5 @@
 import { RedisClient } from "bun";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { createHmac, timingSafeEqual } from "node:crypto";
 import { betterAuth } from "better-auth";
 import { createAdapterFactory, type CleanedWhere } from "better-auth/adapters";
@@ -7,7 +8,7 @@ import { tableOf } from "../values";
 import type { Config } from "./config";
 import { RedisRateLimiter } from "./ratelimit";
 import type { DocStore, TablesSpec } from "./docstore";
-import type { CallHeaders, Executor } from "./executor";
+import type { CallHeaders, Executor, IdentityDetail } from "./executor";
 
 type Doc = Record<string, any>;
 
@@ -84,9 +85,17 @@ async function find(store: DocStore, tables: TablesSpec, model: string, where: C
 /** Set by the server on every auth request, replacing anything the client sent under this name. */
 export const CLIENT_IP_HEADER = "x-archlast-client-ip";
 
+/** While Better Auth resolves a session, the topics its reads touched, so the answer can be kept exactly as long as they are unchanged. */
+const sessionReads = new AsyncLocalStorage<Set<string>>();
+
 /** Better Auth adapter over the document store: auth data lives in users/sessions/accounts/verifications. */
 function documentAdapter(exec: Executor, tables: TablesSpec) {
-  const read = async <T>(fn: (s: DocStore) => Promise<T>) => (await exec.read(fn)).value;
+  const read = async <T>(fn: (s: DocStore) => Promise<T>) => {
+    const { value, reads } = await exec.read(fn);
+    const into = sessionReads.getStore();
+    if (into) for (const t of reads) into.add(t);
+    return value;
+  };
   return createAdapterFactory({
     config: {
       adapterId: "archlast-forge",
@@ -213,23 +222,35 @@ export function createAuth(exec: Executor, tables: TablesSpec, options: AuthOpti
     return token ?? undefined;
   };
 
-  const slow = async (headers: CallHeaders): Promise<UserIdentity | null> => {
-    const s = await auth.api.getSession({ headers: new Headers(headers) });
-    return s ? { userId: s.user.id as UserIdentity["userId"], sessionId: s.session.id, email: s.user.email, name: s.user.name } : null;
+  const slow = async (headers: CallHeaders): Promise<IdentityDetail> => {
+    const reads = new Set<string>();
+    const s = await sessionReads.run(reads, () => auth.api.getSession({ headers: new Headers(headers) }));
+    if (!s) return { identity: null };
+    const identity = { userId: s.user.id as UserIdentity["userId"], sessionId: s.session.id, email: s.user.email, name: s.user.name };
+    // Kept only when the answer rests on the session row (with Better Auth's cookie cache on it answers from the cookie and reads nothing), until the session
+    // ends or is due for its refresh, which is a write that ends the answer anyway.
+    const ends = new Date(s.session.expiresAt as unknown as string | number | Date).getTime();
+    const pinned = [...reads].some((t) => t.startsWith("sessions:")) && Number.isFinite(ends);
+    return pinned ? { identity, topics: [...reads], until: Math.min(ends, ends - expiresInMs + updateAgeMs) } : { identity };
   };
 
-  exec.resolveIdentity = async (headers: CallHeaders): Promise<UserIdentity | null> => {
+  // Who is calling, and for the direct path also what the answer rests on: the topics it read, which a write to invalidates, and the time it
+  // holds until (the session's end, or when Better Auth would refresh it). The server keeps such an answer instead of asking again.
+  exec.identityDetail = async (headers: CallHeaders): Promise<IdentityDetail> => {
     const token = direct ? verifiedToken(headers.cookie, await cookieNameOf()) : undefined;
     if (!token) return slow(headers);
-    const { value } = await exec.read(async (s) => {
+    const { value, reads } = await exec.read(async (s) => {
       const [session] = await find(s, tables, "sessions", [{ field: "token", value: token, operator: "eq", connector: "AND", mode: "sensitive" }], { limit: 1 });
       if (!session || session.expiresAt <= Date.now()) return null; // revoked or expired
       // Due for Better Auth's refresh of the session's expiry: let it do that.
-      if (session.expiresAt - expiresInMs + updateAgeMs <= Date.now()) return undefined;
+      const refreshAt = session.expiresAt - expiresInMs + updateAgeMs;
+      if (refreshAt <= Date.now()) return undefined;
       const user = await s.get(session.userId);
-      return user ? { userId: user._id as UserIdentity["userId"], sessionId: session._id, email: user.email, name: user.name } : null;
+      return user ? { identity: { userId: user._id as UserIdentity["userId"], sessionId: session._id, email: user.email, name: user.name }, until: Math.min(session.expiresAt, refreshAt) } : null;
     });
-    return value === undefined ? slow(headers) : value;
+    if (value === undefined) return slow(headers);
+    return value ? { identity: value.identity, topics: [...reads], until: value.until } : { identity: null };
   };
+  exec.resolveIdentity = async (headers: CallHeaders) => (await exec.identityDetail(headers)).identity;
   return auth;
 }
