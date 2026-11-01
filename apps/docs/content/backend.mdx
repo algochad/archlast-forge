@@ -29,7 +29,8 @@ api/
   .env                   secrets, generated for you, mode 0600, ignored by git
   .env.example           the same keys, empty
   Caddyfile              only with caddy
-  package.json           scripts: dev, codegen, typecheck, up, down, logs
+  package.json           scripts: dev, codegen, typecheck, up, down, logs, format
+  .prettierrc            Prettier, four spaces to an indent (`bun run format`); .prettierignore skips forge/_generated
   .gitignore, README.md
 ```
 
@@ -550,10 +551,10 @@ Test a restore into a scratch copy of the stack (`docker compose -p restore-test
 ## Upgrades
 
 1. Take a backup.
-2. Update the packages: `bun update @archlast/forge-cli @archlast/forge-runtime @archlast/forge-react ...` (they release in lockstep), and `bun install`.
+2. `archlast-forge upgrade` (or `upgrade 0.10.0` for a given version). It moves every `@archlast/forge-*` package in `package.json` and `forge/package.json` (they release in lockstep) and the engine image in the `Dockerfile` and `compose.yaml` to the latest release, installs, and regenerates `forge/_generated`. A project without Prettier gets the setup new projects have (`.prettierrc`, `.prettierignore`, `format`); `bun run format` then formats it. Review the diff and commit it. See [`upgrade`](cli.html#upgrade).
 3. `archlast-forge up`. The CLI builds the app image on the engine image of its own version (`ghcr.io/algochad/archlast-forge-engine:<version>`) and recreates the containers whose configuration or image changed. Documents are stored as JSON, so a schema change needs no database migration; documents that no longer match the schema are reported at start (`SCHEMA_CHECK` on in production refuses to start) and fixed with [data migrations](migrations.html).
 
-To build on another engine image, set `ARCHLAST_ENGINE_IMAGE` for the CLI, or `ENGINE_IMAGE` in the environment of `docker compose`. Plain `docker compose up --build` uses the default written in `compose.yaml` and the `Dockerfile` when the project was created, so after upgrading edit those two lines, or set `ENGINE_IMAGE` in `.env`.
+To build on another engine image, set `ARCHLAST_ENGINE_IMAGE` for the CLI, or `ENGINE_IMAGE` in the environment of `docker compose`. Plain `docker compose up --build` uses the default written in `compose.yaml` and the `Dockerfile`, which `upgrade` keeps on the release the packages are on; set `ENGINE_IMAGE` in `.env` to build on another one.
 
 Pin the third-party images in `compose.yaml` to versions you have tested: `postgres:17-alpine` follows 17.x, but `rustfs/rustfs:latest` and `amazon/aws-cli` move without you. A major PostgreSQL upgrade needs a dump and restore; do not just change the tag.
 

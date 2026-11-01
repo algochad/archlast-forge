@@ -167,7 +167,7 @@ The main risks the engine does not remove are the ones only your code can: who i
 - **Add the headers the engine does not.** The engine sets no `Content-Security-Policy`, `Strict-Transport-Security` or `X-Frame-Options`. Add them at the proxy; a CSP also limits the damage of any script injection you introduce yourself.
 - **Mind your own functions.** A function that calls `fetch` with a user-supplied URL is an open proxy into your private network. Actions run at most once and are not retried; a handler that charges money should carry an idempotency key.
 - **Keep backups and test restoring them.** `archlast-forge backup` (SQLite) or `pg_dump`. See [Migrations and data](migrations.html).
-- **Update.** Upgrade the `@archlast/forge-*` packages and rebuild the image to pick up fixes; the latest minor version is the supported one.
+- **Update.** Run `archlast-forge upgrade` and rebuild the image (`archlast-forge up`) to pick up fixes; the latest minor version is the supported one.
 
 ### Production security checklist
 

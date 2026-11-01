@@ -451,7 +451,7 @@ Start with SQLite: no service to run, fast, and one file to back up (`archlast-f
 
 ### How do I upgrade?
 
-All `@archlast/forge-*` packages and `create-archlast-forge` share one version and move together. Update them all in `package.json` (and `forge/package.json`), `bun install`, run `archlast-forge codegen` and your type check and tests, then `archlast-forge up`: the image is built on the engine image of the CLI's version, so updating the CLI updates the engine. Take a backup first. The [deploy recipe](recipes.html#deploy-a-change-safely) has the checklist.
+All `@archlast/forge-*` packages and `create-archlast-forge` share one version and move together. `archlast-forge upgrade` moves them all, in `package.json` and `forge/package.json`, and the engine image in the `Dockerfile` and `compose.yaml`, then installs and runs codegen ([`upgrade`](cli.html#upgrade)). Run your type check and tests, then `archlast-forge up`: the image is built on the engine image of the CLI's version, so updating the CLI updates the engine. Take a backup first. The [deploy recipe](recipes.html#deploy-a-change-safely) has the checklist.
 
 ### Is it production ready?
 

@@ -1,13 +1,15 @@
-import { describe, expect, test } from "bun:test";
-import { existsSync, mkdtempSync, readdirSync, readFileSync, statSync } from "node:fs";
+import { describe, expect, setDefaultTimeout, test } from "bun:test";
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
 import { Cancelled, gather } from "../src/cli";
-import { scaffold } from "../src/scaffold";
+import { addPrettier, scaffold } from "../src/scaffold";
 import { parseFlags } from "../src/options";
 import { BASE_COLORS } from "../src/shadcn";
 import { parseProjectConfig } from "../src/stack";
+
+setDefaultTimeout(30_000); // every scaffold runs Prettier over the new project
 
 const fresh = (name = "My Chat") => join(mkdtempSync(join(tmpdir(), "afx-create-")), name);
 const read = (dir: string, file: string) => readFileSync(join(dir, file), "utf8");
@@ -130,6 +132,45 @@ describe("scaffold", () => {
       expect(statSync(join(dir, ".env")).mode & 0o777).toBe(0o600);
       expect(read(dir, ".env.example")).toContain("BETTER_AUTH_SECRET=\n");
     }
+  });
+
+  test("a new project is formatted with Prettier, four spaces to an indent", () => {
+    for (const [mode, services, shadcn] of [["backend", ["postgres", "redis", "s3", "caddy"]], ["framework", ["s3"], "zinc"]] as const) {
+      const dir = fresh(mode);
+      scaffold({ dir, mode, services: [...services], shadcn });
+      expect(JSON.parse(read(dir, ".prettierrc"))).toEqual({ tabWidth: 4 });
+      expect(read(dir, ".prettierignore")).toContain("forge/_generated"); // codegen writes it its own way
+      expect(JSON.parse(read(dir, "package.json"))).toMatchObject({ scripts: { format: "prettier --write ." }, devDependencies: { prettier: expect.any(String) } });
+      expect(read(dir, "forge/schema.ts")).toMatch(/\n {4}\w/);
+      const check = Bun.spawnSync([process.execPath, require.resolve("prettier/bin/prettier.cjs"), "--check", "."], { cwd: dir, stdout: "pipe", stderr: "pipe" });
+      expect(check.stderr.toString(), mode).toBe("");
+      expect(check.exitCode).toBe(0);
+    }
+  });
+
+  test("a project from before the Prettier setup gets each missing piece once, and keeps a config of its own", () => {
+    const dir = fresh("old");
+    scaffold({ dir, mode: "backend", services: [] });
+    const pkg = JSON.parse(read(dir, "package.json"));
+    delete pkg.scripts.format;
+    delete pkg.devDependencies.prettier;
+    writeFileSync(join(dir, "package.json"), JSON.stringify(pkg, null, 2) + "\n");
+    for (const f of [".prettierrc", ".prettierignore"]) rmSync(join(dir, f));
+    expect(addPrettier(dir)).toEqual([".prettierrc", ".prettierignore", 'the "format" script', "prettier ^3.9.6 in devDependencies"]);
+    expect(read(dir, "package.json")).toStartWith('{\n  "name"'); // the file's own indent
+    expect(Object.keys(JSON.parse(read(dir, "package.json")).devDependencies)).toEqual(["@archlast/forge-cli", "prettier", "typescript"]);
+    expect(JSON.parse(read(dir, ".prettierrc"))).toEqual({ tabWidth: 4 });
+    expect(addPrettier(dir)).toEqual([]);
+
+    const own = fresh("own");
+    scaffold({ dir: own, mode: "backend", services: [] });
+    rmSync(join(own, ".prettierrc"));
+    rmSync(join(own, ".prettierignore"));
+    writeFileSync(join(own, "package.json"), JSON.stringify({ ...JSON.parse(read(own, "package.json")), prettier: { semi: false }, scripts: { format: "biome format --write ." } }));
+    expect(addPrettier(own)).toEqual([".prettierignore"]);
+    expect(existsSync(join(own, ".prettierrc"))).toBe(false);
+    expect(JSON.parse(read(own, "package.json")).scripts.format).toBe("biome format --write .");
+    expect(addPrettier(fresh("empty"))).toEqual([]); // no package.json: nothing to set up
   });
 
   test("it refuses a folder that already has files, and says so before writing anything", () => {

@@ -11,6 +11,7 @@ Commands that act on a project look for `forge/schema.ts` in the current directo
 | Command | Purpose |
 |---|---|
 | [`init [dir]`](#init) | create a project |
+| [`upgrade [version]`](#upgrade) | move a project to another release |
 | [`dev`](#dev) | develop with live reload |
 | [`codegen`](#codegen) | write `forge/_generated` and check imports |
 | [`build`](#build) | build the app image, or a full-stack app's bundles |
@@ -85,7 +86,52 @@ Files written (the `framework` template adds `app/`, `public/`, `tsconfig.json`;
 | `.env` | fresh secrets, mode 0600 |
 | `.env.example` | the same keys, empty |
 | `Caddyfile` | only with `caddy` |
+| `.prettierrc`, `.prettierignore` | Prettier with four spaces to an indent; `forge/_generated` is skipped |
 | `.gitignore`, `README.md` | |
+
+Every file is then formatted with that config (the project's `bun run format`, which runs `prettier --write .`), so a new project passes `prettier --check .`.
+
+## upgrade
+
+```bash
+archlast-forge upgrade [version] [--dir <forge dir>]
+```
+
+Moves a backend or a full-stack app to another release: the latest by default, or `version` (a version such as `0.9.0`, or a dist-tag such as `latest`), looked up with `bun info @archlast/forge-runtime@<version>` on the registry the project installs from. Then:
+
+1. In `package.json` and `forge/package.json`, every dependency on an `@archlast/forge-*` package or `create-archlast-forge` that names a version keeps its `^` or `~` and gets the new version. `workspace:`, `file:` and tag dependencies are left alone.
+2. In the `Dockerfile` and `compose.yaml`, the engine image `ghcr.io/algochad/archlast-forge-engine:<version>` gets the new version (a tag that isn't a version, like `latest`, is left alone).
+3. Prettier, set up the way [`init`](#init) sets it up, for each piece the project doesn't have yet: `.prettierrc` with four spaces to an indent (only when there is no Prettier config at all: no `.prettierrc*`, `prettier.config.*` or `"prettier"` key in `package.json`), `.prettierignore` (skipping `forge/_generated`), a `format` script (`prettier --write .`) and `prettier` in `devDependencies`. A project that has its own keeps it. Your code is not reformatted: that is a diff of its own, so run `bun run format` when you want it.
+4. `bun install` in the project, then in `forge/` (with `--ignore-scripts`, as `dev` does).
+5. `codegen`, run by the CLI that was just installed, so `forge/_generated` is the new version's.
+
+The versions are edited as text, so those files keep their formatting and everything else in them; adding the `format` script and `prettier` rewrites `package.json` with its own indentation. It prints each change and ends with `✓ Upgraded to 0.9.0`:
+
+```
+$ archlast-forge upgrade
+  package.json         @archlast/forge-cli  ^0.9.0 → ^0.10.0
+  forge/package.json   @archlast/forge-runtime  ^0.9.0 → ^0.10.0
+  Dockerfile           engine image  0.9.0 → 0.10.0
+  compose.yaml         engine image  0.9.0 → 0.10.0
+  + .prettierrc
+  + .prettierignore
+  + the "format" script
+  + prettier ^3.9.6 in devDependencies
+→ installing: bun install (/home/me/api)
+…
+✓ Upgraded to 0.10.0. Commit the changes; `archlast-forge up` rebuilds the stack on the new engine image.
+  Prettier is set up with four spaces to an indent; `bun run format` formats the project.
+```
+
+When everything is already there: `✓ Nothing to change: the project is on 0.10.0`. A project on the release that lacks only the Prettier setup gets it: `✓ Set up Prettier; the project was already on 0.10.0. Commit the changes.` A version the registry doesn't have changes nothing:
+
+```
+✗ Couldn't find archlast-forge 0.42.0 on the registry (No version of "@archlast/forge-runtime" satisfying "0.42.0" found). `bun info @archlast/forge-runtime versions` lists those that exist.
+```
+
+If `bun install` fails, the files are already changed: fix the install and run `bun install` again. A version older than the project's is a downgrade, made the same way.
+
+Projects on `0.9.0` or older have a CLI without this command: run the latest one once with `bunx --package @archlast/forge-cli@latest archlast-forge upgrade`. Data needs no step: documents are stored as JSON, and a schema change is handled by [data migrations](migrations.html). Take a [backup](backups.html) before you deploy the upgrade.
 
 ## dev
 
@@ -468,6 +514,8 @@ Everything else you export is passed to the engine when it runs in the CLI's pro
 | `data/app.db` | `start --no-docker` | the default location without `DATA_DIR` |
 | `.forge/gen`, `.forge/build/<version>`, `.forge/build/latest.json` | `dev`, `build` | a full-stack app's generated entries and bundles |
 | `.env` | `init`, `up` | secrets, once |
+| `package.json`, `forge/package.json`, `Dockerfile`, `compose.yaml` | `upgrade` | the archlast-forge versions and the engine image tag; in `package.json` also the `format` script and `prettier`, if missing |
+| `.prettierrc`, `.prettierignore` | `init`, `upgrade` (if missing) | Prettier with four spaces to an indent |
 | Docker images, containers, volumes | `build`, `up`, `start --image`, `dev` | named after the project |
 
 ## archlast-forge.json

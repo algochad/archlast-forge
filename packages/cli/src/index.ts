@@ -12,6 +12,7 @@ import { loadProjectConfig, projectRoot, type ProjectConfig } from "./project";
 import { serve } from "./serve";
 import * as stack from "./stack";
 import { banner, c, ok, step, warn } from "./ui";
+import { upgrade } from "./upgrade";
 
 // `init` has its own options and prompts: hand everything after it to the scaffolder.
 if (Bun.argv[2] === "init") {
@@ -24,6 +25,7 @@ const USAGE = `${c.bold("archlast-forge")} ${VERSION}
 ${c.bold("Start")}
   init [dir]              create a project: a full-stack app or a backend, with the services you pick
       --mode <framework|backend>   --services <postgres,redis,s3,caddy | none>   --yes   --no-install   --no-git
+  upgrade [version]       move the project's archlast-forge packages and engine image to the latest release (or <version>)
 
 ${c.bold("Develop")}
   dev                     run with live reload: a full-stack app on this machine, a backend's engine in Docker
@@ -331,6 +333,9 @@ const commands: Record<string, () => Promise<unknown>> = {
     await ensureDeps(dir).catch((e) => fail(e.message));
     const modules = await generate(dir).catch((e) => fail(e.message));
     console.log(`✓ wrote ${join(dir, "_generated")} (${modules.length} modules)`);
+  },
+  async upgrade() {
+    await upgrade(findForgeDir(values.dir), rest[0]);
   },
 
   async build() {

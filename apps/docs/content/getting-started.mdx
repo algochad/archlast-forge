@@ -137,7 +137,7 @@ curl localhost:3000/http/hello
 ```
 my-app/
   archlast-forge.json   { "mode": "framework", "services": [] }
-  package.json          scripts: dev, build, start, codegen, typecheck, up, down
+  package.json          scripts: dev, build, start, codegen, typecheck, up, down, format
   tsconfig.json         for app/ (strict, React JSX; with shadcn/ui, the `@/` alias for app/)
   components.json       with shadcn/ui: where the shadcn CLI puts components, and your base color
   app/
@@ -163,6 +163,8 @@ my-app/
   .env                  secrets for the stack: created for you, kept out of git
   .env.example          the same keys, empty
   .gitignore
+  .prettierrc           Prettier, four spaces to an indent: `bun run format`
+  .prettierignore
   README.md
 ```
 
@@ -182,7 +184,7 @@ The files you will edit most:
 ```
 api/
   archlast-forge.json   { "mode": "backend", "services": ["postgres", "redis", "s3"] }
-  package.json          scripts: dev, codegen, typecheck, up, down, logs
+  package.json          scripts: dev, codegen, typecheck, up, down, logs, format
   forge/
     package.json  tsconfig.json
     schema.ts           the same `messages` table
@@ -190,8 +192,10 @@ api/
     http.ts             GET /http/hello
     files.ts            generateUploadUrl and url (only when S3 storage is selected)
   compose.yaml          the app plus PostgreSQL, Redis and RustFS, with health checks
-  Dockerfile  .dockerignore  .env  .env.example  .gitignore  README.md
+  Dockerfile  .dockerignore  .env  .env.example  .gitignore  .prettierrc  .prettierignore  README.md
 ```
+
+Every file starts out formatted by Prettier with four spaces to an indent (`.prettierrc`); `bun run format` keeps it that way. `forge/_generated` is left out (`.prettierignore`), since codegen rewrites it.
 
 There is no `app/`. A frontend lives wherever you like and imports the generated `api` from `forge/_generated`. Anything that imports from `forge/` other than `_generated` fails codegen, so server code never reaches a bundle.
 
