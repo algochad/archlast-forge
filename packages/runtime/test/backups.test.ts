@@ -213,7 +213,9 @@ for (const [label, setup] of setups)
       // the archive is a plain .tar.gz
       const dl = await fetch(`${srv.url}/_admin/backups/download?id=${encodeURIComponent(done._id)}`, { headers: { "x-admin-key": KEY } });
       expect(dl.status).toBe(200);
-      expect(dl.headers.get("content-disposition")).toContain(".tar.gz");
+      // From a folder the engine sends the archive itself; from a bucket it redirects to a presigned URL, whose path names the file.
+      if (dl.redirected) expect(new URL(dl.url).pathname).toEndWith(".tar.gz");
+      else expect(dl.headers.get("content-disposition")).toContain(".tar.gz");
       const archive = new Uint8Array(await dl.arrayBuffer());
       const names: string[] = [];
       for await (const e of readTarGz(new Blob([archive]).stream())) names.push(e.name);
