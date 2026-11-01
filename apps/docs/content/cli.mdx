@@ -97,7 +97,7 @@ Every file is then formatted with that config (the project's `bun run format`, w
 archlast-forge upgrade [version] [--dir <forge dir>]
 ```
 
-Moves a backend or a full-stack app to another release: the latest by default, or `version` (a version such as `0.9.0`, or a dist-tag such as `latest`), looked up with `bun info @archlast/forge-runtime@<version>` on the registry the project installs from. Then:
+Moves a backend or a full-stack app to another release: the latest by default, or `version` (a version such as `0.10.0`, or a dist-tag such as `latest`), looked up with `bun info @archlast/forge-runtime@<version>` on the registry the project installs from. Then:
 
 1. In `package.json` and `forge/package.json`, every dependency on an `@archlast/forge-*` package or `create-archlast-forge` that names a version keeps its `^` or `~` and gets the new version. `workspace:`, `file:` and tag dependencies are left alone.
 2. In the `Dockerfile` and `compose.yaml`, the engine image `ghcr.io/algochad/archlast-forge-engine:<version>` gets the new version (a tag that isn't a version, like `latest`, is left alone).
@@ -105,7 +105,7 @@ Moves a backend or a full-stack app to another release: the latest by default, o
 4. `bun install` in the project, then in `forge/` (with `--ignore-scripts`, as `dev` does).
 5. `codegen`, run by the CLI that was just installed, so `forge/_generated` is the new version's.
 
-The versions are edited as text, so those files keep their formatting and everything else in them; adding the `format` script and `prettier` rewrites `package.json` with its own indentation. It prints each change and ends with `✓ Upgraded to 0.9.0`:
+The versions are edited as text, so those files keep their formatting and everything else in them; adding the `format` script and `prettier` rewrites `package.json` with its own indentation. It prints each change and ends with `✓ Upgraded to 0.10.0`:
 
 ```
 $ archlast-forge upgrade
@@ -154,7 +154,7 @@ Runs the engine and the app in this one process, on your machine:
 ✓ codegen: 3 modules
 ✓ app built in 220 ms
 
-  archlast-forge 0.9.0  ·  full-stack app  · ready in 738 ms
+  archlast-forge 0.10.0  ·  full-stack app  · ready in 738 ms
 
   ➜  App        http://localhost:3000
   ➜  Dashboard  http://localhost:3000/_dashboard
@@ -182,7 +182,7 @@ The environment: `BETTER_AUTH_URL` is set to `http://localhost:<port>` (a stray 
 With Docker, `dev` starts the engine container with `forge/` mounted read-only, and the services as sibling containers:
 
 ```
-  archlast-forge 0.9.0  ·  backend  · engine in Docker
+  archlast-forge 0.10.0  ·  backend  · engine in Docker
 
   ➜  API        http://localhost:3000
   ➜  Dashboard  http://localhost:3000/_dashboard
@@ -199,7 +199,7 @@ Troubleshooting `dev`:
 | Message | What to do |
 |---|---|
 | `Failed to start server. Is port 3000 in use?` | pass `--port`, or stop what holds the port |
-| `Engine image ghcr.io/…:0.9.0 isn't available. Set ARCHLAST_ENGINE_IMAGE to one you can pull or build.` | check network access to GHCR; or build locally with `engine build` in a checkout |
+| `Engine image ghcr.io/…:0.10.0 isn't available. Set ARCHLAST_ENGINE_IMAGE to one you can pull or build.` | check network access to GHCR; or build locally with `engine build` in a checkout |
 | `bun install failed in … Fix forge/package.json; native packages may need "trustedDependencies".` | fix the dependency; list packages that need install scripts under `trustedDependencies` |
 | `Frontend code must import only forge/_generated: …` | see [codegen](#codegen) |
 | `Couldn't start postgres: …` / `postgres didn't become ready in 60 s. See: docker logs …` | look at the container's logs; a port or volume problem is usual |
