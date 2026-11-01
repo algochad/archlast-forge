@@ -1,6 +1,6 @@
 # File storage
 
-Files (avatars, attachments, exports) live in any S3-compatible object store, and the engine keeps a small record of each one. File bytes **never pass through the engine**: the browser uploads straight to storage with a short-lived presigned URL, and downloads the same way. The engine only hands out URLs and keeps the bookkeeping.
+Files (avatars, attachments, exports) live in any S3-compatible object store, or on the engine's own disk, and the engine keeps a small record of each one. With S3, file bytes **never pass through the engine**: the browser uploads straight to storage with a short-lived presigned URL, and downloads the same way. The engine only hands out URLs and keeps the bookkeeping. Your functions use the same `ctx.storage` either way, so code written against the built-in storage in development runs unchanged on S3 in production.
 
 ## Turning it on
 
@@ -14,7 +14,9 @@ Set the endpoint and bucket, plus credentials:
 | `S3_REGION` | The region, for example `us-east-1`. Most self-hosted servers accept any value but still want one. |
 | `S3_PUBLIC_ENDPOINT` | Where **browsers** reach storage. Defaults to `S3_ENDPOINT`. See [below](#s3publicendpoint). |
 
-Set both `S3_ENDPOINT` and `S3_BUCKET`, or neither: with only one, startup fails with `Set both S3_ENDPOINT and S3_BUCKET, or neither`. With neither, storage is off, the dashboard's Files page says so, and any function that uses `ctx.storage` fails with `Storage is not configured: set S3_ENDPOINT and S3_BUCKET` (outside dev that reaches the client as a generic "Server error"; the message is in the log).
+Set both `S3_ENDPOINT` and `S3_BUCKET`, or neither: with only one, startup fails with `Set both S3_ENDPOINT and S3_BUCKET, or neither`. With neither, development uses the [built-in storage](#built-in-storage), and production has no storage unless you ask for the built-in one with `STORAGE=local`: the dashboard's Files page says so, and any function that uses `ctx.storage` fails with `Storage is not configured: set S3_ENDPOINT and S3_BUCKET, or STORAGE=local to keep files on this server` (outside dev that reaches the client as a generic "Server error"; the message is in the log).
+
+`STORAGE` names the choice outright: `s3` (the default when `S3_ENDPOINT` is set), `local` (the default in development without S3), or `off` (the default in production without S3).
 
 URLs are path-style: `<endpoint>/<bucket>/<key>`. That is what RustFS and MinIO expect, and what other S3-compatible servers accept. [RustFS](https://rustfs.com) is a good self-hosted choice. The bundled setups use it:
 
@@ -272,16 +274,30 @@ export function Avatar() {
 
 `useQuery(api.files.myAvatarUrl)` is live: when `setAvatar` commits, the query re-runs and the new picture appears without a reload. Failures (`Only images`, a rejected PUT) throw from the handler; wrap it in `try`/`catch` to show them (see [clients](clients.html#error-handling)).
 
+## Built-in storage
+
+Without S3, `archlast-forge dev` keeps files on the engine's own disk, in `DATA_DIR/storage` (`forge/data/storage` for a project on this machine, the data volume in Docker). Nothing to start or configure: `ctx.storage`, `useUploadFile` and the dashboard's Files page work as they do with a bucket. In production it is off unless you set `STORAGE=local` (on the Settings page or in the environment), so an existing deployment without storage doesn't start keeping files on its disk.
+
+It works like a bucket that the engine serves itself:
+
+- **URLs are signed by the engine.** `generateUploadUrl()` returns `<STORAGE_PUBLIC_URL>/_storage/<key>?expires=…&sig=…`, a PUT that works for an hour, and `getUrl()` a GET URL the same way. The signature covers the method, the key and the expiry (HMAC-SHA256 with a key derived from `BETTER_AUTH_SECRET`), so an upload URL can't read and a download URL can't write. `STORAGE_PUBLIC_URL` defaults to `BETTER_AUTH_URL`; set it when browsers reach the engine at another address.
+- **The bytes go through the engine.** Uploads are streamed to disk, written to a temporary file and moved into place when complete, so a reader never sees half a file. `MAX_UPLOAD_MB` (5120) is the largest file it takes; other requests keep `MAX_REQUEST_BYTES`.
+- **Files are served from your app's origin**, so each response is a sandboxed document (`Content-Security-Policy: sandbox`, `X-Content-Type-Options: nosniff`): an uploaded HTML or SVG file can't run scripts as your app. Images, video and audio display as usual, and `Range` requests work for seeking.
+- **Cross-origin uploads** (a backend with its frontend on another port) get `Access-Control-Allow-Origin: *` on `/_storage`: the signature is the access control, as with a bucket.
+- **One server.** The files are on its disk, so `STORAGE=local` refuses to start with `REPLICAS` above 1. Back them up with the [backups](backups.html), which include files.
+- **Switching** between `local` and `s3` doesn't move files. To move them, back up with files, change `STORAGE`, restart, and restore the backup with files.
+
 ## Local development
 
-1. `archlast-forge dev --with s3` (Docker required). Open the dashboard's Files page to see uploads, with their size and a link.
-2. Without Docker, point the variables at any S3-compatible server you run, such as RustFS or MinIO started by hand: `S3_ENDPOINT`, `S3_BUCKET`, the keys, and a bucket that exists. In `archlast-forge dev`, put them in the environment of the command.
+1. Nothing to do: without S3, `archlast-forge dev` uses the built-in storage above.
+2. To develop against S3 itself: `archlast-forge dev --with s3` (Docker required) starts RustFS. Without Docker, point the variables at any S3-compatible server you run, such as RustFS or MinIO started by hand: `S3_ENDPOINT`, `S3_BUCKET`, the keys, and a bucket that exists. In `archlast-forge dev`, put them in the environment of the command.
 3. Use `*` as the allowed CORS origin in dev; the RustFS container does by default.
 
 ## Not supported
 
-- Streaming files through the engine, image transformations, thumbnails, virus scanning.
+- Image transformations, thumbnails, virus scanning.
 - Per-file access rules beyond what your own functions check before returning a URL.
 - Reading size or type of an object from a function.
 - Resumable or multipart uploads.
 - Several buckets: one `S3_BUCKET` per deployment.
+- The built-in storage on more than one server.

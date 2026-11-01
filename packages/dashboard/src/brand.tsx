@@ -14,10 +14,7 @@ export function Logo({ size = 28 }: { size?: number }) {
       </defs>
       <rect x="1" y="1" width="30" height="30" rx="8" fill="var(--logo-bg)" />
       {/* anvil */}
-      <path
-        d="M6 12.5h13.5c0 2.3 1.8 3.8 4.5 3.8v1.6h-4c-1.2 0-1.9.7-1.9 1.8v1.5h2.2v3.3H10.6v-3.3h2.2v-1.5c0-1.1-.7-1.8-1.8-1.8C8.1 17.9 6 15.6 6 12.5z"
-        fill={`url(#${id}-ember)`}
-      />
+      <path d="M6 12.5h13.5c0 2.3 1.8 3.8 4.5 3.8v1.6h-4c-1.2 0-1.9.7-1.9 1.8v1.5h2.2v3.3H10.6v-3.3h2.2v-1.5c0-1.1-.7-1.8-1.8-1.8C8.1 17.9 6 15.6 6 12.5z" fill={`url(#${id}-ember)`} />
       {/* sparks */}
       <path d="M22.6 5.2l-1 2.6M26.6 7.4l-2.3 1.5M27.4 11.6h-2.6" stroke="var(--spark)" strokeWidth="1.6" strokeLinecap="round" />
     </svg>
@@ -95,13 +92,27 @@ const PATHS: Record<string, string> = {
   trash: "M5 7h14M10 11v6M14 11v6M6 7l1 13h10l1-13M9 7V4h6v3",
   edit: "M4 20h4L20 8l-4-4L4 16z",
   menu: "M4 6h16M4 12h16M4 18h16",
+  backups: "M4 4h16v4H4zM5 8v11h14V8M10 12h4",
+  download: "M12 4v11M7 10l5 5 5-5M5 20h14",
+  upload: "M12 20V9M7 14l5-5 5 5M5 4h14",
 };
 
 export type IconName = keyof typeof PATHS;
 
 export function Icon({ name, size = 18, className }: { name: IconName; size?: number; className?: string }) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth={1.75} strokeLinecap="round" strokeLinejoin="round" aria-hidden="true" className={`icon ${className ?? ""}`}>
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.75}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      aria-hidden="true"
+      className={`icon ${className ?? ""}`}
+    >
       <path d={PATHS[name]} />
     </svg>
   );
@@ -109,7 +120,15 @@ export function Icon({ name, size = 18, className }: { name: IconName; size?: nu
 
 /** Initials avatar for the signed-in admin. */
 export function Avatar({ email }: { email: string }) {
-  const initials = email === "admin-key" ? "AK" : email.split("@")[0]!.split(/[._-]/).map((p) => p[0]?.toUpperCase()).join("").slice(0, 2);
+  const initials =
+    email === "admin-key"
+      ? "AK"
+      : email
+          .split("@")[0]!
+          .split(/[._-]/)
+          .map((p) => p[0]?.toUpperCase())
+          .join("")
+          .slice(0, 2);
   return (
     <span className="avatar" aria-hidden="true">
       {initials}

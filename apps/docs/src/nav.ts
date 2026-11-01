@@ -27,6 +27,7 @@ export const PAGES = {
   deployment: ["Deployment", () => import("../content/deployment.mdx")],
   configuration: ["Configuration", () => import("../content/configuration.mdx")],
   dashboard: ["Dashboard", () => import("../content/dashboard.mdx")],
+  backups: ["Backups", () => import("../content/backups.mdx")],
   observability: ["Observability", () => import("../content/observability.mdx")],
   limits: ["Limits and security", () => import("../content/limits.mdx")],
   reference: ["API reference", () => import("../content/reference.mdx")],
@@ -41,7 +42,7 @@ export const GROUPS: [string, Slug[]][] = [
   ["Data and functions", ["schema", "functions", "queries", "reactivity", "caching", "errors", "migrations"]],
   ["Server features", ["auth", "storage", "scheduling", "http", "nest"]],
   ["Clients and guides", ["clients", "testing", "recipes"]],
-  ["Run", ["cli", "deployment", "configuration", "dashboard", "observability", "limits"]],
+  ["Run", ["cli", "deployment", "configuration", "dashboard", "backups", "observability", "limits"]],
   ["Reference", ["reference", "troubleshooting"]],
 ];
 

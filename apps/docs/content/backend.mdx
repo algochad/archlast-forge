@@ -533,6 +533,8 @@ docker compose exec app bun /engine/packages/cli/src/index.ts admin add you@exam
 
 (Again derived from the code, not run against a stack.) The dashboard also manages accounts and shows data, and does not have this problem.
 
+**Full backups** (data, jobs, settings, source and files) are built in: a schedule on the dashboard's Backups page or `BACKUP_SCHEDULE`, `archlast-forge backup app.tar.gz` and `archlast-forge restore app.tar.gz`. They work the same on SQLite and Postgres; see [Backups](backups.html). The commands below are the database's own tools.
+
 **JSON export** is portable between engines: `archlast-forge export dump.jsonl` and `import dump.jsonl [--replace]` (see [CLI](cli.html#export)). It validates against the schema on import and refuses non-empty tables without `--replace`.
 
 **Files** in RustFS: back up the volume.

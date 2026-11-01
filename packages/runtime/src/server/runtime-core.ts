@@ -14,7 +14,8 @@ import { loadProject, tableSpecs, type Manifest, type Project } from "./project"
 import { matchRoute, routeName } from "./http";
 import type { HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
-import { S3Storage } from "./storage";
+import { createStorage } from "./storage";
+import { Backups } from "./backup/backups";
 import { migrateSystem } from "./system";
 import { ReadCache } from "./read-cache";
 import { annotate, inSpan, instrumentFetch, spanned, traced, type CallTelemetry } from "./telemetry/context";
@@ -31,17 +32,17 @@ function patchConsole() {
   if (patched) return;
   patched = true;
   for (const level of ["log", "info", "warn", "error", "debug"] as const) {
-  const original = console[level].bind(console);
-  console[level] = (...args: unknown[]) => {
-    const ctx = logContext.getStore();
-    if (ctx) {
-      const message = args.map((a) => (typeof a === "string" ? a : Bun.inspect(a))).join(" ");
-      const time = Date.now();
-      emit({ time, name: ctx.name, level, message, requestId: ctx.requestId, traceId: ctx.trace?.traceId, spanId: ctx.spanId });
-      ctx.logs?.push({ time, level, message });
-      original(`[${ctx.name}]`, ...args);
-    } else original(...args);
-  };
+    const original = console[level].bind(console);
+    console[level] = (...args: unknown[]) => {
+      const ctx = logContext.getStore();
+      if (ctx) {
+        const message = args.map((a) => (typeof a === "string" ? a : Bun.inspect(a))).join(" ");
+        const time = Date.now();
+        emit({ time, name: ctx.name, level, message, requestId: ctx.requestId, traceId: ctx.trace?.traceId, spanId: ctx.spanId });
+        ctx.logs?.push({ time, level, message });
+        original(`[${ctx.name}]`, ...args);
+      } else original(...args);
+    };
   }
 }
 
@@ -80,10 +81,7 @@ async function checkSchema(exec: Executor, project: Project) {
       cursor = page.continueCursor;
     }
   }
-  if (problems.length)
-    throw new Error(
-      `Stored documents don't match the schema (fix them with a migration, or set SCHEMA_CHECK=off):\n  ${problems.join("\n  ")}`,
-    );
+  if (problems.length) throw new Error(`Stored documents don't match the schema (fix them with a migration, or set SCHEMA_CHECK=off):\n  ${problems.join("\n  ")}`);
 }
 
 export interface RuntimeCore {
@@ -128,7 +126,8 @@ export async function startCore(opts: {
     // For @archlast/forge-runtime/nest: the methods of the app's controllers and services, timed per call.
     wrap: <T extends (...args: any[]) => any>(fn: T, name: string, attrs?: Record<string, string | number | boolean>) => spanned(fn, name, "nest", attrs),
     annotate: (attrs: Record<string, string | number | boolean>, request?: boolean) => annotate(attrs, request),
-    metric: (type: "counter" | "gauge" | "histogram", name: string, value: number, attrs?: Record<string, string | number | boolean>, unit?: string) => metrics.record(type, name, value, attrs, unit),
+    metric: (type: "counter" | "gauge" | "histogram", name: string, value: number, attrs?: Record<string, string | number | boolean>, unit?: string) =>
+      metrics.record(type, name, value, attrs, unit),
   };
   const sendMetrics = () => {
     const points = metrics.drain();
@@ -145,7 +144,7 @@ export async function startCore(opts: {
   await loadEnv(db);
   const project = await loadProject(forgeDir);
   await db.migrate(tableSpecs(project.tables));
-  const storage = config.s3 ? new S3Storage(config.s3) : undefined;
+  const storage = createStorage(config);
   const exec = new Executor({
     db,
     tables: project.tables,
@@ -171,13 +170,32 @@ export async function startCore(opts: {
   // One scheduler per server: in a runtime pool only the first process polls.
   const scheduler =
     worker === 0
-      ? new SchedulerLoop(exec, db, project.functions, project.crons, config.limits.actionTimeoutMs + 60_000, 500, config.logRetentionDays * 86_400_000, config.telemetry ? (trace) => send({ t: "trace", trace }) : undefined)
+      ? new SchedulerLoop(
+          exec,
+          db,
+          project.functions,
+          project.crons,
+          config.limits.actionTimeoutMs + 60_000,
+          500,
+          config.logRetentionDays * 86_400_000,
+          config.telemetry ? (trace) => send({ t: "trace", trace }) : undefined,
+        )
       : undefined;
-  const deps = { db, exec, functions: project.functions, tables: project.tables, crons: project.crons, storage, serverId };
+  const release = releaseOf(forgeDir, opts.env);
+  // Backups run in the first process, next to the scheduler: one place per server makes them, so the scheduled one runs once.
+  const backups = worker === 0 ? new Backups({ db, exec, tables: project.tables, forgeDir, storage, config, env: opts.env, serverId, release }) : undefined;
+  await backups?.recover();
+  const backupTimer =
+    backups &&
+    setInterval(() => {
+      void backups.tick().catch((e) => console.error(`backup schedule: ${(e as Error).message}`));
+    }, 30_000);
+  (backupTimer as { unref?: () => void } | undefined)?.unref?.();
+  const deps = { db, exec, functions: project.functions, tables: project.tables, crons: project.crons, storage, serverId, backups, dev: opts.dev };
 
   /** CLI data commands, run here because this process holds the database. */
   async function cli({ cmd, args = {} }: { cmd: string; args?: Record<string, unknown> }) {
-    const out = await runCommand({ config, db, project, exec, close: async () => {} }, cmd, args);
+    const out = await runCommand({ config, db, project, exec, storage, forgeDir, env: opts.env, serverId, close: async () => {} }, cmd, args);
     if (AUDITED_COMMANDS.has(cmd)) {
       const { name, email, file } = args as Record<string, unknown>; // never the values or passwords
       await db.execute(`INSERT INTO "_audit" ("_id", "time", "actor", "action", "target", "details") VALUES (?, ?, ?, ?, ?, ?)`, [
@@ -204,7 +222,13 @@ export async function startCore(opts: {
   async function handle(msg: HostMessage): Promise<unknown> {
     switch (msg.t) {
       case "call":
-        return exec.run(msg.name, msg.kind, msg.args, msg.headers, { allowInternal: msg.allowInternal, requestId: msg.requestId, identity: msg.identity, trace: msg.trace, access: msg.access });
+        return exec.run(msg.name, msg.kind, msg.args, msg.headers, {
+          allowInternal: msg.allowInternal,
+          requestId: msg.requestId,
+          identity: msg.identity,
+          trace: msg.trace,
+          access: msg.access,
+        });
       case "identity":
         return msg.detail ? exec.identityDetailOf(msg.headers) : exec.identityOf(msg.headers);
       case "auth": {
@@ -216,7 +240,11 @@ export async function startCore(opts: {
       case "http": {
         const { method, url, headers, body } = msg.req;
         const found = matchRoute(project.http, method, new URL(url).pathname);
-        const answer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({ status, headers: [["content-type", "text/plain"], ...extra], body: new TextEncoder().encode(status === 404 ? "Not found" : "Method not allowed").buffer as ArrayBuffer });
+        const answer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({
+          status,
+          headers: [["content-type", "text/plain"], ...extra],
+          body: new TextEncoder().encode(status === 404 ? "Not found" : "Method not allowed").buffer as ArrayBuffer,
+        });
         if (!("route" in found)) return answer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
         const route = found.route;
         let telemetry: CallTelemetry | undefined;
@@ -243,11 +271,18 @@ export async function startCore(opts: {
 
   scheduler?.start();
   const manifest: Manifest = {
-    functions: [...project.functions].map(([name, fn]) => ({ name, kind: fn.kind, visibility: fn.visibility ?? "public", args: fn.args, returns: fn.returns, ...(fn.access && { access: true }) })),
+    functions: [...project.functions].map(([name, fn]) => ({
+      name,
+      kind: fn.kind,
+      visibility: fn.visibility ?? "public",
+      args: fn.args,
+      returns: fn.returns,
+      ...(fn.access && { access: true }),
+    })),
     tables: project.tables,
     crons: project.crons,
-    storage: Boolean(config.s3),
-    release: releaseOf(forgeDir, opts.env),
+    storage: Boolean(storage),
+    release,
   };
   function event(msg: HostEvent) {
     const take = (globalThis as Record<symbol, unknown>)[msg.t === "relay" ? RELAY : SOCKETS] as ((msg: HostEvent) => void) | undefined;
@@ -261,6 +296,7 @@ export async function startCore(opts: {
     event,
     async shutdown() {
       scheduler?.stop();
+      clearInterval(backupTimer);
       clearInterval(metricsTimer);
       clearInterval(sampleTimer);
       sendMetrics();
@@ -268,4 +304,3 @@ export async function startCore(opts: {
     },
   };
 }
-

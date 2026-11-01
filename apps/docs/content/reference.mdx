@@ -424,6 +424,7 @@ interface ServerOptions {
   env?: Record<string, string | undefined>;      // defaults to process.env
   dashboard?: HTMLBundle;                         // Bun HTML import, served at /_dashboard when enabled
   app?: AppHost;                                  // a frontend for every path the engine does not own
+  restart?: () => Promise<void>;                  // stop and start again in this process: the dashboard's "Restart now" (settings)
 }
 
 interface RunningServer {
@@ -431,7 +432,7 @@ interface RunningServer {
   config: Config;
   runtime: FunctionRuntime;
   reload(): Promise<Manifest>;                    // restarts only the function runtime
-  stop(opts?: { graceful?: boolean }): Promise<void>;
+  stop(opts?: { graceful?: boolean; keepApp?: boolean }): Promise<void>;   // keepApp: leave the app host running, for a restart
 }
 
 interface AppHost {
@@ -842,6 +843,7 @@ Everything the engine answers on its one port.
 | `* /http/*` | Your routes from `forge/http.ts`. |
 | `* /api/auth/*` | Better Auth (sign-up, sign-in, sign-out, session, ...). |
 | `POST /otlp/v1/traces`, `/otlp/v1/logs`, `/otlp/v1/metrics` | OpenTelemetry from other services, with an ingest key. See [Observability](observability.html#other-services-over-opentelemetry). |
+| `GET`, `HEAD`, `PUT /_storage/<key>?expires=&sig=` | Files in the [built-in storage](storage.html#built-in-storage), with `STORAGE=local`: a signed PUT stores the body (up to `MAX_UPLOAD_MB`), a signed GET or HEAD serves it (`Range` supported). A bad or expired signature is `403`. |
 | `POST /_cli` | The CLI's data commands. |
 | `/_admin/*` | The dashboard's API. |
 | `GET /_dashboard` | The dashboard (when enabled). |
@@ -866,7 +868,7 @@ Everything the engine answers on its one port.
 
 `POST /_cli` with header `x-admin-key: <ADMIN_KEY>` and body `{ "cmd": "<command>", "args": { ... } }` runs a data command inside the running server, so an import reaches subscribers. The response is `{ "result": ... }`. A wrong or missing key is `401 {"message":"Invalid admin key"}`; a missing `cmd` is `400 {"message":"Expected {cmd, args}"}`; an unknown command is `400 {"message":"Unknown command \"<cmd>\""}`. It is rate limited separately from `/rpc`.
 
-Commands: `migrate.status`, `migrate.run`, `migrate.check`, `export`, `import`, `backup`, `env.list`, `env.set`, `env.rm`, `admin.list`, `admin.add`, `admin.remove`. They are the implementation of the CLI commands (see [CLI](cli.html)); use the CLI rather than calling this directly.
+Commands: `migrate.status`, `migrate.run`, `migrate.check`, `export`, `import`, `backup`, `backup.full`, `restore`, `env.list`, `env.set`, `env.rm`, `admin.list`, `admin.add`, `admin.remove`. They are the implementation of the CLI commands (see [CLI](cli.html)); use the CLI rather than calling this directly.
 
 ### /_admin
 
@@ -877,9 +879,9 @@ Authentication is a session cookie (`afx_admin`, from `POST /_admin/login` with 
 | Role | Operations |
 |---|---|
 | any signed-in admin | `me` |
-| `viewer` (reads) | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env`, `subscriptions`, `recentLogs`, `server`, `cache`; `GET /_admin/logs/stream` (server-sent events); the telemetry reads `obs.*` and `obs.markSeen` (listed in [Dashboard](dashboard.html#the-admin-api)) |
-| `admin` (changes) | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `run`, `clearCache`, `reload`, `obs.setErrorState`, `obs.saveSlo`, `obs.deleteSlo`, `obs.saveAlertRule`, `obs.deleteAlertRule`, `obs.testAlert`, `obs.createKey`, `obs.revokeKey` |
-| `owner` | `runCustom` (also needs `ALLOW_CUSTOM_FUNCTIONS`) |
+| `viewer` (reads) | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env`, `subscriptions`, `recentLogs`, `server`, `cache`, `settings`, `backups.list`; `GET /_admin/logs/stream` (server-sent events); the telemetry reads `obs.*` and `obs.markSeen` (listed in [Dashboard](dashboard.html#the-admin-api)) |
+| `admin` (changes) | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `run`, `clearCache`, `reload`, `backups.create`, `obs.setErrorState`, `obs.saveSlo`, `obs.deleteSlo`, `obs.saveAlertRule`, `obs.deleteAlertRule`, `obs.testAlert`, `obs.createKey`, `obs.revokeKey` |
+| `owner` | `runCustom` (also needs `ALLOW_CUSTOM_FUNCTIONS`), `saveSetting`, `restart`, `env.set`, `env.remove`, `backups.restore`, `backups.delete`, `GET /_admin/backups/download?id=`, `POST /_admin/backups/upload` |
 
 Errors use the same `{ "error": { ... } }` body as `/rpc`. Guide: [Dashboard](dashboard.html).
 

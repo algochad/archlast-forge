@@ -9,6 +9,7 @@ import { PageHead, QuietRange, TelemetryOff } from "./kit";
 import { RangeProvider, TelemetryOn, useObs } from "./obs";
 import { Alerts } from "./pages/Alerts";
 import { Audit } from "./pages/Audit";
+import { Backups } from "./pages/Backups";
 import { Cache } from "./pages/Cache";
 import { Data } from "./pages/Data";
 import { Errors } from "./pages/Errors";
@@ -60,8 +61,9 @@ const PAGES: Record<string, PageDef> = {
   services: { label: "Services", icon: "services", group: "Admin", observe: true, blurb: "This engine and every service sending it telemetry." },
   alerts: { label: "Alerts", icon: "alerts", group: "Admin", blurb: "Rules over your telemetry, and what they caught." },
   keys: { label: "Ingest keys", icon: "key", group: "Admin", blurb: "Keys other services send OpenTelemetry with." },
+  backups: { label: "Backups", icon: "backups", group: "Admin", blurb: "Snapshots of the data, the function source and the files: on a schedule or now, to download or restore." },
   audit: { label: "Audit", icon: "audit", group: "Admin", blurb: "Every change made from this dashboard." },
-  settings: { label: "Settings", icon: "settings", group: "Admin", blurb: "Schema, environment and live subscriptions." },
+  settings: { label: "Settings", icon: "settings", group: "Admin", blurb: "Everything the engine can be configured with, the functions' environment, the schema and live subscriptions." },
   trace: { label: "Trace", icon: "trace", blurb: "One request from end to end." },
 };
 const NAV = Object.keys(PAGES).filter((p) => PAGES[p]!.group);
@@ -213,110 +215,117 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
 
   return (
     <TelemetryOn.Provider value={telemetry === true}>
-    <div className="shell">
-      <a className="skip" href="#main">
-        Skip to content
-      </a>
-      <nav className="sidebar" aria-label="Dashboard">
-        <a href={href("overview")} className="plain-link">
-          <Wordmark />
+      <div className="shell">
+        <a className="skip" href="#main">
+          Skip to content
         </a>
-        <div className="sidebar-scroll">
-          {GROUPS.map((group) => (
-            <div key={group} style={{ display: "contents" }}>
-              <button type="button" className="nav-group-toggle" aria-expanded={!collapsed.includes(group)} onClick={() => toggleGroup(group)}>
-                {group}
-                <Icon name="chevron-down" size={12} />
-              </button>
-              {!collapsed.includes(group) &&
-                NAV.filter((p) => PAGES[p]!.group === group).map((p) => {
-                  const n = NAV.indexOf(p) + 1;
-                  return (
-                    <a key={p} className="nav-item" href={href(p)} aria-current={p === page || (page === "trace" && p === "requests") ? "page" : undefined}>
-                      <Icon name={PAGES[p]!.icon} />
-                      {PAGES[p]!.label}
-                      {p === "errors" && openErrors > 0 ? <span className="nav-count">{openErrors > 99 ? "99+" : openErrors}</span> : n <= 10 && <kbd>⌥{n % 10}</kbd>}
-                    </a>
-                  );
-                })}
+        <nav className="sidebar" aria-label="Dashboard">
+          <a href={href("overview")} className="plain-link">
+            <Wordmark />
+          </a>
+          <div className="sidebar-scroll">
+            {GROUPS.map((group) => (
+              <div key={group} style={{ display: "contents" }}>
+                <button type="button" className="nav-group-toggle" aria-expanded={!collapsed.includes(group)} onClick={() => toggleGroup(group)}>
+                  {group}
+                  <Icon name="chevron-down" size={12} />
+                </button>
+                {!collapsed.includes(group) &&
+                  NAV.filter((p) => PAGES[p]!.group === group).map((p) => {
+                    const n = NAV.indexOf(p) + 1;
+                    return (
+                      <a key={p} className="nav-item" href={href(p)} aria-current={p === page || (page === "trace" && p === "requests") ? "page" : undefined}>
+                        <Icon name={PAGES[p]!.icon} />
+                        {PAGES[p]!.label}
+                        {p === "errors" && openErrors > 0 ? <span className="nav-count">{openErrors > 99 ? "99+" : openErrors}</span> : n <= 10 && <kbd>⌥{n % 10}</kbd>}
+                      </a>
+                    );
+                  })}
+              </div>
+            ))}
+          </div>
+          <div className="sidebar-foot" aria-label="Runtime status">
+            <span>
+              <span className={`status-dot ${m && !m.error ? "live" : "bad"}`} /> {m ? (m.error ? "Runtime down" : "Runtime healthy") : "Connecting…"}
+            </span>
+            {m && (
+              <span className="muted">
+                {m.functions.length} functions · {Object.keys(m.tables).length} tables{m.release ? ` · ${m.release}` : ""}
+              </span>
+            )}
+          </div>
+        </nav>
+        <div className="column">
+          <header className="topbar">
+            <div className="crumbs-top">
+              <span className="faint">{def.group ?? "Observe"}</span>
+              <Icon name="chevron-right" size={12} />
+              <strong>{def.label}</strong>
             </div>
-          ))}
-        </div>
-        <div className="sidebar-foot" aria-label="Runtime status">
-          <span>
-            <span className={`status-dot ${m && !m.error ? "live" : "bad"}`} /> {m ? (m.error ? "Runtime down" : "Runtime healthy") : "Connecting…"}
-          </span>
-          {m && (
-            <span className="muted">
-              {m.functions.length} functions · {Object.keys(m.tables).length} tables{m.release ? ` · ${m.release}` : ""}
-            </span>
-          )}
-        </div>
-      </nav>
-      <div className="column">
-        <header className="topbar">
-          <div className="crumbs-top">
-            <span className="faint">{def.group ?? "Observe"}</span>
-            <Icon name="chevron-right" size={12} />
-            <strong>{def.label}</strong>
-          </div>
-          <span className="push" />
-          <button className="search-trigger" onClick={() => setPalette(true)} aria-label="Search (Ctrl+K)">
-            <Icon name="search" size={16} />
-            <span>Search or jump to…</span>
-            <kbd>⌘K</kbd>
-          </button>
-          {telemetry && <Notifications />}
-          <Button variant="ghost" className="icon-only" onClick={() => setTheme(NEXT_THEME[theme])} aria-label={`Theme: ${theme}. Switch to ${NEXT_THEME[theme]}`} title={`Theme: ${theme}`}>
-            <Icon name={THEME_ICON[theme]} />
-          </Button>
-          <div className="user-chip">
-            <Avatar email={admin.email} />
-            <span className="who">
-              <span>{admin.email === "admin-key" ? "Admin key" : admin.email}</span>
-              <Badge tone="accent">{admin.role}</Badge>
-            </span>
-            <Button variant="ghost" className="icon-only" onClick={onSignOut} aria-label="Sign out" title="Sign out">
-              <Icon name="logout" size={16} />
+            <span className="push" />
+            <button className="search-trigger" onClick={() => setPalette(true)} aria-label="Search (Ctrl+K)">
+              <Icon name="search" size={16} />
+              <span>Search or jump to…</span>
+              <kbd>⌘K</kbd>
+            </button>
+            {telemetry && <Notifications />}
+            <Button
+              variant="ghost"
+              className="icon-only"
+              onClick={() => setTheme(NEXT_THEME[theme])}
+              aria-label={`Theme: ${theme}. Switch to ${NEXT_THEME[theme]}`}
+              title={`Theme: ${theme}`}
+            >
+              <Icon name={THEME_ICON[theme]} />
             </Button>
-          </div>
-        </header>
-        <main id="main" className="content" tabIndex={-1}>
-          <PageHead title={def.label} blurb={def.blurb} icon={def.icon} controls={(Boolean(def.observe) || page === "cache") && telemetry !== false} />
-          {telemetry === true && HOLDS_REQUESTS.has(page) && <QuietRange />}
-          {m?.error && <p className="note error">The function runtime failed to load: {m.error}</p>}
-          <ErrorNote error={manifest.error} />
-          <Boundary key={`${page}:${route.params.toString()}`}>
-            {def.observe || page === "trace" || page === "alerts" || page === "keys" ? (
-              telemetry === undefined ? (
+            <div className="user-chip">
+              <Avatar email={admin.email} />
+              <span className="who">
+                <span>{admin.email === "admin-key" ? "Admin key" : admin.email}</span>
+                <Badge tone="accent">{admin.role}</Badge>
+              </span>
+              <Button variant="ghost" className="icon-only" onClick={onSignOut} aria-label="Sign out" title="Sign out">
+                <Icon name="logout" size={16} />
+              </Button>
+            </div>
+          </header>
+          <main id="main" className="content" tabIndex={-1}>
+            <PageHead title={def.label} blurb={def.blurb} icon={def.icon} controls={(Boolean(def.observe) || page === "cache") && telemetry !== false} />
+            {telemetry === true && HOLDS_REQUESTS.has(page) && <QuietRange />}
+            {m?.error && <p className="note error">The function runtime failed to load: {m.error}</p>}
+            <ErrorNote error={manifest.error} />
+            <Boundary key={`${page}:${route.params.toString()}`}>
+              {def.observe || page === "trace" || page === "alerts" || page === "keys" ? (
+                telemetry === undefined ? (
+                  <div className="panel">
+                    <Skeleton rows={6} />
+                  </div>
+                ) : telemetry || ["users", "jobs", "logs"].includes(page) ? (
+                  // Users, Jobs and Logs have a view that works without telemetry, and open on it.
+                  <ObservePage page={page} params={route.params} manifest={m} admin={admin} />
+                ) : (
+                  <TelemetryOff />
+                )
+              ) : !m ? (
                 <div className="panel">
                   <Skeleton rows={6} />
                 </div>
-              ) : telemetry || ["users", "jobs", "logs"].includes(page) ? (
-                // Users, Jobs and Logs have a view that works without telemetry, and open on it.
-                <ObservePage page={page} params={route.params} manifest={m} admin={admin} />
               ) : (
-                <TelemetryOff />
-              )
-            ) : !m ? (
-              <div className="panel">
-                <Skeleton rows={6} />
-              </div>
-            ) : (
-              <>
-                {page === "data" && <Data manifest={m} admin={admin} />}
-                {page === "functions" && <Functions manifest={m} admin={admin} />}
-                {page === "cache" && <Cache admin={admin} />}
-                {page === "files" && <Files manifest={m} admin={admin} />}
-                {page === "audit" && <Audit />}
-                {page === "settings" && <Settings manifest={m} admin={admin} />}
-              </>
-            )}
-          </Boundary>
-        </main>
+                <>
+                  {page === "data" && <Data manifest={m} admin={admin} />}
+                  {page === "functions" && <Functions manifest={m} admin={admin} />}
+                  {page === "cache" && <Cache admin={admin} />}
+                  {page === "files" && <Files manifest={m} admin={admin} />}
+                  {page === "audit" && <Audit />}
+                  {page === "backups" && <Backups admin={admin} />}
+                  {page === "settings" && <Settings manifest={m} admin={admin} />}
+                </>
+              )}
+            </Boundary>
+          </main>
+        </div>
+        {palette && <Palette manifest={m} telemetry={telemetry !== false} onClose={() => setPalette(false)} />}
       </div>
-      {palette && <Palette manifest={m} telemetry={telemetry !== false} onClose={() => setPalette(false)} />}
-    </div>
     </TelemetryOn.Provider>
   );
 }
@@ -361,7 +370,11 @@ function ObservePage({ page, params, manifest, admin }: { page: string; params: 
   return null;
 }
 
-type Notice = { unseen: number; firing: { id: string; name: string; since: number; value: number | null; threshold: number; comparator: string; metric: string }[]; recent: { id: string; rule_name: string; time: number; state: string; message: string }[] };
+type Notice = {
+  unseen: number;
+  firing: { id: string; name: string; since: number; value: number | null; threshold: number; comparator: string; metric: string }[];
+  recent: { id: string; rule_name: string; time: number; state: string; message: string }[];
+};
 
 function Notifications() {
   const [open, setOpen] = useState(false);
@@ -420,7 +433,12 @@ function Notifications() {
 }
 
 type Item = { label: string; hint: string; icon: IconName; go: () => void };
-type Found = { operations: { kind: string; operation: string }[]; errors: { fingerprint: string; type: string; message: string }[]; users: { user_id: string; user_name: string | null }[]; traces: { trace_id: string; operation: string }[] };
+type Found = {
+  operations: { kind: string; operation: string }[];
+  errors: { fingerprint: string; type: string; message: string }[];
+  users: { user_id: string; user_name: string | null }[];
+  traces: { trace_id: string; operation: string }[];
+};
 
 /** Ctrl/Cmd+K: jump to a page, a table, a function, or what telemetry knows (operations, errors, users, a trace id). */
 function Palette({ manifest, telemetry, onClose }: { manifest?: Manifest; telemetry: boolean; onClose: () => void }) {
@@ -452,7 +470,12 @@ function Palette({ manifest, telemetry, onClose }: { manifest?: Manifest; teleme
     const remote: Item[] = found
       ? [
           ...found.traces.map((t) => ({ label: `${t.trace_id.slice(0, 12)}… ${t.operation}`, hint: "trace", icon: "trace" as IconName, go: () => navigate("trace", { id: t.trace_id }) })),
-          ...found.operations.map((o) => ({ label: o.operation, hint: `${o.kind} requests`, icon: "requests" as IconName, go: () => navigate(["job", "cron", "consumer"].includes(o.kind) ? "jobs" : "requests", { kind: o.kind, op: o.operation }) })),
+          ...found.operations.map((o) => ({
+            label: o.operation,
+            hint: `${o.kind} requests`,
+            icon: "requests" as IconName,
+            go: () => navigate(["job", "cron", "consumer"].includes(o.kind) ? "jobs" : "requests", { kind: o.kind, op: o.operation }),
+          })),
           ...found.errors.map((e) => ({ label: `${e.type}: ${e.message}`.slice(0, 90), hint: "error", icon: "errors" as IconName, go: () => navigate("errors", { fp: e.fingerprint }) })),
           ...found.users.map((u) => ({ label: u.user_name ?? u.user_id, hint: "user", icon: "user" as IconName, go: () => navigate("users", { id: u.user_id }) })),
         ]

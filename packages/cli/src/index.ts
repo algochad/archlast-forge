@@ -47,6 +47,8 @@ ${c.bold("Data")}
   export <file>           all documents as JSON Lines
   import <file>           restore an export (--replace clears the tables first)
   backup <file>           SQLite database copy (use pg_dump for Postgres)
+  backup <file>.tar.gz    full backup: documents, jobs, env and settings, forge/ source and files (--no-files)
+  restore <file>.tar.gz   restore a full backup: data and files (--no-files; --config also env and settings)
 
 ${c.bold("Config")}
   env list | env get <NAME> | env set <NAME> <value> | env rm <NAME>
@@ -82,6 +84,8 @@ const { positionals, values } = parseCommandLine({
     "run-migrations": { type: "boolean" },
     status: { type: "boolean" },
     replace: { type: "boolean" },
+    "no-files": { type: "boolean" },
+    config: { type: "boolean" },
     role: { type: "string" },
     password: { type: "string" },
     "env-file": { type: "string" },
@@ -117,6 +121,9 @@ function devEnv(dir: string) {
   env.TRUSTED_ORIGINS ||= `http://localhost:${port}`;
   env.BETTER_AUTH_URL = `http://localhost:${port}`; // a project's .env (made for the stack) must not point sessions at another address
   trustProxyOrigins(env);
+  // Behind code-server's port proxy the browser reaches the engine only at the proxy's address, so the built-in storage's file URLs use it.
+  const proxy = env.VSCODE_PROXY_URI;
+  if (proxy?.includes("{{port}}.")) env.STORAGE_PUBLIC_URL ||= new URL(proxy.replace("{{port}}", String(port))).origin;
   return env;
 }
 
@@ -159,7 +166,8 @@ async function devFramework(dir: string, cfg: ProjectConfig) {
   const noDocker = Boolean(values["no-docker"] || process.env.ARCHLAST_NO_DOCKER === "1");
   if (services.length && noDocker) warn(`--no-docker: not starting ${services.join(", ")}; using SQLite. Set DATABASE_URL, REDIS_URL or S3_* yourself to use others.`);
   else if (services.length) {
-    if (!dockerEngine.dockerAvailable()) fail(`This project uses ${services.join(", ")}, which run in Docker, and Docker isn't available.\nStart Docker, or run \`archlast-forge dev --no-docker\` to develop on SQLite.`);
+    if (!dockerEngine.dockerAvailable())
+      fail(`This project uses ${services.join(", ")}, which run in Docker, and Docker isn't available.\nStart Docker, or run \`archlast-forge dev --no-docker\` to develop on SQLite.`);
     step(`starting ${services.join(", ")}`);
     const started = dockerEngine.startServices(dockerEngine.containerName(dir, true), services, { host: true });
     Object.assign(env, started.env);
@@ -197,7 +205,13 @@ async function dev() {
       forgeDir: dir,
       port,
       dev: true,
-      env: { BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET!, ADMIN_KEY: env.ADMIN_KEY!, BETTER_AUTH_URL: `http://localhost:${port}`, TRUSTED_ORIGINS: env.TRUSTED_ORIGINS ?? "" },
+      env: {
+        BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET!,
+        ADMIN_KEY: env.ADMIN_KEY!,
+        BETTER_AUTH_URL: `http://localhost:${port}`,
+        TRUSTED_ORIGINS: env.TRUSTED_ORIGINS ?? "",
+        ...(env.STORAGE_PUBLIC_URL && { STORAGE_PUBLIC_URL: env.STORAGE_PUBLIC_URL }),
+      },
       services: devServices(cfg),
     });
     banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  backend  ${c.dim("· engine in Docker")}`, [
@@ -335,7 +349,9 @@ const commands: Record<string, () => Promise<unknown>> = {
   },
   async up() {
     const dir = findForgeDir(values.dir);
-    const cfg = loadProjectConfig(dir) ?? fail("This folder has no archlast-forge.json. Create a project with `archlast-forge init`, or run a single image with `archlast-forge build` and `start --image`.");
+    const cfg =
+      loadProjectConfig(dir) ??
+      fail("This folder has no archlast-forge.json. Create a project with `archlast-forge init`, or run a single image with `archlast-forge build` and `start --image`.");
     await ensureDeps(dir).catch((e) => fail(e.message));
     await generate(dir).catch((e) => fail(e.message));
     await stack.up(projectRoot(dir), cfg.services, { rebuild: values.rebuild });
@@ -432,6 +448,17 @@ const commands: Record<string, () => Promise<unknown>> = {
     const file = rest[0] ?? fail("Usage: archlast-forge backup <file>");
     const dir = findForgeDir(values.dir);
     const target = engineTarget(dir);
+    // A .tar.gz is a full backup, the same archive the dashboard's Backups page makes; anything else is the SQLite copy it always was.
+    if (/\.(tar\.gz|tgz)$/.test(file)) {
+      if (target) {
+        if (!dockerEngine.execInEngine(target, ["backup", "/tmp/backup.tar.gz", ...(values["no-files"] ? ["--no-files"] : [])]).ok) process.exit(1);
+        if (!dockerEngine.copyFrom(target, "/tmp/backup.tar.gz", resolve(file))) fail("docker cp failed");
+        return console.log(`✓ copied to ${file}`);
+      }
+      const m = await data("backup.full", { file: resolve(file), files: !values["no-files"] });
+      const docs = Object.values(m.tables as Record<string, number>).reduce((a, b) => a + b, 0);
+      return console.log(`✓ backed up ${docs} documents, ${m.functions.files} source files and ${m.files.count} files to ${file}`);
+    }
     if (target) {
       if (!dockerEngine.execInEngine(target, ["backup", "/tmp/backup.db"]).ok) process.exit(1);
       if (!dockerEngine.copyFrom(target, "/tmp/backup.db", resolve(file))) fail("docker cp failed");
@@ -439,6 +466,23 @@ const commands: Record<string, () => Promise<unknown>> = {
     }
     await data("backup", { file: resolve(file) });
     console.log(`✓ backed up to ${file}`);
+  },
+
+  async restore() {
+    const file = rest[0] ?? fail("Usage: archlast-forge restore <file>.tar.gz [--no-files] [--config]");
+    const dir = findForgeDir(values.dir);
+    const target = engineTarget(dir);
+    if (target) {
+      if (!dockerEngine.copyTo(target, resolve(file), "/tmp/restore.tar.gz")) fail("docker cp failed");
+      const flags = [...(values["no-files"] ? ["--no-files"] : []), ...(values.config ? ["--config"] : [])];
+      if (!dockerEngine.execInEngine(target, ["restore", "/tmp/restore.tar.gz", ...flags]).ok) process.exit(1);
+      return;
+    }
+    const r = await data("restore", { file: resolve(file), files: !values["no-files"], config: Boolean(values.config) });
+    console.log(
+      `✓ restored ${r.documents} documents in ${r.tables} tables${r.files ? ` and ${r.files} files` : ""}${r.config ? ", with the environment and settings" : ""} (a safety backup of what was there is on the Backups page)`,
+    );
+    if (r.config) console.log("  Restart the server to apply the restored settings.");
   },
 
   async env() {

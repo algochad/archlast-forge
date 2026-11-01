@@ -24,8 +24,8 @@ A successful sign-in sets an `afx_admin` cookie: `HttpOnly`, `SameSite=Strict`, 
 | Role | Can |
 |---|---|
 | **viewer** | Open every page and read everything: telemetry, documents, users, sessions, schema, the audit log. Cannot change anything (but can mark notifications read). |
-| **admin** | Everything a viewer can, and also: insert, patch, replace and delete documents; run functions (including internal ones) as any user; cancel and retry scheduled jobs; delete files; revoke sessions; ban and unban users; clear the cache; reload the function runtime; resolve and ignore issues; manage SLOs, alert rules and ingest keys. |
-| **owner** | Everything, plus [run your own code](#running-your-own-code) (when `ALLOW_CUSTOM_FUNCTIONS` allows it). |
+| **admin** | Everything a viewer can, and also: insert, patch, replace and delete documents; run functions (including internal ones) as any user; cancel and retry scheduled jobs; delete files; revoke sessions; ban and unban users; clear the cache; reload the function runtime; resolve and ignore issues; manage SLOs, alert rules and ingest keys; make a backup. |
+| **owner** | Everything, plus [run your own code](#running-your-own-code) (when `ALLOW_CUSTOM_FUNCTIONS` allows it); download, upload, restore and delete backups and set their schedule; change engine settings and restart the server; set and remove the functions' environment variables. Backups hold credentials and settings hold secrets, so these are the owner's. |
 
 Buttons a role can't use are hidden, and the server enforces the same rules: a viewer's write answers 403 `Requires the admin role`.
 
@@ -70,7 +70,7 @@ Writes made here publish to live queries and invalidate the [cache](caching.html
 
 ### Files
 
-Appears when storage is on (`S3_ENDPOINT` and `S3_BUCKET`; otherwise it explains how to set it up). Lists `_storage` records newest first with the id, content type, **size** (read from the object itself) and upload time. **Open** gives a presigned link that lasts ten minutes; **Delete** (admins) removes the record and the object. Documents that referenced the file keep a dangling id. See [storage](storage.html).
+Appears when storage is on (S3, or the [built-in storage](storage.html#built-in-storage), which development uses without S3; otherwise it explains how to set it up). Lists `_storage` records newest first with the id, content type, **size** (read from the object itself) and upload time. **Open** gives a presigned link that lasts ten minutes; **Delete** (admins) removes the record and the object. Documents that referenced the file keep a dangling id. See [storage](storage.html).
 
 ### Functions
 
@@ -89,13 +89,19 @@ Shown when the query cache is on (`CACHE_TTL_MS`; otherwise the page says how to
 
 The services reporting telemetry, the alert rules over it and the keys other services send it with: see [observability](observability.html#alerts). For scraping by Prometheus, `/metrics` is still there (bearer `METRICS_TOKEN`, or the admin key).
 
+### Backups
+
+Every backup, newest first, with what it holds (documents and tables, files and their size, the number of source files and whether that source is the code running now), its kind (manual, scheduled, uploaded, made before a restore, or found in storage without a record) and its size. **Back up now** (admins) makes one, with or without files, and shows its progress. Owners can **Download** an archive, **Upload a backup** from somewhere else, **Restore** one (choosing whether files, and environment variables and settings, come back too; type `restore` to confirm; a safety backup is made first), delete one, and set the **Schedule** (off, hourly, daily or weekly at a UTC time, or a cron expression, how many to keep, with or without files). The card also says where backups are kept. See [Backups](backups.html).
+
 ### Audit
 
 The audit log: when, who, what, which target and the arguments, newest first (300 entries). It records dashboard writes and the CLI's `import`, `env set`, `env rm`, `admin add`, `admin remove` and `migrate --run` (actor `cli`; never the secret values). Reads and sign-ins aren't in it (sign-ins are in the server log). See [audit log](#audit-log).
 
 ### Settings
 
-The **schema** (every table with its fields and indexes), the names of **environment variables** set with `archlast-forge env set` (never the values) with a **Reload runtime** button for admins, and the **live subscriptions** on this server (query, arguments, the topics that will re-run it, and how long it has been open).
+- **Engine settings:** every variable the engine reads ([Configuration](configuration.html)), grouped (Server, Auth, Database, Runtime, Limits, Storage, Backups, Telemetry) and searchable, each with what it does, its default, its value and where that value comes from. Owners change them in place: worker counts, timeouts, limits, the cache, storage and its credentials, telemetry. A variable set in the environment wins and is shown read-only, as are the few that only the environment may set (with the reason). Saved values that need a restart are marked, and **Restart now** restarts the server to apply them. Secrets are never shown back. See [settings saved from the dashboard](configuration.html#settings-saved-from-the-dashboard).
+- **Function environment variables:** the names of the variables your functions read (never the values), with when each changed. Owners set new values and remove them; **Reload runtime** (admins) applies the change.
+- The **schema** (every table with its fields and indexes) and the **live subscriptions** on this server (query, arguments, the topics that will re-run it, and how long it has been open).
 
 ## Relationships
 
@@ -180,9 +186,9 @@ curl -X POST localhost:3000/_admin/banUser -H "x-admin-key: $ADMIN_KEY" -H 'x-fo
 | Role | Operations |
 |---|---|
 | none needed | `login`, `logout`, `me` (who you are, or `null`) |
-| viewer | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env` (names only), `recentLogs`, `subscriptions`, `server`, `cache`; telemetry: `obs.overview`, `obs.requests`, `obs.jobs`, `obs.operation`, `obs.trace`, `obs.errors`, `obs.error`, `obs.users`, `obs.user`, `obs.spans`, `obs.span`, `obs.hotspots`, `obs.map`, `obs.runtime`, `obs.metrics`, `obs.releases`, `obs.services`, `obs.logs`, `obs.search`, `obs.slos`, `obs.alertRules`, `obs.alertEvents`, `obs.notifications`, `obs.keys`, `obs.source`, and the write `obs.markSeen` |
-| admin | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `run`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `clearCache`, `reload`, `obs.setErrorState`, `obs.saveSlo`, `obs.deleteSlo`, `obs.saveAlertRule`, `obs.deleteAlertRule`, `obs.testAlert`, `obs.createKey`, `obs.revokeKey` |
-| owner | `runCustom` |
+| viewer | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env` (names only), `recentLogs`, `subscriptions`, `server`, `cache`, `settings` (secrets never), `backups.list`; telemetry: `obs.overview`, `obs.requests`, `obs.jobs`, `obs.operation`, `obs.trace`, `obs.errors`, `obs.error`, `obs.users`, `obs.user`, `obs.spans`, `obs.span`, `obs.hotspots`, `obs.map`, `obs.runtime`, `obs.metrics`, `obs.releases`, `obs.services`, `obs.logs`, `obs.search`, `obs.slos`, `obs.alertRules`, `obs.alertEvents`, `obs.notifications`, `obs.keys`, `obs.source`, and the write `obs.markSeen` |
+| admin | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `run`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `clearCache`, `reload`, `backups.create` (`{ files }`), `obs.setErrorState`, `obs.saveSlo`, `obs.deleteSlo`, `obs.saveAlertRule`, `obs.deleteAlertRule`, `obs.testAlert`, `obs.createKey`, `obs.revokeKey` |
+| owner | `runCustom`, `saveSetting` (`{ name, value }`, `null` removes it), `restart`, `env.set` (`{ name, value }`), `env.remove`, `backups.restore` (`{ id, files, config }`), `backups.delete`; `GET /_admin/backups/download?id=` (the archive) and `POST /_admin/backups/upload` (the archive as the body) |
 
 The `obs.*` reads take a time range in milliseconds since the epoch (`from`, `to`) and optionally a `service`; with `TELEMETRY=off` they answer 404. `/_admin/logs/stream` is the server-sent event stream behind the log stream. The shapes of each operation's input and output follow the dashboard's usage and may change between versions; treat this as a convenience, not a stable public API.
 
@@ -193,5 +199,5 @@ The `obs.*` reads take a time range in milliseconds since the epoch (`from`, `to
 - **Role changes take a few seconds.** The server caches a session's identity for 10 seconds, so a removed account or demoted role can keep working for that long.
 - **Viewers see your data.** Credentials are hidden (`[hidden]`), but every document in every table is readable. Saving a document the Data page showed you never writes the placeholder back over a real credential: it is left as it was.
 - **Custom code is remote code execution** by design. Keep `ALLOW_CUSTOM_FUNCTIONS` off wherever owner sessions are widely shared; see [limits](limits.html).
-- **Audit entries hold the values written.** Don't edit secrets through the dashboard.
+- **Audit entries hold the values written** to documents, so don't put secrets in documents through the Data page. Settings and environment variables are recorded without their values.
 - **Writes are same-origin only.** The cookie is `SameSite=Strict` and every write needs the custom header, so another site can't drive an admin's session.

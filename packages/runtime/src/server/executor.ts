@@ -4,7 +4,7 @@ import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, ty
 import { validate, validateFields, ValidationError } from "../values";
 import type { Limits } from "./config";
 import { isRetryableConflict, type Db, type DbTx } from "./db/types";
-import { DocStore, type TablesSpec } from "./docstore";
+import { DocStore, RESET_TOPIC, type TablesSpec } from "./docstore";
 import { cancelScheduled, schedule } from "./scheduler";
 import type { Storage } from "./storage";
 import { inSpan, logContext, telemetryOf, traced, tracedTx, type CallTelemetry, type TraceParent } from "./telemetry/context";
@@ -172,6 +172,21 @@ export class Executor {
     }
   }
 
+  /**
+   * One write transaction that publishes no per-document topics: restoring a backup rewrites whole tables, so it publishes RESET_TOPIC once
+   * and every server drops its cache and re-runs its subscriptions. Not retried: a restore is not a deterministic mutation to re-run.
+   */
+  async rewrite<T>(fn: (store: DocStore, tx: DbTx) => Promise<T>): Promise<T> {
+    let store: DocStore | undefined;
+    try {
+      return await this.o.db.transaction("write", (tx) => fn((store = this.store(tx, new Set())), tx));
+    } finally {
+      for (const t of store?.writing ?? []) this.o.readCache?.settled(t, []);
+      this.o.readCache?.clear();
+      this.o.publish([RESET_TOPIC]);
+    }
+  }
+
   /** One write transaction; topics publish only after commit. Retries serialization conflicts (mutations are deterministic). */
   async mutate<T>(fn: (store: DocStore, tx: DbTx, afterCommit: AfterCommit) => Promise<T>): Promise<T> {
     for (let attempt = 1; ; attempt++) {
@@ -187,7 +202,10 @@ export class Executor {
           for (const t of store?.writing ?? []) this.o.readCache?.settled(t, writes);
         }
         if (writes.size) this.o.publish([...writes]);
-        for (const f of after) Promise.resolve().then(f).catch((e) => console.error("after-commit task failed:", e));
+        for (const f of after)
+          Promise.resolve()
+            .then(f)
+            .catch((e) => console.error("after-commit task failed:", e));
         return value;
       } catch (e) {
         if (attempt >= 10 || !isRetryableConflict(e)) throw e;
@@ -345,7 +363,7 @@ export class Executor {
   }
 
   private s3(): Storage {
-    if (!this.o.storage) throw new Error("Storage is not configured: set S3_ENDPOINT and S3_BUCKET");
+    if (!this.o.storage) throw new Error("Storage is not configured: set S3_ENDPOINT and S3_BUCKET, or STORAGE=local to keep files on this server");
     return this.o.storage;
   }
 

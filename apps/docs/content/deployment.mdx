@@ -312,7 +312,7 @@ What to expect at load: at 2,000 uncached reads a second on one core (under half
 Without `DATABASE_URL` the engine stores data in a SQLite file (`bun:sqlite`, WAL mode) at `DATA_DIR/app.db`, on the volume at `/data`.
 
 - **One server.** The file belongs to one engine; `REPLICAS > 1` and several servers need PostgreSQL. `RUNTIME_WORKERS > 1` works, but the processes share one write lock, so it helps CPU-heavy functions more than write-heavy ones.
-- **Backups:** `archlast-forge backup app.db` takes a consistent copy while the engine runs. Against a Docker stack, run it inside the container ([Backends](backend.html#backups-and-restores)).
+- **Backups:** set a schedule on the dashboard's Backups page (or `BACKUP_SCHEDULE`), ideally into a bucket of their own (`BACKUP_S3_*`); see [Backups](backups.html). `archlast-forge backup app.db` still takes a consistent copy of the file while the engine runs.
 - **Capacity:** one core serves roughly 600 requests per second of the [$12 challenge](https://github.com/arjaythedev/twelve-dollar-server-challenge) mix, and held 2,000 simulated users with p95 between 50 and 400 ms across runs (measured on a shared VM; expect run-to-run swings). Past that, add runtime processes or move to PostgreSQL.
 
 ## Logs and metrics
@@ -390,7 +390,7 @@ At `/_dashboard` (when `DASHBOARD=on`): requests, traces, errors, logs, users, j
 
 ## Backups and monitoring
 
-Back up the database on a schedule (`pg_dump`, or the SQLite backup) and the storage volume, keep `.env` somewhere safe, and test a restore; the commands are in [Backends](backend.html#backups-and-restores). Monitor:
+Back up on a schedule: the engine's own [backups](backups.html) hold the data, the source and the files (`BACKUP_SCHEDULE`, into a bucket off the machine with `BACKUP_S3_*`), and `pg_dump` or the volumes are there too ([Backends](backend.html#backups-and-restores)). Keep `.env` somewhere safe, and test a restore. Monitor:
 
 - `GET /ready` from outside, expecting 200 (a failed deploy and a lost database both show up here);
 - the error ratio and p95 from `/metrics`, as above;

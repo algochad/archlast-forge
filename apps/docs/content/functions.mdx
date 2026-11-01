@@ -163,7 +163,7 @@ A query that calls `getUserIdentity()` is cached per user instead of being share
 
 ### `ctx.storage`
 
-`getUrl(id)` returns a presigned download URL, or `null` for an id that does not exist. `generateUploadUrl({ contentType })` creates the `_storage` row and a presigned upload URL; `delete(id)` removes the row and the object (the object delete runs after the transaction commits). Storage needs `S3_ENDPOINT` and `S3_BUCKET`; without them the call fails with `Storage is not configured: set S3_ENDPOINT and S3_BUCKET`. See [File storage](storage.html).
+`getUrl(id)` returns a presigned download URL, or `null` for an id that does not exist. `generateUploadUrl({ contentType })` creates the `_storage` row and a presigned upload URL; `delete(id)` removes the row and the object (the object delete runs after the transaction commits). Storage needs `S3_ENDPOINT` and `S3_BUCKET`, or the built-in storage (`STORAGE=local`, the default in dev); without either the call fails with `Storage is not configured: set S3_ENDPOINT and S3_BUCKET, or STORAGE=local to keep files on this server`. See [File storage](storage.html).
 
 ### `ctx.scheduler`
 

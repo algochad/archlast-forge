@@ -20,10 +20,21 @@ In a project that has an `archlast-forge.json`, plain `archlast-forge start` wit
 
 Four details are worth knowing before you debug a setting that "does nothing".
 
-- **The process environment wins.** Whatever is already in the environment is never overwritten by the CLI's defaults or by `archlast-forge env set`.
+- **The process environment wins.** Whatever is already in the environment is never overwritten by the CLI's defaults, by `archlast-forge env set`, or by a value saved on the dashboard's Settings page (below).
 - **Bun reads `.env` for you.** `bun` loads a `.env` file from the current directory into the environment before the CLI starts. So `archlast-forge start --no-docker` run in the project root sees the `.env` that `init` wrote, including `ALLOW_INSECURE_HTTP=1`. Move or delete it and the same command stops with `BETTER_AUTH_SECRET is required outside dev`.
 - **`compose.yaml` passes only the variables it lists.** `up` uses `.env` to fill in `${...}` placeholders in `compose.yaml`; it does not hand the whole file to the app. The generated file passes `BETTER_AUTH_SECRET`, `ADMIN_KEY`, `BETTER_AUTH_URL`, `ALLOW_INSECURE_HTTP` and `DASHBOARD`, plus the service URLs and, with Caddy, `TRUST_PROXY` and `TRUSTED_ORIGINS`. To set anything else (`RATE_LIMIT_PER_MINUTE`, `TRUST_PROXY` without Caddy, `LOG_FORMAT`), add a line under `environment:` in `compose.yaml`. The file is yours to edit.
 - **`dev` and `start --no-docker` share a database.** Both keep it in `forge/data/` unless `DATA_DIR` says otherwise, so what you create in development is there when you start the production bundles on the same machine. (Before `0.2.0`, `start --no-docker` used `./data` of the directory you ran it from, a different database.) Set `DATA_DIR` to keep them apart. In a container the database is on the volume at `/data`.
+
+### Settings saved from the dashboard
+
+Every variable on this page is on the dashboard's **Settings** page, grouped as here, with its current value, its default and where the value comes from. Owners can change most of them there. A value saved there is kept in the database (the `_settings` table) and used when the variable isn't set in the environment, so:
+
+- **The environment still wins.** A variable set in `.env`, `compose.yaml` or the shell shows as "set in the environment" and can't be changed from the page.
+- **Most settings apply when the server restarts.** The page lists the ones waiting and has a **Restart now** button: the CLI (`dev`, `start`, the engine image) stops the server and starts it again in the same process, which takes a few seconds; clients reconnect by themselves. A server embedded with `startServer` without a `restart` option says to restart its process instead. The backup settings (`BACKUP_*`) apply at once.
+- **Some can only come from the environment:** `DATA_DIR` and `DATABASE_URL` (the engine reads them to find the database the settings are in), `PORT` and `HOST` (the container's port mapping depends on them), `REDIS_URL` (connected before anything is served), `REPLICAS`, and `BETTER_AUTH_URL`, `BETTER_AUTH_SECRET`, `ADMIN_KEY` and `DASHBOARD` (a wrong value could lock you out of the dashboard). They are listed, read-only, with the reason.
+- **A value is checked before it is saved:** its type, and whether the engine would still start with it (`RUNTIME_MODE=inline` is refused in dev, `STORAGE=s3` without an endpoint, and so on). If a saved value stops making a valid configuration later (the same database opened in dev), the engine starts without the saved values and the Settings page says why.
+- **Secrets are write-only.** `S3_SECRET_ACCESS_KEY`, `METRICS_TOKEN` and the like show as "set (hidden)"; typing a new value replaces it. Changes are in the audit log without their values.
+- **Where it applies:** on the server that restarts. With several servers, each picks up the saved values when it restarts. CLI data commands that open the database themselves use them too.
 
 ### Development secrets
 
@@ -78,13 +89,32 @@ SQLite runs in WAL mode with one serialized writer, and it belongs to one engine
 
 | Variable | Default | Accepted | What it does |
 |---|---|---|---|
-| `S3_ENDPOINT` | unset: storage off | a URL | The S3-compatible service, as the engine reaches it. |
+| `STORAGE` | `s3` with `S3_ENDPOINT`; otherwise `local` in dev and `off` elsewhere | `s3`, `local`, `off` | Where files live. `local` keeps them in `DATA_DIR/storage` and serves them at `/_storage` (see [built-in storage](storage.html#built-in-storage)); it refuses `REPLICAS` above 1. |
+| `STORAGE_PUBLIC_URL` | the value of `BETTER_AUTH_URL` | a URL | With `STORAGE=local`: the address browsers reach the engine at, which upload and download URLs start with. |
+| `MAX_UPLOAD_MB` | `5120` | integer ≥ 1 | The largest file the built-in storage accepts, and the largest backup the dashboard takes as an upload. Other requests keep `MAX_REQUEST_BYTES`. |
+| `S3_ENDPOINT` | unset | a URL | The S3-compatible service, as the engine reaches it. |
 | `S3_BUCKET` | unset | a bucket name | The bucket for uploads. It must already exist. Set together with `S3_ENDPOINT`, or neither. |
 | `S3_ACCESS_KEY_ID`, `S3_SECRET_ACCESS_KEY` | unset | strings | Credentials for the bucket. |
 | `S3_REGION` | unset | a region, e.g. `us-east-1` | Needed by some providers when signing. |
 | `S3_PUBLIC_ENDPOINT` | the value of `S3_ENDPOINT` | a URL | The address browsers use for uploads and downloads. Presigned URLs are signed for this host, so it must be reachable from the browser and must be the host that will be called. Set it whenever the engine reaches storage by an internal name (a Docker network, a private IP). |
 
-Without storage, `ctx.storage.generateUploadUrl()` fails with `Storage is not configured: set S3_ENDPOINT and S3_BUCKET`. See [File storage](storage.html).
+Without storage, `ctx.storage.generateUploadUrl()` fails with `Storage is not configured: set S3_ENDPOINT and S3_BUCKET, or STORAGE=local to keep files on this server`. See [File storage](storage.html).
+
+## Backups
+
+Read again for every backup, so a change applies without a restart. See [Backups](backups.html).
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `BACKUP_SCHEDULE` | none | a cron expression (UTC) | When to back up: `0 3 * * *` is 03:00 every day. Empty: no scheduled backups. |
+| `BACKUP_KEEP` | `7` | integer ≥ 1 | Scheduled backups kept; older ones are deleted. |
+| `BACKUP_FILES` | `on` | boolean | Whether scheduled backups include the files in storage. |
+| `BACKUP_DIR` | unset | a path | Keep backups in this directory. |
+| `BACKUP_S3_ENDPOINT`, `BACKUP_S3_BUCKET` | unset | a URL, a bucket | A bucket of their own for backups (wins over `BACKUP_DIR`). Set both, or neither. |
+| `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`, `BACKUP_S3_REGION`, `BACKUP_S3_PUBLIC_ENDPOINT` | unset | strings | Its credentials, region, and the address browsers download from. |
+| `BACKUP_S3_PREFIX` | `_backups/` in the files' bucket, none in a bucket of their own | a key prefix | Where in the bucket backups go. |
+
+Without `BACKUP_S3_*` or `BACKUP_DIR`, backups go to the files' bucket under `_backups/` with `STORAGE=s3`, and to `DATA_DIR/backups` otherwise.
 
 ## Limits
 

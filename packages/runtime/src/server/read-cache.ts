@@ -72,6 +72,13 @@ export class ReadCache {
     this.invalidatedAt.set(table, ++this.clock);
   }
 
+  /** Drops every entry, after a write too broad to name its topics (a restore). */
+  clear() {
+    this.entries.clear();
+    this.byTopic.clear();
+    this.bytes = 0;
+  }
+
   /** That transaction committed or rolled back; `topics` are those it wrote (a rolled-back one may pass them too: dropping more is safe). */
   settled(table: string, topics: Iterable<string>) {
     const n = (this.pending.get(table) ?? 1) - 1;

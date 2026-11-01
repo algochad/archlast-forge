@@ -9,6 +9,8 @@ import { tableOf } from "../values";
 import type { TablesSpec } from "./docstore";
 import { cancelScheduled, nextRun, retryScheduled } from "./scheduler";
 import type { Storage } from "./storage";
+import type { Backups } from "./backup/backups";
+import { removeEnv, setEnv } from "./env-store";
 
 export type AdminRole = "owner" | "admin" | "viewer";
 export const ROLES: AdminRole[] = ["owner", "admin", "viewer"];
@@ -64,7 +66,11 @@ const redactOrNull = (doc: { _id: string } | null | undefined) => (doc ? redact(
 /** An edit that sends the placeholder back must not overwrite the real value. */
 const withoutHidden = (value: any) => Object.fromEntries(Object.entries(value ?? {}).filter(([, v]) => v !== HIDDEN));
 const restoreHidden = (value: any, existing: any) =>
-  Object.fromEntries(Object.entries(value ?? {}).map(([k, v]): [string, unknown] => [k, v === HIDDEN && existing ? existing[k] : v]).filter(([, v]) => v !== HIDDEN));
+  Object.fromEntries(
+    Object.entries(value ?? {})
+      .map(([k, v]): [string, unknown] => [k, v === HIDDEN && existing ? existing[k] : v])
+      .filter(([, v]) => v !== HIDDEN),
+  );
 
 export interface AdminInfo {
   email: string;
@@ -82,9 +88,36 @@ export interface AdminDeps {
   storage?: Storage;
   /** Clears Better Auth's own session cache, if any. */
   serverId: string;
+  /** In the first function-runtime process only. */
+  backups?: Backups;
 }
 
-const WRITE_OPS = new Set(["insertDoc", "patchDoc", "replaceDoc", "deleteDoc", "cancelJob", "retryJob", "deleteFile", "revokeSession", "banUser", "run", "runCustom", "clearCache"]);
+const WRITE_OPS = new Set([
+  "insertDoc",
+  "patchDoc",
+  "replaceDoc",
+  "deleteDoc",
+  "cancelJob",
+  "retryJob",
+  "deleteFile",
+  "revokeSession",
+  "banUser",
+  "run",
+  "runCustom",
+  "clearCache",
+  "backups.create",
+  "backups.restore",
+  "backups.delete",
+  "backups.import",
+  "settings.save",
+  "env.set",
+  "env.remove",
+]);
+
+const backupsOf = (d: AdminDeps) => {
+  if (!d.backups) throw new Error("Backups run in the first function runtime process; this one is another");
+  return d.backups;
+};
 
 export async function adminOp(d: AdminDeps, op: string, args: any, actor: string): Promise<unknown> {
   const { db, exec } = d;
@@ -96,7 +129,9 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
           String(args.email ?? "").toLowerCase(),
         ]);
         // Verify against a dummy hash when the account doesn't exist, so timing doesn't reveal emails.
-        const ok = await Bun.password.verify(String(args.password ?? ""), a?.passwordHash ?? "$argon2id$v=19$m=65536,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA").catch(() => false);
+        const ok = await Bun.password
+          .verify(String(args.password ?? ""), a?.passwordHash ?? "$argon2id$v=19$m=65536,t=2,p=1$AAAAAAAAAAAAAAAAAAAAAA$AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA")
+          .catch(() => false);
         if (!a || !ok) throw new ValidationError("Invalid email or password");
         return { token: await createSession(db, a._id), admin: { email: a.email, role: a.role } };
       }
@@ -145,7 +180,9 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
             const index = indexFor(d.tables[r.table]!, r.field);
             const count = await exec
               .read((s) => {
-                const q: any = index ? s.query(r.table).withIndex(index, (b: any) => b.eq(r.field, id)) : s.query(r.table).filter((doc) => (r.many ? (doc[r.field] ?? []).includes(id) : doc[r.field] === id));
+                const q: any = index
+                  ? s.query(r.table).withIndex(index, (b: any) => b.eq(r.field, id))
+                  : s.query(r.table).filter((doc) => (r.many ? (doc[r.field] ?? []).includes(id) : doc[r.field] === id));
                 return q.count();
               })
               .then((x) => x.value as number)
@@ -156,9 +193,7 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
       }
       case "counts":
         return Object.fromEntries(
-          await Promise.all(
-            (args.tables as string[]).map(async (t) => [t, Number((await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM "${assertTable(d, t)}"`))[0]?.n ?? 0)]),
-          ),
+          await Promise.all((args.tables as string[]).map(async (t) => [t, Number((await db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM "${assertTable(d, t)}"`))[0]?.n ?? 0)])),
         );
       case "insertDoc":
         return exec.mutate((s) => s.insert(args.table, withoutHidden(args.value)));
@@ -213,14 +248,26 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
 
       // -- files --
       case "files": {
-        const page = (await exec.read((s) => s.query("_storage").order("desc").paginate({ numItems: Math.min(Number(args.numItems) || 50, 200), cursor: args.cursor ?? null }))).value;
+        const page = (
+          await exec.read((s) =>
+            s
+              .query("_storage")
+              .order("desc")
+              .paginate({ numItems: Math.min(Number(args.numItems) || 50, 200), cursor: args.cursor ?? null }),
+          )
+        ).value;
         const storage = d.storage;
         return {
           ...page,
           page: await Promise.all(
             page.page.map(async (f: any) => ({
               ...f,
-              size: storage ? await storage.stat(f.key).then((s) => s.size).catch(() => null) : null,
+              size: storage
+                ? await storage
+                    .stat(f.key)
+                    .then((s) => s.size)
+                    .catch(() => null)
+                : null,
               url: storage?.getPresignedUrl(f.key, { expiresIn: 600 }) ?? null,
             })),
           ),
@@ -238,7 +285,14 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
           })
         ).value;
       case "sessions":
-        return (await exec.read((s) => s.query("sessions").withIndex("by_userId", (b: any) => b.eq("userId", args.userId)).collect())).value.map(
+        return (
+          await exec.read((s) =>
+            s
+              .query("sessions")
+              .withIndex("by_userId", (b: any) => b.eq("userId", args.userId))
+              .collect(),
+          )
+        ).value.map(
           ({ token, ...rest }: any) => rest, // tokens never leave the server
         );
       case "revokeSession":
@@ -246,7 +300,12 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
       case "banUser":
         return exec.mutate(async (s) => {
           await s.patch(args.userId, { banned: Boolean(args.banned) });
-          if (args.banned) for (const session of await s.query("sessions").withIndex("by_userId", (b: any) => b.eq("userId", args.userId)).collect()) await s.delete(session._id);
+          if (args.banned)
+            for (const session of await s
+              .query("sessions")
+              .withIndex("by_userId", (b: any) => b.eq("userId", args.userId))
+              .collect())
+              await s.delete(session._id);
         });
 
       // A change made outside the runtime (the observability settings live in the telemetry store), recorded here with the rest.
@@ -267,20 +326,42 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
       // -- environment variables (values stay server-side) --
       case "env":
         return db.query(`SELECT "name", "updatedAt" FROM "_env" ORDER BY "name"`);
+      case "env.set":
+        return setEnv(db, String(args.name ?? ""), String(args.value ?? ""));
+      case "env.remove":
+        return removeEnv(db, String(args.name ?? ""));
+
+      // -- engine settings: the server checks and normalizes them, this stores them --
+      case "settings.stored":
+        return db.query(`SELECT "name", "value", "updatedAt", "updatedBy" FROM "_settings" ORDER BY "name"`);
+      case "settings.save":
+        if (args.value === null || args.value === undefined) return db.execute(`DELETE FROM "_settings" WHERE "name" = ?`, [String(args.name)]);
+        return db.execute(
+          `INSERT INTO "_settings" ("name", "value", "updatedAt", "updatedBy") VALUES (?, ?, ?, ?) ON CONFLICT ("name") DO UPDATE SET "value" = excluded."value", "updatedAt" = excluded."updatedAt", "updatedBy" = excluded."updatedBy"`,
+          [String(args.name), String(args.value), Date.now(), actor],
+        );
+
+      // -- backups --
+      case "backups.list":
+        return backupsOf(d).list();
+      case "backups.create":
+        return (await backupsOf(d).start({ kind: "manual", files: args.files === undefined ? undefined : Boolean(args.files), actor })).row;
+      case "backups.restore":
+        return (await backupsOf(d).restore(String(args.id), { files: Boolean(args.files), config: Boolean(args.config), actor })).started;
+      case "backups.delete":
+        return backupsOf(d).remove(String(args.id));
+      case "backups.download":
+        return backupsOf(d).download(String(args.id));
+      case "backups.import":
+        return backupsOf(d).importFile(String(args.path), actor);
     }
     throw new ValidationError(`Unknown admin operation "${op}"`);
   })();
   if (WRITE_OPS.has(op)) {
     const target = args.id ?? args.table ?? args.name ?? args.userId ?? null;
-    const details = JSON.stringify({ ...args, requestId: undefined }).slice(0, 2000);
-    await db.execute(`INSERT INTO "_audit" ("_id", "time", "actor", "action", "target", "details") VALUES (?, ?, ?, ?, ?, ?)`, [
-      newId("_audit"),
-      Date.now(),
-      actor,
-      op,
-      target,
-      details,
-    ]);
+    // Never a value: environment variables and settings can be secrets.
+    const details = JSON.stringify({ ...args, requestId: undefined, value: undefined, path: undefined }).slice(0, 2000);
+    await db.execute(`INSERT INTO "_audit" ("_id", "time", "actor", "action", "target", "details") VALUES (?, ?, ?, ?, ?, ?)`, [newId("_audit"), Date.now(), actor, op, target, details]);
   }
   return result;
 }

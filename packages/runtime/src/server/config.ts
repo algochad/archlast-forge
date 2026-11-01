@@ -23,7 +23,13 @@ export interface Config {
   /** Postgres connections each function-runtime process may open (DATABASE_POOL_SIZE); twice the CPU cores by default. */
   databasePoolSize: number;
   redisUrl?: string;
-  s3?: { endpoint: string; publicEndpoint?: string; bucket: string; accessKeyId?: string; secretAccessKey?: string; region?: string };
+  s3?: S3Config;
+  /** Where files live: an S3 bucket, the engine's own disk (DATA_DIR/storage), or nowhere. */
+  storage: "s3" | "local" | "off";
+  /** Where browsers reach the engine's own storage; BETTER_AUTH_URL unless STORAGE_PUBLIC_URL says otherwise. */
+  storagePublicUrl: string;
+  /** The largest body the built-in storage takes for one file, and the dashboard for an uploaded backup. */
+  maxUploadBytes: number;
   adminKey?: string;
   /** Serve /_dashboard and the admin API. Off by default outside dev. */
   dashboard: boolean;
@@ -60,6 +66,27 @@ export interface Config {
   serviceName: string;
 }
 
+export interface S3Config {
+  endpoint: string;
+  publicEndpoint?: string;
+  bucket: string;
+  accessKeyId?: string;
+  secretAccessKey?: string;
+  region?: string;
+}
+
+/** Where backups are kept and when they are made. Read again for every backup, so a change from the dashboard needs no restart. */
+export interface BackupConfig {
+  /** A bucket of their own (BACKUP_S3_*), or the files' bucket under `prefix`, or a directory. */
+  target: { kind: "s3"; s3: S3Config; prefix: string } | { kind: "dir"; dir: string };
+  /** A cron expression (UTC); empty means no scheduled backups. */
+  schedule: string;
+  /** Scheduled backups kept; older ones are deleted after each new one. */
+  keep: number;
+  /** Whether scheduled backups include the files in storage. */
+  files: boolean;
+}
+
 export class ConfigError extends Error {
   override name = "ConfigError";
 }
@@ -80,8 +107,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const port = int("PORT", 3000);
   const replicas = int("REPLICAS", 1, 1);
   const databaseUrl = env.DATABASE_URL || undefined;
-  if (databaseUrl && !/^postgres(ql)?:\/\//.test(databaseUrl))
-    fail(`DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite), got "${databaseUrl.split(":")[0]}:"`);
+  if (databaseUrl && !/^postgres(ql)?:\/\//.test(databaseUrl)) fail(`DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite), got "${databaseUrl.split(":")[0]}:"`);
   // Inline is the default outside dev: no IPC hop per call, about twice the throughput on one core. Dev keeps the child process, so code
   // changes reload without dropping connections, and so does a pool of runtime processes.
   const runtimeMode = (env.RUNTIME_MODE || (dev || int("RUNTIME_WORKERS", 1, 1) > 1 ? "process" : "inline")) as Config["runtimeMode"];
@@ -91,6 +117,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (replicas > 1 && !env.REDIS_URL) fail("REPLICAS > 1 requires REDIS_URL, or mutations won't reach subscribers on other servers");
   if (replicas > 1 && !databaseUrl) fail("REPLICAS > 1 requires a Postgres DATABASE_URL; bun:sqlite is single-server");
   if (Boolean(env.S3_ENDPOINT) !== Boolean(env.S3_BUCKET)) fail("Set both S3_ENDPOINT and S3_BUCKET, or neither");
+  // Without S3, development keeps files on the engine's disk; production does only when asked, so a deployment without storage stays one.
+  const storage = (env.STORAGE || (env.S3_ENDPOINT ? "s3" : dev ? "local" : "off")) as Config["storage"];
+  if (!["s3", "local", "off"].includes(storage)) fail(`STORAGE must be "s3", "local" or "off", got "${env.STORAGE}"`);
+  if (storage === "s3" && !env.S3_ENDPOINT) fail("STORAGE=s3 needs S3_ENDPOINT and S3_BUCKET");
+  if (storage === "local" && replicas > 1) fail("STORAGE=local keeps files on this server's disk; with REPLICAS > 1 use S3 (S3_ENDPOINT, S3_BUCKET)");
   if (!dev && !env.BETTER_AUTH_SECRET) fail("BETTER_AUTH_SECRET is required outside dev");
   const authUrl = env.BETTER_AUTH_URL ?? `http://localhost:${port}`;
   // Over http, Better Auth's cookies aren't marked Secure; behind a TLS proxy that silently weakens sessions.
@@ -106,22 +137,19 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     databaseUrl,
     databasePoolSize: int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1),
     redisUrl: env.REDIS_URL || undefined,
-    s3: env.S3_ENDPOINT
-      ? {
-          endpoint: env.S3_ENDPOINT,
-          publicEndpoint: env.S3_PUBLIC_ENDPOINT || undefined,
-          bucket: env.S3_BUCKET!,
-          accessKeyId: env.S3_ACCESS_KEY_ID,
-          secretAccessKey: env.S3_SECRET_ACCESS_KEY,
-          region: env.S3_REGION,
-        }
-      : undefined,
+    s3: s3Of(env, "S3_"),
+    storage,
+    storagePublicUrl: (env.STORAGE_PUBLIC_URL || authUrl).replace(/\/+$/, ""),
+    maxUploadBytes: int("MAX_UPLOAD_MB", 5120, 1) * 2 ** 20,
     adminKey: env.ADMIN_KEY || undefined,
     dashboard: bool(env.DASHBOARD, dev),
     customFunctions: bool(env.ALLOW_CUSTOM_FUNCTIONS, dev),
     authSecret: env.BETTER_AUTH_SECRET,
     authUrl,
-    trustedOrigins: (env.TRUSTED_ORIGINS ?? "").split(",").map((s) => s.trim()).filter(Boolean),
+    trustedOrigins: (env.TRUSTED_ORIGINS ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean),
     replicas,
     cacheTtlMs: int("CACHE_TTL_MS", 60_000),
     cacheMaxBytes: int("CACHE_MAX_MB", 64, 1) * 2 ** 20,
@@ -147,6 +175,49 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     telemetryDetailPerSecond: int("TELEMETRY_DETAIL_PER_SECOND", 200, 1),
     serviceName: env.OTEL_SERVICE_NAME || "archlast-forge",
   };
+}
+
+const validCron = (expression: string) => {
+  try {
+    return Boolean(Bun.cron.parse(expression, Date.now(), { tz: "UTC" }));
+  } catch {
+    return false;
+  }
+};
+
+/** An S3 connection from `<prefix>ENDPOINT`, `<prefix>BUCKET` and the rest, or undefined without an endpoint. */
+function s3Of(env: Record<string, string | undefined>, prefix: string): S3Config | undefined {
+  if (!env[`${prefix}ENDPOINT`]) return undefined;
+  return {
+    endpoint: env[`${prefix}ENDPOINT`]!,
+    publicEndpoint: env[`${prefix}PUBLIC_ENDPOINT`] || undefined,
+    bucket: env[`${prefix}BUCKET`]!,
+    accessKeyId: env[`${prefix}ACCESS_KEY_ID`],
+    secretAccessKey: env[`${prefix}SECRET_ACCESS_KEY`],
+    region: env[`${prefix}REGION`],
+  };
+}
+
+/**
+ * Backups go to a bucket of their own when BACKUP_S3_ENDPOINT is set, to BACKUP_DIR when that is, then next to the files: the S3 bucket under
+ * `_backups/`, or DATA_DIR/backups.
+ */
+export function loadBackupConfig(env: Record<string, string | undefined>, config: Pick<Config, "dataDir" | "s3" | "storage">): BackupConfig {
+  if (Boolean(env.BACKUP_S3_ENDPOINT) !== Boolean(env.BACKUP_S3_BUCKET)) throw new ConfigError("Set both BACKUP_S3_ENDPOINT and BACKUP_S3_BUCKET, or neither");
+  const keep = env.BACKUP_KEEP === undefined || env.BACKUP_KEEP === "" ? 7 : Number(env.BACKUP_KEEP);
+  if (!Number.isInteger(keep) || keep < 1) throw new ConfigError(`BACKUP_KEEP must be an integer ≥ 1, got "${env.BACKUP_KEEP}"`);
+  const schedule = (env.BACKUP_SCHEDULE ?? "").trim();
+  if (schedule && !validCron(schedule)) throw new ConfigError(`BACKUP_SCHEDULE must be a cron expression like "0 3 * * *" (UTC), got "${schedule}"`);
+  const own = s3Of(env, "BACKUP_S3_");
+  const prefix = (env.BACKUP_S3_PREFIX ?? (own ? "" : "_backups/")).replace(/^\/+/, "");
+  const target: BackupConfig["target"] = own
+    ? { kind: "s3", s3: own, prefix }
+    : env.BACKUP_DIR
+      ? { kind: "dir", dir: env.BACKUP_DIR }
+      : config.s3 && config.storage === "s3"
+        ? { kind: "s3", s3: config.s3, prefix }
+        : { kind: "dir", dir: join(config.dataDir, "backups") };
+  return { target, schedule, keep, files: bool(env.BACKUP_FILES, true) };
 }
 
 export const sqlitePath = (c: Config) => join(c.dataDir, "app.db");

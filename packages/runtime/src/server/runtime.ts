@@ -91,7 +91,14 @@ class InlineWorker implements Worker {
   ) {}
 
   start(): Promise<Manifest> {
-    this.started = startCore({ forgeDir: this.opts.forgeDir, env: this.opts.env, worker: 0, serverId: this.opts.serverId ?? "local", dev: this.opts.dev, send: (m) => this.events.onMessage(m) }).then((core) => {
+    this.started = startCore({
+      forgeDir: this.opts.forgeDir,
+      env: this.opts.env,
+      worker: 0,
+      serverId: this.opts.serverId ?? "local",
+      dev: this.opts.dev,
+      send: (m) => this.events.onMessage(m),
+    }).then((core) => {
       this.proc = core;
       this.ready = true;
       this.watch();
@@ -227,8 +234,8 @@ class RuntimeProcess implements Worker {
       if (p?.short) {
         const now = performance.now();
         const w = this.window;
-        if (!w.start) (w.start = now, (w.answers = 0));
-        else if (++w.answers >= 5) (this.gapMs = (now - w.start) / w.answers, (this.gapAt = now));
+        if (!w.start) ((w.start = now), (w.answers = 0));
+        else if (++w.answers >= 5) ((this.gapMs = (now - w.start) / w.answers), (this.gapAt = now));
         if (now - w.start > 2000) this.window = { start: now, answers: 0 };
         if (--this.shortPending === 0) this.window = { start: 0, answers: 0 }; // quiet: the next burst starts a new window
       }
@@ -301,7 +308,8 @@ class RuntimeProcess implements Worker {
     if (this.pending.size >= (this.opts.maxPending ?? 1000)) return Promise.reject(new RuntimeCallError("Server is busy, try again", "overloaded"));
     const short = (msg.t === "call" && msg.kind === "query") || msg.t === "identity";
     // A call that would wait longer than a function may run is going to time out; saying so now frees its caller, and the process, for calls that can still finish.
-    if (short && this.gapMs && performance.now() - this.gapAt < 3000 && this.shortPending * this.gapMs > (this.opts.timeouts?.functionMs ?? 10_000)) return Promise.reject(new RuntimeCallError("Server is busy, try again", "overloaded"));
+    if (short && this.gapMs && performance.now() - this.gapAt < 3000 && this.shortPending * this.gapMs > (this.opts.timeouts?.functionMs ?? 10_000))
+      return Promise.reject(new RuntimeCallError("Server is busy, try again", "overloaded"));
     const id = ++this.seq;
     const sentAt = Date.now();
     return new Promise((resolve, reject) => {
@@ -363,7 +371,8 @@ export class FunctionRuntime {
       else if (msg.t === "ws") this.onWs(msg);
       else if (msg.t === "trace") this.onTrace(msg.trace);
       else if (msg.t === "metrics") this.onMetrics(msg.points, msg.instance);
-      else if (msg.t === "sample") this.onSample({ ...msg.sample, inflight: this.workers[index]?.load }); // calls waiting in that process, for the Runtime page
+      else if (msg.t === "sample")
+        this.onSample({ ...msg.sample, inflight: this.workers[index]?.load }); // calls waiting in that process, for the Runtime page
       else if (msg.t === "relay") for (const w of this.workers) if (w.ready) w.event(msg); // to every worker, the sender too: one path for all
     };
     if (this.opts.inline) return new InlineWorker(this.opts, { onMessage });
@@ -384,7 +393,10 @@ export class FunctionRuntime {
     if (msg.op === "open") {
       const closed = () => (this.onWs({ t: "ws", op: "close", sid: msg.sid, code: 1011, reason: "The function runtime is not running" }), undefined);
       // Worker 0, while it is up: every socket in one process, so a gateway's clients are all of them and a broadcast reaches everyone.
-      this.sockets.set(msg.sid, this.pick(0).then((w) => (w.event(msg), w), closed));
+      this.sockets.set(
+        msg.sid,
+        this.pick(0).then((w) => (w.event(msg), w), closed),
+      );
       return;
     }
     const worker = this.sockets.get(msg.sid);
@@ -473,7 +485,13 @@ export class FunctionRuntime {
     });
   }
 
-  call(name: string, kind: FunctionKind, args: unknown, headers: CallHeaders, opts: { allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null; trace?: TraceParent; access?: "only" | "skip" } = {}) {
+  call(
+    name: string,
+    kind: FunctionKind,
+    args: unknown,
+    headers: CallHeaders,
+    opts: { allowInternal?: boolean; requestId?: string; identity?: UserIdentity | null; trace?: TraceParent; access?: "only" | "skip" } = {},
+  ) {
     const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
     return this.send({ t: "call", name, kind, args, headers, ...opts }, (kind === "action" ? t.actionMs : t.functionMs) + HARD_TIMEOUT_GRACE_MS) as Promise<CallResult>;
   }
@@ -500,7 +518,9 @@ export class FunctionRuntime {
 
   admin<T = unknown>(op: string, args: Record<string, unknown>, actor: string) {
     const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
-    const timeout = op === "run" || op === "cli" ? t.actionMs + HARD_TIMEOUT_GRACE_MS : 60_000;
-    return this.send({ t: "admin", op, args, actor }, timeout) as Promise<T>;
+    // An uploaded backup may take minutes to reach a bucket.
+    const timeout = op === "run" || op === "cli" || op === "backups.import" ? t.actionMs + HARD_TIMEOUT_GRACE_MS : 60_000;
+    // Backups live in the first process, with the scheduler that makes them.
+    return this.send({ t: "admin", op, args, actor }, timeout, op.startsWith("backups.") ? 0 : undefined) as Promise<T>;
   }
 }

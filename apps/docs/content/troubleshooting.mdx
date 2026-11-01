@@ -194,7 +194,7 @@ docker compose logs app | grep abc-12      # or paste the id into the dashboard'
 {"time":"2026-10-24T14:04:08.038Z","level":"error","msg":"secret detail: password=hunter2","requestId":"defae1e1-1","function":"zz:boom","stack":"Error: …"}
 ```
 
-The same id is in the `x-request-id` header of every response and on the request's trace in the dashboard. Things that become `Server error`: a bug in your function, a result above `MAX_RESULT_BYTES`, a missing `S3_*` setting (`Storage is not configured: set S3_ENDPOINT and S3_BUCKET`), and database errors. To see messages directly while debugging, reproduce it in dev, where they are returned as they are.
+The same id is in the `x-request-id` header of every response and on the request's trace in the dashboard. Things that become `Server error`: a bug in your function, a result above `MAX_RESULT_BYTES`, a missing `S3_*` setting (`Storage is not configured: …`), and database errors. To see messages directly while debugging, reproduce it in dev, where they are returned as they are.
 
 ### `415 Send application/json`
 
@@ -359,7 +359,7 @@ The client reconnects with backoff (a quarter of a second up to ten) and subscri
 
 In order of likelihood:
 
-1. **`Storage is not configured: set S3_ENDPOINT and S3_BUCKET`** (visible in dev; `Server error` in production): the storage variables are missing, or only one of the two is set (`Set both S3_ENDPOINT and S3_BUCKET, or neither` at startup).
+1. **`Storage is not configured: set S3_ENDPOINT and S3_BUCKET, or STORAGE=local to keep files on this server`** (`Server error` in production): production without S3 has no storage unless `STORAGE=local` is set; with S3, only one of the two variables is set (`Set both S3_ENDPOINT and S3_BUCKET, or neither` at startup).
 2. **The browser can't reach the URL.** The upload URL is signed for `S3_PUBLIC_ENDPOINT`. If the engine reaches storage as `http://rustfs:9000` (a Docker name), browsers cannot, and the `PUT` fails with a network error. Set `S3_PUBLIC_ENDPOINT` to the address browsers use (`https://files.example.com`).
 3. **CORS.** The bucket must allow `PUT` and `GET` from your site's origin. The console shows a CORS error rather than an HTTP status.
 4. **Mixed content.** An https page cannot `PUT` to an `http://` endpoint.

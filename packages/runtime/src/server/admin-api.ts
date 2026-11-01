@@ -13,7 +13,7 @@ export type AdminContext = { admin: AdminInfo | null; requestId: string };
 const RANK: Record<AdminRole, number> = { viewer: 0, admin: 1, owner: 2 };
 
 /** Read operations (viewer) and write operations (admin), all served by the function runtime. */
-const READ_OPS = ["docs", "docsByIds", "references", "counts", "scheduled", "crons", "files", "users", "sessions", "audit", "env"] as const;
+const READ_OPS = ["docs", "docsByIds", "references", "counts", "scheduled", "crons", "files", "users", "sessions", "audit", "env", "backups.list"] as const;
 
 /** The observability pages' reads, answered by the telemetry store (`obs.<name>`), and what changes there with the role it needs. */
 const OBS_READS = [
@@ -71,6 +71,13 @@ export function buildAdminApi(opts: {
   telemetry?: TelemetryClient;
   /** Lines of the project's source around a stack frame. */
   source?: (file: string, line: number) => unknown;
+  /** Every engine setting with where its value comes from. */
+  settings: () => Promise<unknown>;
+  /** Checks a setting (would the engine start with it?) and stores it; null removes it. */
+  saveSetting: (name: string, value: string | null, actor: string) => Promise<unknown>;
+  /** Restarts the whole server in this process, when its host can (the CLI can). */
+  restart?: () => void;
+  maxRequestBytes: number;
 }) {
   const forward = (op: string, role: AdminRole, allowed = true): Operation => ({
     role,
@@ -85,6 +92,9 @@ export function buildAdminApi(opts: {
   for (const op of WRITE_OPS) ops[op] = forward(op, "admin");
   // Arbitrary code runs with the function runtime's privileges, so it takes the top role, not just an admin's.
   ops.runCustom = forward("runCustom", "owner", opts.customFunctions);
+  // Anyone who can sign in may take a backup. Restoring and deleting one, and the variables and settings (secrets among them), are the owner's.
+  ops["backups.create"] = forward("backups.create", "admin");
+  for (const op of ["backups.restore", "backups.delete", "env.set", "env.remove"]) ops[op] = forward(op, "owner");
   const telemetry = () => {
     if (!opts.telemetry) throw new HttpError("NOT_FOUND", "Telemetry is off (TELEMETRY=off), so there is nothing to show here");
     return opts.telemetry;
@@ -98,7 +108,13 @@ export function buildAdminApi(opts: {
         const out = await telemetry().call(op, input, ctx.admin.email);
         // Into the same audit log as data changes (the runtime keeps it); a key's value is never in it, only its name.
         if (op !== "markSeen")
-          void opts.runtime.admin("recordAudit", { action: `obs.${op}`, target: String(input.id ?? input.name ?? input.fingerprint ?? "") || null, details: JSON.stringify({ ...input, webhook: undefined }).slice(0, 2000) }, ctx.admin.email).catch(() => {});
+          void opts.runtime
+            .admin(
+              "recordAudit",
+              { action: `obs.${op}`, target: String(input.id ?? input.name ?? input.fingerprint ?? "") || null, details: JSON.stringify({ ...input, webhook: undefined }).slice(0, 2000) },
+              ctx.admin.email,
+            )
+            .catch(() => {});
         return out;
       },
     };
@@ -123,6 +139,23 @@ export function buildAdminApi(opts: {
     },
     /** Restarts this server's function runtime, e.g. to pick up `archlast-forge env` changes. */
     reload: { role: "admin", write: true, run: async () => (await opts.reload(), true) },
+    settings: { role: "viewer", write: false, run: () => opts.settings() },
+    saveSetting: {
+      role: "owner",
+      write: true,
+      run: (input, ctx) => opts.saveSetting(String(input.name ?? ""), input.value === null || input.value === undefined ? null : String(input.value), ctx.admin.email),
+    },
+    /** Restarts the whole server, which applies saved settings; the dashboard reconnects when it is back. */
+    restart: {
+      role: "owner",
+      write: true,
+      run: async (_input, ctx) => {
+        if (!opts.restart) throw new HttpError("BAD_REQUEST", "This server can't restart itself: restart its process or container to apply the settings");
+        await opts.runtime.admin("recordAudit", { action: "restart", target: null, details: "{}" }, ctx.admin.email).catch(() => {});
+        setTimeout(opts.restart, 250); // after this answer has gone out
+        return { restarting: true };
+      },
+    },
   } satisfies Record<string, Operation>);
 
   return async (op: string, req: Request, ctx: AdminContext): Promise<Response> => {
@@ -134,7 +167,7 @@ export function buildAdminApi(opts: {
         if (!ctx.admin) throw new HttpError("UNAUTHORIZED", "Sign in to the dashboard");
         if (RANK[ctx.admin.role] < RANK[def.role]) throw new HttpError("FORBIDDEN", `Requires the ${def.role} role`);
       }
-      const input = ((await readJson(req, "input", new URL(req.url))) ?? {}) as Input;
+      const input = ((await readJson(req, "input", new URL(req.url), opts.maxRequestBytes)) ?? {}) as Input;
       return Response.json((await def.run(input, ctx as AdminContext & { admin: AdminInfo })) ?? null);
     } catch (e) {
       if (e instanceof HttpError) return errorResponse({ message: e.message, code: e.code, requestId: ctx.requestId });

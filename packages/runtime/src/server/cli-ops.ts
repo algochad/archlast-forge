@@ -9,18 +9,33 @@ import type { Db } from "./db/types";
 import { Executor } from "./executor";
 import { loadProject, tableSpecs, type Project } from "./project";
 import { migrateSystem } from "./system";
+import { listEnv, removeEnv, setEnv } from "./env-store";
+import { readStoredSettings, withSettings } from "./settings";
+import { createStorage, type Storage } from "./storage";
+import { Backups, restoreArchive, writeArchive } from "./backup/backups";
 
 export interface ProjectDb {
   config: Config;
   db: Db;
   project: Project;
   exec: Executor;
+  storage?: Storage;
+  forgeDir: string;
+  env: Record<string, string | undefined>;
+  serverId?: string;
   close(): Promise<void>;
 }
 
 /** Connects to the project's database and applies table/index migrations. */
 export async function openProject(forgeDir: string, env: Record<string, string | undefined> = process.env, dev = true): Promise<ProjectDb> {
-  const config = loadConfig({ ...env, ALLOW_INSECURE_HTTP: "1", BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET || "cli" }, dev);
+  const cliEnv = { ...env, ALLOW_INSECURE_HTTP: "1", BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET || "cli" };
+  const boot = loadConfig(cliEnv, dev);
+  // Settings saved from the dashboard (storage, limits) apply here as they do in the server; a bad one is ignored as it is there.
+  const stored = await readStoredSettings(boot).catch(() => ({}));
+  let config = boot;
+  try {
+    config = loadConfig(withSettings(cliEnv, stored), dev);
+  } catch {}
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
   const db = config.databaseUrl ? createPostgresDb(config.databaseUrl, config.databasePoolSize) : createSqliteDb(sqlitePath(config));
   await migrateSystem(db);
@@ -28,7 +43,7 @@ export async function openProject(forgeDir: string, env: Record<string, string |
   const project = await loadProject(forgeDir);
   await db.migrate(tableSpecs(project.tables));
   const exec = new Executor({ db, tables: project.tables, functions: project.functions, limits: config.limits, publish: () => {}, log: () => {} });
-  return { config, db, project, exec, close: () => db.close() };
+  return { config, db, project, exec, storage: createStorage(config), forgeDir, env: withSettings(cliEnv, stored), close: () => db.close() };
 }
 
 /** Documents that don't match the schema, for `migrate` (check). */
@@ -153,19 +168,36 @@ export async function backup(p: ProjectDb, file: string) {
   await p.db.execute(`VACUUM INTO ?`, [file]);
 }
 
-// ---- environment variables ----
+const backupDeps = (p: ProjectDb) => ({
+  db: p.db,
+  exec: p.exec,
+  tables: p.project.tables,
+  forgeDir: p.forgeDir,
+  storage: p.storage,
+  config: p.config,
+  env: p.env,
+  serverId: p.serverId ?? "cli",
+});
 
-export const listEnv = (db: Db) => db.query<{ name: string; value: string; updatedAt: number }>(`SELECT * FROM "_env" ORDER BY "name"`);
-
-export async function setEnv(db: Db, name: string, value: string) {
-  if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) throw new ValidationError(`Invalid variable name "${name}"`);
-  await db.execute(
-    `INSERT INTO "_env" ("name", "value", "updatedAt") VALUES (?, ?, ?) ON CONFLICT ("name") DO UPDATE SET "value" = excluded."value", "updatedAt" = excluded."updatedAt"`,
-    [name, value, Date.now()],
-  );
+/** A full backup (data, forge/ source, files) as a .tar.gz at `file`, the format the dashboard's Backups page makes and restores. */
+export async function fullBackup(p: ProjectDb, file: string, { files = true } = {}) {
+  return writeArchive(backupDeps(p), file, { kind: "cli", files });
 }
 
-export const removeEnv = (db: Db, name: string) => db.execute(`DELETE FROM "_env" WHERE "name" = ?`, [name]);
+/** Restores a full backup from `file`. A safety backup of what is there now goes to the backup store first, as from the dashboard. */
+export async function restore(p: ProjectDb, file: string, { files = true, config = false, safety = true } = {}) {
+  const d = backupDeps(p);
+  if (safety) {
+    const made = await (await new Backups(d).start({ kind: "pre-restore", files, actor: "cli" })).done;
+    if (made.state !== "done") throw new Error(`The safety backup failed, so nothing was restored: ${made.error}`);
+  }
+  const out = await restoreArchive(d, Bun.file(file), { files, config });
+  return { documents: out.documents, files: out.files, tables: out.tables, config: out.config };
+}
+
+// ---- environment variables ----
+
+export { listEnv, removeEnv, setEnv };
 
 export { addAdmin, listAdmins, removeAdmin, type AdminRole };
 
@@ -201,6 +233,10 @@ export async function runCommand(c: Context, cmd: string, a: Record<string, any>
       return importData(p, a.file, { replace: Boolean(a.replace) });
     case "backup":
       return backup(p, a.file);
+    case "backup.full":
+      return fullBackup(p, a.file, { files: a.files !== false });
+    case "restore":
+      return restore(p, a.file, { files: a.files !== false, config: Boolean(a.config), safety: a.safety !== false });
     case "env.list":
       return listEnv(c.db);
     case "env.set":
@@ -218,4 +254,4 @@ export async function runCommand(c: Context, cmd: string, a: Record<string, any>
 }
 
 /** Commands that read or change secrets or accounts, recorded in the audit log without their values. */
-export const AUDITED_COMMANDS = new Set(["import", "env.set", "env.rm", "admin.add", "admin.remove", "migrate.run"]);
+export const AUDITED_COMMANDS = new Set(["import", "restore", "env.set", "env.rm", "admin.add", "admin.remove", "migrate.run"]);

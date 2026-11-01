@@ -23,7 +23,7 @@ import type { Telemetry } from "./telemetry/recorder";
 /** What a call needs from its HTTP request or WebSocket handshake. */
 export type Context = { headers: CallHeaders; requestId: string; traceparent?: string };
 
-export type ErrorCode = PublicCode | "NOT_FOUND" | "UNAUTHORIZED" | "FORBIDDEN" | "METHOD_NOT_ALLOWED" | "UNSUPPORTED_MEDIA_TYPE" | "TOO_MANY_REQUESTS";
+export type ErrorCode = PublicCode | "NOT_FOUND" | "UNAUTHORIZED" | "FORBIDDEN" | "METHOD_NOT_ALLOWED" | "PAYLOAD_TOO_LARGE" | "UNSUPPORTED_MEDIA_TYPE" | "TOO_MANY_REQUESTS";
 
 const STATUS: Record<ErrorCode, number> = {
   BAD_REQUEST: 400,
@@ -32,6 +32,7 @@ const STATUS: Record<ErrorCode, number> = {
   NOT_FOUND: 404,
   METHOD_NOT_ALLOWED: 405,
   TIMEOUT: 408,
+  PAYLOAD_TOO_LARGE: 413,
   UNSUPPORTED_MEDIA_TYPE: 415,
   TOO_MANY_REQUESTS: 429,
   INTERNAL_SERVER_ERROR: 500,
@@ -60,8 +61,37 @@ export class HttpError extends Error {
   }
 }
 
+const tooLarge = (max: number) => new HttpError("PAYLOAD_TOO_LARGE", `The request body is over ${max} bytes (MAX_REQUEST_BYTES)`);
+
+/**
+ * A request body of at most `max` bytes. Bun refuses longer ones by itself, except where the engine takes uploads (built-in storage, a backup
+ * from the dashboard) and raises Bun's limit for them: then this keeps every other body to MAX_REQUEST_BYTES.
+ */
+export async function readBytes(req: Request, max: number): Promise<Uint8Array> {
+  const declared = req.headers.get("content-length");
+  if (declared !== null) {
+    if (Number(declared) > max) throw tooLarge(max);
+    return new Uint8Array(await req.arrayBuffer()); // a declared length is all Bun reads
+  }
+  if (!req.body) return new Uint8Array(0);
+  const parts: Uint8Array[] = [];
+  let size = 0;
+  for await (const chunk of req.body) {
+    size += chunk.byteLength;
+    if (size > max) throw tooLarge(max);
+    parts.push(chunk);
+  }
+  return Buffer.concat(parts);
+}
+
+export async function readText(req: Request, max: number): Promise<string> {
+  const declared = req.headers.get("content-length");
+  if (declared !== null && Number(declared) <= max) return req.text();
+  return new TextDecoder().decode(await readBytes(req, max));
+}
+
 /** A request's JSON as it arrived: the body of a POST, or the named query parameter of a GET (from the already parsed `url`). */
-const rawJson = async (req: Request, param: string, url: URL) => (req.method === "GET" ? (url.searchParams.get(param) ?? "") : await req.text());
+const rawJson = async (req: Request, param: string, url: URL, max = Infinity) => (req.method === "GET" ? (url.searchParams.get(param) ?? "") : await readText(req, max));
 
 /** Empty means `{}`. */
 function parseJson(raw: string): unknown {
@@ -73,7 +103,7 @@ function parseJson(raw: string): unknown {
   }
 }
 
-export const readJson = async (req: Request, param: string, url: URL): Promise<unknown> => parseJson(await rawJson(req, param, url));
+export const readJson = async (req: Request, param: string, url: URL, max = Infinity): Promise<unknown> => parseJson(await rawJson(req, param, url, max));
 
 const encoder = new TextEncoder();
 
@@ -91,6 +121,7 @@ export interface SocketData extends Context {
 export interface RpcOptions {
   dev: boolean;
   maxSubscriptionsPerConnection: number;
+  maxRequestBytes?: number;
   telemetry?: Telemetry;
 }
 
@@ -109,12 +140,18 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
       const tel = opts.telemetry;
       const root = kind && tel?.begin(kind, name, req.method, ctx.traceparent, ctx.requestId);
       // The trace parent only when the query runs: a cache hit makes no ids.
-      const obs: QueryObserver = root ? { get trace() { return tel!.parent(root); } } : {};
+      const obs: QueryObserver = root
+        ? {
+            get trace() {
+              return tel!.parent(root);
+            },
+          }
+        : {};
       try {
         if (!kind) throw new HttpError("NOT_FOUND", `No function "${name}"`);
         if (req.method === "GET" ? kind !== "query" : req.method !== "POST") throw new HttpError("METHOD_NOT_ALLOWED", `Call ${name} with ${kind === "query" ? "GET or POST" : "POST"}`);
         requireJson(req);
-        const raw = await rawJson(req, "args", url);
+        const raw = await rawJson(req, "args", url, opts.maxRequestBytes);
         // A query's cache entry is keyed by the raw arguments and keeps its encoded response body: a hit parses, serializes and encodes nothing.
         const run = async (): Promise<string | Uint8Array<ArrayBuffer>> => {
           if (kind !== "query") {

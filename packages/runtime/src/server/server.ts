@@ -1,14 +1,17 @@
 import type { HTMLBundle, Server, ServerWebSocket } from "bun";
 import { timingSafeEqual } from "node:crypto";
-import { mkdirSync } from "node:fs";
+import { mkdirSync, rmSync } from "node:fs";
 import { availableParallelism, hostname } from "node:os";
-import { extname, relative, resolve } from "node:path";
+import { extname, join, relative, resolve } from "node:path";
 import { buildAdminApi } from "./admin-api";
 import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
 import { connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
-import { loadConfig, telemetryPath, type Config } from "./config";
+import { ConfigError, loadConfig, telemetryPath, type Config } from "./config";
+import { RESET_TOPIC } from "./docstore";
+import { checkValue, readStoredSettings, SETTING, SETTINGS, validateSettings, withSettings } from "./settings";
+import { createStorage, LocalStorage, serveLocalStorage } from "./storage";
 import { ForgeError } from "../errors";
 import type { FunctionKind, UserIdentity } from "../functions";
 import type { CallHeaders, LogEntry } from "./executor";
@@ -17,7 +20,7 @@ import { Metrics, type LoopDelays } from "./metrics";
 import type { Manifest } from "./project";
 import { toPublicError } from "./public-error";
 import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./ratelimit";
-import { buildRpc, errorResponse, type Rpc, type SocketData } from "./rpc";
+import { buildRpc, errorResponse, HttpError, readBytes, readText, type Rpc, type SocketData } from "./rpc";
 import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager, type QueryObserver } from "./subscriptions";
 import { TelemetryClient } from "./telemetry/client";
@@ -77,6 +80,11 @@ export interface ServerOptions {
   dashboard?: HTMLBundle;
   /** A frontend served for every path the engine doesn't own. */
   app?: AppHost;
+  /**
+   * Stops this server and starts it again in the same process, so settings saved from the dashboard apply. Given by hosts that can (the CLI);
+   * without it the dashboard asks for a restart of the process.
+   */
+  restart?: () => Promise<void>;
 }
 
 export interface RunningServer {
@@ -85,8 +93,8 @@ export interface RunningServer {
   runtime: FunctionRuntime;
   /** Restarts only the function runtime; HTTP/WS stay up and subscriptions re-run. */
   reload(): Promise<Manifest>;
-  /** Graceful: stops accepting work, drains in-flight requests, asks clients to reconnect elsewhere. */
-  stop(opts?: { graceful?: boolean }): Promise<void>;
+  /** Graceful: stops accepting work, drains in-flight requests, asks clients to reconnect elsewhere. `keepApp` leaves the app host running, for a restart. */
+  stop(opts?: { graceful?: boolean; keepApp?: boolean }): Promise<void>;
 }
 
 const pickAuthHeaders = (get: (name: string) => string | null | undefined): CallHeaders => {
@@ -142,10 +150,31 @@ const sameSecret = (a: string, b: string) => {
 
 /** Startup order: config → bus/cache → Bun.serve → function runtime (DB, migrations, modules, auth) → router. */
 export async function startServer(opts: ServerOptions): Promise<RunningServer> {
-  const env = opts.env ?? process.env;
+  const baseEnv = opts.env ?? process.env;
   const dev = opts.dev ?? false;
-  const config = loadConfig(env, dev);
+  const boot = loadConfig(baseEnv, dev); // the environment alone must make a working configuration
+  // Settings saved from the dashboard, under the process environment. If they don't make a valid configuration any more, the engine starts
+  // without them rather than not at all, and says why.
+  let stored: Record<string, string> = {};
+  let storedError: string | undefined;
+  try {
+    stored = await readStoredSettings(boot);
+  } catch (e) {
+    storedError = `couldn't read the settings saved from the dashboard: ${(e as Error).message}`;
+  }
+  let env = withSettings(baseEnv, stored);
+  let config: Config;
+  try {
+    config = loadConfig(env, dev);
+  } catch (e) {
+    storedError = `ignoring the settings saved from the dashboard: ${(e as Error).message}`;
+    env = baseEnv;
+    config = boot;
+    stored = {};
+  }
   setLogFormat(config.logFormat);
+  if (storedError) log("error", storedError);
+  const startedWith = stored;
   const serverId = `${hostname()}:${process.pid}`;
   const ttl = config.cacheTtlMs;
   const bus: Bus = config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0 }) : new MemoryBus();
@@ -229,8 +258,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   );
   // Evicts cache entries, and lets subscriptions notice writes that overlapped their first read. A Redis bus only delivers every topic when caching.
   if (cache || !config.redisUrl) bus.subscribe("*", (topic) => queries.invalidated(topic));
+  // A restore rewrote the tables: what any query read may have changed.
+  bus.subscribe(RESET_TOPIC, () => {
+    void queries.reset().catch((e) => log("error", "cache reset failed", { error: String(e) }));
+    subs.rerunAll();
+  });
 
-  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, telemetry };
+  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
+  const maxBody = config.limits.maxRequestBytes;
+  // Files kept on this server's disk are served here; uploads to them, and backups uploaded to the dashboard, may be larger than other requests.
+  const localFiles = config.storage === "local" ? (createStorage(config) as LocalStorage) : undefined;
+  const takesUploads = Boolean(localFiles) || config.dashboard;
   // Rebuilt after each load; open sockets use whichever is current, so they see functions added by a reload.
   let rpc: Rpc = buildRpc({ functions: [], tables: {}, crons: [], storage: false }, runtime, queries, subs, rpcOpts);
   let loading: Promise<unknown> = Promise.resolve();
@@ -267,13 +305,64 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     runtime,
     subs,
     recentLogs,
-    serverInfo: () => ({ serverId, customFunctions: config.customFunctions, telemetry: Boolean(store), connections, subscriptions: subs.size, workers: config.runtimeWorkers, uptimeMs: Math.round(process.uptime() * 1000) }),
+    serverInfo: () => ({
+      serverId,
+      customFunctions: config.customFunctions,
+      telemetry: Boolean(store),
+      connections,
+      subscriptions: subs.size,
+      workers: config.runtimeWorkers,
+      uptimeMs: Math.round(process.uptime() * 1000),
+    }),
     reload: () => reload(),
     cache: () => ({ ...queries.snapshot(), backend: config.redisUrl ? "redis" : "memory", maxBytes: config.redisUrl ? null : config.cacheMaxBytes }),
     clearCache: () => queries.clear(),
     customFunctions: config.customFunctions,
     telemetry: store,
     source: (file, line) => sourceContext(resolve(opts.forgeDir), file, line),
+    maxRequestBytes: maxBody,
+    restart: opts.restart && (() => void opts.restart!().catch((e) => log("error", `restart failed: ${(e as Error).message}`))),
+    async settings() {
+      const rows = await runtime.admin<{ name: string; value: string; updatedAt: number; updatedBy: string | null }[]>("settings.stored", {}, "system");
+      const now = new Map(rows.map((r) => [r.name, r]));
+      const given = (name: string) => baseEnv[name] !== undefined && baseEnv[name] !== "";
+      return {
+        restartable: Boolean(opts.restart),
+        storedError: storedError ?? null,
+        settings: SETTINGS.map((def) => {
+          const saved = now.get(def.name);
+          const source = given(def.name) ? "environment" : saved ? "dashboard" : "default";
+          const value = source === "environment" ? baseEnv[def.name]! : saved?.value;
+          return {
+            ...def,
+            source,
+            isSet: value !== undefined,
+            value: def.secret ? null : (value ?? null),
+            updatedAt: saved?.updatedAt ?? null,
+            updatedBy: saved?.updatedBy ?? null,
+            // Saved, but this server started with something else: a restart applies it.
+            pending: !def.live && source !== "environment" && (saved?.value ?? null) !== (startedWith[def.name] ?? null),
+          };
+        }),
+      };
+    },
+    async saveSetting(name, value, actor) {
+      const def = SETTING.get(name);
+      if (!def) throw new HttpError("NOT_FOUND", `No setting ${name}`);
+      try {
+        const next = value === null || value.trim() === "" ? null : checkValue(def, value);
+        const rows = await runtime.admin<{ name: string; value: string }[]>("settings.stored", {}, "system");
+        const all = Object.fromEntries(rows.map((r) => [r.name, r.value]));
+        if (next === null) delete all[name];
+        else all[name] = next;
+        validateSettings(baseEnv, all, dev); // the engine must still start, and back up, with it
+        await runtime.admin("settings.save", { name, value: next }, actor);
+        return { name, live: Boolean(def.live), overridden: baseEnv[name] !== undefined && baseEnv[name] !== "" };
+      } catch (e) {
+        if (e instanceof ConfigError) throw new HttpError("BAD_REQUEST", e.message);
+        throw e;
+      }
+    },
   });
   const adminSessions = new Map<string, { admin: AdminInfo | null; at: number }>();
   async function adminOf(req: Request): Promise<AdminInfo | null> {
@@ -288,8 +377,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (adminSessions.size > 1000) adminSessions.clear();
     return found;
   }
-  const adminCookie = (token: string, maxAge: number) =>
-    `afx_admin=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${config.authUrl.startsWith("https://") ? "; Secure" : ""}`;
+  const adminCookie = (token: string, maxAge: number) => `afx_admin=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${config.authUrl.startsWith("https://") ? "; Secure" : ""}`;
 
   const cors = (req: Request, res: Response) => {
     const origin = req.headers.get("origin");
@@ -319,13 +407,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     }
   };
 
-  const clientIp = (req: Request, srv: Server<SocketData>) =>
-    (config.trustProxy && lastForwarded(req.headers.get("x-forwarded-for"))) || srv.requestIP(req)?.address || "unknown";
+  const clientIp = (req: Request, srv: Server<SocketData>) => (config.trustProxy && lastForwarded(req.headers.get("x-forwarded-for"))) || srv.requestIP(req)?.address || "unknown";
   /** Seconds to wait when this client is over its rate limit; with no limit configured, null at once and the client's address is never looked up. */
   const limited = (req: Request, srv: Server<SocketData>, prefix = ""): Promise<number | null> | null => {
     const max = config.limits.rateLimitPerMinute;
     if (!max) return null;
-    return limiter.consume(prefix + clientIp(req, srv), { window: 60, max }).then((r) => (r.allowed ? null : r.retryAfter ?? 60));
+    return limiter.consume(prefix + clientIp(req, srv), { window: 60, max }).then((r) => (r.allowed ? null : (r.retryAfter ?? 60)));
   };
   const tooMany = (retryAfter: number) => Response.json({ message: "Too many requests" }, { status: 429, headers: { "retry-after": String(retryAfter) } });
 
@@ -333,7 +420,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     // A custom header can't be sent cross-site without a CORS preflight, which this API never grants.
     if (req.method !== "GET" && req.headers.get("x-forge-admin") !== "1") return Response.json({ message: "Missing x-forge-admin header" }, { status: 403 });
     if (path === "/_admin/login" && req.method === "POST") {
-      const body = (await req.json().catch(() => ({}))) as { email?: string; password?: string; key?: string };
+      const body = (await readText(req, maxBody)
+        .then((text) => JSON.parse(text))
+        .catch(() => ({}))) as { email?: string; password?: string; key?: string };
       try {
         const out =
           body.key !== undefined
@@ -355,6 +444,50 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       return new Response(null, { status: 204, headers: { "set-cookie": adminCookie("", 0) } });
     }
     const who = await adminOf(req);
+    // A backup archive: streamed from the backup folder, or a redirect to a presigned URL of its bucket. Owners only, like restoring.
+    if (path === "/_admin/backups/download" && req.method === "GET") {
+      if (who?.role !== "owner") return Response.json({ message: "Requires the owner role" }, { status: who ? 403 : 401 });
+      const id = new URL(req.url).searchParams.get("id") ?? "";
+      try {
+        const at = await runtime.admin<{ name: string; path?: string; url?: string }>("backups.download", { id }, who.email);
+        void runtime.admin("recordAudit", { action: "backups.download", target: id, details: "{}" }, who.email).catch(() => {});
+        if (at.url) return Response.redirect(at.url, 302);
+        return new Response(Bun.file(at.path!), {
+          headers: { "content-type": "application/gzip", "content-disposition": `attachment; filename="${at.name}"`, "cache-control": "no-store" },
+        });
+      } catch (e) {
+        return Response.json({ message: (e as Error).message }, { status: 400 });
+      }
+    }
+    // A backup archive from somewhere else (another server, an older download): kept with the others, then restorable like them.
+    if (path === "/_admin/backups/upload" && req.method === "POST") {
+      if (who?.role !== "owner") return Response.json({ message: "Requires the owner role" }, { status: who ? 403 : 401 });
+      const dir = join(config.dataDir, ".backup-tmp");
+      mkdirSync(dir, { recursive: true });
+      const tmp = join(dir, `upload-${crypto.randomUUID()}.tar.gz`);
+      try {
+        const declared = Number(req.headers.get("content-length") ?? NaN);
+        if (declared > config.maxUploadBytes)
+          throw new HttpError("PAYLOAD_TOO_LARGE", `Backups over ${config.maxUploadBytes / 2 ** 20} MB can't be uploaded here (MAX_UPLOAD_MB); restore it with \`archlast-forge restore\``);
+        const sink = Bun.file(tmp).writer();
+        let size = 0;
+        try {
+          if (req.body)
+            for await (const chunk of req.body) {
+              size += chunk.byteLength;
+              if (size > config.maxUploadBytes) throw new HttpError("PAYLOAD_TOO_LARGE", `Backups over ${config.maxUploadBytes / 2 ** 20} MB can't be uploaded here (MAX_UPLOAD_MB)`);
+              sink.write(chunk);
+            }
+        } finally {
+          await sink.end();
+        }
+        return Response.json(await runtime.admin("backups.import", { path: tmp }, who.email));
+      } catch (e) {
+        rmSync(tmp, { force: true });
+        if (e instanceof HttpError) return errorResponse({ message: e.message, code: e.code, requestId });
+        return Response.json({ message: (e as Error).message }, { status: 400 });
+      }
+    }
     if (path === "/_admin/logs/stream") {
       if (!who) return new Response("Unauthorized", { status: 401 });
       let close = () => {};
@@ -376,11 +509,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const server = Bun.serve<ServerSocket>({
     port: config.port,
     hostname: config.hostname,
-    maxRequestBodySize: config.limits.maxRequestBytes,
+    maxRequestBodySize: takesUploads ? Math.max(config.limits.maxRequestBytes, config.maxUploadBytes) : config.limits.maxRequestBytes,
     idleTimeout: Math.min(config.idleTimeoutSeconds, 255), // Bun's own ceiling
-    // Dashboard bundling must match React's build: production under NODE_ENV=production (the engine image),
-    // otherwise dev bundling so dashboard edits show on reload. HMR stays off: it rejects proxied Host headers.
-    development: process.env.NODE_ENV === "production" ? false : { hmr: false },
+    // The dashboard is bundled in production mode everywhere, dev included: minified, with React's production build (which the engine image
+    // has, so a development bundle there renders a blank page). Its source isn't watched; edits to it show after a restart.
+    development: false,
     routes: opts.dashboard && config.dashboard ? { "/_dashboard": opts.dashboard } : {},
     async fetch(req, srv) {
       const url = new URL(req.url);
@@ -390,14 +523,19 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
       if (path === "/health") return Response.json({ ok: true });
       if (path === "/ready")
-        return Response.json({ ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, error: runtime.loadError }, { status: !shuttingDown && runtime.manifest && !runtime.loadError ? 200 : 503 });
+        return Response.json(
+          { ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, error: runtime.loadError },
+          { status: !shuttingDown && runtime.manifest && !runtime.loadError ? 200 : 503 },
+        );
       // The CLI's data commands. They run in the function runtime, which owns the database, so imports reach subscribers and nothing contends with the server for the write lock.
       if (path === "/_cli" && req.method === "POST") {
         const retry = await limited(req, srv, "cli:");
         if (retry) return withId(tooMany(retry));
         const key = req.headers.get("x-admin-key");
         if (!key || !config.adminKey || !sameSecret(key, config.adminKey)) return withId(Response.json({ message: "Invalid admin key" }, { status: 401 }));
-        const body = (await req.json().catch(() => null)) as { cmd?: string; args?: Record<string, unknown> } | null;
+        const body = (await readText(req, maxBody)
+          .then((text) => JSON.parse(text))
+          .catch(() => null)) as { cmd?: string; args?: Record<string, unknown> } | null;
         if (!body?.cmd) return withId(Response.json({ message: "Expected {cmd, args}" }, { status: 400 }));
         try {
           return withId(Response.json({ result: await runtime.admin("cli", { cmd: body.cmd, args: body.args ?? {} }, "cli") }));
@@ -435,9 +573,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           if (encoding && !["gzip", "deflate", "identity"].includes(encoding)) return withId(Response.json({ message: `Unsupported content-encoding ${encoding}` }, { status: 415 }));
           const type = req.headers.get("content-type") ?? "application/x-protobuf";
           // The telemetry thread decompresses it: inflating here would hold up every request.
-          await store.ingest(signal as "traces" | "logs" | "metrics", await req.arrayBuffer(), type, service, encoding === "identity" ? undefined : (encoding as "gzip" | "deflate" | undefined));
+          const payload = await readBytes(req, maxBody);
+          await store.ingest(
+            signal as "traces" | "logs" | "metrics",
+            payload.buffer.slice(payload.byteOffset, payload.byteOffset + payload.byteLength) as ArrayBuffer,
+            type,
+            service,
+            encoding === "identity" ? undefined : (encoding as "gzip" | "deflate" | undefined),
+          );
           return withId(type.includes("json") ? Response.json({}) : new Response(new Uint8Array(0), { headers: { "content-type": "application/x-protobuf" } }));
         } catch (e) {
+          if (e instanceof HttpError) return withId(errorResponse({ message: e.message, code: e.code, requestId }));
           return withId(Response.json({ message: `Could not read the OTLP payload: ${(e as Error).message}` }, { status: 400 }));
         }
       }
@@ -445,10 +591,18 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const auth = req.headers.get("authorization")?.replace(/^Bearer /, "");
         const token = env.METRICS_TOKEN || config.adminKey;
         if (token ? !(auth && sameSecret(auth, token)) : !dev) return new Response("Not found", { status: 404 });
-        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: config.runtimeWorkers, backlog: runtime.backlog() }, queries.snapshot(), loops), { headers: { "content-type": "text/plain; version=0.0.4" } });
+        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: config.runtimeWorkers, backlog: runtime.backlog() }, queries.snapshot(), loops), {
+          headers: { "content-type": "text/plain; version=0.0.4" },
+        });
       }
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
 
+      if (localFiles && path.startsWith("/_storage/")) {
+        const retry = await limited(req, srv, "storage:");
+        if (retry) return withId(tooMany(retry));
+        if (req.method === "PUT") srv.timeout(req, 0); // a large upload over a slow line
+        return withId(await serveLocalStorage(req, localFiles, config.maxUploadBytes));
+      }
       if (path === "/rpc" && req.headers.get("upgrade")?.toLowerCase() === "websocket") {
         if (!originAllowed(req)) return new Response("Origin not allowed. Add it to TRUSTED_ORIGINS.", { status: 403 });
         const retry = await limited(req, srv);
@@ -477,7 +631,14 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const retry = await limited(req, srv);
         if (retry) return withId(tooMany(retry));
         await loading;
-        const body = req.method === "GET" ? undefined : await req.arrayBuffer();
+        let body: ArrayBuffer | undefined;
+        try {
+          const bytes = req.method === "GET" ? undefined : await readBytes(req, maxBody);
+          body = bytes && (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+        } catch (e) {
+          if (e instanceof HttpError) return withId(errorResponse({ message: e.message, code: e.code, requestId }));
+          throw e;
+        }
         // Socket.IO's long-polling requests carry EIO=; their sessions live where its sockets do, on worker 0. They are not requests to record.
         const worker = routed.searchParams.has("EIO") ? 0 : undefined;
         const root =
@@ -485,7 +646,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             ? telemetry?.begin("http", `${req.method} ${normalizePath(routed.pathname)}`, req.method, req.headers.get("traceparent"), requestId, { "url.path": routed.pathname })
             : undefined;
         try {
-          const r = await runtime.http({ method: req.method, url: routed.href, headers: [...req.headers], body }, pickAuthHeaders((n) => req.headers.get(n)), requestId, worker, root && telemetry!.parent(root));
+          const r = await runtime.http(
+            { method: req.method, url: routed.href, headers: [...req.headers], body },
+            pickAuthHeaders((n) => req.headers.get(n)),
+            requestId,
+            worker,
+            root && telemetry!.parent(root),
+          );
           if (root) {
             const route = r.telemetry?.attrs?.["http.route"];
             root.operation = route ? `${req.method} ${route}` : r.status === 404 ? `${req.method} (unmatched)` : root.operation;
@@ -527,7 +694,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         return cors(req, await rpc.call(name, req, url, { headers, requestId, traceparent: req.headers.get("traceparent") ?? undefined })); // sets x-request-id itself
       }
       if (path.startsWith("/api/auth")) {
-        const body = req.method === "GET" || req.method === "HEAD" ? undefined : await req.text();
+        let body: string | undefined;
+        try {
+          body = req.method === "GET" || req.method === "HEAD" ? undefined : await readText(req, maxBody);
+        } catch (e) {
+          if (e instanceof HttpError) return cors(req, withId(errorResponse({ message: e.message, code: e.code, requestId })));
+          throw e;
+        }
         const root = telemetry?.begin("auth", `${req.method} ${normalizePath(path)}`, req.method, req.headers.get("traceparent"), requestId);
         try {
           const headers: [string, string][] = [...req.headers].filter(([k]) => k !== CLIENT_IP_HEADER);
@@ -609,7 +782,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
                 throw publicError(e);
               }
             },
-            identity: () => queries.who(headers).then((c) => c.identity, (e) => Promise.reject(publicError(e))),
+            identity: () =>
+              queries.who(headers).then(
+                (c) => c.identity,
+                (e) => Promise.reject(publicError(e)),
+              ),
             rateLimited: async () => (await limited(req, srv)) ?? null,
             keepAlive: () => srv.timeout(req, 0),
             route: (pattern) => {
@@ -654,7 +831,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         }
         await loading; // a socket can connect before the function runtime has loaded, as an HTTP request can
         const g = ws.data.gateway;
-        if (g) runtime.wsEvent({ t: "ws", op: "message", sid: g.sid, data: typeof msg === "string" ? msg : (msg.buffer.slice(msg.byteOffset, msg.byteOffset + msg.byteLength) as ArrayBuffer) });
+        if (g)
+          runtime.wsEvent({ t: "ws", op: "message", sid: g.sid, data: typeof msg === "string" ? msg : (msg.buffer.slice(msg.byteOffset, msg.byteOffset + msg.byteLength) as ArrayBuffer) });
         else if (typeof msg === "string") rpc.message(ws, msg);
       },
       close(ws, code, reason) {
@@ -692,7 +870,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (busy >= 0 && Date.now() - warnedBusy > 60_000) {
       warnedBusy = Date.now();
       const cores = availableParallelism();
-      log("warn", `function runtime ${busy} has ${backlog[busy]!.waiting} queries waiting, about ${(backlog[busy]!.waitMs / 1000).toFixed(1)} s of work${cores > backlog.length ? `. This machine has ${cores} cores and runs ${backlog.length} function runtime${backlog.length === 1 ? "" : "s"}: RUNTIME_WORKERS=${Math.min(cores - 1, 4)} would spread them` : ""}. Queries that every user runs alike can share one run (see \`access\` in the docs)`);
+      log(
+        "warn",
+        `function runtime ${busy} has ${backlog[busy]!.waiting} queries waiting, about ${(backlog[busy]!.waitMs / 1000).toFixed(1)} s of work${cores > backlog.length ? `. This machine has ${cores} cores and runs ${backlog.length} function runtime${backlog.length === 1 ? "" : "s"}: RUNTIME_WORKERS=${Math.min(cores - 1, 4)} would spread them` : ""}. Queries that every user runs alike can share one run (see \`access\` in the docs)`,
+      );
     }
     const c = queries.snapshot();
     const cache = c.enabled ? { cacheHits: c.hits - sampled.hits, cacheMisses: c.misses - sampled.misses, cacheShared: c.coalesced - sampled.coalesced, cacheEntries: c.entries } : {};
@@ -708,14 +889,14 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     config,
     runtime,
     reload,
-    async stop({ graceful = true } = {}) {
+    async stop({ graceful = true, keepApp = false } = {}) {
       shuttingDown = true;
       clearInterval(sampler);
       // 1012 "service restart": clients reconnect (to another server, behind a load balancer) and refetch.
       for (const ws of sockets) ws.close(1012, "Server restarting");
       if (graceful) await Promise.race([server.stop(false), Bun.sleep(10_000)]);
       server.stop(true);
-      await opts.app?.dispose?.();
+      if (!keepApp) await opts.app?.dispose?.();
       await runtime.stop();
       await bus.close();
       await cache?.close();

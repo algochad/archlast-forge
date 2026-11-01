@@ -8,7 +8,7 @@ export function Files({ manifest, admin }: { manifest: Manifest; admin: Admin })
   const [cursors, setCursors] = useState<(string | null)[]>([null]);
   const files = useAsync(() => get<Page<File>>("files", { cursor: cursors.at(-1), numItems: 50 }), [cursors.at(-1)], { enabled: manifest.storage });
   const { run, busy } = useAction();
-  if (!manifest.storage) return <Empty icon="files">Storage isn't configured. Set S3_ENDPOINT and S3_BUCKET (RustFS works).</Empty>;
+  if (!manifest.storage) return <Empty icon="files">Storage is off. Set S3_ENDPOINT and S3_BUCKET (RustFS works), or STORAGE=local to keep files on this server (Settings → Storage).</Empty>;
   return (
     <section className="panel stack" aria-label="Files">
       <ErrorNote error={files.error} />
@@ -21,7 +21,9 @@ export function Files({ manifest, admin }: { manifest: Manifest; admin: Admin })
               <tr>
                 <th scope="col">file</th>
                 <th scope="col">type</th>
-                <th scope="col" className="num">size</th>
+                <th scope="col" className="num">
+                  size
+                </th>
                 <th scope="col">uploaded</th>
                 <th scope="col" />
               </tr>

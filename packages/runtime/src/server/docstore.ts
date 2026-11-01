@@ -3,6 +3,7 @@ import type { Row } from "./db/types";
 import { SnapshotMoved, type ReadCache } from "./read-cache";
 import { tableOf, validateFields, ValidationError, type Validator } from "../values";
 import type { DbTx, Dialect } from "./db/types";
+import { ftsTable } from "./db/migrate";
 
 export type TablesSpec = Record<
   string,
@@ -25,6 +26,8 @@ export type IncludeSpec = Record<string, IncludeRule>;
 
 /** Reactivity topics: `todos`, `todos:by_list:["lists:…"]`, `todos:by_id:["todos:…"]`. */
 export const topic = (table: string, index: string, values: unknown[]) => `${table}:${index}:${JSON.stringify(values)}`;
+/** Published once when a restore has rewritten the tables: every server drops its query cache and re-runs its subscriptions. */
+export const RESET_TOPIC = "_forge:reset";
 
 const SELECT = `SELECT "_id", "_creationTime", "doc" FROM`;
 const MAX_PAGE = 8192;
@@ -152,7 +155,9 @@ export class DocStore {
 
   /** SQL expression and parameter placeholder for an order-key field. */
   private col(f: string) {
-    return f === "_creationTime" || f === "_id" ? { expr: `"${f}"`, param: "?", encode: (x: unknown) => x } : { expr: this.dialect.field(f), param: this.dialect.valueParam, encode: this.dialect.encode };
+    return f === "_creationTime" || f === "_id"
+      ? { expr: `"${f}"`, param: "?", encode: (x: unknown) => x }
+      : { expr: this.dialect.field(f), param: this.dialect.valueParam, encode: this.dialect.encode };
   }
 
   async get(id: string): Promise<Doc | null> {
@@ -203,7 +208,14 @@ export class DocStore {
         conds.push({ sql: `(${key.map((k) => k.expr).join(", ")}) ${op} (${key.map((k) => k.param).join(", ")})`, params: key.map((k, i) => k.encode(after[i])) });
       }
       // Reads of a range or page are tracked at the equality prefix: coarser, never missed.
-      const read = eqs.length && index !== undefined ? topic(table, index, eqs.map(([, value]) => value)) : table;
+      const read =
+        eqs.length && index !== undefined
+          ? topic(
+              table,
+              index,
+              eqs.map(([, value]) => value),
+            )
+          : table;
       this.reads.add(read);
       return {
         read,
@@ -241,7 +253,7 @@ export class DocStore {
         return { docs: r.docs, keyFields: r.keyFields };
       }
       let seen = 0;
-      for (let cursor = after; ; ) {
+      for (let cursor = after; ;) {
         const batch = await run(SCAN_BATCH, cursor);
         keyFields = batch.keyFields;
         for (const d of await scanned(batch.docs)) {
@@ -335,9 +347,11 @@ export class DocStore {
         return xs.length ? xs.reduce((a, b) => Math.max(a, b)) : null;
       },
       paginate: async ({ numItems, cursor }: { numItems: number; cursor: string | null }) => {
-        if (!Number.isInteger(numItems) || numItems < 1 || numItems > MAX_PAGE)
-          throw new ValidationError(`paginate() numItems must be an integer from 1 to ${MAX_PAGE}`);
-        const keyLength = indexFields().slice(eqs.length).filter((f) => f !== "_creationTime").length + 2;
+        if (!Number.isInteger(numItems) || numItems < 1 || numItems > MAX_PAGE) throw new ValidationError(`paginate() numItems must be an integer from 1 to ${MAX_PAGE}`);
+        const keyLength =
+          indexFields()
+            .slice(eqs.length)
+            .filter((f) => f !== "_creationTime").length + 2;
         const after = cursor === null ? undefined : decodeCursor(cursor, keyLength);
         const { docs, keyFields } = await matches(numItems + 1, after);
         const page = docs.slice(0, numItems);
@@ -470,7 +484,7 @@ export class DocStore {
   }
 
   checkInclude(table: string, spec: IncludeSpec) {
-    if (!spec || typeof spec !== "object") throw new ValidationError("include() expects an object like { list: \"listId\" }");
+    if (!spec || typeof spec !== "object") throw new ValidationError('include() expects an object like { list: "listId" }');
     for (const [key, rule] of Object.entries(spec)) {
       const r = this.relation(table, key, rule);
       if (r.kind === "reverse" && r.rule.include) this.checkInclude(r.rule.table, r.rule.include);
@@ -498,7 +512,9 @@ export class DocStore {
     const child = this.table(rule.table);
     const order = rule.order ?? "asc";
     const perParent = (id: string) => {
-      const q = this.query(rule.table).withIndex(rule.index, (b: any) => b.eq(field, id)).order(order);
+      const q = this.query(rule.table)
+        .withIndex(rule.index, (b: any) => b.eq(field, id))
+        .order(order);
       return q;
     };
     if (rule.count) {
@@ -552,7 +568,12 @@ export class DocStore {
       for (const t of topics) this.reads.add(t);
       const conds = chunk.map((id) => this.dialect.fieldEquals(field, id));
       const orderBy = rest.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", ");
-      const rows = await this.select(rule.table, `${SELECT} "${rule.table}" WHERE (${conds.map((c) => c.sql).join(" OR ")}) ORDER BY ${orderBy}`, conds.flatMap((c) => c.params), topics);
+      const rows = await this.select(
+        rule.table,
+        `${SELECT} "${rule.table}" WHERE (${conds.map((c) => c.sql).join(" OR ")}) ORDER BY ${orderBy}`,
+        conds.flatMap((c) => c.params),
+        topics,
+      );
       for (const row of rows) {
         const doc = this.toDoc(row);
         groups.get(doc[field])?.push(doc);
@@ -574,7 +595,14 @@ export class DocStore {
     w.add(table);
     w.add(topic(table, "by_id", [doc._id]));
     for (const [name, fields] of Object.entries(this.table(table).indexes))
-      for (let k = 1; k <= fields.length; k++) w.add(topic(table, name, fields.slice(0, k).map((f) => doc[f])));
+      for (let k = 1; k <= fields.length; k++)
+        w.add(
+          topic(
+            table,
+            name,
+            fields.slice(0, k).map((f) => doc[f]),
+          ),
+        );
   }
 
   private async syncSearch(table: string, id: string, doc: Record<string, unknown> | undefined) {
@@ -591,8 +619,7 @@ export class DocStore {
     const fields = Object.fromEntries(Object.entries(t.strict ? (value ?? {}) : rest).filter(([, x]) => x !== undefined));
     if (t.strict) validateFields(t.fields, fields, table);
     const json = JSON.stringify(fields);
-    if (json.length > this.maxDocumentBytes)
-      throw new ValidationError(`Document in "${table}" is ${json.length} bytes; the limit is ${this.maxDocumentBytes} (MAX_DOCUMENT_BYTES)`);
+    if (json.length > this.maxDocumentBytes) throw new ValidationError(`Document in "${table}" is ${json.length} bytes; the limit is ${this.maxDocumentBytes} (MAX_DOCUMENT_BYTES)`);
     return { fields, json };
   }
 
@@ -635,6 +662,16 @@ export class DocStore {
     await this.tx.execute(`DELETE FROM "${table}" WHERE "_id" = ?`, [id]);
     await this.syncSearch(table, id, undefined);
     this.written(table, this.toDoc(row));
+  }
+
+  /** Empties a table and its search indexes, for a restore that is about to write the table again. */
+  async truncate(table: string) {
+    if (!this.writes) throw new Error("Database is read-only in queries");
+    const t = this.table(table);
+    await this.tx.execute(`DELETE FROM "${table}"`);
+    // Postgres searches a GIN index over the table itself; SQLite keeps an FTS table next to it.
+    if (this.dialect.name === "sqlite") for (const index of Object.keys(t.searchIndexes ?? {})) await this.tx.execute(`DELETE FROM "${ftsTable(table, index)}"`);
+    this.written(table, { _id: "" });
   }
 
   /** Inserts a document with a known id and creation time (imports). Validated like any write. */

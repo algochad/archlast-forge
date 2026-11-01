@@ -12,6 +12,11 @@ export async function migrateSystem(db: Db) {
     `CREATE INDEX IF NOT EXISTS "afx_audit_time" ON "_audit" ("time")`,
     `CREATE TABLE IF NOT EXISTS "_env" ("name" TEXT PRIMARY KEY, "value" TEXT NOT NULL, "updatedAt" ${real} NOT NULL)`,
     `CREATE TABLE IF NOT EXISTS "_migrations" ("name" TEXT PRIMARY KEY, "state" TEXT NOT NULL, "cursor" TEXT, "processed" INTEGER NOT NULL, "error" TEXT, "updatedAt" ${real} NOT NULL)`,
+    // Engine settings changed from the dashboard; the process environment wins over them.
+    `CREATE TABLE IF NOT EXISTS "_settings" ("name" TEXT PRIMARY KEY, "value" TEXT NOT NULL, "updatedAt" ${real} NOT NULL, "updatedBy" TEXT)`,
+    // Every backup this deployment made or was given, wherever its archive is kept.
+    `CREATE TABLE IF NOT EXISTS "_backups" ("_id" TEXT PRIMARY KEY, "name" TEXT NOT NULL, "createdAt" ${real} NOT NULL, "kind" TEXT NOT NULL, "state" TEXT NOT NULL, "bytes" ${real}, "location" TEXT NOT NULL, "manifest" TEXT, "progress" TEXT, "error" TEXT, "actor" TEXT, "server" TEXT, "finishedAt" ${real})`,
+    `CREATE INDEX IF NOT EXISTS "afx_backups_created" ON "_backups" ("createdAt")`,
   ];
   await db.transaction("write", async (tx) => {
     if (name === "postgres") await tx.execute("SELECT pg_advisory_xact_lock(727276)");
@@ -21,4 +26,17 @@ export async function migrateSystem(db: Db) {
 
 // _logs, _metrics and _cache_stats held function logs and samples before the telemetry store did; they are no longer written, and
 // stay listed so a database from then keeps them out of the data browser. _otel_* are the telemetry store's tables on Postgres.
-export const SYSTEM_TABLES = ["_scheduled_functions", "_admins", "_admin_sessions", "_audit", "_logs", "_metrics", "_cache_stats", "_env", "_migrations", "_search_indexes"];
+export const SYSTEM_TABLES = [
+  "_scheduled_functions",
+  "_admins",
+  "_admin_sessions",
+  "_audit",
+  "_logs",
+  "_metrics",
+  "_cache_stats",
+  "_env",
+  "_migrations",
+  "_search_indexes",
+  "_settings",
+  "_backups",
+];

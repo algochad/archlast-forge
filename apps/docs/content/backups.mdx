@@ -1,0 +1,101 @@
+# Backups
+
+A backup is one `.tar.gz` file with a snapshot of the app: its documents, scheduled jobs, environment and settings, the `forge/` source it ran, and the files in storage. The engine makes them on a schedule or when you ask, keeps them in a folder or a bucket, and restores them on the same deployment or another one. Everything here works from the dashboard's **Backups** page and from the CLI.
+
+## What a backup holds
+
+The archive is an ordinary tar file (`tar tzf backup-….tar.gz` lists it). In order:
+
+| Entry | What it is |
+|---|---|
+| `manifest.json` | What the backup holds: when and by which engine version it was made, the database (`sqlite` or `postgres`), the number of documents in each table, a hash of the source, the number and size of the files. |
+| `data/documents.jsonl` | Every document of every table in the schema, Better Auth's tables and `_storage` included, one `{ "table", "_id", "_creationTime", "doc" }` per line. That is the format of [`archlast-forge export`](cli.html#export), so `archlast-forge import` reads it too. |
+| `data/scheduled.jsonl`, `data/migrations.jsonl` | Scheduled functions (pending and finished) and the state of [data migrations](migrations.html). |
+| `config/env.jsonl`, `config/settings.jsonl` | The variables your functions read (set with `archlast-forge env` or on the Settings page) and the engine settings saved from the dashboard, **with their values**. |
+| `functions/…` | The `forge/` source: every file except `node_modules`, `data/`, dot files (`.env`, `.dev-secrets.json`) and files over 10 MB. |
+| `files/index.jsonl`, `files/objects/<key>` | Every object a `_storage` row names, with its content type, when the backup includes files. |
+
+Not in it: dashboard accounts, admin sessions and the audit log (they belong to the deployment, not the app), telemetry, objects in the bucket that no `_storage` row names, and the process environment (`.env`, `compose.yaml`).
+
+**The data is a consistent snapshot.** Documents and the system rows are read in one read transaction, so a backup never holds half of a mutation, and writes carry on while it is made. Files are read after that snapshot: a file deleted in between is counted as missing in the manifest, not an error.
+
+**Treat backups as secrets.** They hold password hashes, session tokens, OAuth tokens and your environment variables. Only owners can download or restore one.
+
+## Where backups are kept
+
+The first of these that applies:
+
+1. **A bucket of their own**: `BACKUP_S3_ENDPOINT` and `BACKUP_S3_BUCKET` (with `BACKUP_S3_ACCESS_KEY_ID`, `BACKUP_S3_SECRET_ACCESS_KEY`, `BACKUP_S3_REGION`, and optionally `BACKUP_S3_PREFIX`). The bucket must exist. This is the one to use in production: a backup on the same disk as the database doesn't survive losing that disk.
+2. **A folder**: `BACKUP_DIR`.
+3. **Next to the files**: with S3 storage (`STORAGE=s3`), the files' bucket under `_backups/` (`BACKUP_S3_PREFIX` changes that).
+4. Otherwise **`DATA_DIR/backups`**: in a stack made by `init`, the `app-data` volume.
+
+The list on the Backups page comes from the `_backups` table. An archive in the store that the table doesn't know about (you restored the database itself, or a second deployment shares the bucket) is listed as **found in storage**, and can be downloaded and restored like the rest.
+
+With `REPLICAS` above 1 use a bucket: a folder is on one server's disk, and the other servers can't list it.
+
+Changing where backups go doesn't move the old ones. Those in a folder still download and restore; those in a bucket that is no longer configured say so until you point the settings back at it.
+
+## A schedule
+
+| Setting | Default | What it does |
+|---|---|---|
+| `BACKUP_SCHEDULE` | none | A cron expression, in UTC: `0 3 * * *` is 03:00 every day, `0 * * * *` every hour, `30 2 * * 0` Sundays at 02:30. `@daily` and `@hourly` work too. Empty means no scheduled backups. |
+| `BACKUP_KEEP` | `7` | Scheduled backups to keep. After each new one, older scheduled backups are deleted. Manual, uploaded and safety backups are kept until you delete them. |
+| `BACKUP_FILES` | `on` | Whether scheduled backups include the files in storage. |
+
+Set them on the Backups page (**Schedule → Change**: off, hourly, daily or weekly at a time, or a cron expression), on the Settings page, or as environment variables, which win over both. A change applies within half a minute, with no restart.
+
+The schedule runs in the first function-runtime process of each server. With several servers, every one of them checks it, and one makes each backup: the first to record the slot. A slot missed while the engine was down runs once when it is back. A failed run is listed with its error (the last ten failures are kept), and the next slot tries again.
+
+## Making one now
+
+- **Dashboard:** **Back up now** (admins), with or without files. It runs in the background; the list shows its progress.
+- **CLI:** `archlast-forge backup app.tar.gz` writes a full backup to that file (`--no-files` leaves the files out). A file name that doesn't end in `.tar.gz` or `.tgz` is the [SQLite copy](cli.html#backup) the command has always made. Against a Docker stack it runs inside the app container and copies the archive out, like the other [data commands](cli.html#where-data-commands-run).
+
+```
+$ archlast-forge backup before-upgrade.tar.gz
+✓ backed up 18240 documents, 23 source files and 412 files to before-upgrade.tar.gz
+```
+
+## Downloading and uploading
+
+**Download** (owners) streams the archive from the folder, or sends the browser to a ten-minute presigned link to the bucket. Each download is in the audit log.
+
+**Upload a backup** (owners) takes a `.tar.gz` from another deployment or an earlier download. The engine checks that it starts with a backup's `manifest.json`, keeps it in the store, and lists it as **uploaded**. Uploads are limited to `MAX_UPLOAD_MB` (5120 by default); restore a larger one with the CLI.
+
+## Restoring
+
+Owners restore from the dashboard (**Restore**, then type `restore` to confirm) or with the CLI:
+
+```
+$ archlast-forge restore before-upgrade.tar.gz
+✓ restored 18240 documents in 9 tables and 412 files (a safety backup of what was there is on the Backups page)
+```
+
+What happens, in order:
+
+1. **A safety backup** of what is there now is made first (listed as **before a restore**, with files when files are being restored). If it fails, nothing is restored.
+2. **Files**, when chosen: every object in the backup is written back under its key. Files uploaded since the backup stay in storage, unreferenced.
+3. **The data, in one transaction:** every table in the schema is emptied and filled with the backup's documents, each validated against the schema that runs now; the scheduled jobs and migration states are replaced; and, when chosen, the environment variables and settings. If one document doesn't fit the schema, the transaction rolls back and the data is as it was: `Document posts:… doesn't fit the schema: …. Nothing was restored.`
+4. **Every server drops its query cache and re-runs its live queries**, so open pages show the restored data without a reload.
+
+Details:
+
+- **The schema decides.** A table the backup has and the schema doesn't is refused before anything is written: deploy the code the backup was made with (its source is in the archive), then restore. A table the schema has and the backup doesn't is emptied.
+- **Code is not restored.** It ships with git and your image. The Backups page marks a backup made with different code from what runs now, and its source is in the archive if you need it.
+- **Environment variables and settings are off by default.** Restoring into another deployment would replace its API keys and settings with the backup's. When you do restore them, reload the runtime (Settings) for the variables and restart for the settings.
+- **Writes wait** while the transaction runs. SQLite has one writer, and a mutation that waits longer than `FUNCTION_TIMEOUT_MS` fails, so restore a large backup at a quiet time.
+- **Across databases:** the format doesn't depend on the database, so a backup made on SQLite restores into Postgres and the other way round.
+- One restore at a time. The Backups page shows each step and the result.
+
+## The older commands
+
+`archlast-forge backup app.db` still makes a consistent copy of the SQLite file, and `export` and `import` still move documents as JSON Lines. They don't include files, jobs, settings or the source.
+
+## Not supported
+
+- Point-in-time recovery or continuous archiving of the write-ahead log. On Postgres, use its own tools for that; on SQLite, schedule backups as often as you need.
+- Incremental backups: every backup is complete.
+- Encrypting archives. Encrypt the bucket (server-side encryption) or the disk.
+- Restoring one table: take `data/documents.jsonl` out of the archive and use `archlast-forge import --replace` with the lines you want.
