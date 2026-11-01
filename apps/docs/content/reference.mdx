@@ -99,17 +99,24 @@ const internalMutation: FunctionBuilder<"mutation", "internal">;
 const internalAction: FunctionBuilder<"action", "internal">;
 
 interface FunctionBuilder<K extends FunctionKind, Vis extends Visibility> {
-  <A extends PropertyValidators = {}, R = unknown>(def: {
-    args?: A;
-    handler: (ctx: CtxFor<K>, args: ObjectType<A>) => R;
-  }): RegisteredFunction<K, ObjectType<A>, Awaited<R>, Vis>;
+  <A extends PropertyValidators = {}, R = unknown>(
+    def: {
+      args?: A;
+      handler: (ctx: CtxFor<K>, args: ObjectType<A>) => R;
+    } & AccessFor<K, A>,
+  ): RegisteredFunction<K, ObjectType<A>, Awaited<R>, Vis>;
 
-  <A extends PropertyValidators = {}, V extends Validator<any, false> = Validator<any, false>>(def: {
-    args?: A;
-    returns: V;
-    handler: (ctx: CtxFor<K>, args: ObjectType<A>) => HandlerReturn<V> | Promise<HandlerReturn<V>>;
-  }): RegisteredFunction<K, ObjectType<A>, Infer<V>, Vis>;
+  <A extends PropertyValidators = {}, V extends Validator<any, false> = Validator<any, false>>(
+    def: {
+      args?: A;
+      returns: V;
+      handler: (ctx: CtxFor<K>, args: ObjectType<A>) => HandlerReturn<V> | Promise<HandlerReturn<V>>;
+    } & AccessFor<K, A>,
+  ): RegisteredFunction<K, ObjectType<A>, Infer<V>, Vis>;
 }
+
+// Queries only: who may run the query, checked for every caller on every serve and push.
+type AccessFor<K extends FunctionKind, A extends PropertyValidators> = K extends "query" ? { access?: (ctx: QueryCtx, args: ObjectType<A>) => unknown } : {};
 
 type FunctionKind = "query" | "mutation" | "action";
 type Visibility = "public" | "internal";
@@ -120,8 +127,11 @@ interface RegisteredFunction<K, Args, Return, V> {
   readonly args: PropertyValidators;
   readonly returns?: Validator;
   readonly handler: (ctx: any, args: any) => unknown;
+  readonly access?: (ctx: any, args: any) => unknown;   // queries only
 }
 ```
+
+With `access`, the query's result is shared by every caller that passes the check, and the handler can't read `ctx.auth` (it throws). `access` throws to refuse a caller. Guide: [Sharing a query between users](functions.html#sharing-a-query-between-users).
 
 `CtxFor<K>` is `QueryCtx`, `MutationCtx` or `ActionCtx`. `HandlerReturn<V>` is `Infer<V>`, plus `void` when `null` is allowed. Guide: [Functions](functions.html).
 

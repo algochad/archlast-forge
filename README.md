@@ -55,4 +55,4 @@ bun run e2e               # the same projects in Docker: `up`, `dev` with servic
 
 The browser tests (`packages/framework`) drive Chromium. Install one with `cd packages/framework && bunx playwright-core install chromium` (or set `CHROMIUM_PATH`); without a browser they skip.
 
-CI runs all of these on every push and pull request (`.github/workflows/ci.yml`). Releases are tag-driven (`release.yml`): they publish to npm, which needs an `NPM_TOKEN` secret, and push the engine image to GHCR.
+CI runs all of these on every push and pull request (`.github/workflows/ci.yml`). Releases are tag-driven (`release.yml`): they publish to npm, which needs an `NPM_TOKEN` secret, and push the engine image to GHCR. The steps, checks and what to do when one fails are in [docs/releasing.md](docs/releasing.md).
