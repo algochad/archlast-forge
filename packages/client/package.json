@@ -1,6 +1,6 @@
 {
   "name": "@archlast/forge-client",
-  "version": "0.10.0",
+  "version": "0.11.0",
   "description": "Framework-agnostic client for archlast-forge: calls and live queries over HTTP and WebSocket.",
   "license": "MIT",
   "repository": {
