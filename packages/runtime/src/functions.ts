@@ -95,6 +95,13 @@ export interface Query<D, T extends TableNames = TableNames> {
   filter(predicate: (doc: D) => boolean): Query<D, T>;
   /** Adds related documents to each result: see `IncludeSpec`. Loaded in batches, and the query stays reactive to them. */
   include<const S extends IncludeSpec<T>>(spec: S): Query<Expand<D & Joined<T, S>>, T>;
+  /**
+   * Passes over the first `n` matching documents, in the query's order: numbered pages are `skip((page - 1) * size).take(size)`.
+   * Without a `filter()` the database skips them (an `OFFSET` over the index range), so they are never loaded; with one, `n` counts
+   * documents that pass every filter, and the skipped ones count toward the 100,000 a query scans. `include()` runs only on what is returned.
+   * With `paginate()` it places the first page (`cursor: null`); a cursor carries on from where its page ended. At most 100,000.
+   */
+  skip(n: number): Query<D, T>;
   collect(): Promise<D[]>;
   first(): Promise<D | null>;
   /** The one matching document, `null` if there is none, an error if there are several. */

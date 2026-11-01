@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { DocStore, type TablesSpec } from "../src/server/docstore";
-import type { Db } from "../src/server/db/types";
+import type { Db, DbTx } from "../src/server/db/types";
 import { v } from "../src/values";
 import { dbAdapters } from "./helpers";
 
@@ -171,6 +171,82 @@ for (const [label, make] of dbAdapters) {
       const second: any = await read((s) => s.query("notes").withIndex("by_tag_n", (q: any) => q.eq("tag", "odd")).paginate({ numItems: 2, cursor: first.continueCursor }));
       expect(ns(second.page)).toEqual([5, 7]);
       await expect(read((s) => s.query("notes").paginate({ numItems: 2, cursor: "garbage" }))).rejects.toThrow("Invalid pagination cursor");
+    });
+
+    test("skip: numbered pages, skipped in the database unless a filter has to see them", async () => {
+      db = await make();
+      await db.migrate(specs);
+      for (let n = 1; n <= 10; n++) await write((s) => s.insert("notes", { body: `note ${n}`, tag: n % 2 ? "odd" : "even", n }));
+      const ns = (docs: any[]) => docs.map((d) => d.n);
+      // Every statement the query sends, and how many rows come back.
+      const traced = async <T>(fn: (s: DocStore) => Promise<T>) => {
+        const sql: string[] = [];
+        let rows = 0;
+        const result = await db.transaction("read", (tx) =>
+          fn(new DocStore({ query: async (q: string, p?: unknown[]) => (sql.push(q), tx.query(q, p).then((r) => ((rows += r.length), r))), execute: tx.execute } as DbTx, db.dialect, tables)),
+        );
+        return { result, sql, rows };
+      };
+      const byN = (s: DocStore) => s.query("notes").withIndex("by_n");
+
+      const page3 = await traced((s) => byN(s).skip(4).take(3));
+      expect(ns(page3.result)).toEqual([5, 6, 7]);
+      expect(page3.rows).toBe(3); // the four before were never loaded
+      expect(page3.sql).toEqual([expect.stringContaining("LIMIT 3 OFFSET 4")]);
+      expect(ns(await read((s) => byN(s).order("desc").skip(4).take(3)))).toEqual([6, 5, 4]);
+      expect(ns(await read((s) => s.query("notes").withIndex("by_tag_n", (q: any) => q.eq("tag", "odd")).skip(1).take(2)))).toEqual([3, 5]);
+      expect(ns(await read((s) => byN(s).skip(8).collect()))).toEqual([9, 10]);
+      expect((await read((s) => byN(s).skip(2).first()))?.n).toBe(3);
+
+      // With a filter, skip counts the documents that pass it, wherever it is in the chain.
+      expect(ns(await read((s) => byN(s).filter((d: any) => d.tag === "even").skip(2).take(2)))).toEqual([6, 8]);
+      expect(ns(await read((s) => byN(s).skip(2).filter((d: any) => d.tag === "even").take(2)))).toEqual([6, 8]);
+
+      // Counts and aggregates see what's left after the skip.
+      expect(await read((s) => byN(s).skip(3).count())).toBe(7);
+      expect(await read((s) => byN(s).skip(20).count())).toBe(0);
+      expect(await read((s) => byN(s).filter((d: any) => d.tag === "even").skip(1).count())).toBe(4);
+      expect(await read((s) => byN(s).skip(8).sum("n"))).toBe(19);
+
+      // Past the end: an empty page.
+      expect(await read((s) => byN(s).skip(20).take(5))).toEqual([]);
+      const past: any = await read((s) => byN(s).skip(20).paginate({ numItems: 3, cursor: null }));
+      expect(past).toMatchObject({ page: [], isDone: true });
+      const last: any = await read((s) => byN(s).skip(9).paginate({ numItems: 3, cursor: null }));
+      expect(last).toMatchObject({ page: [expect.objectContaining({ n: 10 })], isDone: true });
+
+      // With paginate(), skip places the first page and the cursor carries on from there.
+      const first: any = await read((s) => byN(s).skip(2).paginate({ numItems: 3, cursor: null }));
+      expect(ns(first.page)).toEqual([3, 4, 5]);
+      const next: any = await read((s) => byN(s).skip(2).paginate({ numItems: 3, cursor: first.continueCursor }));
+      expect(ns(next.page)).toEqual([6, 7, 8]);
+
+      await expect(read((s) => byN(s).skip(-1).take(1))).rejects.toThrow("skip() expects a non-negative integer, got -1");
+      await expect(read((s) => byN(s).skip(1.5).take(1))).rejects.toThrow("skip() expects a non-negative integer, got 1.5");
+      await expect(read((s) => byN(s).skip(60_000).skip(60_000).take(1))).rejects.toThrow("skip() passes over at most 100000 documents, got 120000");
+    });
+
+    test("skip with include joins only the documents returned", async () => {
+      db = await make();
+      await db.migrate(specs);
+      for (let i = 0; i < 5; i++) {
+        const listId = await write((s) => s.insert("lists", { name: `list ${i}` }));
+        await write((s) => s.insert("todos", { listId, title: `todo ${i}`, done: false }));
+      }
+      const listReads: unknown[][] = [];
+      const docs: any[] = await db.transaction("read", (tx) =>
+        new DocStore(
+          { query: (q: string, p?: unknown[]) => (q.includes('FROM "lists"') && listReads.push(p ?? []), tx.query(q, p)), execute: tx.execute },
+          db.dialect,
+          tables,
+        )
+          .query("todos")
+          .skip(3)
+          .include({ list: "listId" })
+          .take(1),
+      );
+      expect(docs.map((d) => [d.title, d.list.name])).toEqual([["todo 3", "list 3"]]);
+      expect(listReads).toEqual([[docs[0].listId]]); // one list looked up, not four
     });
 
     test("full-text search with filters stays in sync with writes", async () => {

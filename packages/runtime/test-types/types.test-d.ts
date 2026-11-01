@@ -131,6 +131,16 @@ query({
       .collect(),
 });
 
+// skip() chains like order() and keeps what include() added.
+query({
+  handler: async (ctx) => {
+    const page = await ctx.db.query("todos").withIndex("by_list").skip(40).include({ list: "listId" }).take(20);
+    expectTypeOf(page[0]!.list).toEqualTypeOf<Doc<"lists"> | null>();
+    expectTypeOf(await ctx.db.query("todos").skip(1).paginate({ numItems: 5, cursor: null })).toHaveProperty("continueCursor");
+    return null;
+  },
+});
+
 // Aggregates take number fields only; results are numbers (or null when nothing matched).
 query({
   handler: async (ctx) => {

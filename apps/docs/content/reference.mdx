@@ -205,6 +205,7 @@ interface Query<D, T> {
   order(order: "asc" | "desc"): Query<D, T>;
   filter(predicate: (doc: D) => boolean): Query<D, T>;
   include<const S extends IncludeSpec<T>>(spec: S): Query<D & Joined, T>;
+  skip(n: number): Query<D, T>;         // passes over the first n matches (an OFFSET without a filter)
   collect(): Promise<D[]>;
   first(): Promise<D | null>;
   unique(): Promise<D | null>;          // throws if several match

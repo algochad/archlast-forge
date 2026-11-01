@@ -175,6 +175,8 @@ export class DocStore {
     const eqs: [string, unknown][] = [];
     const bounds: Bound[] = [];
     let boundField: string | undefined;
+    /** Matching documents to pass over before the first one returned: `skip()`. */
+    let offset = 0;
     /** filter() and include() in the order they were called: a filter sees what was included before it. */
     const steps: ({ filter: (doc: Doc) => boolean } | { include: IncludeSpec })[] = [];
 
@@ -226,9 +228,11 @@ export class DocStore {
       };
     };
 
-    const run = async (limit?: number, after?: unknown[]) => {
+    const run = async (limit?: number, after?: unknown[], skip = 0) => {
       const p = plan(after);
-      const rows = await this.select(table, `${SELECT} "${table}" ${p.where} ORDER BY ${p.orderBy}${limit === undefined ? "" : ` LIMIT ${limit}`}`, p.params, [p.read]);
+      // SQLite needs a LIMIT before an OFFSET; Postgres takes any bigint.
+      const page = skip ? ` LIMIT ${limit ?? Number.MAX_SAFE_INTEGER} OFFSET ${skip}` : limit === undefined ? "" : ` LIMIT ${limit}`;
+      const rows = await this.select(table, `${SELECT} "${table}" ${p.where} ORDER BY ${p.orderBy}${page}`, p.params, [p.read]);
       return { docs: rows.map((r) => this.toDoc(r)), keyFields: p.keyFields };
     };
 
@@ -244,12 +248,12 @@ export class DocStore {
     const scanned = (docs: Doc[]) => apply(docs, steps.slice(0, lastFilter() + 1));
     const finish = (docs: Doc[]) => apply(docs, steps.slice(lastFilter() + 1));
 
-    /** Up to `want` documents after `after` that pass the filters, scanning the range in batches. */
-    const matches = async (want: number, after?: unknown[]) => {
+    /** Up to `want` documents after `after` that pass the filters, past the first `skip` of them, scanning the range in batches. */
+    const matches = async (want: number, after?: unknown[], skip = offset) => {
       const out: Doc[] = [];
       let keyFields: string[] = [];
       if (!hasFilter()) {
-        const r = await run(Number.isFinite(want) ? want : undefined, after);
+        const r = await run(Number.isFinite(want) ? want : undefined, after, skip); // the database skips them: never loaded
         return { docs: r.docs, keyFields: r.keyFields };
       }
       let seen = 0;
@@ -257,6 +261,10 @@ export class DocStore {
         const batch = await run(SCAN_BATCH, cursor);
         keyFields = batch.keyFields;
         for (const d of await scanned(batch.docs)) {
+          if (skip > 0) {
+            skip--;
+            continue;
+          }
           out.push(d);
           if (out.length >= want) return { docs: out, keyFields };
         }
@@ -271,9 +279,13 @@ export class DocStore {
     const each = async (visit: (doc: Doc) => void) => {
       let cursor: unknown[] | undefined;
       let seen = 0;
+      let skip = offset;
       for (;;) {
         const batch = await run(SCAN_BATCH * 4, cursor);
-        for (const d of await scanned(batch.docs)) visit(d);
+        for (const d of await scanned(batch.docs)) {
+          if (skip > 0) skip--;
+          else visit(d);
+        }
         seen += batch.docs.length;
         if (batch.docs.length < SCAN_BATCH * 4) return;
         if (seen >= MAX_SCAN) throw new ValidationError(`Aggregates scan at most ${MAX_SCAN} documents of "${table}"; narrow the range with withIndex()`);
@@ -306,6 +318,13 @@ export class DocStore {
         steps.push({ filter: predicate });
         return q;
       },
+      /** Passes over the first `n` matching documents (those that pass every filter), in the query's order. Without a filter the database skips them. */
+      skip(n: number) {
+        if (!Number.isInteger(n) || n < 0) throw new ValidationError(`skip() expects a non-negative integer, got ${n}`);
+        if (offset + n > MAX_SCAN) throw new ValidationError(`skip() passes over at most ${MAX_SCAN} documents, got ${offset + n}; go further with paginate()`);
+        offset += n;
+        return q;
+      },
       /** Adds related documents to each result; see `IncludeSpec`. */
       include: (spec: IncludeSpec) => {
         this.checkInclude(table, spec);
@@ -331,7 +350,7 @@ export class DocStore {
         }
         const p = plan();
         const [row] = await this.select(table, `SELECT COUNT(*) AS "n" FROM "${table}" ${p.where}`, p.params, [p.read]);
-        return Number(row?.n ?? 0);
+        return Math.max(0, Number(row?.n ?? 0) - offset);
       },
       sum: async (field: string) => (await numbers("sum", field)).reduce((a, b) => a + b, 0),
       avg: async (field: string) => {
@@ -353,7 +372,8 @@ export class DocStore {
             .slice(eqs.length)
             .filter((f) => f !== "_creationTime").length + 2;
         const after = cursor === null ? undefined : decodeCursor(cursor, keyLength);
-        const { docs, keyFields } = await matches(numItems + 1, after);
+        // skip() places the first page; a cursor already says where the next one starts.
+        const { docs, keyFields } = await matches(numItems + 1, after, after ? 0 : offset);
         const page = docs.slice(0, numItems);
         const last = page.at(-1);
         return {

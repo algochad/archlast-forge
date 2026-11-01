@@ -17,6 +17,7 @@ test("the testing library runs functions, identities and scheduled work in memor
   await t.finishScheduledFunctions();
   expect(((await t.query(api.todos.events)) as any[]).map((e) => e.kind)).toEqual(["later"]);
   expect(await t.run(async (ctx) => (await (ctx.db as any).query("lists").collect()).length)).toBe(1);
+  expect(await t.run(async (ctx) => (await (ctx.db as any).query("lists").skip(1).collect()).length)).toBe(0);
   await t.close();
 });
 

@@ -76,6 +76,7 @@ await ctx.db.query("lists").unique();       // the one document, or null; an err
 |---|---|---|
 | `collect()` | `Doc[]` | Every match. Bounded only by the 8 MiB result limit, so narrow large tables first. |
 | `take(n)` | `Doc[]` | At most `n`; `n` must be a non-negative integer (`take() expects a non-negative integer, got -1`). |
+| `skip(n)` | the query | Passes over the first `n` matches, then chains on: `skip(40).take(20)` is the third page of 20. Not on search queries. See [Numbered pages](#numbered-pages). |
 | `first()` | `Doc \| null` | The first match. |
 | `unique()` | `Doc \| null` | The only match, `null` for none. Several matches throw `unique() found more than one document in "todos"`. |
 | `paginate(opts)` | `{ page, isDone, continueCursor }` | See [Pagination](#pagination). |
@@ -254,6 +255,30 @@ export const page = query({
 - Paginated queries are reactive like any other, for the page that was requested. In React, `usePaginatedQuery(api.todos.page, { listId }, { initialNumItems: 20 })` keeps one live window that grows with `loadMore(n)`, so every loaded item stays up to date and nothing is duplicated when items are added. In a mutation, `paginate` is the way to walk a large table in batches (data migrations do exactly that). See [Clients](clients.html).
 - Search queries cannot be paginated (`take` them instead).
 
+### Numbered pages
+
+For a table with page numbers ("142 patients · page 3 of 10", a jump to any page), skip to the page and take it, and count the range for the total:
+
+```ts
+export const patients = query({
+  args: { page: v.number(), size: v.number() },
+  handler: async (ctx, { page, size }) => {
+    const byName = () => ctx.db.query("patients").withIndex("by_name");
+    const [rows, total] = await Promise.all([byName().skip((page - 1) * size).take(size), byName().count()]);
+    return { rows, total, pages: Math.ceil(total / size) };
+  },
+});
+```
+
+- **The database skips, unless a filter has to see them.** Without `filter()`, `skip(n)` is an `OFFSET` over the index range: the skipped documents are never loaded, and they don't count toward the scan limit. SQLite and Postgres still step over `n` index entries, so a deep page costs more than the first, but only in the index. With a `filter()`, `n` counts documents that pass every filter (wherever `skip` is in the chain), so they are scanned, and they count toward the 100,000 a query looks through.
+- **It counts in the query's order**: the index's, or reversed with `order("desc")`. Sort by an index whose order is stable, such as a name, then `_creationTime`.
+- **`include()` joins only the documents returned**, not the skipped ones (an `include()` before a `filter()` still runs on what the filter looks at).
+- **`n`** is a non-negative integer (`skip() expects a non-negative integer, got -1`) of at most 100,000 (`skip() passes over at most 100000 documents, got 120000; go further with paginate()`). Two `skip` calls add up.
+- **Past the end** is an empty page: `take` gives `[]`, `paginate` gives `{ page: [], isDone: true }`.
+- **`count()` and the aggregates** after `skip(n)` cover what comes after the skipped documents, so count the range without `skip` for the total, as above.
+- **With `paginate()`**, `skip` places the first page (`cursor: null`), and the `continueCursor` it returns carries on from there with keyset paging (`skip` is not applied again to a page that has a cursor).
+- **Offsets shift.** A document added to page 1 moves everything after it, so page 3 now starts one document later. The query is reactive and simply re-runs, so a page always shows the current page 3. For feeds and infinite lists, use `paginate()` and `usePaginatedQuery`, whose pages don't shift.
+
 ## Full-text search
 
 ```ts
@@ -371,6 +396,7 @@ See [Reactivity](reactivity.html) for how subscriptions use this and [Caching](c
 | Documents scanned by a query with `filter()` | 100,000 | `collect`, `take`, `first`, `unique`, `paginate`, `count` with a filter |
 | Documents scanned by an aggregate | 100,000 | `sum`, `avg`, `min`, `max`, and `count` with a filter |
 | Page size | 8192 | `paginate({ numItems })`, 1 to 8192 |
+| Documents skipped | 100,000 | `skip(n)` |
 | Search results | 1024 | `collect()` on a search query; `take(n)` is also capped at 1024 |
 | Search words | 16 | the first 16 words of the query text |
 | Result size | 8 MiB | `MAX_RESULT_BYTES`, any function |

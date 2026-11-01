@@ -111,7 +111,13 @@ export function createSqliteDb(path: string, readers = 4): Db {
         if (queue[0]!.exclusive) {
           const job = queue.shift()!;
           const tx = scopedTx(txOf(writer));
-          await job.fn(tx).then(job.resolve, job.reject).finally(() => tx.end());
+          let run: Promise<unknown>;
+          try {
+            run = job.fn(tx);
+          } catch (e) {
+            run = Promise.reject(e); // a callback that throws before returning its promise fails its job, not the queue
+          }
+          await run.then(job.resolve, job.reject).finally(() => tx.end());
           continue;
         }
         try {
