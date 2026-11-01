@@ -77,7 +77,7 @@ If you serve a frontend from another origin, list it in `TRUSTED_ORIGINS` and cr
 | `SCHEMA_CHECK` | on outside dev, off in dev | boolean | At startup, validate every stored document against the schema and refuse to start if some do not match. `SCHEMA_CHECK=off` skips the scan, which can take a while on big tables. [Migrations](migrations.html) shows how to fix mismatches. |
 | `REPLICAS` | `1` | integer ≥ 1 | The number of servers you run. It does not start any; it declares your intent so that a multi-server setup missing its shared pieces fails at startup. Above 1 it requires `REDIS_URL` and a Postgres `DATABASE_URL`. |
 
-SQLite runs in WAL mode with one serialized writer, and it belongs to one engine process. Postgres is the choice for several servers. The engine does not pool or tune Postgres connections through variables; put those options in the URL.
+SQLite runs in WAL mode with one serialized writer, and it belongs to one engine process. Its memory is sized to the server's RAM (the container's memory limit when there is one, else the machine's), split across `RUNTIME_WORKERS`: reads are memory-mapped up to a quarter of it (64 MiB to the 2 GiB SQLite allows), so pages come straight from the OS's file cache without a copy, and the page caches of the writer and the four readers share a sixteenth of it (8 MiB to 1 GiB in all, against SQLite's 2 MiB a connection); sorts and temporary indexes stay in memory. On 50,000 random reads by id of a 116 MiB database that the OS had cached, that made reads about 1.5× faster, range reads about 1.2×. There is nothing to set. Postgres is the choice for several servers. The engine does not pool or tune Postgres connections through variables; put those options in the URL.
 
 ## Redis
 

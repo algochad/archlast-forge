@@ -6,7 +6,7 @@ import { createAuth } from "./auth";
 import { AUDITED_COMMANDS, runCommand } from "./cli-ops";
 import { loadConfig, sqlitePath } from "./config";
 import { createPostgresDb } from "./db/postgres";
-import { createSqliteDb } from "./db/sqlite";
+import { createSqliteDb, serverMemory } from "./db/sqlite";
 import type { Db } from "./db/types";
 import type { UserIdentity } from "../functions";
 import { Executor, logContext, type CallHeaders, type LogEntry } from "./executor";
@@ -139,7 +139,10 @@ export async function startCore(opts: {
   const config = loadConfig(opts.env, opts.dev);
 
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl, config.databasePoolSize) : createSqliteDb(sqlitePath(config));
+  // Every function runtime process holds its own connections, so they share the RAM SQLite is given.
+  const db = config.databaseUrl
+    ? createPostgresDb(config.databaseUrl, config.databasePoolSize)
+    : createSqliteDb(sqlitePath(config), undefined, serverMemory() / config.runtimeWorkers);
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);

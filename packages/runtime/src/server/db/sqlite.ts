@@ -1,4 +1,5 @@
 import { Database } from "bun:sqlite";
+import { totalmem } from "node:os";
 import { ftsTable, migrateSqlite } from "./migrate";
 import { scopedTx, type Db, type DbTx, type Dialect } from "./types";
 
@@ -49,13 +50,39 @@ setInterval(() => {
   } catch {}
 }, 250);`;
 
-/** WAL mode, one write connection (group commit, below), a small pool of readers. `:memory:` runs everything on one connection. */
-export function createSqliteDb(path: string, readers = 4): Db {
+const MiB = 2 ** 20;
+const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
+
+/** The RAM this process may use: the container's limit when it has one (`totalmem()` is the host's), else the machine's. */
+export const serverMemory = () => Math.min(totalmem(), process.constrainedMemory?.() || Infinity);
+
+/**
+ * How much of `ram` SQLite takes, over `connections` connections. Reads are memory-mapped (a quarter of the RAM, 64 MiB to the 2 GiB
+ * SQLite allows): pages come straight from the OS's file cache, with no read() call or copy, and the mapping uses no memory of its own
+ * beyond that cache, which the OS reclaims under pressure. Each connection's page cache gets an equal share of a sixteenth of the RAM
+ * (8 MiB to 1 GiB in all), instead of SQLite's 2 MiB each.
+ */
+export function sqliteMemory(ram: number, connections: number) {
+  return { mmapBytes: Math.floor(clamp(ram / 4, 64 * MiB, 0x7fff0000)), cacheKiB: Math.floor(clamp(ram / 16, 8 * MiB, 1024 * MiB) / connections / 1024) };
+}
+
+/**
+ * WAL mode, one write connection (group commit, below), a small pool of readers. `:memory:` runs everything on one connection. With
+ * `ram` (bytes), the connections are sized to it (`sqliteMemory`) and sorts and temporary indexes stay in memory; without it they keep
+ * SQLite's defaults.
+ */
+export function createSqliteDb(path: string, readers = 4, ram?: number): Db {
   const memory = path === ":memory:";
+  const sized = ram && !memory ? sqliteMemory(ram, readers + 1) : undefined;
   const open = () => {
     const c = new Database(path, { create: true });
     c.exec("PRAGMA busy_timeout = 5000");
     if (!memory) c.exec("PRAGMA wal_autocheckpoint = 0");
+    if (sized) {
+      c.exec(`PRAGMA mmap_size = ${sized.mmapBytes}`);
+      c.exec(`PRAGMA cache_size = -${sized.cacheKiB}`);
+      c.exec("PRAGMA temp_store = MEMORY");
+    }
     return c;
   };
   const writer = open();
