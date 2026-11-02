@@ -9,7 +9,7 @@ Use it between forge backends, such as the services of a [monorepo](monorepo.htm
 Forge RPC connects the `forge/` code of one backend to the `forge/` code of another. Frontends never use it: not the pages of a web app or a full-stack app, not a mobile app, not a desktop app. They call their own backend's functions with the [client](clients.html), and that backend's functions call the service:
 
 ```
-web page, mobile or desktop app ──client (/rpc, live queries)──▶ main app's forge/ ──Forge RPC──▶ orders' forge/
+web page, mobile or desktop app ──client──▶ main app's forge/ (controller or action ▶ OrdersService) ──Forge RPC──▶ orders' forge/
 ```
 
 The token every backend shares, `FORGE_RPC_TOKEN`, never leaves the servers, and two checks keep it that way:
@@ -69,7 +69,7 @@ export default http;
 ```
 
 - **Where it runs:** the server listens on its own port, in the first function runtime process, as every transport does. `host` defaults to `0.0.0.0`, so other containers can reach it.
-- **The token:** the server checks a bearer token on every call. It is `FORGE_RPC_TOKEN` unless you pass `token`, and it must be at least 16 characters, or the server refuses to start. Every app that serves or calls Forge RPC needs the same value.
+- **The token:** every call carries a bearer token, and the server checks it. The token is `FORGE_RPC_TOKEN` unless you pass `token`, and it must be at least 16 characters. A server without one refuses to start. A client is often made as its module loads (a class field, `ClientsModule.register()`), so it reads its token at its first call, and each call fails with `UNAUTHORIZED` until the token is there. Every app that serves or calls Forge RPC needs the same value.
 - **Startup checks:**
   - A router whose alias isn't an identifier, or one without a procedure, fails when its module loads.
   - A `ForgeRpcServer` that can't start, because it has no router to serve or its port is taken, logs `[forge-rpc] the server didn't start: …`, and the app's Nest routes answer with that error.
@@ -98,36 +98,125 @@ The file is committed like the rest of `forge/_generated`. In a monorepo, `packa
 
 ## Calling it
 
-From another backend's `forge/` code: an action, a scheduled function, a Nest service.
+Calls come from another backend's `forge/` code. By default they live in a class: a Nest service that holds the typed client. The app's controllers, actions and other services all go through that class, so the app has one client per service and one place that knows the service's address.
+
+### A service class that makes the calls
 
 ```ts
-// apps/web/forge/orders.ts
-import { action, v } from "@archlast/forge-runtime";
+// apps/web/forge/orders.service.ts
+import { Injectable } from "@archlast/forge-runtime/nest";
 import { createForgeRpcClient } from "@archlast/forge-runtime/nest/rpc";
 import type { OrdersRpc } from "@acme/contracts";
 
-const ordersService = createForgeRpcClient<OrdersRpc>({ url: process.env.ORDERS_RPC_URL ?? "http://127.0.0.1:4001" });
+/** Calls the orders service. One instance for the app, so one client. */
+@Injectable()
+export class OrdersService {
+  private readonly orders = createForgeRpcClient<OrdersRpc>({ url: process.env.ORDERS_RPC_URL ?? "http://127.0.0.1:4001" });
+
+  async checkout(userId: string, items: { sku: string; qty: number }[]) {
+    const order = await this.orders.orders.create.mutate({ userId, items });
+    return this.orders.orders.get.query({ id: order.id });
+  }
+
+  status(id: string) {
+    return this.orders.orders.get.query({ id });
+  }
+}
+```
+
+- **How a call reads:** `this.orders.orders.create.mutate(...)` is the client, then the router's alias, then the procedure. `.query()` exists only on queries and `.mutate()` only on mutations, and both are typed from the schemas. TypeScript catches a wrong argument or a renamed procedure, and the result has the procedure's output type.
+- **One client per app:** Nest makes the class once, so it has one client. Calls made in the same tick, from any request, share one HTTP request.
+- **Options:** `createForgeRpcClient` takes `{ url, token?, timeoutMs? }`. `token` defaults to `FORGE_RPC_TOKEN`, and `timeoutMs` to 5000.
+- **No checks in the caller:** the service checks input and output itself, so nothing is validated twice.
+- **Where to call it from:** controllers, actions and other services. Not queries or mutations: they run in a database transaction, a mutation can run more than once, and neither may do I/O (see [Functions](functions.html)).
+
+### From a controller
+
+The service class goes in `providers`, and anything that needs it takes it in its constructor:
+
+```ts
+// apps/web/forge/checkout.controller.ts
+import { Body, Controller, Get, Param, Post } from "@archlast/forge-runtime/nest";
+import { OrdersService } from "./orders.service";
+
+@Controller("checkout")
+export class CheckoutController {
+  constructor(private readonly orders: OrdersService) {}
+
+  @Post()
+  checkout(@Body() body: { userId: string; items: { sku: string; qty: number }[] }) {
+    return this.orders.checkout(body.userId, body.items);
+  }
+
+  @Get(":id")
+  status(@Param("id") id: string) {
+    return this.orders.status(id);
+  }
+}
+```
+
+```ts
+// apps/web/forge/http.ts
+nest(http, { controllers: [CheckoutController], providers: [OrdersService] });
+```
+
+`POST /http/checkout` and `GET /http/checkout/:id` now call the orders service. Import the service class as a value, not with `import type`: Nest reads the constructor's parameter types to know what to inject. Another provider, a `PaymentsService` say, takes `OrdersService` in its constructor the same way.
+
+### From an action
+
+An action can call the route too. It gets the same instance with `inject(ctx, OrdersService)`:
+
+```ts
+// apps/web/forge/checkout.ts
+import { action, v } from "@archlast/forge-runtime";
+import { inject } from "@archlast/forge-runtime/nest";
+import { OrdersService } from "./orders.service";
 
 export const checkout = action({
-  args: { userId: v.string() },
-  handler: async (_ctx, { userId }) => {
-    const order = await ordersService.orders.create.mutate({ userId, items: [{ sku: "A-1", qty: 2 }] });
-    return ordersService.orders.get.query({ id: order.id });
-  },
+  args: { userId: v.string(), items: v.array(v.object({ sku: v.string(), qty: v.number() })) },
+  handler: async (ctx, { userId, items }) => (await inject(ctx, OrdersService)).checkout(userId, items),
 });
 ```
 
-- **What it checks:** `.query()` exists only on queries and `.mutate()` only on mutations, and both are typed from the schemas. TypeScript catches a wrong argument or a renamed procedure.
-- **No checks in the caller:** the service checks input and output itself.
-- **Options:** `createForgeRpcClient` takes `{ url, token?, timeoutMs? }`, or a `ForgeRpcClient` you already have.
-- **Inside Nest:** `ForgeRpcClient` is a `ClientProxy`. Register it with `ClientsModule`, then wrap the injected client:
+- **For the app's own frontend:** pages call `api.checkout.checkout` as they call any function, typed from the procedure's output. The frontend reaches the service only through its own backend.
+- **From a cron or the scheduler:** the same action works, since a scheduled action runs like any other.
+- **Its own client:** an action can also make a client at the top of its module (`const orders = createForgeRpcClient<OrdersRpc>({ url })`) and call it directly. The service class is the default because it keeps one client per app and one place for the address, and because controllers and actions then share it.
+
+### With ClientsModule
+
+To register the transport the way Nest registers any microservice client, inject a `ForgeRpcClient` with `ClientsModule` and wrap it. `ClientsModule.register()` makes the client when the module file loads, and Nest closes it when the app stops:
 
 ```ts
-ClientsModule.register([{ name: "ORDERS", customClass: ForgeRpcClient, options: { url: process.env.ORDERS_RPC_URL! } }]);
-// in a provider: createForgeRpcClient<OrdersRpc>(client), or client.send("orders.get", { id })
+// apps/web/forge/orders.module.ts
+import { Inject, Injectable, Module } from "@archlast/forge-runtime/nest";
+import { ClientsModule, type ClientProxy } from "@archlast/forge-runtime/nest/microservices";
+import { createForgeRpcClient, ForgeRpcClient, type ForgeRpcClientOf } from "@archlast/forge-runtime/nest/rpc";
+import type { OrdersRpc } from "@acme/contracts";
+
+@Injectable()
+export class OrdersService {
+  private readonly orders: ForgeRpcClientOf<OrdersRpc>;
+
+  constructor(@Inject("ORDERS") client: ClientProxy) {
+    this.orders = createForgeRpcClient<OrdersRpc>(client);
+  }
+
+  status(id: string) {
+    return this.orders.orders.get.query({ id });
+  }
+}
+
+@Module({
+  imports: [ClientsModule.register([{ name: "ORDERS", customClass: ForgeRpcClient, options: { url: process.env.ORDERS_RPC_URL! } }])],
+  providers: [OrdersService],
+  exports: [OrdersService],
+})
+export class OrdersModule {}
+
+// forge/http.ts: nest(http, { imports: [OrdersModule], controllers: [CheckoutController] })
 ```
 
-`send(pattern, input)` works as with any transport, for a query or a mutation. `emit()` fails: Forge RPC is request-response only.
+The injected client is a plain `ClientProxy` too. `client.send("orders.get", { id })` works as with any transport, for a query or a mutation, and its observable errors with the plain [error envelope](#errors). `emit()` fails: Forge RPC is request-response only.
 
 ## Errors
 
@@ -167,5 +256,5 @@ TCP's framing beats HTTP on small messages, and with 64 KB payloads the two are 
 1. **Make the controller a router.** Replace `@Controller()` with `@Router({ alias: "orders" })`, and `@MessagePattern("orders.get")` with `@Query({ input, output })` on a method named `get`.
 2. **Take the input from `@Input()`.** Use it where the method took `@Payload()`, and move the checks the method did by hand into `input`.
 3. **Serve it.** Add `{ strategy: new ForgeRpcServer({ port }) }` to `microservices`. TCP can keep listening beside it, so callers can move one at a time.
-4. **Switch the callers.** Run codegen, then replace `client.send("orders.get", data)` with `createForgeRpcClient<OrdersRpc>({ url }).orders.get.query(data)`.
+4. **Switch the callers.** Run codegen. In the class that sends the message, replace its `ClientProxyFactory` client with `createForgeRpcClient<OrdersRpc>({ url })`, and `client.send("orders.get", data)` with `this.orders.orders.get.query(data)`.
 5. **Share the token.** Set the same `FORGE_RPC_TOKEN` in both apps.

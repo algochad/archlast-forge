@@ -21,7 +21,7 @@ beforeAll(async () => {
     forgeDir: fixture,
     env: { ...process.env, RUNTIME_MODE: "process", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json", NEST_TCP_PORT: String(tcpPort), NEST_RPC_PORT: String(rpcPort), FORGE_RPC_TOKEN: RPC_TOKEN, API_DOCS: "on" },
   });
-});
+}, 20_000); // Nest, GraphQL and the fixture in a child process: slower than the default 5 s under load
 afterAll(() => srv.stop({ graceful: false }));
 
 const http = (path: string, init?: RequestInit) => fetch(`${srv.url}/http${path}`, init);
@@ -328,6 +328,12 @@ describe("Forge RPC", () => {
     expect(await Promise.all(Array.from({ length: 40 }, (_, i) => shop.add.query({ a: i, b: 1 })))).toEqual(Array.from({ length: 40 }, (_, i) => ({ sum: i + 1 })));
   });
 
+  test("a service class with a ClientsModule client calls a router, and a controller serves what it answers", async () => {
+    const res = await http("/shop-caller/add?a=2&b=3");
+    expect(res.status).toBe(200);
+    expect(await res.json()).toEqual({ sum: 5 });
+  });
+
   test("errors: the service's ForgeError and RpcException come back as ForgeErrors; anything else is a request id, never its message", async () => {
     const { createForgeRpcClient, ForgeRpcError } = await rpc();
     const shop = createForgeRpcClient<Rpc>({ url: url(), token: RPC_TOKEN }).shop;
@@ -360,7 +366,9 @@ describe("Forge RPC", () => {
     expect(await failure(wrong.add.query({ a: 1, b: 1 }))).toMatchObject({ name: "ForgeRpcError", code: "UNAUTHORIZED" });
     const raw = await fetch(`${url()}/shop.add`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ a: 1, b: 1 }) });
     expect(raw.status).toBe(401);
-    expect(() => new ForgeRpcClient({ url: url(), token: "short" })).toThrow("16 characters or more");
+    // A client is made as its module loads, so it checks its token at the first call; a server refuses to start.
+    const short = createForgeRpcClient<Rpc>(new ForgeRpcClient({ url: url(), token: "short" })).shop;
+    expect(await failure(short.add.query({ a: 1, b: 1 }))).toMatchObject({ code: "UNAUTHORIZED", message: expect.stringContaining("16 characters or more") });
     expect(() => new ForgeRpcServer({ port: 0, token: "" })).toThrow("FORGE_RPC_TOKEN");
   });
 

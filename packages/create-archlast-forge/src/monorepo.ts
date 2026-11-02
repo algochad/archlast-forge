@@ -191,42 +191,87 @@ export default http;
     );
   }
 
-  // The caller: one action per service in the main app, sending it a message and returning the answer.
-  for (const [i, svc] of services.entries())
-    if (transport === "forge-rpc")
-      write(
-        join(root, "apps", main, "forge", `${camel(svc)}.ts`),
-        `import { action, v } from "@archlast/forge-runtime";
+  // The caller, in the main app: a service class per service that makes the calls, a controller over it (POST /http/<svc>/hello), and
+  // an action that reaches the same class (api.<svc>.hello), so functions call the services too.
+  for (const [i, svc] of services.entries()) {
+    const forge = join(root, "apps", main, "forge");
+    const Service = `${pascal(svc)}Service`;
+    write(
+      join(forge, `${svc}.service.ts`),
+      transport === "forge-rpc"
+        ? `import { Injectable } from "@archlast/forge-runtime/nest";
 import { createForgeRpcClient } from "@archlast/forge-runtime/nest/rpc";
 import type { ${pascal(svc)}Rpc } from "@${name}/contracts";
 
-/** The ${svc} service over Forge RPC, typed from its routers: backend to backend, so pages call \`hello\` below, never the service. */
-const ${camel(svc)}Service = createForgeRpcClient<${pascal(svc)}Rpc>({ url: process.env.${env(svc)}_RPC_URL ?? "http://127.0.0.1:${4001 + i}" });
+/** Calls the ${svc} service over Forge RPC, typed from its routers. One client for the app: calls made in the same tick share a request. */
+@Injectable()
+export class ${Service} {
+  private readonly ${camel(svc)} = createForgeRpcClient<${pascal(svc)}Rpc>({ url: process.env.${env(svc)}_RPC_URL ?? "http://127.0.0.1:${4001 + i}" });
 
-/** Calls ${svc}: \`api.${camel(svc)}.hello\` from a page or a client, or \`ctx.runAction\` from another function. */
-export const hello = action({
-  args: { from: v.string() },
-  handler: (_ctx, args) => ${camel(svc)}Service.${camel(svc)}.hello.mutate(args),
-});
-`,
-      );
-    else
-      write(
-      join(root, "apps", main, "forge", `${camel(svc)}.ts`),
-      `import { action, v } from "@archlast/forge-runtime";
-import { rxjs } from "@archlast/forge-runtime/nest";
+  hello(from: string) {
+    return this.${camel(svc)}.${camel(svc)}.hello.mutate({ from });
+  }
+}
+`
+        : `import { Injectable, rxjs } from "@archlast/forge-runtime/nest";
 import { ClientProxyFactory, Transport } from "@archlast/forge-runtime/nest/microservices";
 ${transport === "redis" ? REDIS_HELPER : ""}
-/** The ${svc} service, over ${TRANSPORT_LABEL[transport]}: connected on first use, kept for every call after. */
-const ${camel(svc)} = ClientProxyFactory.create(${transportOptions(transport, svc, i, false)});
+/** Calls the ${svc} service over ${TRANSPORT_LABEL[transport]}: connected on first use, kept for every call after. */
+@Injectable()
+export class ${Service} {
+  private readonly client = ClientProxyFactory.create(${transportOptions(transport, svc, i, false)});
 
-/** Calls ${svc}: \`api.${camel(svc)}.hello\` from a page or a client, or \`ctx.runAction\` from another function. */
+  hello(from: string) {
+    return rxjs.firstValueFrom(this.client.send<{ service: string; greeting: string; calls: number }>("${svc}.hello", { from }));
+  }
+}
+`,
+    );
+    write(
+      join(forge, `${svc}.controller.ts`),
+      `import { Body, Controller, Post } from "@archlast/forge-runtime/nest";
+import { ${Service} } from "./${svc}.service";
+
+/** POST /http/${svc}/hello, for the app's clients: the call to the ${svc} service is in ${Service}. */
+@Controller("${svc}")
+export class ${pascal(svc)}Controller {
+  constructor(private readonly ${camel(svc)}: ${Service}) {}
+
+  @Post("hello")
+  hello(@Body() body: { from: string }) {
+    return this.${camel(svc)}.hello(body.from);
+  }
+}
+`,
+    );
+    write(
+      join(forge, `${camel(svc)}.ts`),
+      `import { action, v } from "@archlast/forge-runtime";
+import { inject } from "@archlast/forge-runtime/nest";
+import { ${Service} } from "./${svc}.service";
+
+/** Calls ${svc} from a function: \`api.${camel(svc)}.hello\` from a page or a client, or \`ctx.runAction\` from another function. The call is in ${Service}. */
 export const hello = action({
   args: { from: v.string() },
-  handler: (_ctx, args) => rxjs.firstValueFrom(${camel(svc)}.send<{ service: string; greeting: string; calls: number }>("${svc}.hello", args)),
+  handler: async (ctx, { from }) => (await inject(ctx, ${Service})).hello(from),
 });
 `,
     );
+  }
+  if (services.length) {
+    // Mount the controllers and the service classes in the main app's forge/http.ts (a backend has one already).
+    const http = join(root, "apps", main, "forge", "http.ts");
+    const current = existsSync(http) ? readFileSync(http, "utf8") : `import { httpRouter } from "@archlast/forge-runtime";\n\nconst http = httpRouter();\n\nexport default http;\n`;
+    const imports = [`import { nest } from "@archlast/forge-runtime/nest";`, ...services.flatMap((svc) => [`import { ${pascal(svc)}Controller } from "./${svc}.controller";`, `import { ${pascal(svc)}Service } from "./${svc}.service";`])];
+    const mount = `// The services this app calls, as Nest classes: a controller for HTTP clients and a service class that makes the calls.
+nest(http, { controllers: [${services.map((s) => `${pascal(s)}Controller`).join(", ")}], providers: [${services.map((s) => `${pascal(s)}Service`).join(", ")}] });
+
+`;
+    if (!current.includes("export default http;")) throw new Error("the main app's forge/http.ts has no \`export default http;\`");
+    const lines = current.replace("export default http;", mount + "export default http;").split("\n");
+    const after = lines.findLastIndex((l) => l.startsWith("import ")) + 1; // after the file's own imports
+    write(http, [...lines.slice(0, after), ...imports, ...lines.slice(after)].join("\n"));
+  }
   const needs = TRANSPORT_PACKAGE[transport];
   if (needs && services.length)
     for (const app of backends) patchJson(join(root, "apps", app, "forge", "package.json"), (pkg) => (pkg.dependencies = { ...pkg.dependencies, [needs[0]]: needs[1] }));
@@ -363,13 +408,17 @@ ${
 
 ${
   transport === "forge-rpc"
-    ? `Each service in \`apps/\` serves a Forge RPC router (\`forge/<service>.router.ts\`, served from \`forge/http.ts\`). Its codegen writes the router's types to \`forge/_generated/rpc.ts\`, \`packages/contracts\` shares them, and the main app's backend calls each service with them, from an action each (\`apps/${main}/forge/${camel(services[0]!)}.ts\`). Forge RPC is backend to backend: pages and apps call the main app's functions, never a service directly:`
-    : `Each service in \`apps/\` listens for messages with NestJS's ${TRANSPORT_LABEL[transport]} transport (\`forge/http.ts\`, \`forge/<service>.controller.ts\`), and \`apps/${main}\` calls them with an action each (\`forge/${camel(services[0]!)}.ts\`):`
+    ? `Each service in \`apps/\` serves a Forge RPC router (\`forge/<service>.router.ts\`, served from \`forge/http.ts\`). Its codegen writes the router's types to \`forge/_generated/rpc.ts\`, \`packages/contracts\` shares them, and the main app's backend calls each service with them. Forge RPC is backend to backend: pages and apps call the main app, never a service directly.`
+    : `Each service in \`apps/\` listens for messages with NestJS's ${TRANSPORT_LABEL[transport]} transport (\`forge/http.ts\`, \`forge/<service>.controller.ts\`), and \`apps/${main}\` sends them messages.`
 }
 
+In \`apps/${main}/forge\`, each service has a class that makes the calls (\`${services[0]}.service.ts\`), and two ways in that both use it: a Nest controller (\`${services[0]}.controller.ts\`, mounted in \`http.ts\`) and an action (\`${camel(services[0]!)}.ts\`, which gets the class with \`inject(ctx, ${pascal(services[0]!)}Service)\`):
+
 \`\`\`bash
-curl -X POST localhost:3000/rpc/${camel(services[0]!)}:hello -H 'content-type: application/json' -d '{"from":"${main}"}'
+curl -X POST localhost:3000/rpc/${camel(services[0]!)}:hello -H 'content-type: application/json' -d '{"from":"${main}"}'   # the action
 # {"result":{"service":"${services[0]}","greeting":"Hello, ${main}","calls":1}}
+curl -X POST localhost:3000/http/${services[0]}/hello -H 'content-type: application/json' -d '{"from":"${main}"}'  # the controller
+# {"service":"${services[0]}","greeting":"Hello, ${main}","calls":2}
 \`\`\`
 ${transport === "forge-rpc" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the services' ports are reachable, and the apps share \`FORGE_RPC_TOKEN\` from their \`.env\`. In production, give every app the same \`FORGE_RPC_TOKEN\`, the callers \`<SERVICE>_RPC_URL\`, and expose each service's Forge RPC port to them (one network for the stacks).` : transport === "tcp" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the TCP ports are reachable. In production, set \`<SERVICE>_HOST\` and \`<SERVICE>_PORT\` for the callers, and expose each service's TCP port to them (one network for the stacks).` : `\nStart a ${transport === "redis" ? "Redis" : "NATS"} server first, and point every app at it with \`${transport === "redis" ? "MICROSERVICES_REDIS_URL" : "MICROSERVICES_NATS_URL"}\` in production.`}
 `

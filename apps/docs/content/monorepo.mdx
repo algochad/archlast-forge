@@ -49,23 +49,44 @@ export class OrdersRouter {
 }
 ```
 
-The service serves the router in its `forge/http.ts`, with `new ForgeRpcServer({ port: Number(process.env.ORDERS_RPC_PORT ?? 4001) })` in `nest()`'s `microservices`. Its codegen writes the router's types to `forge/_generated/rpc.ts`, and `packages/contracts` re-exports them. The main app calls the service from an action, typed:
+The service serves the router in its `forge/http.ts`, with `new ForgeRpcServer({ port: Number(process.env.ORDERS_RPC_PORT ?? 4001) })` in `nest()`'s `microservices`. Its codegen writes the router's types to `forge/_generated/rpc.ts`, and `packages/contracts` re-exports them.
+
+The main app calls each service from a class: a Nest service that holds the typed client and makes the calls. A controller and an action both use it:
 
 ```ts
-// apps/web/forge/orders.ts
-import type { OrdersRpc } from "@acme/contracts";
+// apps/web/forge/orders.service.ts
+@Injectable()
+export class OrdersService {
+  private readonly orders = createForgeRpcClient<OrdersRpc>({ url: process.env.ORDERS_RPC_URL ?? "http://127.0.0.1:4001" });
 
-const ordersService = createForgeRpcClient<OrdersRpc>({ url: process.env.ORDERS_RPC_URL ?? "http://127.0.0.1:4001" });
+  hello(from: string) {
+    return this.orders.orders.hello.mutate({ from });
+  }
+}
 
+// apps/web/forge/orders.controller.ts: POST /http/orders/hello
+@Controller("orders")
+export class OrdersController {
+  constructor(private readonly orders: OrdersService) {}
+
+  @Post("hello")
+  hello(@Body() body: { from: string }) {
+    return this.orders.hello(body.from);
+  }
+}
+
+// apps/web/forge/orders.ts: api.orders.hello, for pages and other functions
 export const hello = action({
   args: { from: v.string() },
-  handler: (_ctx, args) => ordersService.orders.hello.mutate(args),
+  handler: async (ctx, { from }) => (await inject(ctx, OrdersService)).hello(from),
 });
 ```
 
+`forge/http.ts` mounts them with `nest(http, { controllers: [OrdersController], providers: [OrdersService] })`. [Calling it](forge-rpc.html#calling-it) covers the class in detail, along with `ClientsModule` and other providers that use it.
+
 The backends share `FORGE_RPC_TOKEN`, which the scaffold writes to each one's `.env`.
 
-Forge RPC is backend to backend only. The pages of `apps/web`, `apps/mobile` and `apps/desktop` call the main app's functions (`api.orders.hello` here) with the client, and the main app's `forge/` code calls the service. They never import `@acme/contracts` or a service's address, and they never hold the token. See [Forge RPC](forge-rpc.html#backend-to-backend-only) for the checks that enforce it.
+Forge RPC is backend to backend only. The pages of `apps/web`, `apps/mobile` and `apps/desktop` call the main app (`api.orders.hello` or `POST /http/orders/hello` here), and the main app's `OrdersService` calls the service. They never import `@acme/contracts` or a service's address, and they never hold the token. See [Forge RPC](forge-rpc.html#backend-to-backend-only) for the checks that enforce it.
 
 With `--transport tcp`, `redis` or `nats`, each service instead listens with that [NestJS transport](nest.html#microservices), in its `forge/http.ts`, and answers a message pattern with a controller that uses its own database:
 
@@ -81,20 +102,27 @@ export class OrdersController {
 }
 ```
 
-The main app calls each service from an action (`apps/web/forge/orders.ts`), through a Nest client that connects on first use:
+The main app has the same three files. Only the service class differs: it sends a message through a Nest client that connects on first use:
 
 ```ts
-const orders = ClientProxyFactory.create({ transport: Transport.TCP, options: { host: process.env.ORDERS_HOST ?? "127.0.0.1", port: Number(process.env.ORDERS_PORT ?? 4001) } });
+// apps/web/forge/orders.service.ts
+@Injectable()
+export class OrdersService {
+  private readonly client = ClientProxyFactory.create({ transport: Transport.TCP, options: { host: process.env.ORDERS_HOST ?? "127.0.0.1", port: Number(process.env.ORDERS_PORT ?? 4001) } });
 
-export const hello = action({
-  args: { from: v.string() },
-  handler: (_ctx, args) => rxjs.firstValueFrom(orders.send<{ service: string; greeting: string; calls: number }>("orders.hello", args)),
-});
+  hello(from: string) {
+    return rxjs.firstValueFrom(this.client.send<{ service: string; greeting: string; calls: number }>("orders.hello", { from }));
+  }
+}
 ```
 
+With any transport, the main app answers both ways:
+
 ```bash
-curl -X POST localhost:3000/rpc/orders:hello -H 'content-type: application/json' -d '{"from":"web"}'
+curl -X POST localhost:3000/rpc/orders:hello -H 'content-type: application/json' -d '{"from":"web"}'   # the action
 # {"result":{"service":"orders","greeting":"Hello, web","calls":1}}
+curl -X POST localhost:3000/http/orders/hello -H 'content-type: application/json' -d '{"from":"web"}'  # the controller
+# {"service":"orders","greeting":"Hello, web","calls":2}
 ```
 
 | Transport | Service listens on | Callers set | Needs |

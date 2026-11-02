@@ -99,7 +99,11 @@ test("Forge RPC, the default: a router per service, its types generated and shar
   expect(forge("orders", "orders.router.ts")).toContain('@Router({ alias: "orders" })');
   expect(forge("user-billing", "user-billing.router.ts")).toContain('@Router({ alias: "userBilling" })');
   expect(forge("orders", "http.ts")).toContain("process.env.ORDERS_RPC_PORT ?? 4001");
-  expect(forge("api", "orders.ts")).toContain('import type { OrdersRpc } from "@shop/contracts";');
+  // The main app calls each service from a class: a service class with the client, a controller over it, and an action reaching it.
+  expect(forge("api", "orders.service.ts")).toContain('import type { OrdersRpc } from "@shop/contracts";');
+  expect(forge("api", "orders.controller.ts")).toContain('@Controller("orders")');
+  expect(forge("api", "orders.ts")).toContain("inject(ctx, OrdersService)");
+  expect(forge("api", "http.ts")).toMatch(/controllers: \[OrdersController, UserBillingController\],\s+providers: \[OrdersService, UserBillingService\]/);
   expect(read(root, "packages", "contracts", "index.ts")).toContain('export type { Rpc as UserBillingRpc } from "../../apps/user-billing/forge/_generated/rpc";');
   expect(JSON.parse(read(root, "apps", "api", "package.json")).devDependencies["@shop/contracts"]).toBe("workspace:*");
   const tokens = ["api", "orders", "user-billing"].map((app) => /^FORGE_RPC_TOKEN=(\w+)$/m.exec(read(root, "apps", app, ".env"))?.[1]);
@@ -118,10 +122,10 @@ test("Forge RPC, the default: a router per service, its types generated and shar
   symlinkSync(join(root, "packages", "contracts"), join(scratch, "node_modules", "@shop", "contracts"), "dir"); // as the workspace install links it
   const typecheck = () => Bun.spawnSync([process.execPath, "check", "-p", join(root, "apps", "api", "forge")], { stdout: "pipe", stderr: "pipe" });
   expect(typecheck().exitCode).toBe(0);
-  const caller = join(root, "apps", "api", "forge", "orders.ts");
+  const caller = join(root, "apps", "api", "forge", "orders.service.ts");
   const source = read(caller);
-  await Bun.write(caller, source.replace("hello.mutate(args)", "hello.mutate({ from: 1 })"));
-  expect(typecheck().stdout.toString()).toContain("orders.ts");
+  await Bun.write(caller, source.replace("hello.mutate({ from })", "hello.mutate({ from: 1 })"));
+  expect(typecheck().stdout.toString()).toContain("orders.service.ts");
   await Bun.write(caller, source);
 
   // Run: orders serves its router on its port; the main app's action calls it with the shared token.
@@ -133,8 +137,9 @@ test("Forge RPC, the default: a router per service, its types generated and shar
     const hello = async () => (await (await fetch(`${api.url}/rpc/orders:hello`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: "api" }) })).json()) as { result?: unknown };
     let first = await hello();
     for (let i = 0; i < 50 && !first.result; i++) (await Bun.sleep(200), (first = await hello())); // the service's listener starts with its runtime
-    expect(first).toEqual({ result: { service: "orders", greeting: "Hello, api", calls: 1 } });
-    expect((await hello()).result).toMatchObject({ calls: 2 });
+    expect(first).toEqual({ result: { service: "orders", greeting: "Hello, api", calls: 1 } }); // the action, through OrdersService
+    const http = await fetch(`${api.url}/http/orders/hello`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: "api" }) });
+    expect(await http.json()).toEqual({ service: "orders", greeting: "Hello, api", calls: 2 }); // the controller, through the same class
   } finally {
     await api.stop({ graceful: false });
     await orders.stop({ graceful: false });

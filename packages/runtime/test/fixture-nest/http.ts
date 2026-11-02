@@ -9,6 +9,7 @@ import { MathController } from "./math.controller";
 import { NotesModule } from "./notes.controller";
 import { NotesResolver } from "./notes.resolver";
 import { OrdersController } from "./orders.controller";
+import { ShopCallerModule } from "./shop-caller";
 import { ShopRouter } from "./shop.router";
 
 // The tests give each server its own ports; a process without them has no microservice.
@@ -19,7 +20,11 @@ if (process.env.NEST_RPC_PORT) microservices.push({ strategy: new ForgeRpcServer
 const http = httpRouter();
 http.route({ method: "GET", path: "/plain", handler: httpAction(async () => new Response("from httpRouter")) });
 nest(http, {
-  imports: [NotesModule, GraphQLModule.forRoot<ForgeGraphQLOptions>({ driver: ForgeGraphQLDriver, autoSchemaFile: true, yoga: { graphiql: false } })],
+  imports: [
+    NotesModule,
+    GraphQLModule.forRoot<ForgeGraphQLOptions>({ driver: ForgeGraphQLDriver, autoSchemaFile: true, yoga: { graphiql: false } }),
+    ...(process.env.NEST_RPC_PORT ? [ShopCallerModule] : []), // its client needs the router's port and FORGE_RPC_TOKEN
+  ],
   controllers: [ExpressController, MathController, OrdersController, ShopRouter],
   providers: [ChatGateway, NotesResolver],
   cors: { origin: "https://app.example", credentials: true },

@@ -130,9 +130,11 @@ function wireOf(e: unknown, pattern: string, requestId: string): ForgeRpcWireErr
 }
 
 const MIN_TOKEN = 16;
-function tokenOf(token: string | undefined): string {
+function backendOnly() {
   if (typeof (globalThis as { window?: unknown }).window !== "undefined")
     throw new Error("Forge RPC is for calls between backends, and this is a page or an app: call your backend's functions from here, and let the backend call the service");
+}
+function tokenOf(token: string | undefined): string {
   const t = token ?? process.env.FORGE_RPC_TOKEN;
   if (!t || t.length < MIN_TOKEN) throw new Error(`Forge RPC needs a shared token of ${MIN_TOKEN} characters or more: set FORGE_RPC_TOKEN (the same in every app) or pass { token }`);
   return t;
@@ -168,6 +170,7 @@ export class ForgeRpcServer extends Server implements CustomTransportStrategy {
 
   constructor(private readonly options: ForgeRpcServerOptions) {
     super();
+    backendOnly();
     this.transportId = FORGE_RPC;
     this.expected = digest(`Bearer ${tokenOf(options.token)}`);
   }
@@ -280,12 +283,13 @@ export interface ForgeRpcClientOptions {
 export class ForgeRpcClient extends ClientProxy {
   private readonly rpc: ReturnType<typeof createTRPCUntypedClient>;
   private readonly timeoutMs: number;
+  private authorization?: string;
 
   constructor(private readonly options: ForgeRpcClientOptions) {
     super();
-    const authorization = `Bearer ${tokenOf(options.token)}`;
+    backendOnly();
     this.timeoutMs = options.timeoutMs ?? 5000;
-    this.rpc = createTRPCUntypedClient({ links: [httpBatchLink({ url: options.url, methodOverride: "POST", maxItems: 32, headers: { authorization } })] });
+    this.rpc = createTRPCUntypedClient({ links: [httpBatchLink({ url: options.url, methodOverride: "POST", maxItems: 32, headers: () => ({ authorization: this.authorization! }) })] });
   }
 
   async connect() {}
@@ -296,6 +300,14 @@ export class ForgeRpcClient extends ClientProxy {
 
   protected publish(packet: ReadPacket, callback: (packet: WritePacket) => void): () => void {
     const pattern = this.normalizePattern(packet.pattern);
+    // The token is read at the first call, not when the client is made: ClientsModule.register() and class fields make clients as
+    // their module loads, and an app that never calls the service shouldn't fail to load for want of one.
+    try {
+      this.authorization ??= `Bearer ${tokenOf(this.options.token)}`;
+    } catch (e) {
+      callback({ err: { status: "error", message: (e as Error).message, code: "UNAUTHORIZED" } satisfies ForgeRpcWireError, isDisposed: true });
+      return () => {};
+    }
     const abort = new AbortController();
     let done = false;
     const finish = (p: WritePacket) => {

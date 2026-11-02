@@ -3,7 +3,7 @@
 import type { ForgeRpcClientOf } from "../../src/nest-rpc";
 import type * as m0 from "./shop.router";
 
-interface Rpc {
+export interface Rpc {
   shop: {
     add: { kind: "query"; input: { a: number; b: number }; output: { sum: number } };
     order: { kind: "mutation"; input: { userId: string; items: Array<{ sku: string; qty: number }> }; output: { orderId: string; units: number } };
