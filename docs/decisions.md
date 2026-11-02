@@ -32,6 +32,16 @@ User request: "Monorepo support in the CLI using Turborepo … shared forge type
 - **Services talk through Nest's transports, which the engine already runs** (`nest(http, { microservices })`, first runtime process only). Each service answers `<service>.hello` with a controller that runs a mutation in its own database; the main app gets one action per service that sends it the message through `ClientProxyFactory` (a client needs no Nest app). TCP needs nothing; Redis and NATS add `ioredis`/`nats` to the backends and read the broker from `MICROSERVICES_REDIS_URL`/`MICROSERVICES_NATS_URL`. In dev the services run on this machine (`dev --no-docker --port 300n`), so TCP ports 400n are reachable; a Docker dev engine would publish only HTTP.
 - Tested by generating a monorepo with two services and running the example: the main app's action reaches `orders` over TCP, which counts the calls in its database. Not tested: `bun install` and `turbo` on a generated monorepo from the published tarballs, and the Redis and NATS variants.
 
+## Mobile apps (Expo)
+
+User request: "React Native (Expo) template, backend mode only … Better Auth session handling suitable for native apps (secure token storage, not cookies only) … reconnect … offline … no fullstack option"; inventory approved.
+
+- **`--mobile` adds apps/mobile to a monorepo** (it implies one) and is refused with a full-stack app, by flag and in the prompts (the question is only asked for a backend). Expo SDK 58 (React Native 0.88, React 19.3.0); `@forge/react`'s React peer range is now `^19.0.0` so Expo's React doesn't warn.
+- **The session is Better Auth's Expo plugin, kept in secure storage**: `expoClient` (Keychain/Keystore through expo-secure-store) in the app, `expo()` with the app's scheme in `trustedOrigins` in the backend's `forge/auth.ts`, both at 1.7.12 to match the engine's Better Auth. A plugin turns off the engine's direct session check (documented). The client gained two options for it: `headers` (every call, and the socket handshake in React Native's `(url, protocols, { headers })` form; asked each time, may be async) and `authPlugins` (passed to `createAuthClient`). Both are additions; browsers are unaffected.
+- **Types without bundling the backend**: the app types `api` with a type-only import from `packages/api` over `anyApi`, so Metro never resolves the backend's generated code or its dependencies.
+- **Background and offline**: `AppState` active → `client.reconnect()` (subscriptions are sent again and refetch). No offline store: the client has none, so the template keeps last data on screen and lets calls fail; documented as such.
+- Tested: the client with a WebSocket that takes headers like React Native's, against a real engine: signed calls, a signed socket, live updates after a mutation; the scaffold's files and checks. Not tested: building or running the Expo app (no simulator here), the server plugin in a running engine (it needs Expo's packages).
+
 ## OpenAPI and the API docs page
 
 User request: "Generate an OpenAPI 3.1 document from the /http routes and NestJS controllers … derived from the same validators the engine uses … Scalar … docs UI in React and MDX … disabled by default in production"; inventory approved.

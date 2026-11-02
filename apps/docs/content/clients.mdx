@@ -38,6 +38,8 @@ stop();
 |---|---|
 | `url` | The server's origin. Defaults to `location.origin`, so a page served by the engine (or behind a dev proxy that forwards `/rpc` and `/api/auth`) needs no option. A trailing slash is removed. Required outside a browser. |
 | `WebSocket` | A WebSocket constructor to use instead of the global one. See [outside the browser](#using-the-client-outside-the-browser). |
+| `headers` | `() => headers \| undefined`, sync or async: added to every call and passed to the live socket's handshake as React Native's WebSocket takes them (`new WebSocket(url, undefined, { headers })`; a browser can't set handshake headers and ignores them). Asked each time, so a session that changes is picked up. For clients without browser cookies: see [Mobile apps](mobile.html#signing-in). |
+| `authPlugins` | Better Auth client plugins for `client.auth`, such as `expoClient` from `@better-auth/expo`. |
 
 Nothing connects until you use it: creating a client does no network I/O, which makes it safe to build on the server.
 

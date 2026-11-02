@@ -1,6 +1,6 @@
 // A Turborepo monorepo: the main app in apps/, backends that serve as microservices beside it, wired with a NestJS transport, and the
 // backends' generated API types shared from packages/api.
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { nameOf } from "./options";
 import { addPrettier, format, scaffold, VERSION } from "./scaffold";
@@ -18,8 +18,12 @@ export interface MonorepoOptions {
   /** Backends to add as microservices, by name (`orders`, `billing`). */
   microservices?: string[];
   transport?: Transport;
+  /** A React Native (Expo) app in apps/mobile, a client of the backend (the main app must be one: Expo has no full-stack option). */
+  mobile?: boolean;
   version?: string;
 }
+
+const MOBILE = new URL("../template/mobile", import.meta.url).pathname;
 
 const SERVICE_NAME = /^[a-z][a-z0-9-]{0,30}$/;
 export function parseMicroservices(text: string): string[] {
@@ -69,6 +73,7 @@ export function scaffoldMonorepo(o: MonorepoOptions): string {
   const transport = o.transport ?? "tcp";
   const services = o.microservices ?? [];
   const main = o.mode === "framework" ? "web" : "api";
+  if (o.mobile && o.mode !== "backend") throw new Error("The Expo app is a client of a backend: use --mode backend (Expo has no full-stack option)");
 
   // The apps, each a project like `init` makes on its own, then wired.
   scaffold({ dir: join(root, "apps", main), mode: o.mode, services: o.services, shadcn: o.shadcn, version });
@@ -161,6 +166,8 @@ export const hello = action({
   const needs = TRANSPORT_PACKAGE[transport];
   if (needs && services.length)
     for (const app of backends) patchJson(join(root, "apps", app, "forge", "package.json"), (pkg) => (pkg.dependencies = { ...pkg.dependencies, [needs[0]]: needs[1] }));
+
+  if (o.mobile) addMobile(root, name, version);
 
   // The backends' typed APIs, for any app or package here: \`import { webApi } from "@<name>/api"\`.
   write(
@@ -264,6 +271,37 @@ ${transport === "tcp" ? `\nIn development every app runs on this machine (\`--no
 `
     : ""
 }`;
+}
+
+/**
+ * apps/mobile: the Expo app (template/mobile), and what the backend in apps/api needs for it: Better Auth's Expo plugin, which lets the app's
+ * scheme sign in and keeps sessions working without browser cookies.
+ */
+function addMobile(root: string, name: string, version: string) {
+  const dir = join(root, "apps", "mobile");
+  cpSync(MOBILE, dir, { recursive: true });
+  renameSync(join(dir, "gitignore"), join(dir, ".gitignore")); // npm drops .gitignore files from packages
+  renameSync(join(dir, "env.example"), join(dir, ".env.example"));
+  const fill = (path: string) => {
+    for (const entry of readdirSync(path)) {
+      const p = join(path, entry);
+      if (statSync(p).isDirectory()) fill(p);
+      else writeFileSync(p, readFileSync(p, "utf8").replaceAll("__NAME__", name).replaceAll("__VERSION__", version));
+    }
+  };
+  fill(dir);
+  writeFileSync(join(dir, ".env"), readFileSync(join(dir, ".env.example"), "utf8"));
+  const forge = join(root, "apps", "api", "forge");
+  write(
+    join(forge, "auth.ts"),
+    `import { defineAuth } from "@archlast/forge-runtime";
+import { expo } from "@better-auth/expo";
+
+// The mobile app signs in through Better Auth's Expo plugin: its requests come from its scheme (${name}://), not from a web origin.
+export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [expo()], trustedOrigins: ["${name}://"] });
+`,
+  );
+  patchJson(join(forge, "package.json"), (pkg) => (pkg.dependencies = { ...pkg.dependencies, "@better-auth/expo": "1.7.12" }));
 }
 
 /** Whether `dir` looks like a monorepo this scaffolder made (for tests and the CLI). */

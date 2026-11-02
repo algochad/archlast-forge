@@ -498,6 +498,8 @@ class ArchlastForgeClient {
 interface ClientOptions {
   url?: string;                     // server origin; defaults to location.origin
   WebSocket?: typeof WebSocket;     // for runtimes without a global WebSocket
+  headers?: () => Record<string, string> | undefined | Promise<Record<string, string> | undefined>; // every call and the socket's handshake
+  authPlugins?: unknown[];          // Better Auth client plugins for client.auth (expoClient on React Native)
 }
 ```
 

@@ -125,3 +125,34 @@ test("pageArgs asks for numbered page N with its total; windowArgs for the first
   expect(windowArgs({}, 30)).toEqual({ paginationOpts: { numItems: 30, cursor: null } });
   expect(() => pageArgs({}, 0, 20)).toThrow("page must be an integer from 1, got 0");
 });
+
+test("a client without browser cookies (React Native) signs its calls and its socket with headers, and live updates arrive", async () => {
+  const res = await fetch(`${srv.url}/api/auth/sign-up/email`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ email: "native@example.com", password: "native password 1", name: "Native" }) });
+  const cookie = res.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
+  let asked = 0;
+  // React Native's WebSocket takes handshake headers as a third argument; Bun's takes them in an options object.
+  class NativeStyleWebSocket extends WebSocket {
+    constructor(url: string, _protocols?: string | string[], options?: { headers?: Record<string, string> }) {
+      super(url, { headers: options?.headers } as never);
+    }
+  }
+  const native = new ArchlastForgeClient({ url: srv.url, WebSocket: NativeStyleWebSocket as never, headers: async () => (asked++, { cookie }) });
+  try {
+    expect(await native.query(api.todos.whoami)).toMatchObject({ email: "native@example.com" }); // the call carried the session
+    const seen: unknown[] = [];
+    const stop = native.watch(api.todos.whoami, {}, (u) => "value" in u && seen.push(u.value));
+    await until(() => seen.length > 0);
+    expect(seen[0]).toMatchObject({ email: "native@example.com" }); // so did the socket's handshake
+    stop();
+    const events: unknown[][] = [];
+    const off = native.watch(api.todos.events, {}, (u) => "value" in u && events.push(u.value as unknown[]));
+    await until(() => events.length > 0);
+    const before = events.at(-1)!.length;
+    await native.mutation(api.todos.logEvent, { kind: "from a phone" });
+    await until(() => events.at(-1)!.length === before + 1); // the live update arrives
+    off();
+    expect(asked).toBeGreaterThanOrEqual(3); // asked each time: every call, and the socket
+  } finally {
+    native.close();
+  }
+});

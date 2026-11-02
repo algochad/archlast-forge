@@ -26,6 +26,15 @@ export interface ClientOptions {
   /** Server origin. Defaults to the page's origin (e.g. behind a dev proxy). */
   url?: string;
   WebSocket?: typeof WebSocket;
+  /**
+   * Headers for every call and for the live socket's handshake, asked for each time they are needed, so a session that changes is picked up.
+   * For clients without browser cookies: a React Native app sends the session cookie it keeps in secure storage, `() => ({ cookie })`. The
+   * socket passes them the way React Native's WebSocket takes them, `new WebSocket(url, undefined, { headers })`; a browser can't set
+   * handshake headers and ignores them.
+   */
+  headers?: () => Record<string, string> | undefined | Promise<Record<string, string> | undefined>;
+  /** Better Auth client plugins for `client.auth`, e.g. `expoClient` from @better-auth/expo on React Native. */
+  authPlugins?: unknown[];
 }
 
 interface Watch {
@@ -75,10 +84,14 @@ class LiveSocket {
 
   private url: string;
   private WebSocketImpl?: typeof WebSocket;
+  private headers?: ClientOptions["headers"];
+  /** Waiting for the headers before a socket opens. */
+  private opening = false;
 
-  constructor(url: string, WebSocketImpl?: typeof WebSocket) {
+  constructor(url: string, WebSocketImpl?: typeof WebSocket, headers?: ClientOptions["headers"]) {
     this.url = url;
     this.WebSocketImpl = WebSocketImpl;
+    this.headers = headers;
   }
 
   subscribe(name: string, args: unknown, handlers: Handlers) {
@@ -114,8 +127,21 @@ class LiveSocket {
   }
 
   private open() {
+    if (this.closed || this.socket || this.timer || this.opening) return;
+    if (!this.headers) return this.connect();
+    this.opening = true;
+    Promise.resolve()
+      .then(() => this.headers!())
+      .then(
+        (headers) => ((this.opening = false), this.connect(headers)),
+        () => ((this.opening = false), this.connect()),
+      );
+  }
+
+  private connect(headers?: Record<string, string>) {
     if (this.closed || this.socket || this.timer) return;
-    const socket = (this.socket = new (this.WebSocketImpl ?? WebSocket)(this.url));
+    const Impl = (this.WebSocketImpl ?? WebSocket) as unknown as new (url: string, protocols?: string | string[], options?: { headers?: Record<string, string> }) => WebSocket;
+    const socket = (this.socket = headers ? new Impl(this.url, undefined, { headers }) : new Impl(this.url));
     socket.onopen = () => {
       this.attempts = 0;
       for (const [id, { name, args }] of this.subscriptions) this.send({ type: "subscribe", id, name, args });
@@ -143,11 +169,15 @@ export class ArchlastForgeClient {
   private live: LiveSocket;
   private watches = new Map<string, Watch>();
   private authClient?: ReturnType<typeof createAuthClient>;
+  private headers?: ClientOptions["headers"];
+  private authPlugins?: unknown[];
   private sessionListeners = new Set<(user: SessionUser | null) => void>();
 
   constructor(opts: ClientOptions = {}) {
     this.url = (opts.url ?? globalThis.location?.origin ?? "").replace(/\/$/, "");
-    this.live = new LiveSocket(`${this.url.replace(/^http/, "ws")}/rpc`, opts.WebSocket);
+    this.headers = opts.headers;
+    this.authPlugins = opts.authPlugins;
+    this.live = new LiveSocket(`${this.url.replace(/^http/, "ws")}/rpc`, opts.WebSocket, opts.headers);
   }
 
   /** Opens a new socket, e.g. after sign-in: cookies are only sent on the WebSocket handshake. */
@@ -173,7 +203,7 @@ export class ArchlastForgeClient {
   /** Better Auth client for this server; a change of session reconnects the socket. */
   get auth() {
     if (!this.authClient) {
-      const auth = (this.authClient = createAuthClient({ baseURL: this.url, fetchOptions: { credentials: "include" } }));
+      const auth = (this.authClient = createAuthClient({ baseURL: this.url, fetchOptions: { credentials: "include" }, ...(this.authPlugins && { plugins: this.authPlugins as never }) }));
       let session: string | null | undefined;
       auth.useSession.subscribe((s) => {
         if (s.isPending) return;
@@ -190,7 +220,7 @@ export class ArchlastForgeClient {
     const res = await fetch(`${this.url}/rpc/${encodeURI(getFunctionName(ref))}`, {
       method: "POST",
       credentials: "include",
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", ...(await this.headers?.()) },
       body: JSON.stringify(args ?? {}),
     });
     const body = (await res.json().catch(() => null)) as { result?: unknown; error?: ErrorBody; message?: string } | null;

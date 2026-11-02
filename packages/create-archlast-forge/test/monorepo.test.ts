@@ -26,6 +26,28 @@ test("flags: --microservices and --transport make a monorepo, and names are chec
   expect(() => parseMicroservices("Orders!")).toThrow("isn't a service name");
   expect(() => parseMicroservices("web")).toThrow("taken by the monorepo");
   expect(() => parseMicroservices("a,a")).toThrow("named twice");
+  expect(parseFlags(["x", "--mode", "backend", "--mobile"])).toMatchObject({ monorepo: true, mobile: true });
+  expect(() => parseFlags(["x", "--mode", "framework", "--mobile"])).toThrow("Expo has no full-stack option");
+});
+
+test("--mobile: an Expo app in apps/mobile, a client of the backend, which gets Better Auth's Expo plugin", () => {
+  mkdirSync(scratch, { recursive: true });
+  const root = scaffoldMonorepo({ dir: join(scratch, "phone"), mode: "backend", services: [], mobile: true });
+  const app = (...p: string[]) => read(root, "apps", "mobile", ...p);
+  expect(JSON.parse(app("package.json"))).toMatchObject({ name: "@phone/mobile", scripts: { dev: "expo start" }, dependencies: { "@phone/api": "workspace:*", "expo-secure-store": expect.any(String), "@better-auth/expo": "1.7.12" } });
+  expect(JSON.parse(app("app.json")).expo).toMatchObject({ scheme: "phone", slug: "phone" });
+  expect(app("src", "client.ts")).toContain("process.env.EXPO_PUBLIC_API_URL");
+  expect(app("src", "client.ts")).toContain('import type { apiApi } from "@phone/api";'); // types only: the backend's code is never bundled
+  expect(app("src", "client.ts")).toContain("client.reconnect()"); // back from the background
+  expect(app(".env")).toContain("EXPO_PUBLIC_API_URL=http://localhost:3000");
+  expect(app(".gitignore")).toContain(".env");
+  expect(app("README.md")).toContain("there is no full-stack Expo option");
+  expect(read(root, "apps", "api", "forge", "auth.ts")).toMatch(/plugins: \[expo\(\)\],\s+trustedOrigins: \["phone:\/\/"\]/); // as Prettier wrapped it
+  expect(JSON.parse(read(root, "apps", "api", "forge", "package.json")).dependencies["@better-auth/expo"]).toBe("1.7.12");
+  for (const f of ["App.tsx", "index.ts", "metro.config.js", "tsconfig.json"]) expect(existsSync(join(root, "apps", "mobile", f)), f).toBe(true);
+  const check = Bun.spawnSync([process.execPath, require.resolve("prettier/bin/prettier.cjs"), "--check", "."], { cwd: root, stdout: "pipe", stderr: "pipe" });
+  expect(check.exitCode).toBe(0);
+  expect(() => scaffoldMonorepo({ dir: join(scratch, "nope"), mode: "framework", services: [], mobile: true })).toThrow("Expo has no full-stack option");
 });
 
 test("a monorepo with two services: workspaces, turbo, shared types, and the app calling a service over TCP", async () => {

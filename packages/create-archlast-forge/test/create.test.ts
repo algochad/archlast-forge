@@ -247,7 +247,7 @@ describe("gather (prompts)", () => {
     await Bun.sleep(30);
     expect(t.screen()).toContain("PostgreSQL");
     await t.press(" "); // the cursor starts on PostgreSQL: untick it
-    await t.press("\r", "\r"); // the services, then one app (not a monorepo)
+    await t.press("\r", "\r", "\r"); // the services, no Expo app, one app (not a monorepo)
     expect(await done).toEqual({ dir, mode: "backend", services: ["redis", "s3"], install: false, git: false });
   });
 
@@ -256,7 +256,7 @@ describe("gather (prompts)", () => {
     const dir = fresh("mono");
     const done = gather({ dir, install: false, git: false, yes: false, help: false }, true, { input: t.input, output: t.output });
     await Bun.sleep(30);
-    await t.press(DOWN, "\r", "\r", DOWN, "\r"); // backend, its services, a monorepo
+    await t.press(DOWN, "\r", "\r", "\r", DOWN, "\r"); // backend, its services, no Expo app, a monorepo
     await Bun.sleep(30);
     await t.press(..."orders,billing".split(""), "\r", DOWN, "\r"); // the services' names, then Redis
     expect(await done).toMatchObject({ mode: "backend", monorepo: { microservices: ["orders", "billing"], transport: "redis" } });

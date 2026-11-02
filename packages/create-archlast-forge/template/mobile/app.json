@@ -1,0 +1,14 @@
+{
+  "expo": {
+    "name": "__NAME__",
+    "slug": "__NAME__",
+    "scheme": "__NAME__",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "userInterfaceStyle": "automatic",
+    "newArchEnabled": true,
+    "ios": { "bundleIdentifier": "com.example.__NAME__" },
+    "android": { "package": "com.example.__NAME__" },
+    "plugins": ["expo-secure-store", "expo-web-browser"]
+  }
+}

@@ -286,6 +286,10 @@ What was run against a dev server:
 
 Put `process.env` secrets (like `MAIL_KEY`) in the server's environment or in `archlast-forge env set`; see [configuration](configuration.html).
 
+## Native apps
+
+A React Native app keeps the session in the device's secure storage with Better Auth's Expo plugin (`expo()` in `forge/auth.ts`, `expoClient` in the app) and sends it as a header with every call; `init --mobile` sets both up. See [Mobile apps](mobile.html#signing-in).
+
 ## Bearer tokens for non-browser callers
 
 Add the plugin and sign-in returns a `set-auth-token` header. Send it back as `Authorization: Bearer <token>` on `/rpc/…`, `/http/…` and `/api/auth/…` calls:

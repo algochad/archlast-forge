@@ -23,6 +23,7 @@ export const PAGES = {
   nest: ["NestJS", () => import("../content/nest.mdx")],
   "api-docs": ["API docs and OpenAPI", () => import("../content/api-docs.mdx")],
   clients: ["Clients: React, Vue, Svelte", () => import("../content/clients.mdx")],
+  mobile: ["Mobile apps (Expo)", () => import("../content/mobile.mdx")],
   testing: ["Testing", () => import("../content/testing.mdx")],
   recipes: ["Recipes", () => import("../content/recipes.mdx")],
   cli: ["CLI reference", () => import("../content/cli.mdx")],
@@ -43,7 +44,7 @@ export const GROUPS: [string, Slug[]][] = [
   ["Project modes", ["framework", "backend", "monorepo"]],
   ["Data and functions", ["schema", "functions", "queries", "reactivity", "caching", "errors", "migrations"]],
   ["Server features", ["auth", "storage", "scheduling", "http", "nest", "api-docs"]],
-  ["Clients and guides", ["clients", "testing", "recipes"]],
+  ["Clients and guides", ["clients", "mobile", "testing", "recipes"]],
   ["Run", ["cli", "deployment", "configuration", "dashboard", "backups", "observability", "limits"]],
   ["Reference", ["reference", "troubleshooting"]],
 ];

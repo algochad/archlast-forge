@@ -14,6 +14,8 @@ export interface Flags {
   monorepo?: boolean;
   microservices?: string[];
   transport?: Transport;
+  /** A React Native (Expo) app beside a backend. */
+  mobile?: boolean;
   yes: boolean;
   install?: boolean;
   git?: boolean;
@@ -30,6 +32,8 @@ export const USAGE = `Usage: bun create archlast-forge [directory] [options]
   --monorepo                   a Turborepo monorepo: the app in apps/, shared API types in packages/api
   --microservices <names>      backends to add beside it (orders,billing), each called from the app over a NestJS transport
   --transport <tcp|redis|nats> how the services talk. Default: tcp
+  --mobile                     a React Native (Expo) app in apps/mobile, a client of the backend: with --mode backend
+                               (Expo has no full-stack option). Implies --monorepo
   --install / --no-install     run \`bun install\` afterwards
   --git / --no-git             start a git repository
   -y, --yes                    take the default for everything not given, and ask nothing
@@ -52,6 +56,7 @@ export function parseFlags(argv: string[]): Flags {
       monorepo: { type: "boolean" },
       microservices: { type: "string" },
       transport: { type: "string" },
+      mobile: { type: "boolean" },
       install: { type: "boolean" },
       "no-install": { type: "boolean" },
       git: { type: "boolean" },
@@ -70,9 +75,11 @@ export function parseFlags(argv: string[]): Flags {
   const transport = values.transport;
   if (transport !== undefined && !(TRANSPORTS as readonly string[]).includes(transport)) throw new Error(`Unknown transport "${transport}". Choose ${TRANSPORTS.join(", ")}.`);
   const microservices = values.microservices === undefined ? undefined : parseMicroservices(values.microservices);
+  if (values.mobile && mode === "framework") throw new Error("The Expo app is a client of a backend: use --mode backend (Expo has no full-stack option)");
   return {
     dir: positionals[0],
-    monorepo: values.monorepo || microservices !== undefined || transport !== undefined ? true : undefined,
+    monorepo: values.monorepo || microservices !== undefined || transport !== undefined || values.mobile ? true : undefined,
+    mobile: values.mobile ? true : undefined,
     microservices,
     transport: transport as Transport | undefined,
     mode: mode as Mode | undefined,

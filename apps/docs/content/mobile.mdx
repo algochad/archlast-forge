@@ -1,0 +1,71 @@
+# Mobile apps (Expo)
+
+`init --mobile` adds a React Native app made with [Expo](https://expo.dev) to a backend: a client that calls its functions and keeps queries live, typed from the backend's generated API. It never runs the engine: **there is no full-stack Expo option**, so `--mobile` goes with `--mode backend`, and `init` doesn't offer it for a full-stack app.
+
+```bash
+bun create archlast-forge acme --mode backend --mobile        # implies --monorepo
+cd acme && bun install && bun run dev                          # the backend on :3000, and expo start
+```
+
+```
+acme/
+  apps/api/           the backend, with Better Auth's Expo plugin in forge/auth.ts
+  apps/mobile/        the Expo app: App.tsx (sign-in, a live chat), src/client.ts, app.json, .env
+  packages/api/       the backend's typed API, which the app imports types from
+```
+
+## Connecting
+
+The app reads the backend's address from `EXPO_PUBLIC_API_URL` (Expo inlines `EXPO_PUBLIC_*` variables when it bundles):
+
+| Where | Value |
+|---|---|
+| A simulator on this computer | `http://localhost:3000` (the `.env` that `init` writes) |
+| A phone in development (Expo Go) | your computer's address on the network, `http://192.168.1.20:3000`: `localhost` would be the phone |
+| A build | the deployed backend, `https://api.example.com`, set where the app is built (EAS: `eas env:create`) |
+
+The backend must accept the requests: `BETTER_AUTH_URL` is its public address as usual, and `forge/auth.ts` trusts the app's scheme (`acme://`) for sign-in.
+
+## Signing in
+
+Browsers carry the session in a cookie; a native app keeps it in the device's **secure storage** (Keychain on iOS, Keystore on Android) with [Better Auth's Expo plugin](https://www.better-auth.com/docs/integrations/expo), and sends it with every call:
+
+```ts
+// apps/mobile/src/client.ts
+export const client: ArchlastForgeClient = new ArchlastForgeClient({
+  url: process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3000",
+  authPlugins: [expoClient({ scheme: "acme", storagePrefix: "acme", storage: SecureStore })],
+  headers: () => {
+    const cookie = (client.auth as unknown as { getCookie(): string }).getCookie();
+    return cookie ? { cookie } : undefined;
+  },
+});
+```
+
+```ts
+// apps/api/forge/auth.ts
+export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [expo()], trustedOrigins: ["acme://"] });
+```
+
+- `client.auth.signIn.email(...)`, `signUp.email(...)` and `signOut()` work as in a browser; the plugin stores the session and sends it to `/api/auth`.
+- [`headers`](clients.html#constructor) adds the session to every function call and to the live socket's handshake (React Native's WebSocket takes headers; a browser's can't), so `ctx.auth` sees the user in queries, mutations and live queries.
+- A Better Auth plugin turns off the engine's faster session check (see [Authentication](auth.html#customizing-with-forgeauthts)): about a millisecond per signed-in call instead of a few hundredths.
+
+## Live queries and the background
+
+Live queries share one WebSocket, as on the web, and reconnect with backoff when it drops. When the app comes back to the foreground the template opens a fresh socket (`AppState` → `client.reconnect()`), because the system may have closed the old one while the app slept; every live query subscribes again and refetches, so the screen catches up.
+
+## Offline
+
+Nothing is stored on the device, and there is no offline store in the client:
+
+- While the connection is down, screens keep the last data their queries had (live queries come back with fresh data when it returns).
+- Calls fail while offline: `useMutation` and `client.query` reject, and nothing is queued for later. Retry when the connection is back, or keep your own queue.
+
+## Types
+
+`src/client.ts` types `api` from the backend with a type-only import (`import type { apiApi } from "@acme/api"`) over `anyApi`, so the app never bundles the backend's code, and its types follow the backend's codegen.
+
+## What was checked
+
+The client side (headers on every call and on the socket, sign-in by cookie header, live updates arriving after a mutation) is tested against a real engine, with a WebSocket that takes headers the way React Native's does. The Expo app itself wasn't built or run on a device or simulator here.
