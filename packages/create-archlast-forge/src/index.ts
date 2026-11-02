@@ -2,6 +2,7 @@
 // bun create archlast-forge my-app   (or: bunx create-archlast-forge my-app, or: archlast-forge init)
 export { main } from "./cli";
 export { addPrettier, scaffold, VERSION, type ScaffoldOptions } from "./scaffold";
+export { parseMicroservices, scaffoldMonorepo, TRANSPORTS, type MonorepoOptions, type Transport } from "./monorepo";
 export * from "./options";
 export * from "./stack";
 

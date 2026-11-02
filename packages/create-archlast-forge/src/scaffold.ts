@@ -105,7 +105,7 @@ export function addPrettier(root: string): string[] {
 }
 
 /** Runs what the project's `bun run format` runs, with the config just written, so a new project starts out formatted. */
-function format(target: string) {
+export function format(target: string) {
   const prettier = fileURLToPath(import.meta.resolve("prettier/bin/prettier.cjs"));
   const r = Bun.spawnSync([process.execPath, prettier, "--write", "--log-level", "warn", "."], { cwd: target, stdout: "pipe", stderr: "pipe" });
   if (r.exitCode !== 0) throw new Error(`Prettier couldn't format ${target}:\n${r.stderr.toString() || r.stdout.toString()}`);

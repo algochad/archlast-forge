@@ -54,6 +54,9 @@ All three are the same program (`create-archlast-forge`). `init` forwards everyt
 | `-s`, `--services <list>` | any of `postgres`, `redis`, `s3`, `caddy`, comma separated, or `none`. Defaults: `postgres,redis,s3,caddy` for `framework`; `postgres,redis,s3` for `backend`. |
 | `--shadcn`, `--no-shadcn` | full-stack apps only: write the starter with shadcn/ui (Tailwind CSS v4, `components.json`, components in `app/components/ui`) or with its plain stylesheet. Default: shadcn/ui. With `--mode backend` it is an error. |
 | `--base-color <name>` | the shadcn/ui base color: `neutral` (default), `stone`, `zinc`, `mauve`, `olive`, `mist` or `taupe`. It cannot be changed later (that is shadcn's rule for `components.json`). Passing it implies `--shadcn`; with `--no-shadcn` it is an error. |
+| `--monorepo` | a Turborepo monorepo: the app in `apps/`, the backends' typed APIs in `packages/api` ([Monorepos](monorepo.html)). |
+| `--microservices <names>` | backends to add beside the app, comma separated (`orders,billing`), each called from it over a NestJS transport. Implies `--monorepo`. Names: lowercase letters, digits and `-`; not `web`, `api`, `mobile` or `desktop`. |
+| `--transport <tcp\|redis\|nats>` | how the services talk. Default `tcp`. |
 | `--install`, `--no-install` | run `bun install` afterwards. When nothing is said: ask, or do not install if not asking. |
 | `--git`, `--no-git` | run `git init -q`. Same defaults. |
 | `-y`, `--yes` | take the default for every question not answered by a flag, and ask nothing. |

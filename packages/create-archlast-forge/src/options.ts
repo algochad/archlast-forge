@@ -2,6 +2,7 @@ import { basename, resolve } from "node:path";
 import { parseArgs } from "node:util";
 import { BASE_COLORS, parseBaseColor, type BaseColor } from "./shadcn";
 import { DEFAULT_SERVICES, MODES, parseServiceList, type Mode, type StackService } from "./stack";
+import { parseMicroservices, TRANSPORTS, type Transport } from "./monorepo";
 
 export interface Flags {
   dir?: string;
@@ -9,6 +10,10 @@ export interface Flags {
   services?: StackService[];
   shadcn?: boolean;
   baseColor?: BaseColor;
+  /** A Turborepo monorepo: the app in apps/, with these backends beside it as microservices. */
+  monorepo?: boolean;
+  microservices?: string[];
+  transport?: Transport;
   yes: boolean;
   install?: boolean;
   git?: boolean;
@@ -22,6 +27,9 @@ export const USAGE = `Usage: bun create archlast-forge [directory] [options]
   --services <list>            postgres, redis, s3, caddy (comma separated) or "none"
   --shadcn / --no-shadcn       full-stack apps: use shadcn/ui (Tailwind CSS and components). Default: yes
   --base-color <name>          shadcn/ui's base color: ${BASE_COLORS.join(", ")}. Default: neutral
+  --monorepo                   a Turborepo monorepo: the app in apps/, shared API types in packages/api
+  --microservices <names>      backends to add beside it (orders,billing), each called from the app over a NestJS transport
+  --transport <tcp|redis|nats> how the services talk. Default: tcp
   --install / --no-install     run \`bun install\` afterwards
   --git / --no-git             start a git repository
   -y, --yes                    take the default for everything not given, and ask nothing
@@ -41,6 +49,9 @@ export function parseFlags(argv: string[]): Flags {
       shadcn: { type: "boolean" },
       "no-shadcn": { type: "boolean" },
       "base-color": { type: "string" },
+      monorepo: { type: "boolean" },
+      microservices: { type: "string" },
+      transport: { type: "string" },
       install: { type: "boolean" },
       "no-install": { type: "boolean" },
       git: { type: "boolean" },
@@ -56,8 +67,14 @@ export function parseFlags(argv: string[]): Flags {
   const shadcn = pick(values.shadcn, values["no-shadcn"]);
   if (shadcn === false && baseColor) throw new Error("--base-color is for shadcn/ui, which --no-shadcn turns off");
   if ((shadcn || baseColor) && mode === "backend") throw new Error("shadcn/ui is for full-stack apps: use --mode framework");
+  const transport = values.transport;
+  if (transport !== undefined && !(TRANSPORTS as readonly string[]).includes(transport)) throw new Error(`Unknown transport "${transport}". Choose ${TRANSPORTS.join(", ")}.`);
+  const microservices = values.microservices === undefined ? undefined : parseMicroservices(values.microservices);
   return {
     dir: positionals[0],
+    monorepo: values.monorepo || microservices !== undefined || transport !== undefined ? true : undefined,
+    microservices,
+    transport: transport as Transport | undefined,
     mode: mode as Mode | undefined,
     services: values.services === undefined ? undefined : parseServiceList(values.services),
     shadcn,

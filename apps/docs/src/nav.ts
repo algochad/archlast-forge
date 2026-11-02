@@ -8,6 +8,7 @@ export const PAGES = {
   tutorial: ["Tutorial: a notes app", () => import("../content/tutorial.mdx")],
   framework: ["Full-stack apps", () => import("../content/framework.mdx")],
   backend: ["Backends", () => import("../content/backend.mdx")],
+  monorepo: ["Monorepos and microservices", () => import("../content/monorepo.mdx")],
   schema: ["Schema and validators", () => import("../content/schema.mdx")],
   functions: ["Functions", () => import("../content/functions.mdx")],
   queries: ["Reading data", () => import("../content/queries.mdx")],
@@ -39,7 +40,7 @@ export type Slug = keyof typeof PAGES;
 /** The sidebar's sections, in reading order. Every page in PAGES must be in exactly one. */
 export const GROUPS: [string, Slug[]][] = [
   ["Start", ["introduction", "concepts", "getting-started", "tutorial"]],
-  ["Project modes", ["framework", "backend"]],
+  ["Project modes", ["framework", "backend", "monorepo"]],
   ["Data and functions", ["schema", "functions", "queries", "reactivity", "caching", "errors", "migrations"]],
   ["Server features", ["auth", "storage", "scheduling", "http", "nest", "api-docs"]],
   ["Clients and guides", ["clients", "testing", "recipes"]],

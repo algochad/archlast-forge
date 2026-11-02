@@ -47,3 +47,4 @@ data/
 
 # archlast-forge framework mode
 .forge
+packages/create-archlast-forge/test/.tmp-*

@@ -1,0 +1,73 @@
+# Monorepos and microservices
+
+`init` can lay a project out as a [Turborepo](https://turborepo.com) monorepo: the app in `apps/`, backends beside it that serve as microservices, and the backends' typed APIs shared from `packages/api`.
+
+```bash
+bun create archlast-forge acme --monorepo
+bun create archlast-forge acme --microservices orders,billing --transport tcp   # implies --monorepo
+```
+
+```
+acme/
+  package.json        workspaces apps/* and packages/*; scripts dev, build, typecheck (turbo run …), format
+  turbo.json          dev (persistent, no cache), build, typecheck (after the packages it depends on)
+  apps/
+    web/              the main app, as init makes it (--mode framework; apps/api with --mode backend)
+    orders/           a backend: the orders microservice
+    billing/          a backend: the billing microservice
+  packages/
+    api/              @acme/api: the backends' api objects and data model types
+```
+
+Every app is a whole archlast-forge project, made as `init` makes one: its own `forge/`, `compose.yaml`, `Dockerfile` and `.env`, deployed on its own. `bun run dev` at the root starts them all (`turbo run dev`): the main app on port 3000, the services on 3001, 3002 and so on, on this machine (`--no-docker`) so they reach each other's transports. `bun run typecheck` runs each app's codegen and `tsc`, then `packages/api`'s.
+
+## Shared types
+
+`packages/api` (named `@<project>/api`) re-exports each backend's generated `api` and data model, so any app or package of the monorepo calls them typed:
+
+```ts
+import { ordersApi, type Orders } from "@acme/api";
+
+const client = new ArchlastForgeClient({ url: "http://localhost:3001" });
+await client.query(ordersApi.messages.list, { paginationOpts: { numItems: 20, cursor: null } });
+```
+
+## Services calling services
+
+Each service listens for messages with a [NestJS transport](nest.html#microservices) (`--transport tcp`, the default, `redis` or `nats`), in its `forge/http.ts`, and answers a message pattern with a controller that uses its own database:
+
+```ts
+// apps/orders/forge/orders.controller.ts
+@Controller()
+export class OrdersController {
+  @MessagePattern("orders.hello")
+  async hello(@Payload() data: { from: string }, @Ctx() ctx: ActionCtx) {
+    const calls = await ctx.runMutation(internal.calls.record, { from: data.from });
+    return { service: "orders", greeting: `Hello, ${data.from}`, calls };
+  }
+}
+```
+
+The main app calls each service from an action (`apps/web/forge/orders.ts`), through a Nest client that connects on first use:
+
+```ts
+const orders = ClientProxyFactory.create({ transport: Transport.TCP, options: { host: process.env.ORDERS_HOST ?? "127.0.0.1", port: Number(process.env.ORDERS_PORT ?? 4001) } });
+
+export const hello = action({
+  args: { from: v.string() },
+  handler: (_ctx, args) => rxjs.firstValueFrom(orders.send<{ service: string; greeting: string; calls: number }>("orders.hello", args)),
+});
+```
+
+```bash
+curl -X POST localhost:3000/rpc/orders:hello -H 'content-type: application/json' -d '{"from":"web"}'
+# {"result":{"service":"orders","greeting":"Hello, web","calls":1}}
+```
+
+| Transport | Service listens on | Callers set | Needs |
+|---|---|---|---|
+| `tcp` | `<SERVICE>_PORT` (4001, 4002, … in dev) on every interface | `<SERVICE>_HOST`, `<SERVICE>_PORT` | nothing |
+| `redis` | the Redis at `MICROSERVICES_REDIS_URL` (default `redis://127.0.0.1:6379`) | the same URL | a Redis server; `ioredis` (added to each backend's `forge/package.json`) |
+| `nats` | the NATS server at `MICROSERVICES_NATS_URL` (default `nats://127.0.0.1:4222`) | the same URL | a NATS server; `nats` (added to each backend) |
+
+A service listens in the first function runtime process of its server, so a message is handled once per server. In production every app is its own stack: for TCP, put the stacks on one network and give callers the services' hosts and ports; for Redis or NATS, point every app at the same broker.

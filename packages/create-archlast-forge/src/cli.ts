@@ -3,6 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { scaffold } from "./scaffold";
+import { parseMicroservices, scaffoldMonorepo, TRANSPORTS, type Transport } from "./monorepo";
 import { BASE_COLORS, BASE_COLOR_HINTS, type BaseColor } from "./shadcn";
 import { defaultServices, nameOf, parseFlags, USAGE, type Flags } from "./options";
 import { DEFAULT_SERVICES, MODES, SERVICES, type Mode, type StackService } from "./stack";
@@ -19,6 +20,8 @@ export interface Answers {
   services: StackService[];
   /** Full-stack apps: the shadcn/ui base color, or nothing for a plain app. */
   shadcn?: BaseColor;
+  /** A monorepo, with these microservices beside the app. */
+  monorepo?: { microservices: string[]; transport: Transport };
   install: boolean;
   git: boolean;
 }
@@ -91,10 +94,32 @@ export async function gather(flags: Flags, interactive: boolean, io: Io = {}): P
       : defaultServices(mode);
   }
 
+  let monorepo: Answers["monorepo"];
+  const wantsMonorepo =
+    flags.monorepo ??
+    (interactive
+      ? (await ask<string>((o) =>
+          p.select({ ...o, message: "One app, or a monorepo?", initialValue: "single", options: [{ value: "single", label: "One app" }, { value: "monorepo", label: "A monorepo (Turborepo)", hint: "apps/, shared API types, optional microservices" }] }),
+        )) === "monorepo"
+      : false);
+  if (wantsMonorepo) {
+    const microservices =
+      flags.microservices ??
+      (interactive
+        ? parseMicroservices(await ask<string>((o) => p.text({ ...o, message: "Microservices to add beside the app? (comma-separated names, empty for none)", placeholder: "orders,billing", defaultValue: "", validate: (v) => { try { parseMicroservices(v ?? ""); } catch (e) { return (e as Error).message; } } })))
+        : []);
+    const transport =
+      flags.transport ??
+      (interactive && microservices.length
+        ? await ask<Transport>((o) => p.select<Transport>({ ...o, message: "How do the services talk?", initialValue: "tcp", options: TRANSPORTS.map((t) => ({ value: t, label: t.toUpperCase(), hint: t === "tcp" ? "no server needed" : `needs a ${t === "redis" ? "Redis" : "NATS"} server` })) }))
+        : "tcp");
+    monorepo = { microservices, transport };
+  }
+
   const confirm = async (given: boolean | undefined, message: string) => given ?? (interactive ? await ask<boolean>((o) => p.confirm({ ...o, message, initialValue: true })) : false);
   const install = await confirm(flags.install, "Install dependencies with bun?");
   const git = await confirm(flags.git, "Start a git repository?");
-  return { dir, mode, services, ...(shadcn && { shadcn }), install, git };
+  return { dir, mode, services, ...(shadcn && { shadcn }), ...(monorepo && { monorepo }), install, git };
 }
 
 const run = async (cmd: string[], cwd: string) => {
@@ -107,7 +132,11 @@ export function nextSteps(a: Answers, installed: boolean): string {
   const rel = relative(process.cwd(), resolve(a.dir)) || ".";
   const cd = rel.startsWith("..") ? resolve(a.dir) : rel; // a path that climbs out of here reads better in full
   const lines = [cd !== "." ? `cd ${cd}` : undefined, installed ? undefined : "bun install", "bun run dev"].filter(Boolean) as string[];
-  const where = a.mode === "framework" ? "Your app: http://localhost:3000" : "Your backend: http://localhost:3000";
+  const where = a.monorepo
+    ? `apps/${a.mode === "framework" ? "web" : "api"}: http://localhost:3000${a.monorepo.microservices.map((s, i) => `\napps/${s}: http://localhost:${3001 + i}`).join("")}`
+    : a.mode === "framework"
+      ? "Your app: http://localhost:3000"
+      : "Your backend: http://localhost:3000";
   return `${lines.join("\n")}\n\n${where}\nDashboard: http://localhost:3000/_dashboard\n\nTo deploy: bun run up   (builds the image and starts the stack in compose.yaml)`;
 }
 
@@ -137,7 +166,7 @@ export async function main(argv: string[], io: Io = {}): Promise<void> {
 
   const target = (() => {
     try {
-      return scaffold(answers);
+      return answers.monorepo ? scaffoldMonorepo({ ...answers, ...answers.monorepo }) : scaffold(answers);
     } catch (e) {
       console.error(`✗ ${(e as Error).message}`);
       return process.exit(1);
