@@ -155,4 +155,4 @@ test("a client without browser cookies (React Native) signs its calls and its so
   } finally {
     native.close();
   }
-});
+}, 15_000); // a sign-up (password hashing), two live subscriptions and their updates: past 5 s on a busy CI runner
