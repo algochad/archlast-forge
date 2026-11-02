@@ -50,6 +50,7 @@ export async function codegen(forgeDir: string) {
   await write("dataModel.ts", dataModel);
   // After api.ts: the routers import it.
   const routers = await rpcRouters(forgeDir, modules);
+  for (const r of routers) for (const p of r.procedures) if (p.output === null) console.warn(`! ${r.module}.ts: ${r.exportName}.${p.name} has no output schema, so callers get \`unknown\`. Add output: z.object({ ... }) to its @${p.kind === "query" ? "Query" : "Mutation"}.`);
   if (routers.length) await write("rpc.ts", renderRpc(routers, HEADER));
   else rmSync(join(out, "rpc.ts"), { force: true });
   return modules.map((m) => m.name);

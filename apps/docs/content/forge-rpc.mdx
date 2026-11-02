@@ -46,7 +46,7 @@ export class OrdersRouter {
 - **`@Router({ alias })`** makes the class a router. Its procedures are called as `<alias>.<method>` (`orders.get`). The alias defaults to the class name without `Router`, with its first letter lowercased. The class is also a Nest controller, so dependency injection, guards, pipes and interceptors work as usual.
 - **`@Query()` and `@Mutation()`** take `input` and `output`, both Zod schemas or any other [Standard Schema](https://standardschema.dev).
   - `input` is checked before the method runs. Without it, the procedure takes no input; use `z.object({})` for one that takes an empty object.
-  - `output` is checked against what the method returns. Without it, nothing is checked and the caller's type is the method's return type.
+  - `output` is checked against what the method returns. Without it, nothing is checked and callers get `unknown`: add one to type the result for them.
 - **`@Input()`** receives the checked input, and `@Input("id")` one field of it.
 - **`@Ctx()`** receives an anonymous `ActionCtx`, as for any microservice message: a call between services has no signed-in user. To act for a user, pass their id in the input. `@TransportCtx()` gives a `ForgeRpcContext`, which has `getPattern()` and `getRequestId()`.
 
@@ -90,7 +90,7 @@ export interface Rpc {
 }
 ```
 
-- **How it's built:** codegen imports the files that contain `@Router(`, in a process of its own, and turns each schema into a type through JSON Schema. Input types are what the schema accepts, output types what it returns. A procedure without an output schema gets `Awaited<ReturnType<...>>` of its method.
+- **How it's built:** codegen imports the files that contain `@Router(`, in a process of its own, and turns each schema into a type through JSON Schema. Input types are what the schema accepts, output types what it returns. A procedure without an output schema gets `unknown`, and codegen says so: reading its method's return type would put the service's own generated types into the caller's TypeScript project, where two backends' schemas collide.
 - **Its limits:** a value JSON Schema can't describe (a `Date`, a transform) becomes `unknown`, and a recursive schema stops at `unknown` too. Answers travel as JSON, so a `Date` reaches the caller as a string.
 - **Duplicates:** two routers with the same alias fail codegen.
 

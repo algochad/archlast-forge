@@ -17,14 +17,14 @@ test("JSON Schema becomes TypeScript", () => {
   expect(tsOf({})).toBe("unknown");
 });
 
-test("codegen imports the routers and writes their procedures: schemas as types, the return type where there is no output schema", async () => {
+test("codegen imports the routers and writes their procedures: schemas as types, `unknown` where there is no output schema (so no import of the service's code)", async () => {
   const routers = await rpcRouters(fixture, listModules(fixture));
   expect(routers.map((r) => [r.module, r.exportName, r.alias])).toEqual([["shop.router", "ShopRouter", "shop"]]);
   const text = renderRpc(routers, "// header\n");
-  expect(text).toContain('import type * as m0 from "../shop.router";');
+  expect(text).not.toContain("import"); // nothing of the service's code or generated types reaches a caller's project
   expect(text).toContain('add: { kind: "query"; input: { a: number; b: number }; output: { sum: number } };');
   expect(text).toContain('order: { kind: "mutation"; input: { userId: string; items: Array<{ sku: string; qty: number }> }; output: { orderId: string; units: number } };');
-  expect(text).toContain('notes: { kind: "query"; input: undefined; output: Awaited<ReturnType<m0.ShopRouter["notes"]>> };');
-  expect(text).toContain('fail: { kind: "mutation"; input: { kind: "forge" | "rpc" | "crash" }; output: Awaited<ReturnType<m0.ShopRouter["fail"]>> };');
+  expect(text).toContain('notes: { kind: "query"; input: undefined; output: unknown };');
+  expect(text).toContain('fail: { kind: "mutation"; input: { kind: "forge" | "rpc" | "crash" }; output: unknown };');
   expect(() => renderRpc([...routers, { ...routers[0]!, module: "other" }], "")).toThrow('both use the Forge RPC alias "shop"');
 });

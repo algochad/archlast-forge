@@ -26,7 +26,7 @@ test("flags: --microservices and --transport make a monorepo, and names are chec
   expect(parseFlags(["x", "--monorepo"])).toMatchObject({ monorepo: true });
   expect(() => parseFlags(["x", "--transport", "kafka"])).toThrow('Unknown transport "kafka"');
   expect(parseFlags(["x", "--transport", "forge-rpc"])).toMatchObject({ monorepo: true, transport: "forge-rpc" });
-  expect(() => parseMicroservices("Orders!")).toThrow("isn't a service name");
+  expect(() => parseMicroservices("Orders!")).toThrow("isn't a name for a service or an app");
   expect(() => parseMicroservices("web")).toThrow("taken by the monorepo");
   expect(() => parseMicroservices("a,a")).toThrow("named twice");
   expect(parseFlags(["x", "--mode", "backend", "--mobile"])).toMatchObject({ monorepo: true, mobile: true });
@@ -64,7 +64,10 @@ test("a monorepo with two services: workspaces, turbo, shared types, and the app
   expect(JSON.parse(read(root, "turbo.json")).tasks.dev).toEqual({ cache: false, persistent: true });
   for (const app of ["api", "orders", "billing"]) expect(existsSync(join(root, "apps", app, "forge", "schema.ts")), app).toBe(true);
   expect(JSON.parse(read(root, "apps", "orders", "package.json"))).toMatchObject({ name: "@acme/orders", scripts: { dev: "archlast-forge dev --no-docker --port 3001" } });
-  expect(read(root, "packages", "api", "index.ts")).toContain('export { api as ordersApi } from "../../apps/orders/forge/_generated/api";');
+  // packages/api has the main app's types: services are called over a transport, and two backends' types can't share a TypeScript project.
+  expect(read(root, "packages", "api", "index.ts")).toContain('export { api as apiApi } from "../../apps/api/forge/_generated/api";');
+  expect(read(root, "packages", "api", "index.ts")).not.toContain("ordersApi");
+  expect(JSON.parse(read(root, "packages", "api", "package.json")).devDependencies).toMatchObject({ "@acme/backend": "workspace:*", "@types/bun": expect.any(String) });
   expect(read(root, "apps", "billing", "forge", "http.ts")).toContain("port: Number(process.env.BILLING_PORT ?? 4002)");
   expect(read(root, "README.md")).toContain("Services calling services");
   const check = Bun.spawnSync([process.execPath, require.resolve("prettier/bin/prettier.cjs"), "--check", "."], { cwd: root, stdout: "pipe", stderr: "pipe" });
@@ -103,7 +106,8 @@ test("Forge RPC, the default: a router per service, its types generated and shar
   expect(forge("api", "orders.service.ts")).toContain('import type { OrdersRpc } from "@shop/contracts";');
   expect(forge("api", "orders.controller.ts")).toContain('@Controller("orders")');
   expect(forge("api", "orders.ts")).toContain("inject(ctx, OrdersService)");
-  expect(forge("api", "http.ts")).toMatch(/controllers: \[OrdersController, UserBillingController\],\s+providers: \[OrdersService, UserBillingService\]/);
+  expect(forge("api", "_services.ts")).toMatch(/serviceControllers = \[OrdersController, UserBillingController\];\s+export const serviceProviders = \[OrdersService, UserBillingService\];/);
+  expect(forge("api", "http.ts")).toMatch(/nest\(http, \{\s+controllers: serviceControllers,\s+providers: serviceProviders,?\s+\}\);/); // mounted once, through the list
   expect(read(root, "packages", "contracts", "index.ts")).toContain('export type { Rpc as UserBillingRpc } from "../../apps/user-billing/forge/_generated/rpc";');
   expect(JSON.parse(read(root, "apps", "api", "package.json")).devDependencies["@shop/contracts"]).toBe("workspace:*");
   const tokens = ["api", "orders", "user-billing"].map((app) => /^FORGE_RPC_TOKEN=(\w+)$/m.exec(read(root, "apps", app, ".env"))?.[1]);

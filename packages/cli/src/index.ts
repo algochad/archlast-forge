@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import { ops } from "@archlast/forge-runtime/server";
-import { watch } from "node:fs";
+import { existsSync, watch } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs, type ParseArgsConfig } from "node:util";
 import { buildFramework, loadFramework } from "./app";
@@ -8,6 +8,7 @@ import { devSecrets, fail, findForgeDir, generate, trustProxyOrigins, VERSION } 
 import { ensureDeps, findUp } from "./deps";
 import * as dockerEngine from "./docker";
 import { engineServe, prepare } from "./engine";
+import type { GrowOptions } from "./grow";
 import { loadProjectConfig, projectRoot, type ProjectConfig } from "./project";
 import { serve } from "./serve";
 import * as stack from "./stack";
@@ -26,6 +27,18 @@ ${c.bold("Start")}
   init [dir]              create a project: a full-stack app or a backend, with the services you pick
       --mode <framework|backend>   --services <postgres,redis,s3,caddy | none>   --yes   --no-install   --no-git
   upgrade [version]       move the project's archlast-forge packages and engine image to the latest release (or <version>)
+
+${c.bold("Grow")}  (a project that exists: see the monorepo page of the docs)
+  monorepo                turn this project into a monorepo: its files move to apps/web (or apps/api) and nothing is lost
+      --microservices <a,b>   --transport <forge-rpc|tcp|redis|nats>   --mobile   --desktop <full|client>   --dry-run
+  add service <name>      a microservice: its own app, and a class in the main app that calls it
+  add app <name>          another app of the monorepo   --mode <framework|backend>   --services <list>   --no-shadcn   --base-color <name>
+  add mobile              an Expo app, a client of a backend main app
+  add desktop <full|client>   a Tauri app
+  remove <name>           delete a service or app (and the main app's calls to it), or mobile or desktop
+  workspace [sync]        list the monorepo's apps and ports; sync writes packages/api and packages/contracts again from apps/
+  stack [add|remove <list>]   the services (postgres, redis, s3, caddy) in this app's compose.yaml
+      all of these: --yes (don't ask)   --no-install (no bun install or codegen afterwards)
 
 ${c.bold("Develop")}
   dev                     run with live reload: a full-stack app on this machine, a backend's engine in Docker
@@ -93,6 +106,18 @@ const { positionals, values } = parseCommandLine({
     "env-file": { type: "string" },
     run: { type: "string" },
     volumes: { type: "boolean" },
+    mode: { type: "string" },
+    transport: { type: "string" },
+    microservices: { type: "string" },
+    services: { type: "string" },
+    shadcn: { type: "boolean" },
+    "no-shadcn": { type: "boolean" },
+    "base-color": { type: "string" },
+    yes: { type: "boolean", short: "y" },
+    "dry-run": { type: "boolean" },
+    "no-install": { type: "boolean" },
+    mobile: { type: "boolean" },
+    desktop: { type: "string" },
     rebuild: { type: "boolean" },
     dev: { type: "boolean" },
     help: { type: "boolean", short: "h" },
@@ -326,8 +351,54 @@ async function reloadRunning(dir: string) {
   console.log(res?.ok ? "✓ running server reloaded" : "  (no running server picked it up; it applies on next start)");
 }
 
+/** The options of the commands that change a project, from the command line. */
+const growOptions = (): GrowOptions => ({
+  mode: values.mode,
+  transport: values.transport,
+  microservices: values.microservices,
+  services: values.services,
+  shadcn: values.shadcn,
+  noShadcn: values["no-shadcn"],
+  baseColor: values["base-color"],
+  yes: values.yes,
+  dryRun: values["dry-run"],
+  noInstall: values["no-install"],
+  mobile: values.mobile,
+  desktop: values.desktop,
+});
+
+/** The commands that change a project load their code when one runs: the scaffolder behind them is not what `dev` or `up` should wait for. */
+const grow = () => import("./grow");
+
+/** The folder of the project a command works on: where archlast-forge.json is. A monorepo's own root isn't one, and says what to do. */
+async function appRoot(command: string) {
+  const { isMonorepo } = await import("create-archlast-forge/workspace");
+  if (!values.dir && !existsSync("forge/schema.ts") && !existsSync("schema.ts") && isMonorepo(process.cwd()))
+    fail(
+      command === "monorepo"
+        ? "This folder is already a monorepo. Add to it with `archlast-forge add service <name>` or `add app <name>`."
+        : "This is the root of a monorepo, and the stack belongs to one of its apps: cd apps/<app> first, or pass --dir apps/<app>/forge.",
+    );
+  return projectRoot(findForgeDir(values.dir));
+}
+
 const commands: Record<string, () => Promise<unknown>> = {
   dev,
+  async monorepo() {
+    await (await grow()).monorepo(await appRoot("monorepo"), growOptions());
+  },
+  async add() {
+    await (await grow()).add(values.dir ?? process.cwd(), rest[0], rest[1], growOptions());
+  },
+  async remove() {
+    await (await grow()).remove(values.dir ?? process.cwd(), rest[0], growOptions());
+  },
+  async workspace() {
+    await (await grow()).workspace(values.dir ?? process.cwd(), rest[0], growOptions());
+  },
+  async stack() {
+    (await grow()).stack(await appRoot("stack"), rest[0], rest[1]);
+  },
   async codegen() {
     const dir = findForgeDir(values.dir);
     await ensureDeps(dir).catch((e) => fail(e.message));

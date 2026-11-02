@@ -39,7 +39,12 @@
   },
   "exports": {
     ".": "./src/index.ts",
-    "./stack": "./src/stack.ts"
+    "./stack": "./src/stack.ts",
+    "./scaffold": "./src/scaffold.ts",
+    "./monorepo": "./src/monorepo.ts",
+    "./workspace": "./src/workspace.ts",
+    "./options": "./src/options.ts",
+    "./shadcn": "./src/shadcn.ts"
   },
   "engines": {
     "bun": ">=1.4.4"

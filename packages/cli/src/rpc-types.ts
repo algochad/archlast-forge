@@ -1,6 +1,7 @@
 // forge/_generated/rpc.ts: what the forge/ Forge RPC routers (@Router classes) serve, as the types other apps call them with. The schemas
 // are values, so the routers are imported, in a process of its own (this file, run as a script), and their schemas turned into types
-// through JSON Schema. A procedure without an output schema gets its method's return type.
+// through JSON Schema. A procedure without an output schema gets `unknown`: its method's return type would mean importing the service's code (and
+// its generated types, which declare the global `Register` that each backend's schema is) into the caller's TypeScript project.
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -89,26 +90,13 @@ export function renderRpc(routers: RouterInfo[], header: string): string {
     if (other) throw new Error(`codegen: ${other} and ${r.module}.ts ${r.exportName} both use the Forge RPC alias "${r.alias}"`);
     seen.set(r.alias, `${r.module}.ts ${r.exportName}`);
   }
-  const imports = new Map<string, string>();
   const body = [...routers]
     .sort((a, b) => a.alias.localeCompare(b.alias))
     .map((r) => {
-      const procs = r.procedures.map((p) => {
-        let output = p.output;
-        if (output === null) {
-          const id = imports.get(r.module) ?? `m${imports.size}`;
-          imports.set(r.module, id);
-          output = `Awaited<ReturnType<${id}.${r.exportName}[${JSON.stringify(p.name)}]>>`;
-        }
-        return `    ${key(p.name)}: { kind: "${p.kind}"; input: ${p.input ?? "undefined"}; output: ${output} };\n`;
-      });
+      const procs = r.procedures.map((p) => `    ${key(p.name)}: { kind: "${p.kind}"; input: ${p.input ?? "undefined"}; output: ${p.output ?? "unknown"} };\n`);
       return `  /** ${r.module}.ts: ${r.exportName} */\n  ${key(r.alias)}: {\n${procs.join("")}  };\n`;
     });
-  return (
-    header +
-    [...imports].map(([m, id]) => `import type * as ${id} from "../${m}";\n`).join("") +
-    `\n/** The Forge RPC routers this backend serves. Another app calls them with \`createForgeRpcClient<Rpc>({ url })\`. */\nexport interface Rpc {\n${body.join("")}}\n`
-  );
+  return header + `\n/** The Forge RPC routers this backend serves. Another app calls them with \`createForgeRpcClient<Rpc>({ url })\`. */\nexport interface Rpc {\n${body.join("")}}\n`;
 }
 
 if (import.meta.main) {

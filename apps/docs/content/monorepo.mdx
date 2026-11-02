@@ -1,6 +1,6 @@
 # Monorepos and microservices
 
-`init` can lay a project out as a [Turborepo](https://turborepo.com) monorepo: the app in `apps/`, backends beside it that serve as microservices, and the backends' typed APIs shared from `packages/api`.
+`init` can lay a project out as a [Turborepo](https://turborepo.com) monorepo: the app in `apps/`, backends beside it that serve as microservices, and the main app's typed API shared from `packages/api`. A project that exists becomes one with [`archlast-forge monorepo`](#turn-a-project-into-a-monorepo), and services and apps are [added and removed](#add-and-remove) later.
 
 ```bash
 bun create archlast-forge acme --monorepo
@@ -16,22 +16,70 @@ acme/
     orders/           a backend: the orders microservice
     billing/          a backend: the billing microservice
   packages/
-    api/              @acme/api: the backends' api objects and data model types
+    api/              @acme/api: the main app's api object and data model types (each other app's: @acme/api/<app>)
     contracts/        @acme/contracts: the services' Forge RPC types, for the backends that call them (--transport forge-rpc, the default)
 ```
 
-Every app is a whole archlast-forge project, made as `init` makes one: its own `forge/`, `compose.yaml`, `Dockerfile` and `.env`, deployed on its own. `bun run dev` at the root starts them all (`turbo run dev`): the main app on port 3000, the services on 3001, 3002 and so on, on this machine (`--no-docker`) so they reach each other's transports. `bun run typecheck` runs each app's codegen and `tsc`, then `packages/api`'s.
+Every app is a whole archlast-forge project, made as `init` makes one: its own `forge/`, `compose.yaml`, `Dockerfile` and `.env`, deployed on its own. `bun run dev` at the root starts them all (`turbo run dev`): the main app on port 3000, the services on 3001, 3002 and so on, on this machine (`--no-docker`) so they reach each other's transports. `bun run typecheck` runs each app's codegen and `tsc`, then `packages/api`'s. A backend main app's package is `@acme/backend`, because `@acme/api` is `packages/api`.
 
 ## Shared types
 
-`packages/api` (named `@<project>/api`) re-exports each backend's generated `api` and data model, so any app or package of the monorepo calls them typed:
+`packages/api` (named `@<project>/api`) re-exports the main app's generated `api` and data model, so whatever is the main app's client, such as its pages, a [mobile](mobile.html) or a [desktop](desktop.html) app, calls it typed:
 
 ```ts
-import { ordersApi, type Orders } from "@acme/api";
+import { webApi, type Web } from "@acme/api";
 
-const client = new ArchlastForgeClient({ url: "http://localhost:3001" });
-await client.query(ordersApi.messages.list, { paginationOpts: { numItems: 20, cursor: null } });
+const client = new ArchlastForgeClient({ url: "http://localhost:3000" });
+await client.query(webApi.messages.list, { paginationOpts: { numItems: 20, cursor: null } });
 ```
+
+- **Services aren't in it.** Clients call the main app, and the main app calls its services over a transport, with [their own types](forge-rpc.html#its-types-forgegeneratedrpcts).
+- **Another app has a file of its own:** `import { adminApi } from "@acme/api/admin"`.
+- **A TypeScript project imports the types of one backend.** The types each backend generates declare the global `Register` with its schema, so two backends' types in one project collide (`TS2717`). Each app already has its own project, and so does a mobile or a desktop app: it imports `@acme/api`, the main app's, and no other.
+
+## Turn a project into a monorepo
+
+```bash
+cd my-app
+archlast-forge monorepo --microservices orders --yes
+```
+
+`archlast-forge monorepo` makes the project in the current folder the main app of a monorepo, in place. Its files move to `apps/web` (or `apps/api` for a backend), the monorepo's own files are written around them, and the services you name are added as `init --microservices` adds them. `.env`, the data, `compose.yaml` (with the Docker project name it already has, so a running stack keeps its volumes), the lockfile and the Git history all come along, and your code isn't reformatted. `--dry-run` shows the plan first. [The CLI reference](cli.html#monorepo) has the details.
+
+## Add and remove
+
+From any folder of the monorepo:
+
+```bash
+archlast-forge add service billing      # apps/billing, and a class in the main app that calls it
+archlast-forge add app admin            # another full-stack app (--mode backend for a backend)
+archlast-forge add mobile               # an Expo app (a backend main app)
+archlast-forge add desktop client       # a Tauri app: full, or client
+archlast-forge remove billing           # a service or app, or mobile or desktop
+archlast-forge workspace                # what is here, and on which ports
+```
+
+Each takes the next free ports, runs `bun install` and codegen, and says what is left for you. A service is made exactly as `init` makes one: the main app gets `forge/<service>.service.ts` (the class that calls it), `forge/<service>.controller.ts` and `forge/<service>.ts` (the action), and `forge/_services.ts`, which lists them for the one `nest()` call in `forge/http.ts`. `_services.ts` is written by the commands, so adding a third service doesn't touch `http.ts`. If `http.ts` already has a `nest()` call of its own, the command tells you which two lists to add to it.
+
+`add` stops before writing anything when a name is taken, or when a file in the main app would be overwritten. [The CLI reference](cli.html#add) lists what each writes.
+
+## The workspace file
+
+`archlast-forge.workspace.json` at the root records what the commands need:
+
+```json
+{
+  "main": "web",
+  "transport": "forge-rpc",
+  "apps": {
+    "orders": { "kind": "service", "port": 3001, "rpcPort": 4001 },
+    "admin": { "kind": "app", "port": 3002 }
+  },
+  "mobile": true
+}
+```
+
+`main` is `web` or `api`. A service is called by the main app over `transport`; an app is a project of its own. `port` is where `dev` serves it on this machine, and `rpcPort` the service's port for the transport. A monorepo made before this file existed has it worked out from its folders, and the first change writes it. `archlast-forge workspace sync` rewrites the shared packages after changes you made by hand.
 
 ## Services calling services
 

@@ -26,14 +26,16 @@ export interface ScaffoldOptions {
   shadcn?: BaseColor;
   /** The archlast-forge version the project depends on. Defaults to this package's. */
   version?: string;
+  /** The project's name (package.json, compose.yaml's project and image). Defaults to the folder's: a monorepo's apps pass `<monorepo>-<app>`, so two monorepos' stacks never share one. */
+  name?: string;
 }
 
 /** Writes a new project into `dir` (which may exist but must be empty) and returns its absolute path. */
-export function scaffold({ dir, mode, services, shadcn, version = VERSION }: ScaffoldOptions): string {
+export function scaffold({ dir, mode, services, shadcn, version = VERSION, name: given }: ScaffoldOptions): string {
   const target = resolve(dir);
   if (existsSync(target) && readdirSync(target).length) throw new Error(`${target} isn't empty`);
   if (shadcn && mode !== "framework") throw new Error("shadcn/ui is for full-stack apps: use --mode framework");
-  const name = nameOf(target);
+  const name = given ?? nameOf(target);
   for (const part of ["base", mode]) cpSync(join(TEMPLATE, part), target, { recursive: true });
   if (shadcn) addShadcn(target, shadcn);
   renameSync(join(target, "gitignore"), join(target, ".gitignore")); // npm drops .gitignore files from packages
@@ -104,9 +106,26 @@ export function addPrettier(root: string): string[] {
   return added;
 }
 
-/** Runs what the project's `bun run format` runs, with the config just written, so a new project starts out formatted. */
-export function format(target: string) {
-  const prettier = fileURLToPath(import.meta.resolve("prettier/bin/prettier.cjs"));
-  const r = Bun.spawnSync([process.execPath, prettier, "--write", "--log-level", "warn", "."], { cwd: target, stdout: "pipe", stderr: "pipe" });
+const prettierBin = () => fileURLToPath(import.meta.resolve("prettier/bin/prettier.cjs"));
+
+/**
+ * Runs what the project's `bun run format` runs, with the config just written, so a new project starts out formatted. With `files` (paths
+ * relative to `target`) it formats only those: commands that add to an existing project write files of their own and leave the rest as it is.
+ */
+export function format(target: string, files?: string[]) {
+  if (files && !files.length) return;
+  const r = Bun.spawnSync([process.execPath, prettierBin(), "--write", "--log-level", "warn", ...(files ?? ["."])], { cwd: target, stdout: "pipe", stderr: "pipe" });
   if (r.exitCode !== 0) throw new Error(`Prettier couldn't format ${target}:\n${r.stderr.toString() || r.stdout.toString()}`);
+}
+
+/** `text` as Prettier formats a file at `file` (relative to `target`), with the project's own config: to compare generated text with what a scaffold wrote. */
+export function formatText(target: string, file: string, text: string): string {
+  const r = Bun.spawnSync([process.execPath, prettierBin(), "--stdin-filepath", file], { cwd: target, stdin: Buffer.from(text), stdout: "pipe", stderr: "pipe" });
+  if (r.exitCode !== 0) throw new Error(`Prettier couldn't format ${file}:\n${r.stderr.toString()}`);
+  return r.stdout.toString();
+}
+
+/** Whether Prettier would leave `file` (relative to `target`) as it is: a file that isn't is the user's own style, and is not reformatted. */
+export function isFormatted(target: string, file: string): boolean {
+  return Bun.spawnSync([process.execPath, prettierBin(), "--check", "--log-level", "silent", file], { cwd: target, stdout: "pipe", stderr: "pipe" }).exitCode === 0;
 }

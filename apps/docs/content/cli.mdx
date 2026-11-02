@@ -12,6 +12,8 @@ Commands that act on a project look for `forge/schema.ts` in the current directo
 |---|---|
 | [`init [dir]`](#init) | create a project |
 | [`upgrade [version]`](#upgrade) | move a project to another release |
+| [`monorepo`](#monorepo), [`add`](#add), [`remove`](#remove), [`workspace`](#workspace) | turn a project into a monorepo, and add or remove its services and apps |
+| [`stack`](#stack) | add or remove PostgreSQL, Redis, S3 storage or Caddy |
 | [`dev`](#dev) | develop with live reload |
 | [`codegen`](#codegen) | write `forge/_generated` and check imports |
 | [`build`](#build) | build the app image, or a full-stack app's bundles |
@@ -54,7 +56,7 @@ All three are the same program (`create-archlast-forge`). `init` forwards everyt
 | `-s`, `--services <list>` | any of `postgres`, `redis`, `s3`, `caddy`, comma separated, or `none`. Defaults: `postgres,redis,s3,caddy` for `framework`; `postgres,redis,s3` for `backend`. |
 | `--shadcn`, `--no-shadcn` | full-stack apps only: write the starter with shadcn/ui (Tailwind CSS v4, `components.json`, components in `app/components/ui`) or with its plain stylesheet. Default: shadcn/ui. With `--mode backend` it is an error. |
 | `--base-color <name>` | the shadcn/ui base color: `neutral` (default), `stone`, `zinc`, `mauve`, `olive`, `mist` or `taupe`. It cannot be changed later (that is shadcn's rule for `components.json`). Passing it implies `--shadcn`; with `--no-shadcn` it is an error. |
-| `--monorepo` | a Turborepo monorepo: the app in `apps/`, the backends' typed APIs in `packages/api` ([Monorepos](monorepo.html)). |
+| `--monorepo` | a Turborepo monorepo: the app in `apps/`, the main app's typed API in `packages/api` ([Monorepos](monorepo.html)). |
 | `--microservices <names>` | backends to add beside the app, comma separated (`orders,billing`), each called from it over [Forge RPC](forge-rpc.html) or another NestJS transport. Implies `--monorepo`. Names: lowercase letters, digits and `-`; not `web`, `api`, `mobile` or `desktop`. |
 | `--transport <forge-rpc\|tcp\|redis\|nats>` | how the services talk. Default `forge-rpc`: typed calls between forge apps, with `packages/contracts`. |
 | `--mobile` | a React Native (Expo) app in `apps/mobile`, a client of the backend ([Mobile apps](mobile.html)). Only with `--mode backend`: Expo has no full-stack option, and asking for one is an error. Implies `--monorepo`. Interactive `init` asks for it only when you build a backend. |
@@ -137,6 +139,76 @@ When everything is already there: `✓ Nothing to change: the project is on 0.10
 If `bun install` fails, the files are already changed: fix the install and run `bun install` again. A version older than the project's is a downgrade, made the same way.
 
 Projects on `0.9.0` or older have a CLI without this command: run the latest one once with `bunx --package @archlast/forge-cli@latest archlast-forge upgrade`. Data needs no step: documents are stored as JSON, and a schema change is handled by [data migrations](migrations.html). Take a [backup](backups.html) before you deploy the upgrade.
+
+## monorepo
+
+```bash
+archlast-forge monorepo [--microservices <a,b>] [--transport <forge-rpc|tcp|redis|nats>] [--mobile] [--desktop <full|client>] [--dry-run] [--yes] [--no-install] [--dir <forge dir>]
+```
+
+Turns the project you are in, a full-stack app or a backend, into the main app of a [monorepo](monorepo.html), in place. Everything in the folder moves to `apps/web` (a full-stack app) or `apps/api` (a backend), and the monorepo's own files are written around it: `package.json` with workspaces, `turbo.json`, `packages/api`, a README and `archlast-forge.workspace.json`.
+
+- **Nothing is lost.** `.env`, the data folder, `compose.yaml`, the lockfile and the Git history move with the project. `compose.yaml` names its Docker project (`name:`), which doesn't change, so a stack that is running keeps its volumes. The repository's own files stay at the root: `.git`, `.github`, `.vscode`, `.idea`, `.husky`, `.claude`, `node_modules` and the licence.
+- **Your code isn't reformatted.** Prettier runs only over the files the command writes.
+- **It asks first,** as it moves every file: with no terminal to ask on, it changes nothing and tells you to pass `--yes`. `--dry-run` prints the plan and stops.
+- **With `--microservices`,** it also makes the services (`orders,billing`), as `init --microservices` does; `--transport`, `--mobile` and `--desktop` are `init`'s too.
+- **Afterwards** it runs `bun install` at the root and codegen in the apps it wrote (`--no-install` skips both).
+- **It refuses** a project that is already in a monorepo, a folder with an `apps/` of its own, and one without `forge/`.
+
+## add
+
+```bash
+archlast-forge add service <name>
+archlast-forge add app <name> [--mode <framework|backend>] [--services <list>] [--no-shadcn] [--base-color <name>]
+archlast-forge add mobile
+archlast-forge add desktop <full|client>
+```
+
+Each is run from anywhere inside a [monorepo](monorepo.html), and installs and runs codegen afterwards (`--no-install` skips that).
+
+| | Writes |
+|---|---|
+| `add service <name>` | `apps/<name>`, a backend that serves the transport (a [Forge RPC](forge-rpc.html) router by default), and in the main app a service class that calls it, a controller and an action over that class. It gets the next free ports, and the shared `FORGE_RPC_TOKEN`. `packages/contracts` gains its types. |
+| `add app <name>` | `apps/<name>`, a project like `init` makes: a full-stack app by default (with shadcn/ui, as `init` does), or `--mode backend`. It gets the next free port, and its typed API is `@<project>/api/<name>`. |
+| `add mobile` | `apps/mobile`, an Expo app that is a client of `apps/api`. Only where the main app is a backend: Expo has no full-stack option. A backend with an `auth.ts` of its own keeps it, and is told what to add. |
+| `add desktop <full\|client>` | `apps/desktop`, a Tauri app. `full` is only for a full-stack main app. |
+
+Names are lowercase letters, digits and `-`; `web`, `api`, `mobile` and `desktop` are the monorepo's own. A name that is taken, or a file in the main app that the service's calls would overwrite, is refused before anything is written.
+
+## remove
+
+```bash
+archlast-forge remove <name> [--yes] [--no-install]
+```
+
+Deletes `apps/<name>`, a service or an app, and for a service the main app's calls to it (`<name>.service.ts`, `<name>.controller.ts` and `<camel-name>.ts`), then writes `packages/api`, `packages/contracts` and the main app's service list again. `mobile` and `desktop` work too. The main app can't be removed.
+
+It deletes folders with their data and `.env`, so it asks first (`--yes` skips the question). In a repository, `git checkout .` brings back what was tracked.
+
+## workspace
+
+```bash
+archlast-forge workspace          # list the monorepo's apps, services and ports
+archlast-forge workspace sync     # write the shared packages again from apps/
+```
+
+`sync` is for changes made by hand: an app folder you deleted drops out of the workspace, an app you made in `apps/` joins it, and `packages/api`, `packages/contracts` and the main app's `forge/_services.ts` are written from what is there. It also renames a backend main app's package from `@<project>/api` to `@<project>/backend`: monorepos made by 0.13.0 and before gave both it and `packages/api` that name, and `bun install` refuses two packages of one name.
+
+The monorepo's record is `archlast-forge.workspace.json` at its root (see [Monorepos](monorepo.html#the-workspace-file)); one made without it is worked out from its folders.
+
+## stack
+
+```bash
+archlast-forge stack                       # the services this app has, and the ones it could
+archlast-forge stack add <postgres,redis,s3,caddy>
+archlast-forge stack remove <list>
+```
+
+Changes which stack services the app you are in has, after [`init`](#init) chose them: `archlast-forge.json`, and what follows from it. In a monorepo, run it inside one of its apps (`cd apps/web`), or pass `--dir apps/web/forge`.
+
+- **`compose.yaml`, `.env.example` and the `Caddyfile`** are written again only if they are what the old services would have made. A `compose.yaml` with edits of yours is left alone, and the new one is written as `compose.new.yaml` for you to merge.
+- **`.env`** only gets the keys the new services need (`POSTGRES_PASSWORD`, the S3 keys, `DOMAIN`), with fresh secrets. The values you have are never touched.
+- **What it can't do for you** it says: documents aren't moved between SQLite and PostgreSQL (`export` before, `import` after), Caddy needs `DOMAIN` and an https `BETTER_AUTH_URL`, and the volumes of a removed service stay in Docker until `down --volumes`.
 
 ## dev
 
@@ -519,6 +591,8 @@ Everything else you export is passed to the engine when it runs in the CLI's pro
 | `data/app.db` | `start --no-docker` | the default location without `DATA_DIR` |
 | `.forge/gen`, `.forge/build/<version>`, `.forge/build/latest.json` | `dev`, `build` | a full-stack app's generated entries and bundles |
 | `.env` | `init`, `up` | secrets, once |
+| `archlast-forge.workspace.json`, `apps/`, `packages/`, `turbo.json` | `init --monorepo`, `monorepo`, `add`, `remove`, `workspace sync` | a monorepo and what is in it |
+| `archlast-forge.json`, `compose.yaml`, `.env`, `Caddyfile` | `stack` | the stack's services (`compose.new.yaml` if you edited `compose.yaml`) |
 | `package.json`, `forge/package.json`, `Dockerfile`, `compose.yaml` | `upgrade` | the archlast-forge versions and the engine image tag; in `package.json` also the `format` script and `prettier`, if missing |
 | `.prettierrc`, `.prettierignore` | `init`, `upgrade` (if missing) | Prettier with four spaces to an indent |
 | Docker images, containers, volumes | `build`, `up`, `start --image`, `dev` | named after the project |
