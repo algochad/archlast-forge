@@ -1,0 +1,8 @@
+{
+  "name": "@archlast/forge-bench-batch",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "@archlast/forge-runtime": "workspace:*"
+  }
+}

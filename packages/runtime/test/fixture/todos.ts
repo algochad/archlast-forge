@@ -187,3 +187,13 @@ export const bigAnswer = query({
     return Array.from({ length: rows }, (_, i) => ({ id: `row:${seed}:${i}`, name: "Santos, Maria", pad: "x".repeat(300), n: i, when: 1_700_000_000_000 + i, ok: i % 2 === 0, none: null }));
   },
 });
+
+/** Batch writes: many todos in one call, and many marked done in one. */
+export const addMany = mutation({
+  args: { listId: v.id("lists"), titles: v.array(v.string()) },
+  handler: (ctx, { listId, titles }) => ctx.db.insertMany("todos", titles.map((title) => ({ listId, title, done: false }))),
+});
+export const completeMany = mutation({
+  args: { ids: v.array(v.id("todos")) },
+  handler: (ctx, { ids }) => ctx.db.updateMany("todos", ids.map((id) => ({ id, patch: { done: true } }))),
+});

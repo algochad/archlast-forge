@@ -158,6 +158,8 @@ export async function startCore(opts: {
     log: emit,
     // Only this process writes the local database when it is the one function runtime, so its own writes keep the cache exact.
     readCache: !config.databaseUrl && config.runtimeWorkers === 1 ? new ReadCache() : undefined,
+    // Inside a call, so the warning is listed with the function that ran the query.
+    devWarn: config.dev ? (message) => console.warn(message) : undefined,
   });
   if (config.schemaCheck && worker === 0) await checkSchema(exec, project);
   // What @archlast/forge-runtime/nest reaches the engine through, for work that doesn't start as a call: gateway sockets and microservice messages.

@@ -92,6 +92,35 @@ type Joined<T extends TableNames, S> = {
 
 type NumberFields<D> = { [K in keyof D & string]-?: [NonNullable<D[K]>] extends [never] ? never : NonNullable<D[K]> extends number ? K : never }[keyof D & string];
 
+type StringFields<D> = { [K in keyof D & string]-?: [NonNullable<D[K]>] extends [never] ? never : NonNullable<D[K]> extends string ? K : never }[keyof D & string];
+
+/** A where() condition. Only the builder makes them. */
+export interface Predicate {
+  readonly __predicate: true;
+}
+
+/**
+ * Conditions on a table's stored fields, which run in the database (SQL, not JavaScript): comparisons on the fields of an index use it (the
+ * one withIndex() names, or one the database picks), the rest read the range. A comparison with a field a document doesn't have is false;
+ * `neq` and `not` count such documents as not matching what they negate.
+ */
+export interface WhereBuilder<D> {
+  eq<K extends keyof D & string>(field: K, value: D[K] | null): Predicate;
+  neq<K extends keyof D & string>(field: K, value: D[K] | null): Predicate;
+  gt<K extends keyof D & string>(field: K, value: NonNullable<D[K]>): Predicate;
+  gte<K extends keyof D & string>(field: K, value: NonNullable<D[K]>): Predicate;
+  lt<K extends keyof D & string>(field: K, value: NonNullable<D[K]>): Predicate;
+  lte<K extends keyof D & string>(field: K, value: NonNullable<D[K]>): Predicate;
+  /** Inclusive at both ends. */
+  between<K extends keyof D & string>(field: K, low: NonNullable<D[K]>, high: NonNullable<D[K]>): Predicate;
+  in<K extends keyof D & string>(field: K, values: readonly NonNullable<D[K]>[]): Predicate;
+  /** A string field that starts with `prefix` (case-sensitive). */
+  prefix(field: StringFields<D>, prefix: string): Predicate;
+  and(...predicates: Predicate[]): Predicate;
+  or(...predicates: Predicate[]): Predicate;
+  not(predicate: Predicate): Predicate;
+}
+
 export interface Query<D, T extends TableNames = TableNames> {
   /** Ascending (the default) or descending, by the index's fields then `_creationTime`. */
   order(order: "asc" | "desc"): Query<D, T>;
@@ -100,6 +129,15 @@ export interface Query<D, T extends TableNames = TableNames> {
    * It runs while scanning the index range, so narrow the range with `withIndex()` first: a query scans at most 100,000 documents.
    */
   filter(predicate: (doc: D) => boolean): Query<D, T>;
+  /**
+   * Keeps the documents a condition holds for, evaluated in the database: `where((q) => q.or(q.eq("status", "open"), q.in("priority", [1, 2])))`.
+   * Unlike `filter()`, documents it rejects are never loaded, and `skip`, `count` and pages stay in SQL. Several calls must all hold.
+   */
+  where(condition: (q: WhereBuilder<Doc<T>>) => Predicate): Query<D, T>;
+  /** Sorts by these fields in turn, each `"asc"` or `"desc"`, then `_creationTime` and `_id`, in place of the index's order. `order("desc")` reverses it all. */
+  orderBy(keys: readonly (readonly [field: keyof Doc<T> & string, direction: "asc" | "desc"])[]): Query<D, T>;
+  /** Keeps only these fields of each result, besides `_id` and `_creationTime` (fields added by `include()` can be named too). */
+  select<const K extends keyof D & string>(fields: readonly K[]): Query<Expand<Pick<D, Extract<K | "_id" | "_creationTime", keyof D>>>, T>;
   /** Adds related documents to each result: see `IncludeSpec`. Loaded in batches, and the query stays reactive to them. */
   include<const S extends IncludeSpec<T>>(spec: S): Query<Expand<D & Joined<T, S>>, T>;
   /**
@@ -168,8 +206,24 @@ export interface DatabaseReader {
   include<T extends TableNames, const S extends IncludeSpec<T>>(table: T, docs: readonly Doc<T>[], spec: S): Promise<Expand<Doc<T> & Joined<T, S>>[]>;
 }
 
+/** One document of a batch that wasn't written, by its position in the batch. */
+export interface BatchError {
+  index: number;
+  message: string;
+}
+
 export interface DatabaseWriter extends DatabaseReader {
   insert<T extends TableNames>(table: T, value: WithoutSystemFields<Doc<T>>): Promise<Id<T>>;
+  /**
+   * Many documents in one call (and one statement per 200), each validated against the schema before any is written. With `mode: "all"`, the
+   * default, one invalid document fails the call and nothing is inserted.
+   */
+  insertMany<T extends TableNames>(table: T, values: readonly WithoutSystemFields<Doc<T>>[], opts?: { mode?: "all" }): Promise<Id<T>[]>;
+  /** With `mode: "partial"`, the valid documents are inserted: `ids` has `null` where one wasn't, and `errors` says why. */
+  insertMany<T extends TableNames>(table: T, values: readonly WithoutSystemFields<Doc<T>>[], opts: { mode: "partial" }): Promise<{ ids: (Id<T> | null)[]; errors: BatchError[] }>;
+  /** Patches many documents of `table` (shallow merges, like `patch`), each result validated before any is written. `mode` works as for `insertMany`. */
+  updateMany<T extends TableNames>(table: T, updates: readonly { id: Id<T>; patch: Partial<WithoutSystemFields<Doc<T>>> }[], opts?: { mode?: "all" }): Promise<null>;
+  updateMany<T extends TableNames>(table: T, updates: readonly { id: Id<T>; patch: Partial<WithoutSystemFields<Doc<T>>> }[], opts: { mode: "partial" }): Promise<{ errors: BatchError[] }>;
   /** Shallow merge; a field set to `undefined` is removed. */
   patch<T extends TableNames>(id: Id<T>, value: Partial<WithoutSystemFields<Doc<T>>>): Promise<void>;
   replace<T extends TableNames>(id: Id<T>, value: WithoutSystemFields<Doc<T>>): Promise<void>;

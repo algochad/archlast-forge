@@ -43,6 +43,27 @@ test("HTTP queries and mutations", async () => {
   await expect(rpc("todos:add", { listId, title: 5 }, { mutation: true })).rejects.toThrow("args.title must be a string");
 });
 
+test("a batch write wakes the subscriptions it touches, after it commits, and no others", async () => {
+  const listId = await rpc("todos:createList", { name: "batch" }, { mutation: true });
+  const other = await rpc("todos:createList", { name: "untouched" }, { mutation: true });
+  const mine = subscribe("todos:listByList", { listId });
+  const theirs = subscribe("todos:listByList", { listId: other });
+  await until(() => mine.updates.length === 1 && theirs.updates.length === 1);
+  const ids = await rpc("todos:addMany", { listId, titles: ["a", "b", "c"] }, { mutation: true });
+  await until(() => mine.updates.length === 2);
+  expect(mine.updates[1].value.map((t: any) => t.title)).toEqual(["a", "b", "c"]); // all three at once: one push for the batch
+  await rpc("todos:completeMany", { ids }, { mutation: true });
+  await until(() => mine.updates.length === 3);
+  expect(mine.updates[2].value.every((t: any) => t.done)).toBe(true);
+  // A batch that fails validation writes nothing and wakes nobody.
+  await expect(rpc("todos:completeMany", { ids: [...ids, "todos:00000000000000000000000000000000"] }, { mutation: true })).rejects.toThrow("none was applied");
+  await Bun.sleep(150);
+  expect(mine.updates).toHaveLength(3);
+  expect(theirs.updates).toHaveLength(1);
+  mine.close();
+  theirs.close();
+});
+
 test("a mutation updates a subscribed query; an unrelated one doesn't push", async () => {
   const listId = await rpc("todos:createList", { name: "reactive" }, { mutation: true });
   const other = await rpc("todos:createList", { name: "other" }, { mutation: true });

@@ -33,6 +33,8 @@ export default defineSchema({
 | `db.query(table)` | a query | Start of every table read. |
 | `db.include(table, docs, spec)` | the documents, joined | Joins onto documents you already have. |
 | `db.insert(table, value)` | `Id` | Mutations only. |
+| `db.insertMany(table, values, { mode }?)` | `Id[]`, or `{ ids, errors }` | Many at once, all validated first. See [Batch writes](#batch-writes). |
+| `db.updateMany(table, updates, { mode }?)` | `null`, or `{ errors }` | Many patches at once. |
 | `db.patch(id, partial)` | `void` | Shallow merge. |
 | `db.replace(id, value)` | `void` | Replace the whole document. |
 | `db.delete(id)` | `void` | |
@@ -42,7 +44,7 @@ A query chain starts with `db.query("todos")`, optionally narrows it, and ends w
 | Step | Methods |
 |---|---|
 | Choose the range | `.withIndex(name, range?)` or `.withSearchIndex(name, search)` |
-| Shape it | `.order("asc" \| "desc")`, `.filter(fn)`, `.include(spec)` |
+| Shape it | `.where(q => …)`, `.order("asc" \| "desc")`, `.orderBy(keys)`, `.filter(fn)`, `.include(spec)`, `.select(fields)`, `.skip(n)` |
 | Run it | `.collect()`, `.take(n)`, `.first()`, `.unique()`, `.paginate(opts)`, `.count()`, `.sum(f)`, `.avg(f)`, `.min(f)`, `.max(f)` |
 
 Unknown tables, indexes and fields fail with a `BAD_REQUEST` that names them (`Unknown table "nope"`, `Unknown index "todos.nope"`). TypeScript catches the same mistakes after codegen.
@@ -130,6 +132,45 @@ ctx.db.query("todos").withIndex("by_priority", (q) => q.eq("priority", undefined
 **Values compare by type.** Numbers numerically, strings as text, booleans as `false < true`. Keep an indexed field to one type (which `v.number()` or `v.string()` already guarantees); the order between different types is not defined.
 
 An index only helps the fields it lists, in order. If you find yourself writing a `filter` on the same field you always query by, it wants an index.
+
+## Conditions in the database: where
+
+```ts
+ctx.db
+  .query("todos")
+  .withIndex("by_list", (q) => q.eq("listId", listId))
+  .where((q) => q.and(q.eq("done", false), q.or(q.prefix("title", "Fix"), q.in("priority", [1, 2]))))
+  .orderBy([["priority", "desc"], ["title", "asc"]])
+  .select(["title", "priority"])
+  .take(20);
+```
+
+`where` takes a condition built from `q` and runs it **in the database**, as SQL: documents it rejects are never loaded, and `skip`, `count`, pages and totals stay in SQL too. Several `where` calls must all hold. It is typed from the schema: field names, and values of the field's type.
+
+| Predicate | Matches | Uses an index |
+|---|---|---|
+| `q.eq(field, value)` | equal; `null` matches a missing field | yes, on the field's index |
+| `q.neq(field, value)` | not equal, a missing field included | no |
+| `q.gt`, `q.gte`, `q.lt`, `q.lte` | comparisons | yes |
+| `q.between(field, low, high)` | `low ≤ value ≤ high` | yes |
+| `q.in(field, values)` | any of the values (`[]` matches nothing) | yes (SQLite) |
+| `q.prefix(field, text)` | a string starting with `text`, case-sensitive | yes on SQLite (a range); a scan on Postgres |
+| `q.and(...)`, `q.or(...)` | all, any | `and` keeps its parts' indexes; `or` usually scans |
+| `q.not(p)` | where `p` doesn't hold, a missing field included | no |
+
+"Uses an index" means the database can use an index on that field: the one `withIndex` names, or one it picks itself (SQLite does, for `eq` and ranges on an indexed field). A predicate that no index serves still runs in SQL, but reads the whole range, so put the selective part in `withIndex` (equality on a prefix, then a range) and the rest in `where`. A comparison with a field a document doesn't have is false; strings, numbers and booleans compare as the database compares them (on SQLite every number sorts before every string).
+
+**In dev, a query that no index serves says so** in the terminal and on the dashboard's Logs page, once per query shape: `A query on "todos" reads every document of the table: no index serves its where() or orderBy() (SQLite: SCAN todos). Add an index whose fields start with the ones it filters or sorts by, and query withIndex().` It checks SQLite's query plan; it is not shown in production or on Postgres.
+
+`where` is for conditions SQL can express. `filter` (below) is still there for anything else: two fields compared, array contents, data from `include()`.
+
+### orderBy
+
+`orderBy([[field, "asc" | "desc"], …])` sorts by those fields in turn, then by `_creationTime` and `_id` in the direction of the last key, in place of the index's order; `order("desc")` reverses all of it. When an index's fields match the keys (after the `withIndex` equalities), the database reads in index order and stops at the page; otherwise it sorts, and dev says so (`sorts its results without an index`). Pagination works with any `orderBy`, ascending, descending or mixed: cursors carry every key. Fields used for ordering should be on every document: one that lacks the field sorts first ascending, and a cursor positioned on it can't move past it.
+
+### select
+
+`select(["title", "done"])` keeps only those fields of each result, besides `_id` and `_creationTime` (fields `include()` added can be named too); the result type narrows to match. It runs after filters and joins, so they still see whole documents; what it saves is the size of the result sent to the client, cached, and kept live.
 
 ## Filtering
 
@@ -346,6 +387,25 @@ await ctx.db.delete(id);
 
 Removes the document. Deleting one that does not exist does nothing, which makes deletes safe to repeat. Nothing else changes: documents that reference the deleted one keep their ids.
 
+### Batch writes
+
+```ts
+const ids = await ctx.db.insertMany("todos", titles.map((title) => ({ listId, title, done: false })));
+await ctx.db.updateMany("todos", ids.map((id) => ({ id, patch: { done: true } })));
+
+const { ids: maybe, errors } = await ctx.db.insertMany("todos", rows, { mode: "partial" });
+// maybe: (Id<"todos"> | null)[], errors: { index, message }[]
+```
+
+Both validate **every** document against the schema before writing any, inside the mutation's transaction.
+
+- **`mode: "all"`** (the default) fails the whole call if one document is invalid, and nothing is written: `insertMany() on "todos": 1 of 3 documents are invalid, so none was inserted. Document 2: todos.title must be a string`. Uncaught, the mutation rolls back like any other error.
+- **`mode: "partial"`** writes the valid ones and reports the rest by their position: `insertMany` returns `{ ids, errors }` (`null` in `ids` where a document wasn't inserted), `updateMany` returns `{ errors }`. Only validation failures are reported this way; an id of another table, or of a document that doesn't exist, is one too for `updateMany`.
+- `insertMany` writes one `INSERT` per 200 documents, in the order given (creation times increase). `updateMany` patches like `patch` (a shallow merge); two updates of one document apply in turn.
+- Topics are published once the mutation commits, like any write, so live queries see the whole batch in one update, and a batch that fails wakes nobody.
+
+Measured (`benchmarks/batch`, SQLite, 1,000 documents, noisy machine): one mutation per document 440 to 1,060 a second one at a time, 1,200 to 3,000 with 32 in flight; one mutation inserting them in a loop about 19,000 a second; `insertMany` 25,000 to 32,000 (1.3 to 1.6 times the loop); `updateMany` 1.1 to 1.6 times a loop of `patch`.
+
 ### Cascades and uniqueness
 
 Because references and indexes are not enforced by the database, you write the rules in the mutation. Both are safe inside one mutation, since mutations are serializable:
@@ -413,6 +473,7 @@ See [Reactivity](reactivity.html) for how subscriptions use this and [Caching](c
 | Documents skipped | 100,000 | `skip(n)` |
 | Search results | 1024 | `collect()` on a search query; `take(n)` is also capped at 1024 |
 | Search words | 16 | the first 16 words of the query text |
+| `where`, `orderBy`, `select` field names | letters, digits, `_` | a top-level field of the table (of the schema, for a validated table) |
 | Result size | 8 MiB | `MAX_RESULT_BYTES`, any function |
 | Document size | 1 MiB | `MAX_DOCUMENT_BYTES`, every write |
 | Time | 10 s | queries and mutations, `FUNCTION_TIMEOUT_MS` |

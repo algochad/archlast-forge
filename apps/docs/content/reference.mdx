@@ -206,6 +206,9 @@ interface Query<D, T> {
   filter(predicate: (doc: D) => boolean): Query<D, T>;
   include<const S extends IncludeSpec<T>>(spec: S): Query<D & Joined, T>;
   skip(n: number): Query<D, T>;         // passes over the first n matches (an OFFSET without a filter)
+  where(condition: (q: WhereBuilder<Doc<T>>) => Predicate): Query<D, T>;   // in the database: eq, neq, gt, gte, lt, lte, between, in, prefix, and, or, not
+  orderBy(keys: readonly [field, "asc" | "desc"][]): Query<D, T>;
+  select<K extends keyof D>(fields: readonly K[]): Query<Pick<D, K | "_id" | "_creationTime">, T>;
   collect(): Promise<D[]>;
   first(): Promise<D | null>;
   unique(): Promise<D | null>;          // throws if several match

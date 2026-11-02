@@ -16,6 +16,8 @@ export const sqliteDialect: Dialect = {
   valueParam: "?",
   encode,
   field,
+  // A range, so an index on the field serves it: in SQLite's binary order every string with the prefix sorts between these two.
+  startsWith: (name, prefix) => ({ sql: `(${field(name)} >= ? AND ${field(name)} < ?)`, params: [prefix, prefix + "\u{10FFFF}"] }),
   fieldEquals(name, value) {
     if (value === undefined) return { sql: `${field(name)} IS NULL`, params: [] };
     return { sql: `${field(name)} = ?`, params: [encode(value)] };

@@ -13,6 +13,7 @@ export const postgresDialect: Dialect = {
   field,
   valueParam: "?::text::jsonb",
   encode: (value) => JSON.stringify(value),
+  startsWith: (name, prefix) => ({ sql: `starts_with("doc"->>'${name}', ?)`, params: [prefix] }),
   fieldEquals(name, value) {
     if (value === undefined) return { sql: `${field(name)} IS NULL`, params: [] };
     return { sql: `${field(name)} = ?::text::jsonb`, params: [JSON.stringify(value)] };

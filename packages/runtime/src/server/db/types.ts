@@ -15,6 +15,8 @@ export interface Dialect {
   jsonParam: string;
   /** Expression reading a top-level document field, also used in index definitions. */
   field(name: string): string;
+  /** A document field that starts with `prefix` (a string), for where()'s prefix(). */
+  startsWith(name: string, prefix: string): { sql: string; params: unknown[] };
   /** `field = ?` with the value encoded for that comparison; undefined matches a missing field. */
   fieldEquals(name: string, value: unknown): { sql: string; params: unknown[] };
   listIndexesSql: string;

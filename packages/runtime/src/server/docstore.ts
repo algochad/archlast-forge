@@ -40,6 +40,23 @@ const IN_CHUNK = 500;
 const OR_CHUNK = 100;
 
 type Bound = { op: ">" | ">=" | "<" | "<="; value: unknown };
+/** A where() predicate, compiled: SQL with `?` placeholders and their values. Only the builder makes these (the brand), so no SQL text comes from elsewhere. */
+const PREDICATE = Symbol("predicate");
+type Predicate = { [PREDICATE]: true; sql: string; params: unknown[] };
+const isPredicate = (p: unknown): p is Predicate => typeof p === "object" && p !== null && PREDICATE in p;
+/** Field names go into SQL text (a JSON path), so only plain identifiers are accepted. */
+const IDENT = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
+/** SQL statements already explained in this process, so a query that scans is reported once, not on every run. */
+const explained = new Set<string>();
+/** Creation times strictly increase within a process, so documents inserted together keep their order. */
+let lastCreation = 0;
+const creationTime = () => (lastCreation = Math.max(performance.timeOrigin + performance.now(), lastCreation + 0.001));
+type BatchMode = "all" | "partial";
+const batchMode = (name: string, opts: unknown): BatchMode => {
+  const mode = (opts as { mode?: unknown } | undefined)?.mode ?? "all";
+  if (mode !== "all" && mode !== "partial") throw new ValidationError(`${name}() mode must be "all" or "partial", got ${JSON.stringify(mode)}`);
+  return mode;
+};
 type Step = { filter: (doc: Doc) => boolean } | { include: IncludeSpec };
 
 const encodeCursor = (values: unknown[]) => Buffer.from(JSON.stringify(values)).toString("base64url");
@@ -65,6 +82,8 @@ export class DocStore {
     readonly writes?: Set<string>,
     private maxDocumentBytes = 1024 * 1024,
     private cache?: ReadCache,
+    /** In dev: told when a where() or orderBy() query has no index to use (SQLite's query plan says it scans or sorts). */
+    private warn?: (message: string) => void,
   ) {
     this.stamp = cache?.now() ?? 0;
   }
@@ -129,6 +148,8 @@ export class DocStore {
     return {
       ...this.reader(),
       insert: this.insert.bind(this),
+      insertMany: this.insertMany.bind(this),
+      updateMany: this.updateMany.bind(this),
       patch: this.patch.bind(this),
       replace: this.replace.bind(this),
       delete: this.delete.bind(this),
@@ -160,6 +181,108 @@ export class DocStore {
       : { expr: this.dialect.field(f), param: this.dialect.valueParam, encode: this.dialect.encode };
   }
 
+  /** A field where(), orderBy() or select() names: an identifier, and a field of the table when the table is validated. */
+  private fieldName(table: string, f: unknown, method: string): string {
+    const t = this.table(table);
+    if (typeof f !== "string" || !IDENT.test(f)) throw new ValidationError(`${method}(): ${JSON.stringify(f)} is not a field name`);
+    if (t.strict && f !== "_id" && f !== "_creationTime" && !(f in t.fields)) throw new ValidationError(`${method}(): "${f}" is not a field of "${table}"`);
+    return f;
+  }
+
+  /** The predicates where() builds: comparisons on the document's fields, compiled to SQL that an index on those fields can serve, and and/or/not. */
+  private predicates(table: string) {
+    const pred = (sql: string, params: unknown[]): Predicate => ({ [PREDICATE]: true, sql, params });
+    const col = (f: unknown, method: string) => this.col(this.fieldName(table, f, method));
+    const cmp = (op: string, method: string) => (f: string, value: unknown) => {
+      const c = col(f, method);
+      return pred(`${c.expr} ${op} ${c.param}`, [c.encode(value)]);
+    };
+    const all = (ps: unknown[], method: string) => {
+      for (const p of ps) if (!isPredicate(p)) throw new ValidationError(`${method}() takes predicates from the where() builder`);
+      return ps as Predicate[];
+    };
+    const join = (method: string, glue: "AND" | "OR", empty: string) => (...ps: unknown[]) => {
+      const list = all(ps, method);
+      return list.length ? pred(`(${list.map((p) => p.sql).join(` ${glue} `)})`, list.flatMap((p) => p.params)) : pred(empty, []);
+    };
+    return {
+      eq: (f: string, value: unknown) => {
+        const name = this.fieldName(table, f, "eq");
+        if (value === undefined || value === null) return pred(`${this.col(name).expr} IS NULL`, []);
+        if (name === "_id" || name === "_creationTime") return pred(`"${name}" = ?`, [value]);
+        const c = this.dialect.fieldEquals(name, value);
+        return pred(c.sql, c.params);
+      },
+      /** Not equal, which a document without the field is. */
+      neq: (f: string, value: unknown) => {
+        const c = col(f, "neq");
+        if (value === undefined || value === null) return pred(`${c.expr} IS NOT NULL`, []);
+        return pred(`(${c.expr} IS NULL OR ${c.expr} <> ${c.param})`, [c.encode(value)]);
+      },
+      gt: cmp(">", "gt"),
+      gte: cmp(">=", "gte"),
+      lt: cmp("<", "lt"),
+      lte: cmp("<=", "lte"),
+      between: (f: string, low: unknown, high: unknown) => {
+        const c = col(f, "between");
+        return pred(`(${c.expr} >= ${c.param} AND ${c.expr} <= ${c.param})`, [c.encode(low), c.encode(high)]);
+      },
+      in: (f: string, values: unknown) => {
+        const c = col(f, "in");
+        if (!Array.isArray(values)) throw new ValidationError("in() expects an array of values");
+        if (!values.length) return pred("1 = 0", []);
+        return pred(`${c.expr} IN (${values.map(() => c.param).join(", ")})`, values.map((v) => c.encode(v)));
+      },
+      prefix: (f: string, prefix: unknown) => {
+        const name = this.fieldName(table, f, "prefix");
+        if (typeof prefix !== "string") throw new ValidationError("prefix() expects a string");
+        if (name === "_creationTime") throw new ValidationError("prefix() is for string fields");
+        if (name === "_id") return pred(`("_id" >= ? AND "_id" < ?)`, [prefix, prefix + "\u{10FFFF}"]);
+        const s = this.dialect.startsWith(name, prefix);
+        return pred(s.sql, s.params);
+      },
+      and: join("and", "AND", "1 = 1"),
+      or: join("or", "OR", "1 = 0"),
+      /** True where the predicate isn't, a missing field included (CASE rather than NOT, so a NULL comparison counts as false). */
+      not: (p: unknown) => {
+        const [inner] = all([p], "not");
+        return pred(`(CASE WHEN ${inner!.sql} THEN 1 ELSE 0 END) = 0`, inner!.params);
+      },
+    };
+  }
+
+  /** Rows after `after` in the order of `key`: one row-value comparison when every key goes the same way (an index serves it), else (a > ?) OR (a = ? AND b < ?) …. */
+  private keyset(key: { expr: string; param: string; encode: (x: unknown) => unknown; desc: boolean }[], after: unknown[]) {
+    if (key.every((k) => k.desc === key[0]!.desc))
+      return { sql: `(${key.map((k) => k.expr).join(", ")}) ${key[0]!.desc ? "<" : ">"} (${key.map((k) => k.param).join(", ")})`, params: key.map((k, i) => k.encode(after[i])) };
+    const parts: string[] = [];
+    const params: unknown[] = [];
+    key.forEach((k, i) => {
+      parts.push(`(${[...key.slice(0, i).map((p) => `${p.expr} = ${p.param}`), `${k.expr} ${k.desc ? "<" : ">"} ${k.param}`].join(" AND ")})`);
+      params.push(...key.slice(0, i).map((p, j) => p.encode(after[j])), k.encode(after[i]));
+    });
+    return { sql: `(${parts.join(" OR ")})`, params };
+  }
+
+  /**
+   * In dev, on SQLite: says once per statement when its plan reads the whole table, or walks a whole index while where() filters, or sorts
+   * without an index. A walk in index order that only serves the order (and stops at a LIMIT) is what an index is for.
+   */
+  private async explain(table: string, sql: string, params: unknown[], filtered: boolean, sorted: boolean) {
+    if (!this.warn || this.dialect.name !== "sqlite" || explained.has(sql)) return;
+    explained.add(sql);
+    this.toDb();
+    const plan = (await this.tx.query<{ detail: string }>(`EXPLAIN QUERY PLAN ${sql}`, params)).map((r) => r.detail);
+    const scan = plan.find((d) => /^SCAN /.test(d) && (!/USING (COVERING )?INDEX/.test(d) || filtered));
+    // Sorting what where() narrowed down is cheap; an orderBy() that no index serves sorts whatever the range holds.
+    const sort = sorted ? plan.find((d) => /USE TEMP B-TREE FOR .*ORDER BY/.test(d)) : undefined;
+    if (!scan && !sort)
+      return;
+    this.warn(
+      `A query on "${table}" ${scan ? "reads every document of the table" : "sorts its results without an index"}: no index serves its where() or orderBy() (SQLite: ${[scan, sort].filter(Boolean).join("; ")}). Add an index whose fields start with the ones it filters or sorts by, and query withIndex(). (Shown in dev only, once per query.)`,
+    );
+  }
+
   async get(id: string): Promise<Doc | null> {
     const table = this.parseId(id);
     const read = topic(table, "by_id", [id]);
@@ -177,6 +300,12 @@ export class DocStore {
     let boundField: string | undefined;
     /** Matching documents to pass over before the first one returned: `skip()`. */
     let offset = 0;
+    /** where() predicates, compiled to SQL. */
+    const wheres: Predicate[] = [];
+    /** orderBy()'s keys, in place of the index's order. */
+    let orderKeys: { f: string; desc: boolean }[] | undefined;
+    /** select()'s fields: what each result keeps, besides _id and _creationTime. */
+    let projection: string[] | undefined;
     /** filter() and include() in the order they were called: a filter sees what was included before it. */
     const steps: ({ filter: (doc: Doc) => boolean } | { include: IncludeSpec })[] = [];
 
@@ -202,13 +331,11 @@ export class DocStore {
         const c = this.col(boundField!);
         conds.push({ sql: `${c.expr} ${b.op} ${c.param}`, params: [c.encode(b.value)] });
       }
-      // Order key: the index fields after the equalities, then _creationTime and _id (unique).
-      const keyFields = [...fields.slice(eqs.length).filter((f) => f !== "_creationTime"), "_creationTime", "_id"];
-      const key = keyFields.map((f) => this.col(f));
-      if (after) {
-        const op = order === "asc" ? ">" : "<";
-        conds.push({ sql: `(${key.map((k) => k.expr).join(", ")}) ${op} (${key.map((k) => k.param).join(", ")})`, params: key.map((k, i) => k.encode(after[i])) });
-      }
+      conds.push(...wheres);
+      const keys = orderKey();
+      const keyFields = keys.map((k) => k.f);
+      const key = keys.map((k) => ({ ...this.col(k.f), desc: k.desc }));
+      if (after) conds.push(this.keyset(key, after));
       // Reads of a range or page are tracked at the equality prefix: coarser, never missed.
       const read =
         eqs.length && index !== undefined
@@ -223,16 +350,30 @@ export class DocStore {
         read,
         where: conds.length ? `WHERE ${conds.map((c) => c.sql).join(" AND ")}` : "",
         params: conds.flatMap((c) => c.params),
-        orderBy: key.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", "),
+        orderBy: key.map((k) => `${k.expr}${k.desc ? " DESC" : ""}`).join(", "),
         keyFields,
       };
+    };
+
+    /**
+     * The order key: orderBy()'s fields, or the index's after its equalities; then _creationTime and _id, which make it unique, in the direction
+     * of the last key (so an index on those fields serves the whole order). order("desc") reverses all of it.
+     */
+    const orderKey = () => {
+      const base = orderKeys ?? indexFields().slice(eqs.length).map((f) => ({ f, desc: false }));
+      const keys: { f: string; desc: boolean }[] = [];
+      const tie = base.at(-1)?.desc ?? false;
+      for (const k of [...base, { f: "_creationTime", desc: tie }, { f: "_id", desc: tie }]) if (!keys.some((x) => x.f === k.f)) keys.push(k);
+      return order === "desc" ? keys.map((k) => ({ ...k, desc: !k.desc })) : keys;
     };
 
     const run = async (limit?: number, after?: unknown[], skip = 0) => {
       const p = plan(after);
       // SQLite needs a LIMIT before an OFFSET; Postgres takes any bigint.
       const page = skip ? ` LIMIT ${limit ?? Number.MAX_SAFE_INTEGER} OFFSET ${skip}` : limit === undefined ? "" : ` LIMIT ${limit}`;
-      const rows = await this.select(table, `${SELECT} "${table}" ${p.where} ORDER BY ${p.orderBy}${page}`, p.params, [p.read]);
+      const sql = `${SELECT} "${table}" ${p.where} ORDER BY ${p.orderBy}${page}`;
+      if (wheres.length || orderKeys) await this.explain(table, sql, p.params, wheres.length > 0, Boolean(orderKeys));
+      const rows = await this.select(table, sql, p.params, [p.read]);
       return { docs: rows.map((r) => this.toDoc(r)), keyFields: p.keyFields };
     };
 
@@ -246,7 +387,10 @@ export class DocStore {
       return out;
     };
     const scanned = (docs: Doc[]) => apply(docs, steps.slice(0, lastFilter() + 1));
-    const finish = (docs: Doc[]) => apply(docs, steps.slice(lastFilter() + 1));
+    /** select(): each result keeps _id, _creationTime and the fields asked for (a field it doesn't have stays out). */
+    const project = (docs: Doc[]) =>
+      projection ? docs.map((d) => Object.fromEntries([["_id", d._id], ["_creationTime", d._creationTime], ...projection!.filter((f) => f in d).map((f) => [f, d[f]])]) as Doc) : docs;
+    const finish = async (docs: Doc[]) => project(await apply(docs, steps.slice(lastFilter() + 1)));
 
     /** Up to `want` documents after `after` that pass the filters, past the first `skip` of them, scanning the range in batches. */
     const matches = async (want: number, after?: unknown[], skip = offset) => {
@@ -336,6 +480,29 @@ export class DocStore {
         offset += n;
         return q;
       },
+      /** Keeps the documents the predicate holds for, in the database: where((q) => q.or(q.eq("status", "open"), q.in("priority", [1, 2]))). */
+      where: (build: (b: ReturnType<DocStore["predicates"]>) => unknown) => {
+        if (typeof build !== "function") throw new ValidationError('where() expects a function: where((q) => q.eq("done", false))');
+        const p = build(this.predicates(table));
+        if (!isPredicate(p)) throw new ValidationError("where()'s function must return a predicate from its builder (q.eq, q.and, …)");
+        wheres.push(p);
+        return q;
+      },
+      /** Sorts by these fields, each ascending or descending, then _creationTime and _id; in place of the index's order. */
+      orderBy: (keys: unknown) => {
+        if (!Array.isArray(keys) || !keys.length) throw new ValidationError('orderBy() expects [field, "asc" | "desc"] pairs: orderBy([["dueDate", "asc"], ["priority", "desc"]])');
+        orderKeys = keys.map((k) => {
+          if (!Array.isArray(k) || (k[1] !== "asc" && k[1] !== "desc")) throw new ValidationError(`orderBy() expects [field, "asc" | "desc"] pairs, got ${JSON.stringify(k)}`);
+          return { f: this.fieldName(table, k[0], "orderBy"), desc: k[1] === "desc" };
+        });
+        return q;
+      },
+      /** Keeps only these fields of each result, besides _id and _creationTime. */
+      select: (fields: unknown) => {
+        if (!Array.isArray(fields) || !fields.length) throw new ValidationError('select() expects field names: select(["title", "done"])');
+        projection = fields.map((f) => (typeof f === "string" && IDENT.test(f) ? f : this.fieldName(table, f, "select")));
+        return q;
+      },
       /** Adds related documents to each result; see `IncludeSpec`. */
       include: (spec: IncludeSpec) => {
         this.checkInclude(table, spec);
@@ -370,10 +537,7 @@ export class DocStore {
       paginate: async ({ numItems, cursor, offset: extra = 0, withTotal }: { numItems: number; cursor: string | null; offset?: number; withTotal?: boolean }) => {
         if (!Number.isInteger(numItems) || numItems < 1 || numItems > MAX_PAGE) throw new ValidationError(`paginate() numItems must be an integer from 1 to ${MAX_PAGE}`);
         if (!Number.isInteger(extra) || extra < 0) throw new ValidationError(`paginate() offset must be a non-negative integer, got ${extra}`);
-        const keyLength =
-          indexFields()
-            .slice(eqs.length)
-            .filter((f) => f !== "_creationTime").length + 2;
+        const keyLength = orderKey().length;
         const after = cursor === null ? undefined : decodeCursor(cursor, keyLength);
         // skip() places the first page; a cursor already says where the next one starts. An offset counts from wherever the page starts.
         const skip = (after ? 0 : offset) + extra;
@@ -651,13 +815,87 @@ export class DocStore {
 
   async insert(table: string, value: Record<string, unknown>): Promise<string> {
     const { fields, json } = this.checked(table, value);
-    const _id = `${table}:${crypto.randomUUID().replaceAll("-", "")}`;
-    // Fractional ms keeps insertion order within one process.
-    const _creationTime = performance.timeOrigin + performance.now();
-    await this.tx.execute(`INSERT INTO "${table}" ("_id", "_creationTime", "doc") VALUES (?, ?, ${this.dialect.jsonParam})`, [_id, _creationTime, json]);
-    await this.syncSearch(table, _id, fields);
-    this.written(table, { ...fields, _id });
-    return _id;
+    const [_id] = await this.insertChecked(table, [{ fields, json }]);
+    return _id!;
+  }
+
+  /** Writes documents already validated: one INSERT per 200 rows, each with a fresh id and a creation time after the last. */
+  private async insertChecked(table: string, rows: { fields: Record<string, unknown>; json: string }[]) {
+    const docs = rows.map((r) => ({ ...r, _id: `${table}:${crypto.randomUUID().replaceAll("-", "")}`, _creationTime: creationTime() }));
+    for (let i = 0; i < docs.length; i += 200) {
+      const part = docs.slice(i, i + 200);
+      await this.tx.execute(
+        `INSERT INTO "${table}" ("_id", "_creationTime", "doc") VALUES ${part.map(() => `(?, ?, ${this.dialect.jsonParam})`).join(", ")}`,
+        part.flatMap((d) => [d._id, d._creationTime, d.json]),
+      );
+    }
+    for (const d of docs) {
+      await this.syncSearch(table, d._id, d.fields);
+      this.written(table, { ...d.fields, _id: d._id });
+    }
+    return docs.map((d) => d._id);
+  }
+
+  /** Validates every value against the schema first. `all` (the default) writes none if any is invalid; `partial` writes the valid ones and lists the rest. */
+  async insertMany(table: string, values: Record<string, unknown>[], opts?: { mode?: BatchMode }) {
+    const mode = batchMode("insertMany", opts);
+    if (!Array.isArray(values)) throw new ValidationError("insertMany() expects an array of documents");
+    if (!this.writes) throw new Error("Database is read-only in queries");
+    const checked = values.map((value, index) => {
+      try {
+        return { index, ...this.checked(table, value) };
+      } catch (e) {
+        if (e instanceof ValidationError) return { index, error: e.message };
+        throw e;
+      }
+    });
+    const errors = checked.filter((c): c is { index: number; error: string } => "error" in c).map((c) => ({ index: c.index, message: c.error }));
+    if (mode === "all" && errors.length) throw new ValidationError(`insertMany() on "${table}": ${errors.length} of ${values.length} documents are invalid, so none was inserted. Document ${errors[0]!.index}: ${errors[0]!.message}`);
+    const valid = checked.filter((c): c is { index: number; fields: Record<string, unknown>; json: string } => !("error" in c));
+    const ids = await this.insertChecked(table, valid);
+    if (mode === "all") return ids;
+    const byIndex: (string | null)[] = values.map(() => null);
+    valid.forEach((c, i) => (byIndex[c.index] = ids[i]!));
+    return { ids: byIndex, errors };
+  }
+
+  /** Patches many documents of `table` (shallow merges, like patch()), every result validated before any is written; `mode` as for insertMany(). */
+  async updateMany(table: string, updates: { id: string; patch: Record<string, unknown> }[], opts?: { mode?: BatchMode }) {
+    const mode = batchMode("updateMany", opts);
+    if (!Array.isArray(updates)) throw new ValidationError("updateMany() expects an array of { id, patch }");
+    if (!this.writes) throw new Error("Database is read-only in queries");
+    this.table(table);
+    const ids = [...new Set(updates.map((u) => u?.id).filter((id): id is string => typeof id === "string" && id.startsWith(`${table}:`)))];
+    const current = new Map<string, Doc>();
+    for (let i = 0; i < ids.length; i += IN_CHUNK) {
+      const chunk = ids.slice(i, i + IN_CHUNK);
+      for (const row of await this.tx.query(`${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk)) current.set(row._id, this.toDoc(row));
+    }
+    const writes: { id: string; old: Doc; fields: Record<string, unknown>; json: string }[] = [];
+    const errors: { index: number; message: string }[] = [];
+    updates.forEach((u, index) => {
+      try {
+        if (typeof u?.id !== "string" || !u.id.startsWith(`${table}:`)) throw new ValidationError(`${JSON.stringify(u?.id)} is not an id of "${table}"`);
+        if (typeof u.patch !== "object" || u.patch === null) throw new ValidationError("patch must be an object");
+        const old = current.get(u.id);
+        if (!old) throw new ValidationError(`Document ${u.id} not found`);
+        const { _id, _creationTime, ...rest } = old;
+        const { fields, json } = this.checked(table, { ...rest, ...u.patch });
+        writes.push({ id: u.id, old, fields, json });
+        current.set(u.id, { _id, _creationTime, ...fields }); // a later update of the same document applies on top of this one
+      } catch (e) {
+        if (!(e instanceof ValidationError)) throw e;
+        errors.push({ index, message: e.message });
+      }
+    });
+    if (mode === "all" && errors.length) throw new ValidationError(`updateMany() on "${table}": ${errors.length} of ${updates.length} updates are invalid, so none was applied. Update ${errors[0]!.index}: ${errors[0]!.message}`);
+    for (const w of writes) {
+      await this.tx.execute(`UPDATE "${table}" SET "doc" = ${this.dialect.jsonParam} WHERE "_id" = ?`, [w.json, w.id]);
+      await this.syncSearch(table, w.id, w.fields);
+      this.written(table, w.old);
+      this.written(table, { ...w.fields, _id: w.id });
+    }
+    return mode === "all" ? null : { errors };
   }
 
   private async update(id: string, next: (old: Doc) => Record<string, unknown>) {

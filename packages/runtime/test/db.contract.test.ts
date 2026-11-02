@@ -254,6 +254,103 @@ for (const [label, make] of dbAdapters) {
       await expect(page({ numItems: 2, cursor: null, offset: 100_001 })).rejects.toThrow("paginate() passes over at most 100000 documents, got 100001");
     });
 
+    test("where(): predicates run in the database, and rows they reject are never loaded", async () => {
+      db = await make();
+      await db.migrate(specs);
+      const tags = ["alpha", "beta", "Alpine", "gamma", "alps"];
+      for (let n = 1; n <= 10; n++) await write((s) => s.insert("notes", { body: `note ${n}`, tag: tags[n % 5]!, n }));
+      const ns = (docs: any[]) => docs.map((d) => d.n);
+      const where = (build: (q: any) => any, q = (s: DocStore) => s.query("notes").withIndex("by_n")) => read<any[]>((s) => (q(s) as any).where(build).collect()).then(ns);
+
+      expect(await where((q) => q.eq("tag", "beta"))).toEqual([1, 6]);
+      expect(await where((q) => q.gt("n", 8))).toEqual([9, 10]);
+      expect(await where((q) => q.lte("n", 2))).toEqual([1, 2]);
+      expect(await where((q) => q.between("n", 4, 6))).toEqual([4, 5, 6]);
+      expect(await where((q) => q.in("n", [2, 7, 99]))).toEqual([2, 7]);
+      expect(await where((q) => q.in("n", []))).toEqual([]);
+      expect(await where((q) => q.prefix("tag", "alp"))).toEqual([4, 5, 9, 10]); // case-sensitive: not "Alpine"
+      expect(await where((q) => q.or(q.eq("n", 1), q.and(q.gt("n", 5), q.prefix("tag", "gam"))))).toEqual([1, 8]);
+      expect(await where((q) => q.not(q.lt("n", 9)))).toEqual([9, 10]);
+      expect(await where((q) => q.and(q.neq("tag", "alpha"), q.neq("tag", "alps"), q.gt("n", 4)))).toEqual([6, 7, 8]);
+      expect(await where((q) => q.eq("n", 3)).then(() => where((q) => q.gt("_creationTime", 0)))).toHaveLength(10);
+      // With an index range, a second where(), skip, count and pages: all of it in SQL.
+      expect(await where((q) => q.gte("n", 3), (s) => s.query("notes").withIndex("by_n", (q: any) => q.lte("n", 6)))).toEqual([3, 4, 5, 6]);
+      expect(ns(await read((s) => (s.query("notes") as any).where((q: any) => q.gt("n", 2)).where((q: any) => q.lt("n", 6)).skip(1).take(2)))).toEqual([4, 5]);
+      expect(await read((s) => (s.query("notes") as any).where((q: any) => q.prefix("tag", "a")).count())).toBe(4);
+      const seen: number[] = [];
+      for (let cursor: string | null = null; ; ) {
+        const page: any = await read((s) => (s.query("notes").withIndex("by_n") as any).where((q: any) => q.neq("tag", "beta")).paginate({ numItems: 3, cursor }));
+        seen.push(...ns(page.page));
+        if (page.isDone) break;
+        cursor = page.continueCursor;
+      }
+      expect(seen).toEqual([2, 3, 4, 5, 7, 8, 9, 10]);
+      // Only the matching rows come back from the database.
+      let rows = 0;
+      await db.transaction("read", (tx) =>
+        (new DocStore({ query: (q: string, p?: unknown[]) => tx.query(q, p).then((r) => ((rows += r.length), r)), execute: tx.execute } as DbTx, db.dialect, tables).query("notes") as any)
+          .where((q: any) => q.eq("tag", "gamma"))
+          .collect(),
+      );
+      expect(rows).toBe(2);
+
+      await expect(read((s) => (s.query("notes") as any).where((q: any) => q.eq("n; DROP TABLE notes", 1)).collect())).rejects.toThrow("is not a field name");
+      await expect(read((s) => (s.query("notes") as any).where((q: any) => q.eq("nope", 1)).collect())).rejects.toThrow('"nope" is not a field of "notes"');
+      await expect(read((s) => (s.query("notes") as any).where(() => ({ sql: "1 = 1", params: [] })).collect())).rejects.toThrow("must return a predicate");
+    });
+
+    test("orderBy() sorts by several keys each way, pages cover everything once, and select() keeps what's asked", async () => {
+      db = await make();
+      await db.migrate(specs);
+      for (let n = 1; n <= 9; n++) await write((s) => s.insert("notes", { body: `b${n}`, tag: ["x", "y", "z"][n % 3]!, n }));
+      const pairs = (docs: any[]) => docs.map((d) => `${d.tag}${d.n}`);
+      const sorted = (s: DocStore) => (s.query("notes") as any).orderBy([["tag", "desc"], ["n", "asc"]]);
+      const want = ["z2", "z5", "z8", "y1", "y4", "y7", "x3", "x6", "x9"];
+      expect(pairs(await read((s) => sorted(s).collect()))).toEqual(want);
+      expect(pairs(await read((s) => sorted(s).order("desc").collect()))).toEqual([...want].reverse());
+      for (const order of ["asc", "desc"] as const) {
+        const seen: string[] = [];
+        for (let cursor: string | null = null; ; ) {
+          const page: any = await read((s) => sorted(s).order(order).paginate({ numItems: 2, cursor }));
+          seen.push(...pairs(page.page));
+          if (page.isDone) break;
+          cursor = page.continueCursor;
+        }
+        expect(seen).toEqual(order === "asc" ? want : [...want].reverse());
+      }
+      const slim: any[] = await read((s) => (s.query("notes").withIndex("by_n") as any).select(["n"]).take(2));
+      expect(slim.map((d) => Object.keys(d).sort())).toEqual([["_creationTime", "_id", "n"], ["_creationTime", "_id", "n"]]);
+      await expect(read((s) => (s.query("notes") as any).orderBy([["n", "up"]]).collect())).rejects.toThrow('orderBy() expects [field, "asc" | "desc"] pairs');
+      await expect(read((s) => (s.query("notes") as any).select([]).collect())).rejects.toThrow("select() expects field names");
+    });
+
+    test("insertMany and updateMany validate every row first: all or nothing, or partial with the reasons", async () => {
+      db = await make();
+      await db.migrate(specs);
+      const ids: string[] = await write((s: any) => s.insertMany("notes", [1, 2, 3].map((n) => ({ body: `b${n}`, tag: "t", n }))));
+      expect(ids).toHaveLength(3);
+      expect((await read((s) => s.query("notes").collect())).map((d: any) => d.n)).toEqual([1, 2, 3]); // in the order given
+      await expect(write((s: any) => s.insertMany("notes", [{ body: "ok", tag: "t", n: 4 }, { body: "bad", tag: "t", n: "five" }]))).rejects.toThrow(
+        'insertMany() on "notes": 1 of 2 documents are invalid, so none was inserted. Document 1: notes.n must be a finite number',
+      );
+      expect(await read((s) => s.query("notes").count())).toBe(3);
+      const partial: any = await write((s: any) => s.insertMany("notes", [{ body: "ok", tag: "t", n: 4 }, { body: "bad", tag: "t" }], { mode: "partial" }));
+      expect(partial.ids[0]).toMatch(/^notes:/);
+      expect(partial.ids[1]).toBeNull();
+      expect(partial.errors).toEqual([{ index: 1, message: expect.stringContaining("notes.n") }]);
+
+      await write((s: any) => s.updateMany("notes", [{ id: ids[0], patch: { tag: "u" } }, { id: ids[0], patch: { n: 10 } }, { id: ids[1], patch: { tag: "u" } }]));
+      expect(await read((s) => s.get(ids[0]!))).toMatchObject({ tag: "u", n: 10 }); // the second update applies on top of the first
+      await expect(write((s: any) => s.updateMany("notes", [{ id: ids[2], patch: { tag: "v" } }, { id: ids[1], patch: { n: "x" } }]))).rejects.toThrow("so none was applied. Update 1");
+      expect(await read((s) => s.get(ids[2]!))).toMatchObject({ tag: "t" });
+      const result: any = await write((s: any) => s.updateMany("notes", [{ id: ids[2], patch: { tag: "v" } }, { id: "notes:missing", patch: { n: 1 } }, { id: ids[0], patch: { n: "x" } }], { mode: "partial" }));
+      expect(result.errors.map((e: any) => e.index)).toEqual([1, 2]);
+      expect(result.errors[0].message).toContain("not found");
+      expect(await read((s) => s.get(ids[2]!))).toMatchObject({ tag: "v" });
+      await expect(write((s: any) => s.insertMany("notes", [], { mode: "some" }))).rejects.toThrow('mode must be "all" or "partial"');
+      await expect(read((s: any) => s.insertMany("notes", []))).rejects.toThrow("read-only");
+    });
+
     test("skip with include joins only the documents returned", async () => {
       db = await make();
       await db.migrate(specs);

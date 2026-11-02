@@ -181,3 +181,47 @@ mutation({
 });
 // @ts-expect-error the arguments of access are the handler's
 query({ args: { n: v.number() }, access: (_ctx, { n }: { n: string }) => n, handler: () => null });
+
+// where(): typed fields and values, run in the database; orderBy() pairs; select() narrows the result.
+query({
+  handler: async (ctx) => {
+    const open = await ctx.db
+      .query("todos")
+      .where((q) => q.and(q.eq("done", false), q.or(q.prefix("title", "Buy"), q.in("points", [1, 2])), q.not(q.lt("points", 0))))
+      .orderBy([["points", "desc"], ["title", "asc"]])
+      .take(10);
+    expectTypeOf(open).toEqualTypeOf<Doc<"todos">[]>();
+    // @ts-expect-error a title is a string
+    ctx.db.query("todos").where((q) => q.eq("title", 1));
+    // @ts-expect-error prefix() is for string fields
+    ctx.db.query("todos").where((q) => q.prefix("points", "1"));
+    // @ts-expect-error not a field of todos
+    ctx.db.query("todos").where((q) => q.gt("nope", 1));
+    // @ts-expect-error a direction is "asc" or "desc"
+    ctx.db.query("todos").orderBy([["title", "up"]]);
+    const slim = await ctx.db.query("todos").include({ list: "listId" }).select(["title", "list"]).collect();
+    expectTypeOf(slim[0]!.title).toEqualTypeOf<string>();
+    expectTypeOf(slim[0]!._id).toEqualTypeOf<Id<"todos">>();
+    expectTypeOf(slim[0]!.list).toEqualTypeOf<Doc<"lists"> | null>();
+    expectTypeOf(slim[0]!).not.toHaveProperty("done");
+    return null;
+  },
+});
+
+// Batch writes: ids for "all", ids with nulls and errors for "partial".
+mutation({
+  args: { listId: v.id("lists") },
+  handler: async (ctx, { listId }) => {
+    const ids = await ctx.db.insertMany("todos", [{ listId, title: "a", done: false }]);
+    expectTypeOf(ids).toEqualTypeOf<Id<"todos">[]>();
+    const partial = await ctx.db.insertMany("todos", [{ listId, title: "b", done: false }], { mode: "partial" });
+    expectTypeOf(partial.ids).toEqualTypeOf<(Id<"todos"> | null)[]>();
+    expectTypeOf(partial.errors[0]!.index).toEqualTypeOf<number>();
+    await ctx.db.updateMany("todos", ids.map((id) => ({ id, patch: { done: true } })));
+    // @ts-expect-error done is a boolean
+    await ctx.db.updateMany("todos", ids.map((id) => ({ id, patch: { done: "yes" } })));
+    // @ts-expect-error a todo needs a title
+    await ctx.db.insertMany("todos", [{ listId, done: false }]);
+    return null;
+  },
+});

@@ -97,6 +97,8 @@ export interface ExecutorOptions {
   log(entry: LogEntry): void;
   /** Keep document reads in an exact read cache: only when this process is the database's only writer. */
   readCache?: ReadCache;
+  /** In dev: where a query without an index to use is reported. */
+  devWarn?: (message: string) => void;
 }
 
 type AfterCommit = (() => unknown)[];
@@ -155,7 +157,7 @@ export class Executor {
   }
 
   private store(tx: DbTx, writes?: Set<string>, cached = true) {
-    return new DocStore(tracedTx(tx, this.system), this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes, cached ? this.o.readCache : undefined);
+    return new DocStore(tracedTx(tx, this.system), this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes, cached ? this.o.readCache : undefined, this.o.devWarn);
   }
 
   /** OpenTelemetry's name for the database, on db spans. */

@@ -58,6 +58,12 @@
         "shiki": "^4.5.0",
       },
     },
+    "benchmarks/batch/forge": {
+      "name": "@archlast/forge-bench-batch",
+      "dependencies": {
+        "@archlast/forge-runtime": "workspace:*",
+      },
+    },
     "benchmarks/twelve-dollar/forge": {
       "name": "@archlast/forge-bench-twelve-dollar",
       "dependencies": {
@@ -236,6 +242,8 @@
     },
   },
   "packages": {
+    "@archlast/forge-bench-batch": ["@archlast/forge-bench-batch@workspace:benchmarks/batch/forge"],
+
     "@archlast/forge-bench-twelve-dollar": ["@archlast/forge-bench-twelve-dollar@workspace:benchmarks/twelve-dollar/forge"],
 
     "@archlast/forge-bench-workers": ["@archlast/forge-bench-workers@workspace:benchmarks/workers/forge"],
