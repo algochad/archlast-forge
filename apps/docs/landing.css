@@ -51,13 +51,6 @@
 .spec-cell b { font-size: 2.6rem; line-height: 1; letter-spacing: -0.05em; font-weight: 600; margin-top: 6px; font-variant-numeric: tabular-nums; }
 .spec-cell span:last-child { color: var(--muted); font-size: 14px; }
 
-.builton { display: flex; align-items: baseline; gap: 24px; padding: 22px max(32px, calc((100% - 1176px) / 2)); border-bottom: 1px solid var(--border); }
-.builton p { margin: 0; color: var(--muted); font-size: 14.5px; }
-.marquee { display: flex; flex: 1; min-width: 0; overflow: hidden; mask-image: linear-gradient(90deg, transparent, #000 6%, #000 94%, transparent); }
-.track { display: flex; flex: none; white-space: nowrap; animation: marquee 34s linear infinite; }
-.marquee:hover .track { animation-play-state: paused; }
-@keyframes marquee { to { transform: translateX(-100%); } }
-.builton i { font-style: normal; color: var(--border-strong); margin: 0 12px; }
 
 /* Sections */
 .sec { padding: 104px 0 40px; }
@@ -207,13 +200,10 @@
   .spec-cell:nth-child(n + 3) { border-top: 1px solid var(--border); }
   .cells { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .two, .step { grid-template-columns: minmax(0, 1fr); gap: 32px; }
-  .builton { flex-direction: column; gap: 10px; }
-  .marquee { align-self: stretch; }
 }
 @media (max-width: 640px) {
-  .wrap, .hero-in, .builton, .foot-in, .foot-bar { padding-left: 20px; padding-right: 20px; }
-  .spec, .builton { padding-left: 0; padding-right: 0; }
-  .builton { padding-left: 20px; padding-right: 20px; }
+  .wrap, .hero-in, .foot-in, .foot-bar { padding-left: 20px; padding-right: 20px; }
+  .spec { padding-left: 0; padding-right: 0; }
   .spec-cell { padding: 20px; }
   .cells { grid-template-columns: minmax(0, 1fr); }
   .cell { min-height: 0; }
@@ -231,7 +221,4 @@
   .bw, .hero h1 .hl .bw { animation: none; }
   .hero-grid::before, .hero-grid::after { animation: none; }
   [data-reveal] { opacity: 1; transform: none; transition: none; }
-  .marquee { mask-image: none; }
-  .track { animation: none; flex-wrap: wrap; white-space: normal; }
-  .track[aria-hidden] { display: none; }
 }

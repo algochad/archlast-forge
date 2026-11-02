@@ -9,37 +9,40 @@ const code = snippets();
 
 const features: [string, string, Slug][] = [
   ["Live queries", "A query's result updates in every open window when the data it read changes. No polling, no refresh code.", "reactivity"],
-  ["Typed end to end", "The client's types come from your functions. Arguments and results are validated on the server.", "clients"],
-  ["Auth built in", "Better Auth with email and password out of the box. Plugins and social sign-in through one file.", "auth"],
-  ["SQLite or PostgreSQL", "A single file to start, a shared database when you grow. Add Redis to run several servers.", "deployment"],
-  ["Full-stack React", "File routes, server rendering, loaders and live data in one process, built with Bun.", "framework"],
-  ["Backend mode", "The engine and its services as a Docker Compose stack, for any frontend or none at all.", "backend"],
-  ["HTTP endpoints", "Webhooks and public APIs as plain routes, run as actions with the same database and auth.", "http"],
+  ["Typed end to end", "Clients get their types from your functions, and the server checks every argument and every result.", "clients"],
+  ["Queries that stay fast", "Indexes, filters, sorting and pagination run as SQL, and development warns about any query that scans a whole table.", "queries"],
+  ["Sign-in built in", "Email and password out of the box, social sign-in and more from one file, and sessions every function can read.", "auth"],
+  ["File storage", "Uploads straight to S3-compatible storage, or files kept on the server's own disk behind signed links.", "storage"],
   ["Scheduling and crons", "Run a function later or on a schedule. Scheduled mutations run exactly once.", "scheduling"],
-  ["File storage", "Browser-to-S3 uploads with presigned URLs. File bytes never pass through the engine.", "storage"],
+  ["HTTP and API docs", "Webhooks and public routes beside your functions, with an OpenAPI document and an explorer generated from them.", "api-docs"],
+  ["A dashboard", "Browse and edit data, run functions, read logs, manage users and change settings, from the browser.", "dashboard"],
+  ["Tracing and metrics", "Every request timed and traced, with error tracking, SLOs and alerts, kept in your own database.", "observability"],
+  ["Backups", "The database and its files on a schedule, to a folder or a bucket, restored from the dashboard or the CLI.", "backups"],
+  ["Services that call services", "Forge RPC: typed calls from one backend to another, checked against the service's own generated types.", "forge-rpc"],
+  ["One repo, many apps", "A monorepo with the app, its services, and mobile and desktop apps, all sharing generated types.", "monorepo"],
 ];
 
 const promises = [
   ["Transactions", "Every mutation runs in one. It commits whole or not at all."],
-  ["Types from your code", "Change a function and the client's types change with it. No codegen step to forget."],
+  ["Types from your code", "Change a function and the client's types change with it. Development regenerates them as you save."],
   ["Narrow live queries", "A query wakes only for writes it could have seen, so a busy table doesn't wake everyone."],
   ["Honest retries", "Scheduled mutations run exactly once. Actions run at most once and never retry on their own."],
-  ["Your data, your disk", "One deployment per app, on SQLite or PostgreSQL that you run. No control plane."],
+  ["Room to grow", "Add function processes from the dashboard without a restart, and run several servers on PostgreSQL with Redis between them."],
+  ["Your data, your disk", "One deployment per app, on SQLite or PostgreSQL that you run. No control plane, no account to sign up for."],
 ];
 
 const steps: [string, string, typeof code.schema, Slug][] = [
   ["Describe your data", "A schema with validators gives every document a TypeScript type and rejects bad writes before they reach the database. Indexes make reads narrow, which keeps live queries cheap.", code.schema, "schema"],
   ["Write functions", "Queries read, mutations write inside a transaction, actions talk to the outside world. Your code runs on your server, next to your data.", code.functions, "functions"],
-  ["Use them, live", "Call a function from React, Vue or Svelte. The component shows the result and updates itself whenever it changes.", code.component, "clients"],
+  ["Use them, live", "Call a function from a page. The component shows the result and updates itself whenever it changes, in every window that has it open.", code.component, "clients"],
 ];
 
 const spec = [
   ["Container", 1, "runs the whole app"],
   ["Databases", 2, "SQLite or PostgreSQL"],
-  ["Clients", 3, "React, Vue and Svelte"],
+  ["Accounts", 0, "to sign up for: it runs on your servers"],
   ["Docs", reading.length, "pages, with a tutorial"],
 ] as const;
-const stack = ["Bun", "SQLite", "PostgreSQL", "Redis", "S3 storage", "Better Auth", "React Router", "TanStack Query", "Zod"];
 
 const Tag = ({ children }: { children: ReactNode }) => <span className="tag">{children}</span>;
 const More = ({ to, children }: { to: string; children: ReactNode }) => (
@@ -185,7 +188,7 @@ function Footer() {
       <div className="foot-in">
         <div className="foot-brand">
           <Link className="brand" to="/"><Mark /><span>archlast-forge</span></Link>
-          <p>A self-hosted reactive backend for TypeScript apps, with an optional full-stack React framework.</p>
+          <p>A self-hosted reactive backend for TypeScript apps: full-stack apps, backends and the services between them.</p>
           <Link className="btn" to="/getting-started">Get started <Arrow /></Link>
         </div>
         {stack("Start", "Project modes")}
@@ -231,7 +234,7 @@ export function Landing() {
                 <Words text="The reactive backend you" />{" "}
                 <span className="hl"><Words text="host yourself" from={4} /></span>.
               </h1>
-              <p className="lede">Typed queries and mutations with live results, on SQLite or PostgreSQL. Auth, storage and a full-stack React framework are built in. It runs as one container, on your own servers.</p>
+              <p className="lede">Typed queries and mutations with live results, on SQLite or PostgreSQL. Sign-in, file storage, jobs, a dashboard, tracing and backups are built in. It runs as one container, on your own servers.</p>
               <div className="cta">
                 <Link className="btn solid" to="/getting-started">Get started</Link>
                 <Link className="btn" to="/introduction">Read the docs</Link>
@@ -257,20 +260,9 @@ export function Landing() {
           </div>
         </section>
 
-        <section className="builton" aria-label="Built on">
-          <span className="label">Built on</span>
-          <div className="marquee">
-            {[0, 1].map((copy) => (
-              <p className="track" key={copy} aria-hidden={copy ? true : undefined}>
-                {stack.map((s) => <span key={s}>{s}<i>/</i></span>)}
-              </p>
-            ))}
-          </div>
-        </section>
-
         <section className="sec">
           <div className="wrap">
-            <div className="sec-head" data-reveal><Tag>What is inside</Tag><h2>Everything a backend needs, in one deploy</h2><p>The model will be familiar if you have used Convex. The difference is that you run it.</p></div>
+            <div className="sec-head" data-reveal><Tag>What is inside</Tag><h2>Everything a backend needs, in one deploy</h2><p>Your data and functions, sign-in, files and jobs, and the tools to run them in production: one engine, deployed on servers you choose.</p></div>
             <div className="cells">
               {features.map(([title, text, to], i) => (
                 <Link className="cell" to={`/${to}`} key={title} onPointerMove={spot} data-reveal style={at("--d", i % 3)}>
@@ -315,14 +307,14 @@ export function Landing() {
             <div className="modes">
               <Link className="mode" to="/framework" onPointerMove={spot} data-reveal>
                 <h3>Full-stack app</h3>
-                <p>React pages rendered on the server, file routes and your backend in one container. A SQLite file is all it needs to start.</p>
+                <p>Pages rendered on the server, file routes and your backend in one container. A SQLite file is all it needs to start.</p>
                 <ul><li>Loaders with data already in the first HTML</li><li>One process in development, with live reload</li><li>Deploy with <code>bun run up</code></li></ul>
                 <span className="more">Full-stack apps <Arrow /></span>
               </Link>
               <Link className="mode" to="/backend" onPointerMove={spot} data-reveal style={at("--d", 1)}>
                 <h3>Backend only</h3>
-                <p>The engine and its services as a Compose stack, for a mobile app, a separate frontend, or no frontend.</p>
-                <ul><li>PostgreSQL, Redis and S3 storage included</li><li>Optional Caddy for HTTPS</li><li>Same client libraries for React, Vue and Svelte</li></ul>
+                <p>The engine and its services as one stack of containers, for a mobile app, a separate frontend, other services, or no frontend.</p>
+                <ul><li>PostgreSQL, Redis and S3 storage included</li><li>HTTPS from a proxy in the same stack</li><li>Typed clients for web, mobile and desktop apps</li></ul>
                 <span className="more">Backends <Arrow /></span>
               </Link>
             </div>
