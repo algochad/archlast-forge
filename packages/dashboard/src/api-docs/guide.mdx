@@ -1,0 +1,24 @@
+# Calling this API
+
+Everything here is generated from the code that runs: the functions in `forge/`, the routes in `forge/http.ts` and the NestJS controllers, with the validators the engine checks every call against. A change to a function's arguments shows up here on the next load.
+
+## Functions
+
+Every public query, mutation and action answers `POST /rpc/<module>:<name>` with its arguments as a JSON object:
+
+```bash
+curl -X POST https://app.example.com/rpc/messages:send \
+  -H "content-type: application/json" \
+  -d '{"body":"Hello"}'
+# {"result":"messages:4f1c..."}
+```
+
+The answer is `{ "result": … }`, or `{ "error": { "message", "code", "requestId" } }` with a matching status: `400` for arguments that don't match (or a `ForgeError`), `401` when the function needs a signed-in caller, `408` past the time limit, `429` when rate limited, `500` otherwise. A query also answers `GET /rpc/<name>?args=<JSON>`, and the WebSocket at `/rpc` keeps it live; the client libraries do both for you.
+
+## HTTP routes and controllers
+
+Routes from `forge/http.ts` and NestJS controllers are served under `/http`. A route that declares its `query` or `body` (or a controller method with `@Contract`) answers `400` with the reason when a request doesn't match, before its handler runs.
+
+## Signing in
+
+Sessions are Better Auth's, at `/api/auth`: a browser sends the session cookie it was given at sign-in; other clients send `Authorization: Bearer <token>` when the app enables Better Auth's bearer plugin. Each function decides what an anonymous caller may do.

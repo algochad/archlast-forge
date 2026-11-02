@@ -57,6 +57,14 @@ export const SETTINGS: SettingDef[] = [
   { name: "ADMIN_KEY", group: "Auth", type: "string", secret: true, default: "generated in dev", doc: "An owner credential for the dashboard and the CLI's data commands.", envOnly: ACCESS },
   { name: "DASHBOARD", group: "Auth", type: "bool", default: "on in dev, off otherwise", doc: "Serve /_dashboard and its API.", envOnly: ACCESS },
   {
+    name: "API_DOCS",
+    group: "Server",
+    type: "bool",
+    default: "on in dev, off otherwise",
+    doc: "Serve the OpenAPI document (API_DOCS_PATH/openapi.json), the API docs page and the explorer. It lists every public function and HTTP route.",
+  },
+  { name: "API_DOCS_PATH", group: "Server", type: "string", default: "/_api", doc: "Where the API docs are served." },
+  {
     name: "ALLOW_CUSTOM_FUNCTIONS",
     group: "Auth",
     type: "bool",

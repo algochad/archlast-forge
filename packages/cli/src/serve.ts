@@ -1,7 +1,7 @@
 import { startServer, type AppHost, type RunningServer } from "@archlast/forge-runtime/server";
 import { watch } from "node:fs";
 import { basename } from "node:path";
-import { fail, loadDashboard } from "./common";
+import { fail, loadApiDocs, loadDashboard } from "./common";
 
 export interface ServeOptions {
   forgeDir: string;
@@ -21,9 +21,10 @@ export interface ServeOptions {
  */
 export async function serve(opts: ServeOptions): Promise<RunningServer> {
   const dashboard = await loadDashboard();
+  const apiDocs = await loadApiDocs();
   let current: RunningServer;
   let restarting: Promise<void> | undefined;
-  const start = () => startServer({ forgeDir: opts.forgeDir, dev: opts.dev, env: opts.env, dashboard, app: opts.app, restart });
+  const start = () => startServer({ forgeDir: opts.forgeDir, dev: opts.dev, env: opts.env, dashboard, apiDocs, app: opts.app, restart });
   async function restart() {
     if (restarting) return restarting;
     restarting = (async () => {

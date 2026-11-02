@@ -51,6 +51,8 @@ export async function generate(dir: string) {
 }
 
 export const loadDashboard = async () => (await import("@archlast/forge-dashboard")).default;
+/** The API docs page and explorer, served when API_DOCS is on. */
+export const loadApiDocs = async () => (await import("@archlast/forge-dashboard/api-docs")).default;
 
 /** The CLI's own version; the engine image is tagged with it. */
 export const VERSION: string = JSON.parse(readFileSync(new URL("../package.json", import.meta.url), "utf8")).version;

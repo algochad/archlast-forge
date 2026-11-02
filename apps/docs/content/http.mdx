@@ -44,6 +44,27 @@ http.route({ method, pathPrefix, handler });  // everything below a prefix
 
 A route needs exactly one of `path` and `pathPrefix`. Mistakes fail when `forge/http.ts` loads, with a message that names the route: a bad method, a path that doesn't start with `/`, a prefix that doesn't start and end with `/`, a missing `httpAction`, or the same method and path registered twice.
 
+### Validators and the OpenAPI document
+
+A route can declare what it takes and answers with, in the validators functions use:
+
+```ts
+http.route({
+  method: "POST",
+  path: "/orders",
+  summary: "Place an order",
+  tags: ["Orders"],
+  query: { dryRun: v.optional(v.boolean()), limit: v.optional(v.number()) },
+  body: v.object({ sku: v.string(), qty: v.number(), note: v.optional(v.string()) }),
+  returns: v.object({ id: v.string() }),
+  handler: httpAction(async (ctx, request) => { /* request.json() is the checked body */ }),
+});
+```
+
+- **`query` and `body` are checked before the handler runs.** A request that doesn't match gets `400` with `{ "error": { "code": "BAD_REQUEST", "message": "body.qty must be a finite number, got \"two\"" } }`, and the handler never sees it. A body that isn't JSON gets `The body must be JSON`. The handler still receives the request as it came: read the body as usual.
+- Query values arrive as text: a `v.number()` or `v.boolean()` parameter is converted first (`limit=5`, `dryRun=true`), and a `v.array(...)` one takes every value given (`?tag=a&tag=b`).
+- `returns`, `summary`, `description` and `tags` are for the [OpenAPI document](api-docs.html) and the API docs page, as are `query` and `body`. A route without any of them is still listed, with its method and path.
+
 ### No path parameters
 
 Paths are literal: `/orders/:id` would only match a request for the text `:id`. Register `pathPrefix: "/orders/"` and read the rest yourself with `new URL(request.url).pathname.slice("/orders/".length)`.

@@ -4,8 +4,13 @@
 // server (onSocket): Nest never opens a server of its own. GraphQL, WebSocket gateways and microservices have their own entries.
 import "reflect-metadata";
 import {
+  applyDecorators,
   BadRequestException,
   Catch,
+  SetMetadata,
+  UseInterceptors,
+  type CallHandler,
+  type NestInterceptor,
   Controller as NestController,
   Injectable as NestInjectable,
   createParamDecorator,
@@ -30,7 +35,7 @@ import {
   type VersioningOptions,
   type WsMessageHandler,
 } from "@nestjs/common";
-import { AbstractHttpAdapter, BaseExceptionFilter, ContextIdFactory, NestFactory, REQUEST } from "@nestjs/core";
+import { AbstractHttpAdapter, BaseExceptionFilter, ContextIdFactory, ModulesContainer, NestFactory, REQUEST } from "@nestjs/core";
 import type { ContextId } from "@nestjs/core";
 import type { MicroserviceOptions } from "@nestjs/microservices";
 import { IoAdapter } from "@nestjs/platform-socket.io";
@@ -45,6 +50,9 @@ import { Readable } from "node:stream";
 import { match } from "path-to-regexp";
 import { EMPTY, filter, fromEvent, mergeMap, takeUntil, type Observable } from "rxjs";
 import { httpAction, type ActionCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
+import { queryValue } from "./server/http";
+import { NEST_MOUNT, type NestRoute } from "./server/openapi";
+import { validate, validateFields, ValidationError, type PropertyValidators, type Validator } from "./values";
 
 export * from "@nestjs/common";
 export { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE, BaseExceptionFilter, ModuleRef, Reflector } from "@nestjs/core";
@@ -262,7 +270,74 @@ export function nest(http: { route(spec: HttpRoute): void }, options: NestOption
   started.catch(() => {}); // reported to every call that needs the app
 
   const handler = httpAction(async (ctx, request) => (await started!).adapter.handle(request, ctx));
+  (handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] = true;
   for (const method of METHODS) http.route({ method, pathPrefix: prefix, handler });
+  (globalThis as Record<symbol, unknown>)[NEST_ROUTES] = async () => routesOf((await started!).app, prefix);
+}
+
+/**
+ * A route's contract, in the engine's validators: checked on every request before the handler runs (a mismatch answers 400 with the reason),
+ * and described in the OpenAPI document, so the two can't drift. `params` and `query` values arrive as text and are converted the way
+ * /http routes convert theirs.
+ *
+ *     @Post(":id/items") @Contract({ params: { id: v.string() }, body: v.object({ sku: v.string(), qty: v.number() }), returns: v.object({ ok: v.boolean() }) })
+ */
+export interface ContractSpec {
+  body?: Validator;
+  query?: PropertyValidators;
+  params?: PropertyValidators;
+  returns?: Validator;
+  summary?: string;
+  description?: string;
+  tags?: string[];
+}
+const CONTRACT = "archlast-forge:contract";
+const NEST_ROUTES = Symbol.for("archlast-forge.nest-routes");
+
+class ContractInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler) {
+    const spec = Reflect.getMetadata(CONTRACT, context.getHandler()) as ContractSpec | undefined;
+    if (spec) {
+      const req = context.switchToHttp().getRequest<ForgeRequest>();
+      const fromText = (fields: PropertyValidators, given: Record<string, string | string[] | undefined>) =>
+        Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, given[k] === undefined ? undefined : queryValue(v, [given[k]!].flat())]));
+      try {
+        if (spec.params) validateFields(spec.params, fromText(spec.params, req.params), "params");
+        if (spec.query) validateFields(spec.query, fromText(spec.query, req.query), "query");
+        if (spec.body) validate(spec.body, req.body, "body");
+      } catch (e) {
+        if (e instanceof ValidationError) throw new BadRequestException(e.message);
+        throw e;
+      }
+    }
+    return next.handle();
+  }
+}
+NestInjectable()(ContractInterceptor);
+
+export const Contract = (spec: ContractSpec) => applyDecorators(SetMetadata(CONTRACT, spec), UseInterceptors(ContractInterceptor));
+
+/** Every controller route of the app, from Nest's own metadata (paths, methods) and @Contract: what the OpenAPI document lists. */
+function routesOf(app: INestApplication, prefix: string): NestRoute[] {
+  const routes: NestRoute[] = [];
+  const join = (...parts: string[]) => "/" + parts.map((p) => p.replace(/^\/+|\/+$/g, "")).filter(Boolean).join("/");
+  // Nest's PATH_METADATA and METHOD_METADATA keys, as @nestjs/common's constants define them.
+  for (const module of app.get(ModulesContainer, { strict: false }).values())
+    for (const wrapper of module.controllers.values()) {
+      const cls = wrapper.metatype as Type | undefined;
+      if (!cls?.prototype) continue;
+      const bases = [Reflect.getMetadata("path", cls) ?? "/"].flat() as string[];
+      for (const key of Object.getOwnPropertyNames(cls.prototype)) {
+        const fn = (cls.prototype as Record<string, unknown>)[key];
+        if (key === "constructor" || typeof fn !== "function") continue;
+        const method = Reflect.getMetadata("method", fn) as RequestMethod | undefined;
+        const paths = Reflect.getMetadata("path", fn) as string | string[] | undefined;
+        if (method === undefined || paths === undefined || !METHOD_NAMES[method]) continue;
+        for (const base of bases)
+          for (const p of [paths].flat()) routes.push({ method: METHOD_NAMES[method]!, path: join("http", prefix, base, p), name: `${cls.name}.${key}`, contract: Reflect.getMetadata(CONTRACT, fn) });
+      }
+    }
+  return routes;
 }
 
 const contexts = new WeakMap<object, ContextId>();

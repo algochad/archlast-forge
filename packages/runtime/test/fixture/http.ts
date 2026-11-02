@@ -1,4 +1,4 @@
-import { anyApi, ForgeError, httpAction, httpRouter } from "../../src/index";
+import { anyApi, ForgeError, httpAction, httpRouter, v } from "../../src/index";
 
 const api = anyApi;
 const http = httpRouter();
@@ -40,5 +40,19 @@ http.route({
 http.route({ method: "GET", path: "/boom", handler: httpAction(async () => { throw new Error("secret internal detail"); }) });
 http.route({ method: "GET", path: "/forge-fail", handler: httpAction(async () => { throw new ForgeError({ code: "NOPE" }); }) });
 http.route({ method: "GET", path: "/not-a-response", handler: httpAction((async () => "text") as any) });
+// A route with a contract: the engine checks the query and body before the handler runs, and the OpenAPI document describes all three.
+http.route({
+  method: "POST",
+  path: "/orders",
+  summary: "Place an order",
+  tags: ["Orders"],
+  query: { dryRun: v.optional(v.boolean()), limit: v.optional(v.number()) },
+  body: v.object({ sku: v.string(), qty: v.number(), note: v.optional(v.string()) }),
+  returns: v.object({ sku: v.string(), qty: v.number(), dryRun: v.boolean() }),
+  handler: httpAction(async (_ctx, req) => {
+    const body = (await req.json()) as { sku: string; qty: number };
+    return json({ sku: body.sku, qty: body.qty, dryRun: new URL(req.url).searchParams.get("dryRun") === "true" });
+  }),
+});
 
 export default http;

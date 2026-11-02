@@ -39,7 +39,8 @@ function stage(dir: string, dist: boolean) {
   const target = join(OUT, "stage", dir);
   rmSync(target, { recursive: true, force: true });
   mkdirSync(target, { recursive: true });
-  for (const entry of dist ? ["dist"] : ["src", "template"]) if (existsSync(join(src, entry))) cpSync(join(src, entry), join(target, entry), { recursive: true });
+  // vendor/: files kept as they come from elsewhere (the dashboard's Scalar explorer).
+  for (const entry of dist ? ["dist"] : ["src", "template", "vendor"]) if (existsSync(join(src, entry))) cpSync(join(src, entry), join(target, entry), { recursive: true });
   cpSync(join(ROOT, "LICENSE"), join(target, "LICENSE"));
   // Code ported from other projects keeps their license notices with it.
   const notices = existsSync(join(src, "THIRD_PARTY_NOTICES.md"));
@@ -67,7 +68,7 @@ function stage(dir: string, dist: boolean) {
     ...(exportsOut && { exports: exportsOut }),
     dependencies: pin(pkg.dependencies),
     peerDependencies: pin(pkg.peerDependencies),
-    files: [...(dist ? ["dist"] : ["src", "template"].filter((f) => existsSync(join(src, f)))), ...(notices ? ["THIRD_PARTY_NOTICES.md"] : [])],
+    files: [...(dist ? ["dist"] : ["src", "template", "vendor"].filter((f) => existsSync(join(src, f)))), ...(notices ? ["THIRD_PARTY_NOTICES.md"] : [])],
     publishConfig: { access: "public" },
   };
   writeFileSync(join(target, "package.json"), JSON.stringify(out, null, 2) + "\n");
@@ -109,7 +110,7 @@ async function smoke(mode: "framework" | "backend") {
   await probe.stop(true);
   const server = Bun.spawn(["bunx", "archlast-forge", "start", "--no-docker"], {
     cwd: app,
-    env: { ...process.env, PORT: port, DATA_DIR: join(app, "data"), BETTER_AUTH_SECRET: "x".repeat(40), ALLOW_INSECURE_HTTP: "1", ARCHLAST_NO_DOCKER: "1", BETTER_AUTH_URL: `http://localhost:${port}`, ADMIN_KEY: "k".repeat(32), DASHBOARD: "on" },
+    env: { ...process.env, PORT: port, DATA_DIR: join(app, "data"), BETTER_AUTH_SECRET: "x".repeat(40), ALLOW_INSECURE_HTTP: "1", ARCHLAST_NO_DOCKER: "1", BETTER_AUTH_URL: `http://localhost:${port}`, ADMIN_KEY: "k".repeat(32), DASHBOARD: "on", API_DOCS: "on" },
     stdout: "inherit",
     stderr: "inherit",
   });
@@ -145,6 +146,13 @@ async function smoke(mode: "framework" | "backend") {
       ops = ((await (await fetch(`${base}/_admin/obs.requests?input=${range}`, { headers: { "x-admin-key": "k".repeat(32) } })).json()) as any).operations ?? [];
     }
     if (!ops.some((o) => o.operation === "messages:list")) throw new Error(`the call isn't in the packed engine's telemetry: ${JSON.stringify(ops)}`);
+    // The API docs: the document, the page (bundled from the installed dashboard, MDX included) and the vendored explorer.
+    const doc = (await (await fetch(`${base}/_api/openapi.json`)).json()) as { openapi?: string; paths?: Record<string, unknown> };
+    if (doc.openapi !== "3.1.0" || !doc.paths?.["/rpc/messages:list"]) throw new Error("the OpenAPI document doesn't list messages:list");
+    const apiPage = await (await fetch(`${base}/_api`)).text();
+    const apiScript = /src="(\/_api\/assets\/[^"]+\.js)"/.exec(apiPage)?.[1];
+    if (!apiScript || !(await fetch(`${base}${apiScript}`)).ok) throw new Error("the API docs page isn't served");
+    if ((await (await fetch(`${base}/_api/scalar.js`)).arrayBuffer()).byteLength < 1_000_000) throw new Error("the API explorer (vendored Scalar) isn't served");
     const dashboard = await fetch(`${base}/_dashboard`);
     if (!dashboard.ok || !(await dashboard.text()).includes('<div id="root">')) throw new Error("the dashboard isn't served");
     console.log(`✓ smoke test (${mode}): scaffolded, installed from tarballs, typechecked${mode === "framework" ? ", built" : ""}, served ${app}, and read its telemetry back`);

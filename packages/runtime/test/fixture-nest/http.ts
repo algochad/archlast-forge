@@ -7,12 +7,13 @@ import { ExpressController } from "./express.controller";
 import { MathController } from "./math.controller";
 import { NotesModule } from "./notes.controller";
 import { NotesResolver } from "./notes.resolver";
+import { OrdersController } from "./orders.controller";
 
 const http = httpRouter();
 http.route({ method: "GET", path: "/plain", handler: httpAction(async () => new Response("from httpRouter")) });
 nest(http, {
   imports: [NotesModule, GraphQLModule.forRoot<ForgeGraphQLOptions>({ driver: ForgeGraphQLDriver, autoSchemaFile: true, yoga: { graphiql: false } })],
-  controllers: [ExpressController, MathController],
+  controllers: [ExpressController, MathController, OrdersController],
   providers: [ChatGateway, NotesResolver],
   cors: { origin: "https://app.example", credentials: true },
   // The tests give each server its own port; a process without one has no microservice.

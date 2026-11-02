@@ -1,5 +1,6 @@
 // The function runtime: forge/ modules, the database, auth and the scheduler. See startCore().
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readFileSync } from "node:fs";
+import { basename, dirname, join } from "node:path";
 import { validateFields } from "../values";
 import { adminOp } from "./admin-ops";
 import { createAuth } from "./auth";
@@ -11,7 +12,8 @@ import type { Db } from "./db/types";
 import type { UserIdentity } from "../functions";
 import { Executor, logContext, type CallHeaders, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
-import { matchRoute, routeName } from "./http";
+import { checkHttpRequest, matchRoute, routeName } from "./http";
+import { buildOpenApi, type NestRoute } from "./openapi";
 import type { HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
 import { createStorage } from "./storage";
@@ -252,6 +254,14 @@ export async function startCore(opts: {
         });
         if (!("route" in found)) return answer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
         const route = found.route;
+        // A route that declares its query or body answers 400 for a request that doesn't match, before its handler runs.
+        const invalid = checkHttpRequest(route, url, body);
+        if (invalid)
+          return {
+            status: 400,
+            headers: [["content-type", "application/json"]],
+            body: new TextEncoder().encode(JSON.stringify({ error: { code: "BAD_REQUEST", message: invalid, requestId: msg.requestId } })).buffer as ArrayBuffer,
+          };
         let telemetry: CallTelemetry | undefined;
         const res = await traced(msg.trace, routeName(route), () => {
           // The route's pattern, for the request's name; a Nest controller names its own, finer one.
@@ -270,11 +280,24 @@ export async function startCore(opts: {
       }
       case "admin":
         if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });
+        if (msg.op === "openapi") return openApi();
         return adminOp(deps, msg.op, msg.args ?? {}, msg.actor);
     }
   }
 
   scheduler?.start();
+  // The folder around forge/, whose package.json names the project.
+  const projectRootOf = (dir: string) => (["forge", "convex"].includes(basename(dir)) ? dirname(dir) : dir);
+  /** The OpenAPI document: the manifest's functions, forge/http.ts's routes and, once the Nest app has started, its controllers' routes. */
+  const openApi = async () => {
+    const nestRoutes = (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-routes")] as (() => Promise<NestRoute[]>) | undefined;
+    let title = basename(projectRootOf(forgeDir));
+    try {
+      title = JSON.parse(readFileSync(join(projectRootOf(forgeDir), "package.json"), "utf8")).name || title;
+    } catch {}
+    return buildOpenApi({ title, version: release, functions: manifest.functions, http: project.http, nest: (await nestRoutes?.().catch(() => [])) ?? [] });
+  };
+
   const manifest: Manifest = {
     functions: [...project.functions].map(([name, fn]) => ({
       name,

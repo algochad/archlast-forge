@@ -812,7 +812,7 @@ In Docker, `archlast-forge up` builds an image from the project's `Dockerfile`: 
 
 ## Reserved paths
 
-These belong to the engine and are not available to routes: `/rpc`, `/api/auth`, `/http`, `/_app`, `/_admin`, `/_dashboard`, `/_storage` (with the built-in storage), `/_cli` (POST), `/health`, `/ready`, `/metrics`. A route file named `health.tsx` would never be reached. Your `forge/http.ts` routes, and NestJS if you mount it, live under `/http` (see [HTTP endpoints](http.html) and [NestJS](#nestjs)).
+These belong to the engine and are not available to routes: `/rpc`, `/api/auth`, `/http`, `/_app`, `/_admin`, `/_dashboard`, `/_storage` (with the built-in storage), `/_cli` (POST), `/health`, `/ready`, `/metrics`, and `API_DOCS_PATH` (`/_api`) when the [API docs](api-docs.html) are on. A route file named `health.tsx` would never be reached. Your `forge/http.ts` routes, and NestJS if you mount it, live under `/http` (see [HTTP endpoints](http.html) and [NestJS](#nestjs)).
 
 `/_dashboard` and `/_admin` exist only when the dashboard is on (development, or `DASHBOARD=on`). Otherwise `/_admin/*` answers a plain 404 and `/_dashboard` falls through to your app, which renders its own 404 page.
 

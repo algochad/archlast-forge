@@ -1,0 +1,6 @@
+# Ordering
+
+Place an order with `POST /http/orders`: the engine checks the query and the body against the route's validators before the handler runs.
+
+- `dryRun=true` checks without ordering.
+- `limit` caps the lines returned.

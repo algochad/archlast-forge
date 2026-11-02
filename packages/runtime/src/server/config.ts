@@ -60,6 +60,9 @@ export interface Config {
   adminKey?: string;
   /** Serve /_dashboard and the admin API. Off by default outside dev. */
   dashboard: boolean;
+  /** Serve the OpenAPI document, the API docs page and the explorer at `apiDocsPath`. */
+  apiDocs: boolean;
+  apiDocsPath: string;
   authSecret?: string;
   authUrl: string;
   trustedOrigins: string[];
@@ -118,6 +121,8 @@ export class ConfigError extends Error {
   override name = "ConfigError";
 }
 
+/** Paths the engine answers itself, which the API docs can't take. */
+const RESERVED = ["/rpc", "/http", "/api/auth", "/_dashboard", "/_admin", "/_cli", "/_storage", "/_app", "/health", "/ready", "/metrics", "/otlp"];
 const bool = (v: string | undefined, fallback: boolean) => (v === undefined || v === "" ? fallback : ["1", "true", "on", "yes"].includes(v.toLowerCase()));
 
 /** Fails fast on missing or contradictory settings. */
@@ -151,6 +156,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (storage === "s3" && !env.S3_ENDPOINT) fail("STORAGE=s3 needs S3_ENDPOINT and S3_BUCKET");
   if (storage === "local" && replicas > 1) fail("STORAGE=local keeps files on this server's disk; with REPLICAS > 1 use S3 (S3_ENDPOINT, S3_BUCKET)");
   if (!dev && !env.BETTER_AUTH_SECRET) fail("BETTER_AUTH_SECRET is required outside dev");
+  const apiDocsPath = (env.API_DOCS_PATH || "/_api").replace(/\/+$/, "");
+  if (!/^\/[A-Za-z0-9._~\/-]+$/.test(apiDocsPath)) fail(`API_DOCS_PATH must be a path like "/_api", got "${env.API_DOCS_PATH}"`);
+  if (RESERVED.some((r) => apiDocsPath === r || apiDocsPath.startsWith(`${r}/`))) fail(`API_DOCS_PATH can't be under ${RESERVED.find((r) => apiDocsPath === r || apiDocsPath.startsWith(`${r}/`))}, which the engine serves`);
   const authUrl = env.BETTER_AUTH_URL ?? `http://localhost:${port}`;
   // Over http, Better Auth's cookies aren't marked Secure; behind a TLS proxy that silently weakens sessions.
   if (!dev && !authUrl.startsWith("https://") && !bool(env.ALLOW_INSECURE_HTTP, false))
@@ -171,6 +179,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxUploadBytes: int("MAX_UPLOAD_MB", 5120, 1) * 2 ** 20,
     adminKey: env.ADMIN_KEY || undefined,
     dashboard: bool(env.DASHBOARD, dev),
+    apiDocs: bool(env.API_DOCS, dev),
+    apiDocsPath,
     customFunctions: bool(env.ALLOW_CUSTOM_FUNCTIONS, dev),
     authSecret: env.BETTER_AUTH_SECRET,
     authUrl,

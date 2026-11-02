@@ -1,0 +1,48 @@
+# API docs and OpenAPI
+
+The engine describes the app's API as an OpenAPI 3.1 document, and serves it with a docs page in this site's style and an explorer where requests can be tried. The document is made from the code that runs: every public query, mutation and action, the routes in `forge/http.ts`, and the NestJS controllers, with request and response schemas taken from the same validators the engine checks calls against. Nothing is written by hand, so it can't drift.
+
+## Turning it on
+
+| Setting | Default | |
+|---|---|---|
+| `API_DOCS` | on in dev, off otherwise | Serve the document, the docs page and the explorer. |
+| `API_DOCS_PATH` | `/_api` | Where. It can't be under a path the engine serves itself (`/rpc`, `/http`, `/_dashboard`, …). |
+
+Set them in the environment or on the dashboard's Settings page. In production they stay off until you turn them on: the document lists every public function and route of the app. Anything listed is callable anyway, so this is about what you advertise, not about access.
+
+| Path | What |
+|---|---|
+| `/_api` | The docs page: a guide to calling the API, your own pages, and every endpoint with its parameters, body, responses and an example `curl`. |
+| `/_api/openapi.json` | The document: minified, compressed (brotli or gzip, as the client accepts), with an `ETag`. |
+| `/_api/explorer` | The explorer ([Scalar](https://github.com/scalar/scalar)), for trying requests from the browser. |
+
+## What the document holds
+
+- **Functions**: `POST /rpc/<module>:<name>` for each public function, the body being its `args` and the `200` answer `{ "result": … }` with its `returns` validator. Internal functions are left out. Errors share one `ErrorBody` schema: `{ "error": { "message", "code", "data"?, "requestId" } }` with the status codes in [Errors](errors.html).
+- **HTTP routes**: every `http.route()`, under `/http`. A `pathPrefix` route is `/http/<prefix>{rest}`. The query, body and answer come from the route's [validators](http.html#validators-and-the-openapi-document), when it declares them.
+- **NestJS controllers**: every controller method with a route, from Nest's own metadata (method and path, `:id` as `{id}`), grouped by controller. Methods with [`@Contract`](nest.html#contract-validators-and-the-openapi-document) get their schemas from it.
+- `servers` is `BETTER_AUTH_URL` when it is set, else the address the document was asked at. Security schemes describe the session cookie and Better Auth's bearer token, both optional: each function decides what an anonymous caller may do.
+- Schemas that appear more than once are written once, under `components.schemas`, and referenced. Only schemas something uses are there.
+
+The document is made once per load of the code: a change in dev, a reload or a restart makes the next one.
+
+## Your own pages
+
+Put MDX files in `forge/docs/` and they appear on the docs page under Guide, ordered by file name (`01-orders.mdx` before `02-webhooks.mdx`), titled by their first `#` heading:
+
+```mdx
+# Ordering
+
+Orders are **final** once placed. Use `dryRun=true` to check one first.
+```
+
+They are compiled when the page is first asked for (and again when a file changes), with React from the engine, so a backend needs nothing installed. They can use Markdown and JSX elements, not `import`s.
+
+## Size
+
+The page is React, bundled when it is first asked for: minified, split so each of your pages loads when it is opened, and hashed and cached for a year. Its first load is about **72 KB gzipped** (HTML, script, stylesheet), plus the Geist fonts as two Latin `woff2` files (29 and 23 KB) fetched when text uses them.
+
+The explorer is on a page of its own, so it never weighs on the docs page or on your app: Scalar's standalone bundle, **1.06 MB with brotli** (1.43 MB gzipped, 4.9 MB raw), vendored in the engine rather than installed (the package is 56 MB), and loaded only by `/_api/explorer`. It runs with Scalar's hosted features off: no toolbar (share, SDK generation), no Ask AI, no telemetry, no web fonts, so nothing about your API leaves the server.
+
+The document for this site's test app is 115 KB pretty-printed with every schema written out, 57 KB minified with shared schemas, and 3.2 KB gzipped (2.3 KB with brotli) on the wire.

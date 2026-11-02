@@ -287,6 +287,10 @@ interface HttpRoute {
   path?: string;          // exact, starts with "/"
   pathPrefix?: string;    // starts and ends with "/"
   handler: HttpAction;
+  query?: PropertyValidators;   // checked before the handler (400 otherwise); text converted for v.number(), v.boolean(), v.array()
+  body?: Validator;             // the JSON body, checked before the handler
+  returns?: Validator;          // for the OpenAPI document
+  summary?: string; description?: string; tags?: string[];
 }
 interface HttpAction { kind: "httpAction"; handler: (ctx: ActionCtx, request: Request) => Response | Promise<Response> }
 ```
@@ -376,6 +380,7 @@ Everything `@nestjs/common` exports (`Controller`, `Get`, `Post`, `Body`, `Param
 
 ```ts
 function nest(http: { route(spec: HttpRoute): void }, options: NestOptions | Type): void;
+function Contract(spec: { params?: PropertyValidators; query?: PropertyValidators; body?: Validator; returns?: Validator; summary?: string; description?: string; tags?: string[] }): MethodDecorator; // checked by an interceptor, listed in the OpenAPI document
 interface NestOptions {
   controllers?: Type[];
   providers?: Provider[];
@@ -428,6 +433,7 @@ interface ServerOptions {
   env?: Record<string, string | undefined>;      // defaults to process.env
   dashboard?: HTMLBundle;                         // Bun HTML import, served at /_dashboard when enabled
   app?: AppHost;                                  // a frontend for every path the engine does not own
+  apiDocs?: ApiDocsHost;                          // the API docs page and explorer below API_DOCS_PATH (@archlast/forge-dashboard/api-docs)
   restart?: () => Promise<void>;                  // stop and start again in this process: the dashboard's "Restart now" (settings)
 }
 

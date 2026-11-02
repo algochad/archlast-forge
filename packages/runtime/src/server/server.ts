@@ -1,4 +1,5 @@
 import type { HTMLBundle, Server, ServerWebSocket } from "bun";
+import { brotliCompressSync } from "node:zlib";
 import { timingSafeEqual } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { availableParallelism, hostname } from "node:os";
@@ -80,11 +81,28 @@ export interface ServerOptions {
   dashboard?: HTMLBundle;
   /** A frontend served for every path the engine doesn't own. */
   app?: AppHost;
+  /** The API docs page and the explorer, served below API_DOCS_PATH when API_DOCS is on (the OpenAPI document is the engine's own). */
+  apiDocs?: ApiDocsHost;
   /**
    * Stops this server and starts it again in the same process, so settings saved from the dashboard apply. Given by hosts that can (the CLI);
    * without it the dashboard asks for a restart of the process.
    */
   restart?: () => Promise<void>;
+}
+
+/** Serves the API docs page, its assets and the explorer below `base`; null for a path it has nothing at. */
+export interface ApiDocsHost {
+  serve(req: Request, opts: { base: string; forgeDir: string; dev: boolean }): Promise<Response | null>;
+}
+
+/** `body` compressed for this request: brotli or gzip when the client takes them, else as it is. */
+export function compressed(req: Request, body: string | Uint8Array<ArrayBuffer>, headers: Record<string, string>) {
+  const accepts = req.headers.get("accept-encoding") ?? "";
+  const bytes: Uint8Array<ArrayBuffer> = typeof body === "string" ? new TextEncoder().encode(body) : body;
+  const vary = { ...headers, vary: "accept-encoding" };
+  if (/\bbr\b/.test(accepts)) return new Response(brotliCompressSync(bytes), { headers: { ...vary, "content-encoding": "br" } });
+  if (/\bgzip\b/.test(accepts)) return new Response(Bun.gzipSync(bytes), { headers: { ...vary, "content-encoding": "gzip" } });
+  return new Response(bytes, { headers: vary });
 }
 
 export interface RunningServer {
@@ -385,6 +403,22 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
     },
   });
+  /** The OpenAPI document, made once per load of the code (a reload or restart brings a new manifest), minified. */
+  let openApi: { manifest: unknown; json: string; etag: string } | undefined;
+  async function openApiResponse(req: Request) {
+    await loading;
+    if (!runtime.manifest) return Response.json({ message: runtime.loadError ?? "The function runtime is not running" }, { status: 503 });
+    if (openApi?.manifest !== runtime.manifest) {
+      const manifest = runtime.manifest;
+      const doc = await runtime.admin<Record<string, unknown>>("openapi", {}, "system");
+      // Calls go to the address browsers use: BETTER_AUTH_URL when it is set (a proxy in front may hide it from the request), else the one asked.
+      const json = JSON.stringify({ ...doc, servers: [{ url: env.BETTER_AUTH_URL ? config.authUrl : new URL(req.url).origin }] });
+      openApi = { manifest, json, etag: `"${Bun.hash(json).toString(36)}"` };
+    }
+    if (req.headers.get("if-none-match") === openApi.etag) return new Response(null, { status: 304, headers: { etag: openApi.etag } });
+    return compressed(req, openApi.json, { "content-type": "application/json", etag: openApi.etag, "cache-control": "no-cache", "x-content-type-options": "nosniff" });
+  }
+
   const adminSessions = new Map<string, { admin: AdminInfo | null; at: number }>();
   async function adminOf(req: Request): Promise<AdminInfo | null> {
     const key = req.headers.get("x-admin-key");
@@ -618,6 +652,16 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
 
+      if (config.apiDocs && (path === config.apiDocsPath || path.startsWith(`${config.apiDocsPath}/`))) {
+        const retry = await limited(req, srv);
+        if (retry) return withId(tooMany(retry));
+        if (path === `${config.apiDocsPath}/openapi.json`) return withId(await openApiResponse(req));
+        const page = await opts.apiDocs?.serve(req, { base: config.apiDocsPath, forgeDir: resolve(opts.forgeDir), dev });
+        if (page) return withId(page);
+        if (path === config.apiDocsPath && !opts.apiDocs)
+          return withId(Response.json({ message: `The docs page comes with @archlast/forge-dashboard; the OpenAPI document is at ${config.apiDocsPath}/openapi.json` }, { status: 404 }));
+        return withId(new Response("Not found", { status: 404 }));
+      }
       if (localFiles && path.startsWith("/_storage/")) {
         const retry = await limited(req, srv, "storage:");
         if (retry) return withId(tooMany(retry));

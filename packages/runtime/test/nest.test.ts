@@ -16,7 +16,7 @@ beforeAll(async () => {
   // Functions in a child process, so sockets and streamed bodies cross IPC (the production describe below runs them inline).
   srv = await startServer({
     forgeDir: fixture,
-    env: { ...process.env, RUNTIME_MODE: "process", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json", NEST_TCP_PORT: String(tcpPort) },
+    env: { ...process.env, RUNTIME_MODE: "process", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json", NEST_TCP_PORT: String(tcpPort), API_DOCS: "on" },
   });
 });
 afterAll(() => srv.stop({ graceful: false }));
@@ -107,6 +107,34 @@ describe("Nest controllers under /http", () => {
     expect(text).not.toContain("secret internal detail");
     const bad = await http("/notes", { method: "POST", headers: { "content-type": "application/json" }, body: "{not json" });
     expect(bad.status).toBe(400);
+  });
+});
+
+describe("controllers in the OpenAPI document", () => {
+  test("every controller route is listed with its @Contract's schemas, and the contract is checked on each request", async () => {
+    const doc = (await (await fetch(`${srv.url}/_api/openapi.json`)).json()) as any;
+    const { Validator } = await import("@seriousme/openapi-schema-validator");
+    expect((await new Validator().validate(doc)).valid).toBe(true);
+    const order = doc.paths["/http/orders/{shop}"].post;
+    expect(order.summary).toBe("Order from a shop");
+    expect(order.tags).toEqual(["OrdersController"]);
+    expect(order.parameters).toEqual([
+      { name: "shop", in: "path", required: true, schema: { type: "string" } },
+      { name: "express", in: "query", required: false, schema: { type: "boolean" } },
+    ]);
+    expect(order.requestBody.content["application/json"].schema.required).toEqual(["sku", "qty"]);
+    expect(order.responses["201"].content["application/json"].schema.properties.express).toEqual({ type: "boolean" });
+    expect(doc.paths["/http/orders"].get).toBeDefined(); // without a contract: listed, with no schemas
+    expect(doc.paths["/http/plain"].get).toBeDefined(); // http.route() beside the Nest mount
+    expect(Object.keys(doc.paths).filter((p) => p.endsWith("{rest}"))).toEqual([]); // the mount itself isn't a route
+
+    const post = (body: unknown) => http("/orders/acme?express=true", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const ok = await post({ sku: "a1", qty: 2 });
+    expect(ok.status).toBe(201);
+    expect(await ok.json()).toEqual({ shop: "acme", sku: "a1", qty: 2, express: true });
+    const bad = await post({ sku: "a1", qty: "two" });
+    expect(bad.status).toBe(400);
+    expect(await bad.json()).toEqual({ message: 'body.qty must be a finite number, got "two"', error: "Bad Request", statusCode: 400 });
   });
 });
 

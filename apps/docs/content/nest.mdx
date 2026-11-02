@@ -104,6 +104,30 @@ export class NotesController {
 
 A request is an action, so a controller gets an `ActionCtx` through `@Ctx()`. It has auth, storage and the scheduler, and it reaches the database through queries and mutations, where the services above do the work. That keeps every write in a transaction and every read reactive. A `ForgeService<ActionCtx>` injected into a controller gets the request's ctx too.
 
+### Contract: validators and the OpenAPI document
+
+`@Contract` gives a controller method the engine's validators for its params, query and body (checked on every request before the handler runs, `400` with the reason otherwise) and for what it answers, and puts all of it in the [OpenAPI document](api-docs.html):
+
+```ts
+import { v } from "@archlast/forge-runtime";
+import { Body, Contract, Controller, Param, Post } from "@archlast/forge-runtime/nest";
+
+@Controller("orders")
+export class OrdersController {
+  @Post(":shop")
+  @Contract({
+    summary: "Order from a shop",
+    params: { shop: v.string() },
+    query: { express: v.optional(v.boolean()) },
+    body: v.object({ sku: v.string(), qty: v.number() }),
+    returns: v.object({ id: v.string() }),
+  })
+  order(@Param("shop") shop: string, @Body() body: { sku: string; qty: number }) {}
+}
+```
+
+It is an interceptor (`UseInterceptors`) plus metadata, so it runs after guards and with your pipes. A mismatch answers like Nest's own `BadRequestException`: `{ "message": "body.qty must be a finite number, got \"two\"", "error": "Bad Request", "statusCode": 400 }`. Params and query values arrive as text and are converted for `v.number()` and `v.boolean()`, as for [HTTP routes](http.html#validators-and-the-openapi-document). Methods without `@Contract` are still in the document, with their method and path.
+
 ## Mount it in forge/http.ts
 
 ```ts

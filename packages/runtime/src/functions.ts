@@ -492,6 +492,19 @@ export interface HttpRoute {
   /** Every path under it, e.g. "/files/". Exact paths win, then the longest prefix. */
   pathPrefix?: string;
   handler: HttpAction;
+  /**
+   * The query string's parameters. Checked before the handler runs (a mismatch answers 400) and described in the OpenAPI document. Values
+   * arrive as text: a `v.number()` or `v.boolean()` parameter is converted first, a `v.array(...)` one takes every value given.
+   */
+  query?: PropertyValidators;
+  /** The JSON body: checked before the handler runs (400 when it doesn't match) and described in the OpenAPI document. */
+  body?: Validator;
+  /** The JSON the route answers with, for the OpenAPI document. */
+  returns?: Validator;
+  /** For the OpenAPI document and the API docs page. */
+  summary?: string;
+  description?: string;
+  tags?: string[];
 }
 
 /** `forge/http.ts` default-exports one of these. Routes are served under `/http`: `path: "/hello"` answers at `/http/hello`. */
