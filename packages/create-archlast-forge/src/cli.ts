@@ -4,6 +4,7 @@ import { basename, relative, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { scaffold } from "./scaffold";
 import { parseMicroservices, scaffoldMonorepo, TRANSPORTS, type Transport } from "./monorepo";
+import type { DesktopMode } from "./desktop";
 import { BASE_COLORS, BASE_COLOR_HINTS, type BaseColor } from "./shadcn";
 import { defaultServices, nameOf, parseFlags, USAGE, type Flags } from "./options";
 import { DEFAULT_SERVICES, MODES, SERVICES, type Mode, type StackService } from "./stack";
@@ -21,7 +22,7 @@ export interface Answers {
   /** Full-stack apps: the shadcn/ui base color, or nothing for a plain app. */
   shadcn?: BaseColor;
   /** A monorepo, with these microservices beside the app. */
-  monorepo?: { microservices: string[]; transport: Transport; mobile?: boolean };
+  monorepo?: { microservices: string[]; transport: Transport; mobile?: boolean; desktop?: DesktopMode };
   install: boolean;
   git: boolean;
 }
@@ -101,8 +102,27 @@ export async function gather(flags: Flags, interactive: boolean, io: Io = {}): P
       (interactive
         ? await ask<boolean>((o) => p.confirm({ ...o, message: "Add a React Native (Expo) app? It is a client of this backend (Expo has no full-stack option)", initialValue: false }))
         : false));
+  // A desktop app: the full-stack app with its engine on the user's machine (full-stack apps only), or a client of a backend.
+  const desktop =
+    flags.desktop ??
+    (interactive
+      ? await ask<DesktopMode | "none">((o) =>
+          p.select<DesktopMode | "none">({
+            ...o,
+            message: "Add a desktop app (Tauri)?",
+            initialValue: "none",
+            options: [
+              { value: "none", label: "No" },
+              ...(mode === "framework" ? [{ value: "full" as const, label: "Yes, the whole app on the user's machine", hint: "its engine runs inside the desktop app, no Docker" }] : []),
+              { value: "client" as const, label: "Yes, a client of the backend", hint: "a page that talks to the deployed backend" },
+            ],
+          }),
+        )
+      : "none");
+  const wantsDesktop = desktop !== "none" ? desktop : undefined;
   let monorepo: Answers["monorepo"];
   const wantsMonorepo =
+    Boolean(wantsDesktop) ||
     mobile ||
     (flags.monorepo ??
     (interactive
@@ -121,7 +141,7 @@ export async function gather(flags: Flags, interactive: boolean, io: Io = {}): P
       (interactive && microservices.length
         ? await ask<Transport>((o) => p.select<Transport>({ ...o, message: "How do the services talk?", initialValue: "tcp", options: TRANSPORTS.map((t) => ({ value: t, label: t.toUpperCase(), hint: t === "tcp" ? "no server needed" : `needs a ${t === "redis" ? "Redis" : "NATS"} server` })) }))
         : "tcp");
-    monorepo = { microservices, transport, ...(mobile && { mobile: true }) };
+    monorepo = { microservices, transport, ...(mobile && { mobile: true }), ...(wantsDesktop && { desktop: wantsDesktop }) };
   }
 
   const confirm = async (given: boolean | undefined, message: string) => given ?? (interactive ? await ask<boolean>((o) => p.confirm({ ...o, message, initialValue: true })) : false);
@@ -141,7 +161,7 @@ export function nextSteps(a: Answers, installed: boolean): string {
   const cd = rel.startsWith("..") ? resolve(a.dir) : rel; // a path that climbs out of here reads better in full
   const lines = [cd !== "." ? `cd ${cd}` : undefined, installed ? undefined : "bun install", "bun run dev"].filter(Boolean) as string[];
   const where = a.monorepo
-    ? `apps/${a.mode === "framework" ? "web" : "api"}: http://localhost:3000${a.monorepo.microservices.map((s, i) => `\napps/${s}: http://localhost:${3001 + i}`).join("")}${a.monorepo.mobile ? "\napps/mobile: Expo (scan the QR code that bun run dev prints)" : ""}`
+    ? `apps/${a.mode === "framework" ? "web" : "api"}: http://localhost:3000${a.monorepo.microservices.map((s, i) => `\napps/${s}: http://localhost:${3001 + i}`).join("")}${a.monorepo.mobile ? "\napps/mobile: Expo (scan the QR code that bun run dev prints)" : ""}${a.monorepo.desktop ? "\napps/desktop: Tauri (needs Rust; see its README)" : ""}`
     : a.mode === "framework"
       ? "Your app: http://localhost:3000"
       : "Your backend: http://localhost:3000";

@@ -1,0 +1,46 @@
+# Desktop apps (Tauri)
+
+`init --desktop` adds a [Tauri](https://tauri.app) app to a monorepo, in one of two modes:
+
+| Mode | What the app is | With |
+|---|---|---|
+| `full` | the full-stack app, engine included, running on the user's machine: no Docker, no server to reach | `--mode framework` |
+| `client` | a page that talks to a forge backend running elsewhere | either mode |
+
+```bash
+bun create archlast-forge acme --desktop full                    # implies --monorepo; apps/web and apps/desktop
+bun create archlast-forge acme --mode backend --desktop client   # apps/api and apps/desktop
+```
+
+Tauri needs Rust and the platform's webview libraries ([prerequisites](https://tauri.app/start/prerequisites/)). `bun run dev` in `apps/desktop` runs `tauri dev`, `bun run build` makes an installer. The icons are placeholders: run `bunx tauri icon your-icon.png` once.
+
+## Full mode: the engine inside the app
+
+Tauri starts **Bun as a sidecar** (shipped inside the app), which runs `desktop-engine.ts`, which starts the engine as `archlast-forge start --no-docker` would:
+
+- in **production** mode, on a free port of **`127.0.0.1`**: the engine never listens on the network;
+- with its **data in the app's data folder** (Tauri's `app_data_dir`): the SQLite database, files and backups;
+- with a **secret of its own**, made on first start and kept there (`secret`, readable only by the user), which signs sessions.
+
+The window opens on the engine's address once it answers (the first start migrates the database), and the engine stops when the app quits. Pages, functions, live queries and sign-in work as in a browser, on the same origin.
+
+`scripts/bundle-engine.ts` prepares what ships, before `tauri dev` and `tauri build`: `apps/web` built for production (`archlast-forge build --no-docker`) with its production dependencies, the starter, and the Bun binary itself (`src-tauri/binaries/bun-<target triple>`). Bun is about 90 MB and the web app's dependencies add more, so an installer is a few hundred MB.
+
+Each user's data is theirs, on their machine: there is nothing to deploy and nothing shared between users. Back it up with the dashboard (`DASHBOARD=on` in `desktop-engine.ts`'s environment) or by copying the data folder.
+
+Why not one compiled binary (`bun build --compile`)? The engine reads files next to its own source (its version, the dashboard's page, the explorer, fonts, worker scripts), which a compiled binary's virtual file system doesn't have; tried, it stops at the first of them. Bun as a sidecar runs exactly what `start --no-docker` runs.
+
+## Client mode: a page for a backend elsewhere
+
+`src/main.tsx` is a React page, typed from the backend with a type-only import, that talks to the backend at `FORGE_URL`:
+
+```bash
+bun run dev                                          # tauri dev, talking to http://localhost:3000
+FORGE_URL=https://api.example.com bun run build      # the installer, talking to the deployed backend
+```
+
+The backend has to accept the app's origin: add `tauri://localhost` (macOS, Linux) and `http://tauri.localhost` (Windows) to its `TRUSTED_ORIGINS`. To sign in from the app, give it a session it can send: Better Auth's [bearer plugin](auth.html#bearer-tokens-for-non-browser-callers) and the client's [`headers`](clients.html#constructor) option.
+
+## What was checked
+
+Tested: the scaffold in both modes (files, Tauri config, icons), and full mode's engine starter run for real against a generated app: production on `127.0.0.1` only, data and secret in the data folder, not reachable from the network. Not done here: building or running the Tauri app (this environment has no Rust or webview libraries), so the Rust in `src-tauri/src/main.rs` follows Tauri 2's API but hasn't been compiled.

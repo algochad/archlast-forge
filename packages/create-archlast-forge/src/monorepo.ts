@@ -4,6 +4,7 @@ import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, s
 import { join, resolve } from "node:path";
 import { nameOf } from "./options";
 import { addPrettier, format, scaffold, VERSION } from "./scaffold";
+import { addDesktop, type DesktopMode } from "./desktop";
 import type { BaseColor } from "./shadcn";
 import type { Mode, StackService } from "./stack";
 
@@ -20,6 +21,8 @@ export interface MonorepoOptions {
   transport?: Transport;
   /** A React Native (Expo) app in apps/mobile, a client of the backend (the main app must be one: Expo has no full-stack option). */
   mobile?: boolean;
+  /** A Tauri desktop app in apps/desktop: the full-stack app with its engine on the user's machine, or a client of a backend. */
+  desktop?: DesktopMode;
   version?: string;
 }
 
@@ -74,6 +77,7 @@ export function scaffoldMonorepo(o: MonorepoOptions): string {
   const services = o.microservices ?? [];
   const main = o.mode === "framework" ? "web" : "api";
   if (o.mobile && o.mode !== "backend") throw new Error("The Expo app is a client of a backend: use --mode backend (Expo has no full-stack option)");
+  if (o.desktop === "full" && o.mode !== "framework") throw new Error("--desktop full runs the full-stack app on the user's machine: use --mode framework (or --desktop client for a backend)");
 
   // The apps, each a project like `init` makes on its own, then wired.
   scaffold({ dir: join(root, "apps", main), mode: o.mode, services: o.services, shadcn: o.shadcn, version });
@@ -168,6 +172,7 @@ export const hello = action({
     for (const app of backends) patchJson(join(root, "apps", app, "forge", "package.json"), (pkg) => (pkg.dependencies = { ...pkg.dependencies, [needs[0]]: needs[1] }));
 
   if (o.mobile) addMobile(root, name, version);
+  if (o.desktop) addDesktop(root, name, version, o.desktop, main);
 
   // The backends' typed APIs, for any app or package here: \`import { webApi } from "@<name>/api"\`.
   write(

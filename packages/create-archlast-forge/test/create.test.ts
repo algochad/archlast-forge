@@ -247,7 +247,7 @@ describe("gather (prompts)", () => {
     await Bun.sleep(30);
     expect(t.screen()).toContain("PostgreSQL");
     await t.press(" "); // the cursor starts on PostgreSQL: untick it
-    await t.press("\r", "\r", "\r"); // the services, no Expo app, one app (not a monorepo)
+    await t.press("\r", "\r", "\r", "\r"); // the services, no Expo app, no desktop app, one app (not a monorepo)
     expect(await done).toEqual({ dir, mode: "backend", services: ["redis", "s3"], install: false, git: false });
   });
 
@@ -256,7 +256,7 @@ describe("gather (prompts)", () => {
     const dir = fresh("mono");
     const done = gather({ dir, install: false, git: false, yes: false, help: false }, true, { input: t.input, output: t.output });
     await Bun.sleep(30);
-    await t.press(DOWN, "\r", "\r", "\r", DOWN, "\r"); // backend, its services, no Expo app, a monorepo
+    await t.press(DOWN, "\r", "\r", "\r", "\r", DOWN, "\r"); // backend, its services, no Expo app, no desktop app, a monorepo
     await Bun.sleep(30);
     await t.press(..."orders,billing".split(""), "\r", DOWN, "\r"); // the services' names, then Redis
     expect(await done).toMatchObject({ mode: "backend", monorepo: { microservices: ["orders", "billing"], transport: "redis" } });
@@ -267,7 +267,7 @@ describe("gather (prompts)", () => {
     const pick = terminal();
     const picked = gather({ dir: fresh("zinc"), install: false, git: false, yes: false, help: false }, true, { input: pick.input, output: pick.output });
     await Bun.sleep(30);
-    await pick.press("\r", "\r", DOWN, DOWN, "\r", "\r", "\r"); // framework, yes, neutral → stone → zinc, the services, one app
+    await pick.press("\r", "\r", DOWN, DOWN, "\r", "\r", "\r", "\r"); // framework, yes, neutral → stone → zinc, the services, no desktop app, one app
     expect(await picked).toMatchObject({ mode: "framework", shadcn: "zinc" });
     expect(pick.screen()).toContain("Add shadcn/ui?");
     expect(pick.screen()).toContain("Taupe");
@@ -275,7 +275,7 @@ describe("gather (prompts)", () => {
     const skip = terminal();
     const skipped = gather({ dir: fresh("plain-ui"), install: false, git: false, yes: false, help: false }, true, { input: skip.input, output: skip.output });
     await Bun.sleep(30);
-    await skip.press("\r", "n", "\r", "\r", "\r"); // framework, no (so no base color), the services, one app
+    await skip.press("\r", "n", "\r", "\r", "\r", "\r"); // framework, no (so no base color), the services, no desktop app, one app
     const answers = await skipped;
     expect(answers.mode).toBe("framework");
     expect(answers).not.toHaveProperty("shadcn");
@@ -286,7 +286,7 @@ describe("gather (prompts)", () => {
     const dir = fresh("plain");
     const done = gather({ dir, install: false, git: false, yes: false, help: false }, true, { input: t.input, output: t.output });
     await Bun.sleep(30);
-    await t.press("\r", "\r", "\r", "\r", "\r"); // the mode, shadcn/ui (yes), its base color (neutral), the services, one app
+    await t.press("\r", "\r", "\r", "\r", "\r", "\r"); // the mode, shadcn/ui (yes), its base color (neutral), the services, no desktop app, one app
     expect(await done).toMatchObject({ mode: "framework", shadcn: "neutral", services: ["postgres", "redis", "s3", "caddy"] });
 
     const quit = terminal();

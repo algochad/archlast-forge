@@ -3,6 +3,7 @@ import { parseArgs } from "node:util";
 import { BASE_COLORS, parseBaseColor, type BaseColor } from "./shadcn";
 import { DEFAULT_SERVICES, MODES, parseServiceList, type Mode, type StackService } from "./stack";
 import { parseMicroservices, TRANSPORTS, type Transport } from "./monorepo";
+import { DESKTOP_MODES, type DesktopMode } from "./desktop";
 
 export interface Flags {
   dir?: string;
@@ -16,6 +17,8 @@ export interface Flags {
   transport?: Transport;
   /** A React Native (Expo) app beside a backend. */
   mobile?: boolean;
+  /** A Tauri desktop app: full (the engine on the user's machine) or client. */
+  desktop?: DesktopMode;
   yes: boolean;
   install?: boolean;
   git?: boolean;
@@ -34,6 +37,8 @@ export const USAGE = `Usage: bun create archlast-forge [directory] [options]
   --transport <tcp|redis|nats> how the services talk. Default: tcp
   --mobile                     a React Native (Expo) app in apps/mobile, a client of the backend: with --mode backend
                                (Expo has no full-stack option). Implies --monorepo
+  --desktop <full|client>      a Tauri desktop app in apps/desktop. full: the full-stack app with its engine on the user's
+                               machine (--mode framework); client: a page that talks to a backend elsewhere. Implies --monorepo
   --install / --no-install     run \`bun install\` afterwards
   --git / --no-git             start a git repository
   -y, --yes                    take the default for everything not given, and ask nothing
@@ -57,6 +62,7 @@ export function parseFlags(argv: string[]): Flags {
       microservices: { type: "string" },
       transport: { type: "string" },
       mobile: { type: "boolean" },
+      desktop: { type: "string" },
       install: { type: "boolean" },
       "no-install": { type: "boolean" },
       git: { type: "boolean" },
@@ -75,11 +81,15 @@ export function parseFlags(argv: string[]): Flags {
   const transport = values.transport;
   if (transport !== undefined && !(TRANSPORTS as readonly string[]).includes(transport)) throw new Error(`Unknown transport "${transport}". Choose ${TRANSPORTS.join(", ")}.`);
   const microservices = values.microservices === undefined ? undefined : parseMicroservices(values.microservices);
+  const desktop = values.desktop;
+  if (desktop !== undefined && !(DESKTOP_MODES as readonly string[]).includes(desktop)) throw new Error(`Unknown desktop mode "${desktop}". Choose full or client.`);
+  if (desktop === "full" && mode === "backend") throw new Error("--desktop full runs the full-stack app on the user's machine: use --mode framework (or --desktop client for a backend)");
   if (values.mobile && mode === "framework") throw new Error("The Expo app is a client of a backend: use --mode backend (Expo has no full-stack option)");
   return {
     dir: positionals[0],
-    monorepo: values.monorepo || microservices !== undefined || transport !== undefined || values.mobile ? true : undefined,
+    monorepo: values.monorepo || microservices !== undefined || transport !== undefined || values.mobile || desktop !== undefined ? true : undefined,
     mobile: values.mobile ? true : undefined,
+    desktop: desktop as DesktopMode | undefined,
     microservices,
     transport: transport as Transport | undefined,
     mode: mode as Mode | undefined,

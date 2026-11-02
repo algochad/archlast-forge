@@ -42,6 +42,16 @@ User request: "React Native (Expo) template, backend mode only … Better Auth s
 - **Background and offline**: `AppState` active → `client.reconnect()` (subscriptions are sent again and refetch). No offline store: the client has none, so the template keeps last data on screen and lets calls fail; documented as such.
 - Tested: the client with a WebSocket that takes headers like React Native's, against a real engine: signed calls, a signed socket, live updates after a mutation; the scaffold's files and checks. Not tested: building or running the Expo app (no simulator here), the server plugin in a running engine (it needs Expo's packages).
 
+## Desktop apps (Tauri)
+
+User request: "Tauri desktop template. Full-stack mode runs the engine locally inside the desktop app, without Docker. A client-only mode connects to a remote forge backend"; inventory approved (with a spike first).
+
+- **Spike: one compiled binary doesn't work as is.** `bun build --compile` of the CLI builds (112 MB) but stops at start: the engine reads files beside its source (its `package.json` for the version, the dashboard's page, the vendored explorer, fonts, worker scripts), which the binary's `$bunfs` doesn't have. Making every one of those embeddable would touch every way the engine runs.
+- **So Bun itself is the sidecar**: `scripts/bundle-engine.ts` ships `apps/web` built for production with its production dependencies, `desktop-engine.ts`, and the Bun binary (`binaries/bun-<target triple>`, Tauri's sidecar naming); the Rust shell starts it on a free port, waits for it, opens the window on it and kills it on exit. That is exactly `start --no-docker`, which pack:smoke covers. The cost is size: Bun (~90 MB) plus dependencies.
+- **The engine stays local**: `HOST=127.0.0.1`, production mode, `BETTER_AUTH_URL` on the loopback with `ALLOW_INSECURE_HTTP` (nothing else reaches it), data in Tauri's `app_data_dir`, and a secret made on first start and kept there (0600).
+- **Client mode** is a React page bundled by `Bun.build` with the backend's address in `config.js` (`FORGE_URL` at build time), typed with a type-only import like the Expo app. The backend must trust Tauri's origins; signing in goes through the bearer plugin and `headers`.
+- Tested: both scaffolds, placeholder icons (RGBA PNGs written by the scaffolder, `tauri icon` replaces them), and the starter run for real (loopback only, data and secret placed, not reachable from the LAN address). Not done: compiling the Rust or running Tauri (no Rust or webview libraries here).
+
 ## OpenAPI and the API docs page
 
 User request: "Generate an OpenAPI 3.1 document from the /http routes and NestJS controllers … derived from the same validators the engine uses … Scalar … docs UI in React and MDX … disabled by default in production"; inventory approved.

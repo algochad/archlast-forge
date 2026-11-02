@@ -5,6 +5,8 @@ import { codegen } from "../../cli/src/codegen";
 import { startServer } from "../../runtime/src/server/server";
 import { parseFlags } from "../src/options";
 import { parseMicroservices, scaffoldMonorepo } from "../src/monorepo";
+import { copyFileSync, cpSync, statSync } from "node:fs";
+import { networkInterfaces } from "node:os";
 
 setDefaultTimeout(120_000); // scaffolds run Prettier, and the services start for real
 
@@ -85,5 +87,72 @@ test("a monorepo with two services: workspaces, turbo, shared types, and the app
   } finally {
     await api.stop({ graceful: false });
     await orders.stop({ graceful: false });
+  }
+});
+
+test("--desktop: flags and what they refuse", () => {
+  expect(parseFlags(["x", "--desktop", "client"])).toMatchObject({ monorepo: true, desktop: "client" });
+  expect(() => parseFlags(["x", "--desktop", "web"])).toThrow('Unknown desktop mode "web"');
+  expect(() => parseFlags(["x", "--mode", "backend", "--desktop", "full"])).toThrow("use --mode framework");
+});
+
+test("--desktop full: Tauri with Bun as a sidecar that starts the full-stack app's engine; client: a page that talks to a backend", () => {
+  mkdirSync(scratch, { recursive: true });
+  const full = scaffoldMonorepo({ dir: join(scratch, "desk"), mode: "framework", services: [], desktop: "full" });
+  const app = (...p: string[]) => read(full, "apps", "desktop", ...p);
+  expect(app("src-tauri", "src", "main.rs")).toContain('.sidecar("bun")');
+  const conf = JSON.parse(app("src-tauri", "tauri.conf.json"));
+  expect(conf).toMatchObject({ productName: "desk", app: { windows: [] }, bundle: { externalBin: ["binaries/bun"], resources: { "app-bundle/": "app/" } }, build: { beforeBuildCommand: "bun scripts/bundle-engine.ts" } });
+  expect(app("src-tauri", "Cargo.toml")).toContain("tauri-plugin-shell");
+  expect(app("engine", "desktop-engine.ts")).toContain('HOST: "127.0.0.1"');
+  expect(existsSync(join(full, "apps", "desktop", "index.html"))).toBe(false); // client mode's page isn't there
+  const icon = new Uint8Array(readFileSync(join(full, "apps", "desktop", "src-tauri", "icons", "icon.png")));
+  expect([...icon.slice(0, 8)]).toEqual([137, 80, 78, 71, 13, 10, 26, 10]);
+  expect(new DataView(icon.buffer).getUint32(16)).toBe(512); // IHDR width
+  expect(icon[25]).toBe(6); // RGBA, which Tauri needs
+  expect(Bun.spawnSync([process.execPath, require.resolve("prettier/bin/prettier.cjs"), "--check", "."], { cwd: full }).exitCode).toBe(0);
+
+  const client = scaffoldMonorepo({ dir: join(scratch, "deskc"), mode: "backend", services: [], desktop: "client" });
+  const c = (...p: string[]) => read(client, "apps", "desktop", ...p);
+  expect(c("src-tauri", "src", "main.rs")).not.toContain("sidecar");
+  expect(JSON.parse(c("src-tauri", "tauri.conf.json"))).toMatchObject({ build: { devUrl: "http://localhost:5174", frontendDist: "../dist" }, app: { windows: [{ title: "deskc" }] } });
+  expect(c("src", "main.tsx")).toContain('import type { apiApi } from "@deskc/api";');
+  expect(JSON.parse(c("package.json"))).toMatchObject({ dependencies: { "@deskc/api": "workspace:*" }, devDependencies: { "@tauri-apps/cli": expect.any(String) } });
+  expect(c("src-tauri", "Cargo.toml")).not.toContain("tauri-plugin-shell");
+  expect(c("README.md")).toContain("TRUSTED_ORIGINS");
+  expect(() => scaffoldMonorepo({ dir: join(scratch, "nope2"), mode: "backend", services: [], desktop: "full" })).toThrow("use --mode framework");
+});
+
+test("full mode's engine starter: production on 127.0.0.1 only, with its own secret in the data folder", async () => {
+  // A bundle as scripts/bundle-engine.ts lays it out: the app's forge/, the starter, and the CLI where bun install puts it.
+  mkdirSync(join(scratch, "node_modules", "@archlast"), { recursive: true });
+  if (!existsSync(join(scratch, "node_modules", "@archlast", "forge-runtime"))) symlinkSync(join(import.meta.dir, "../../runtime"), join(scratch, "node_modules", "@archlast", "forge-runtime"), "dir");
+  if (!existsSync(join(scratch, "node_modules", "@archlast", "forge-cli"))) symlinkSync(join(import.meta.dir, "../../cli"), join(scratch, "node_modules", "@archlast", "forge-cli"), "dir");
+  const made = scaffoldMonorepo({ dir: join(scratch, "deskrun"), mode: "backend", services: [] });
+  const bundle = join(scratch, "bundle");
+  cpSync(join(made, "apps", "api", "forge"), join(bundle, "forge"), { recursive: true });
+  copyFileSync(join(import.meta.dir, "../template/desktop/engine/desktop-engine.ts"), join(bundle, "desktop-engine.ts"));
+  mkdirSync(join(bundle, "node_modules"), { recursive: true });
+  symlinkSync(join(scratch, "node_modules", "@archlast"), join(bundle, "node_modules", "@archlast"), "dir");
+  const port = await freePort();
+  const data = join(scratch, "desk-data");
+  const engine = Bun.spawn([process.execPath, join(bundle, "desktop-engine.ts")], { env: { ...process.env, PORT: String(port), DATA_DIR: data }, stdout: "ignore", stderr: "inherit" });
+  try {
+    let ready = false;
+    for (let i = 0; i < 150 && !ready; i++) {
+      ready = await fetch(`http://127.0.0.1:${port}/ready`).then((r) => r.ok, () => false);
+      if (!ready) await Bun.sleep(200);
+    }
+    expect(ready).toBe(true);
+    const res = await fetch(`http://127.0.0.1:${port}/rpc/messages:list`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ paginationOpts: { numItems: 5, cursor: null } }) });
+    expect(((await res.json()) as any).result.page).toEqual([]);
+    expect(statSync(join(data, "secret")).mode & 0o777).toBe(0o600);
+    expect(existsSync(join(data, "app.db"))).toBe(true); // the data folder Tauri gives it
+    // Not on the network: an address of this machine other than the loopback doesn't answer.
+    const lan = Object.values(networkInterfaces()).flat().find((a) => a && a.family === "IPv4" && !a.internal)?.address;
+    if (lan) expect(await fetch(`http://${lan}:${port}/ready`).then(() => "answered", () => "refused")).toBe("refused");
+  } finally {
+    engine.kill("SIGTERM");
+    await engine.exited;
   }
 });
