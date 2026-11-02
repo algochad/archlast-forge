@@ -112,6 +112,8 @@ Moves a backend or a full-stack app to another release: the latest by default, o
 4. `bun install` in the project, then in `forge/` (with `--ignore-scripts`, as `dev` does).
 5. `codegen`, run by the CLI that was just installed, so `forge/_generated` is the new version's.
 
+**In a monorepo the whole of it moves**, from its root or from inside any app: every app that is a project is upgraded as above (its packages, `forge/package.json`, `Dockerfile` and `compose.yaml`), and the other apps and packages (the phone app, the desktop app, `packages/api`, `packages/contracts`) have their dependencies on the archlast-forge packages moved. One `bun install` runs at the root, then each project's server dependencies and codegen. The packages of a release are meant to run together (a service and the app that calls it over Forge RPC, the phone app and its engine), and a `^0.x` range doesn't cross a minor, so an app left behind stays behind. Prettier is not set up in a monorepo's apps by this: they have it from `init`.
+
 The versions are edited as text, so those files keep their formatting and everything else in them; adding the `format` script and `prettier` rewrites `package.json` with its own indentation. It prints each change and ends with `✓ Upgraded to 0.10.0`:
 
 ```

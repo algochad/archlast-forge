@@ -1,5 +1,6 @@
 #!/usr/bin/env bun
 import { ops } from "@archlast/forge-runtime/server";
+import { findWorkspaceRoot } from "create-archlast-forge/workspace";
 import { existsSync, watch } from "node:fs";
 import { basename, join, resolve } from "node:path";
 import { parseArgs, type ParseArgsConfig } from "node:util";
@@ -26,7 +27,7 @@ const USAGE = `${c.bold("archlast-forge")} ${VERSION}
 ${c.bold("Start")}
   init [dir]              create a project: a full-stack app or a backend, with the services you pick
       --mode <framework|backend>   --services <postgres,redis,s3,caddy | none>   --yes   --no-install   --no-git
-  upgrade [version]       move the project's archlast-forge packages and engine image to the latest release (or <version>)
+  upgrade [version]       move the project's archlast-forge packages and engine image to the latest release (or <version>); a monorepo moves whole
 
 ${c.bold("Grow")}  (a project that exists: see the monorepo page of the docs)
   monorepo                turn this project into a monorepo: its files move to apps/web (or apps/api) and nothing is lost
@@ -406,7 +407,9 @@ const commands: Record<string, () => Promise<unknown>> = {
     console.log(`✓ wrote ${join(dir, "_generated")} (${modules.length} modules)`);
   },
   async upgrade() {
-    await upgrade(findForgeDir(values.dir), rest[0]);
+    // In a monorepo the whole of it moves, so it can be run from its root, where there is no forge/.
+    const root = values.dir ? undefined : findWorkspaceRoot(process.cwd());
+    await upgrade(root && !existsSync("forge/schema.ts") && !existsSync("schema.ts") ? root : findForgeDir(values.dir), rest[0]);
   },
 
   async build() {

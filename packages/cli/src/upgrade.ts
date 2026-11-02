@@ -1,7 +1,8 @@
-// `archlast-forge upgrade`: moves a project, backend or full-stack app, to another release of archlast-forge.
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
+// `archlast-forge upgrade`: moves a project, backend or full-stack app, to another release of archlast-forge, or every app and package of a monorepo.
+import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { addPrettier } from "create-archlast-forge";
+import { findWorkspaceRoot } from "create-archlast-forge/workspace";
 import { generate } from "./common";
 import { ensureDeps } from "./deps";
 import { projectRoot } from "./project";
@@ -44,6 +45,38 @@ export function upgradeFiles(forgeDir: string, version: string): UpgradeChange[]
   return changes;
 }
 
+/**
+ * A monorepo moves as one: the packages of one release are meant to run together (a service and the app that calls it over Forge RPC, the phone
+ * app and the engine it talks to), and a caret range on 0.x doesn't cross a minor, so one left behind stays behind. Each app that is a project
+ * (an archlast-forge.json) is upgraded as `upgradeFiles` does it; the other apps and packages (the phone app, desktop app, packages/api) only
+ * have their dependencies on the packages moved. Paths in the result are relative to the monorepo's root.
+ */
+export function upgradeWorkspaceFiles(root: string, version: string): UpgradeChange[] {
+  const changes: UpgradeChange[] = [];
+  const manifest = (dir: string) => {
+    const path = join(dir, "package.json");
+    if (!existsSync(path)) return;
+    const text = readFileSync(path, "utf8");
+    const next = text.replace(DEPENDENCY, (whole, name: string, sep: string, prefix: string, from: string) => {
+      if (from === version) return whole;
+      changes.push({ file: relative(root, path), name, from: prefix + from, to: prefix + version });
+      return `"${name}"${sep}"${prefix}${version}"`;
+    });
+    if (next !== text) writeFileSync(path, next);
+  };
+  manifest(root);
+  for (const group of ["apps", "packages"]) {
+    const dir = join(root, group);
+    for (const name of existsSync(dir) ? readdirSync(dir).sort() : []) {
+      const app = join(dir, name);
+      if (group === "apps" && existsSync(join(app, "archlast-forge.json")))
+        changes.push(...upgradeFiles(join(app, "forge"), version).map((c) => ({ ...c, file: relative(root, join(app, c.file)) })));
+      else manifest(app);
+    }
+  }
+  return changes;
+}
+
 /** The release `spec` (a version, or a dist-tag such as `latest`) names, asked of the registry the project installs from. */
 export function resolveRelease(spec: string, cwd: string): string {
   const r = Bun.spawnSync([process.execPath, "info", `@archlast/forge-runtime@${spec}`, "version"], { cwd, stdout: "pipe", stderr: "pipe" });
@@ -59,6 +92,8 @@ export function resolveRelease(spec: string, cwd: string): string {
  * installs, and regenerates forge/_generated with the CLI just installed.
  */
 export async function upgrade(forgeDir: string, spec = "latest") {
+  const monorepo = findWorkspaceRoot(forgeDir);
+  if (monorepo) return upgradeMonorepo(monorepo, spec);
   const root = projectRoot(forgeDir);
   const version = resolveRelease(spec, root);
   const changes = upgradeFiles(forgeDir, version);
@@ -84,4 +119,31 @@ export async function upgrade(forgeDir: string, spec = "latest") {
   else ok(`Set up Prettier; the project was already on ${version}. Commit the changes.`);
   // Formatting existing code is a diff of its own, so it is the project's call: the setup is added, the code is left as it is.
   if (added.includes(".prettierrc")) console.log("  Prettier is set up with four spaces to an indent; `bun run format` formats the project.");
+}
+
+/** Upgrades every app and package of the monorepo at `root`: the versions, one `bun install` at the root, then each project's server dependencies and generated types. */
+async function upgradeMonorepo(root: string, spec: string) {
+  const version = resolveRelease(spec, root);
+  const changes = upgradeWorkspaceFiles(root, version);
+  if (!changes.length) return ok(`Nothing to change: the monorepo is on ${version}`);
+  for (const ch of changes) console.log(`  ${ch.file.padEnd(34)} ${ch.name}  ${ch.from} → ${ch.to}`);
+
+  step(`installing: bun install (${root})`);
+  const r = Bun.spawnSync([process.execPath, "install"], { cwd: root, stdout: "inherit", stderr: "inherit", stdin: "ignore" });
+  if (r.exitCode !== 0) throw new Error(`bun install failed (exit ${r.exitCode}). The versions are already changed in the files above: fix the install, then run bun install.`);
+
+  const apps = join(root, "apps");
+  for (const name of readdirSync(apps).sort()) {
+    const app = join(apps, name);
+    if (!existsSync(join(app, "archlast-forge.json"))) continue;
+    const forgeDir = join(app, "forge");
+    await ensureDeps(forgeDir);
+    // The generated types belong to the version: write them with the CLI that was just installed, from the app's own node_modules or the root's.
+    const cli = [join(app, "node_modules", ".bin", "archlast-forge"), join(root, "node_modules", ".bin", "archlast-forge")].find(existsSync);
+    if (cli) {
+      const c = Bun.spawnSync([process.execPath, cli, "codegen", "--dir", forgeDir], { cwd: app, stdout: "inherit", stderr: "inherit", stdin: "ignore" });
+      if (c.exitCode !== 0) throw new Error(`codegen in apps/${name} failed after the upgrade; see above`);
+    } else await generate(forgeDir);
+  }
+  ok(`Upgraded the monorepo to ${version}. Commit the changes; \`archlast-forge up\` in an app rebuilds its stack on the new engine image.`);
 }
