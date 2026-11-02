@@ -53,7 +53,7 @@ From any folder of the monorepo:
 ```bash
 archlast-forge add service billing      # apps/billing, and a class in the main app that calls it
 archlast-forge add app admin            # another full-stack app (--mode backend for a backend)
-archlast-forge add mobile               # an Expo app (a backend main app)
+archlast-forge add mobile               # an Expo app, a client of the main app
 archlast-forge add desktop client       # a Tauri app: full, or client
 archlast-forge remove billing           # a service or app, or mobile or desktop
 archlast-forge workspace                # what is here, and on which ports
@@ -79,7 +79,17 @@ Each takes the next free ports, runs `bun install` and codegen, and says what is
 }
 ```
 
-`main` is `web` or `api`. A service is called by the main app over `transport`; an app is a project of its own. `port` is where `dev` serves it on this machine, and `rpcPort` the service's port for the transport. A monorepo made before this file existed has it worked out from its folders, and the first change writes it. `archlast-forge workspace sync` rewrites the shared packages after changes you made by hand.
+`main` is the folder of the main app: `web` or `api` in a monorepo `init` made, any name in one made by hand. `scope`, when it is there, is what the packages are scoped with (`@<scope>/api`) in place of the root package's name. A service is called by the main app over `transport`; an app is a project of its own. `port` is where `dev` serves it on this machine, and `rpcPort` the service's port for the transport. A monorepo made before this file existed has it worked out from its folders, and the first change writes it. `archlast-forge workspace sync` rewrites the shared packages after changes you made by hand.
+
+## A monorepo made by hand
+
+A monorepo that was set up without these commands, with a main app called `medico` or `ward`, joins them with its record:
+
+```json
+{ "main": "ward", "scope": "hospital", "transport": "forge-rpc", "apps": {} }
+```
+
+Save that as `archlast-forge.workspace.json` at the root and run `archlast-forge workspace sync`. It writes `packages/api` (`@hospital/api`, with `wardApi`), naming each app's package as its own `package.json` does. After that `add mobile`, `add desktop`, `add service` and `workspace` work as they do in a monorepo `init` made. Without the file, a lone app with an `archlast-forge.json` is taken for the main app, and with several the command asks you to say which.
 
 ## Services calling services
 

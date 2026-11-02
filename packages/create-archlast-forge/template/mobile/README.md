@@ -1,6 +1,6 @@
 # __NAME__ mobile
 
-A React Native app made with [Expo](https://expo.dev), a client of the backend in `apps/api`. It never runs the engine: there is no full-stack Expo option, the pages and functions live in the backend.
+A React Native app made with [Expo](https://expo.dev), a client of `apps/__MAIN__`, whether that is a full-stack app or a backend. It never runs the engine: there is no full-stack Expo option, so the pages and functions live in `apps/__MAIN__`.
 
 ```bash
 cp env.example .env     # EXPO_PUBLIC_API_URL: the backend (your computer's address on the network, from a phone)

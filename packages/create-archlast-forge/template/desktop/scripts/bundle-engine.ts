@@ -1,10 +1,10 @@
-// What the desktop app ships, made before `tauri dev` and `tauri build` (tauri.conf.json): the web app in apps/web, built for production,
+// What the desktop app ships, made before `tauri dev` and `tauri build` (tauri.conf.json): the app in apps/__MAIN__, built for production,
 // with its production dependencies, the engine's starter, and the Bun runtime that runs it (the sidecar Tauri starts).
 import { chmodSync, copyFileSync, cpSync, existsSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 
 const here = join(import.meta.dir, "..");
-const web = join(here, "..", "web");
+const web = join(here, "..", "__MAIN__");
 const out = join(here, "src-tauri", "app-bundle");
 const run = (cmd: string[], cwd: string) => {
   const r = Bun.spawnSync(cmd, { cwd, stdio: ["ignore", "inherit", "inherit"] });

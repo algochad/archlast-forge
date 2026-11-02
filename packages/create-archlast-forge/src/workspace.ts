@@ -35,8 +35,10 @@ export interface WorkspaceApp {
 
 /** archlast-forge.workspace.json */
 export interface Workspace {
-  /** `web` (a full-stack app) or `api` (a backend): the app the others are added to. */
-  main: "web" | "api";
+  /** The folder in apps/ of the main app, the one the others are added to: `web` (a full-stack app) or `api` (a backend) in a monorepo `init` made, whatever it is called in one made by hand. */
+  main: string;
+  /** What the monorepo's packages are scoped with (`@<scope>/api`), when that isn't the name in the root package.json. */
+  scope?: string;
   transport: Transport;
   apps: Record<string, WorkspaceApp>;
   mobile?: boolean;
@@ -77,7 +79,22 @@ export const backendsOf = (ws: Workspace) => [ws.main, ...Object.keys(ws.apps)];
 
 const isDir = (p: string) => existsSync(p) && statSync(p).isDirectory();
 
-/** A monorepo without the file: its services are the backends beside the main app that have a router or a controller of their own. */
+/** Whether apps/<app> is a full-stack app or a backend, from its archlast-forge.json (no file: a backend, as for any project from before it existed). */
+export function modeOf(root: string, app: string): "framework" | "backend" {
+  const file = join(root, "apps", app, "archlast-forge.json");
+  return existsSync(file) && JSON.parse(readFileSync(file, "utf8")).mode === "framework" ? "framework" : "backend";
+}
+
+/** The package name of apps/<app>: what its package.json says (a monorepo made by hand names its apps its own way), else what `init` would call it. */
+export function appPackage(root: string, scope: string, app: string): string {
+  const file = join(root, "apps", app, "package.json");
+  return (existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")).name as string | undefined) : undefined) ?? packageOf(scope, app);
+}
+
+/**
+ * A monorepo without the file: the main app is `web`, else `api`, else the only app with an archlast-forge.json, and its services are the
+ * backends beside it that have a router or a controller of their own.
+ */
 function infer(root: string): Workspace {
   const apps = join(root, "apps");
   const dirs = isDir(apps)
@@ -85,7 +102,14 @@ function infer(root: string): Workspace {
         .filter((d) => isDir(join(apps, d)))
         .sort()
     : [];
-  const main = dirs.includes("web") ? "web" : "api";
+  const projects = dirs.filter((d) => !["mobile", "desktop"].includes(d) && existsSync(join(apps, d, "archlast-forge.json")));
+  const main = projects.includes("web") ? "web" : projects.includes("api") ? "api" : projects.length === 1 ? projects[0]! : undefined;
+  if (!main)
+    throw new Error(
+      projects.length
+        ? `Can't tell which of ${projects.join(", ")} is the main app: say so with "main" in ${join(root, WORKSPACE_FILE)}, as in { "main": "${projects[0]}", "transport": "forge-rpc", "apps": {} }.`
+        : `${root} has no app in apps/ (a folder with an archlast-forge.json).`,
+    );
   const ws: Workspace = { main, transport: "forge-rpc", apps: {} };
   let n = 0;
   for (const d of dirs) {
@@ -111,8 +135,8 @@ function infer(root: string): Workspace {
 export function loadWorkspace(root: string): { name: string; ws: Workspace; inferred: boolean } {
   const file = join(root, WORKSPACE_FILE);
   const pkg = join(root, "package.json");
-  const name: string = (existsSync(pkg) ? JSON.parse(readFileSync(pkg, "utf8")).name : undefined) ?? nameOf(root);
-  if (!existsSync(file)) return { name, ws: infer(root), inferred: true };
+  const rootName: string = (existsSync(pkg) ? JSON.parse(readFileSync(pkg, "utf8")).name : undefined) ?? nameOf(root);
+  if (!existsSync(file)) return { name: rootName, ws: infer(root), inferred: true };
   let json: Partial<Workspace>;
   try {
     json = JSON.parse(readFileSync(file, "utf8"));
@@ -122,13 +146,22 @@ export function loadWorkspace(root: string): { name: string; ws: Workspace; infe
   const bad = (why: string): never => {
     throw new Error(`${file}: ${why}`);
   };
-  if (json.main !== "web" && json.main !== "api") bad(`"main" must be "web" or "api" (got ${JSON.stringify(json.main)})`);
+  if (typeof json.main !== "string" || !/^[A-Za-z0-9._-]+$/.test(json.main)) bad(`"main" must be the folder of the main app in apps/ (got ${JSON.stringify(json.main)})`);
+  if (!isDir(join(root, "apps", json.main!))) bad(`"main" is "${json.main}", and there is no apps/${json.main}`);
+  if (json.scope !== undefined && !/^[a-z0-9][a-z0-9._-]*$/.test(String(json.scope))) bad(`"scope" must be a package scope without the @ (got ${JSON.stringify(json.scope)})`);
   if (!TRANSPORTS.includes(json.transport as Transport)) bad(`"transport" must be one of ${TRANSPORTS.join(", ")}`);
   for (const [n, a] of Object.entries(json.apps ?? {}))
     if ((a.kind !== "service" && a.kind !== "app") || typeof a.port !== "number") bad(`"apps.${n}" needs a "kind" ("service" or "app") and a "port"`);
   return {
-    name,
-    ws: { main: json.main!, transport: json.transport!, apps: json.apps ?? {}, ...(json.mobile && { mobile: true }), ...(json.desktop && { desktop: json.desktop }) },
+    name: json.scope ?? rootName,
+    ws: {
+      main: json.main!,
+      ...(json.scope && { scope: json.scope }),
+      transport: json.transport!,
+      apps: json.apps ?? {},
+      ...(json.mobile && { mobile: true }),
+      ...(json.desktop && { desktop: json.desktop }),
+    },
     inferred: false,
   };
 }

@@ -36,8 +36,8 @@ export const USAGE = `Usage: bun create archlast-forge [directory] [options]
   --microservices <names>      backends to add beside it (orders,billing), each called from the app over Forge RPC or another NestJS transport
   --transport <forge-rpc|tcp|redis|nats>
                                how the services talk. Default: forge-rpc (typed calls between forge apps)
-  --mobile                     a React Native (Expo) app in apps/mobile, a client of the backend: with --mode backend
-                               (Expo has no full-stack option). Implies --monorepo
+  --mobile                     a React Native (Expo) app in apps/mobile, a client of the app: a full-stack app or a backend.
+                               Implies --monorepo
   --desktop <full|client>      a Tauri desktop app in apps/desktop. full: the full-stack app with its engine on the user's
                                machine (--mode framework); client: a page that talks to a backend elsewhere. Implies --monorepo
   --install / --no-install     run \`bun install\` afterwards
@@ -85,7 +85,6 @@ export function parseFlags(argv: string[]): Flags {
   const desktop = values.desktop;
   if (desktop !== undefined && !(DESKTOP_MODES as readonly string[]).includes(desktop)) throw new Error(`Unknown desktop mode "${desktop}". Choose full or client.`);
   if (desktop === "full" && mode === "backend") throw new Error("--desktop full runs the full-stack app on the user's machine: use --mode framework (or --desktop client for a backend)");
-  if (values.mobile && mode === "framework") throw new Error("The Expo app is a client of a backend: use --mode backend (Expo has no full-stack option)");
   return {
     dir: positionals[0],
     monorepo: values.monorepo || microservices !== undefined || transport !== undefined || values.mobile || desktop !== undefined ? true : undefined,

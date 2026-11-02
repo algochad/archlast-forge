@@ -26,6 +26,7 @@ import {
   findWorkspaceRoot,
   isMonorepo,
   loadWorkspace,
+  modeOf,
   nextPorts,
   packageOf,
   servicesOf,
@@ -121,19 +122,18 @@ export function addApp(dir: string, name: string, o: AddAppOptions = {}): Change
   );
 }
 
-/** apps/mobile, an Expo app that is a client of the main app, a backend. */
+/** apps/mobile, an Expo app that is a client of the main app, a full-stack app or a backend: both serve the same API and sign-in. */
 export function addMobileTo(dir: string): Change {
   const c = open(dir);
-  if (c.ws.main !== "api") throw new Error("The Expo app is a client of a backend, and this monorepo's main app is a full-stack app (apps/web): Expo has no full-stack option.");
   if (existsSync(appDir(c, "mobile"))) throw new Error("apps/mobile already exists.");
   addMobile(c);
-  return done(c, ["apps/mobile: an Expo app, a client of apps/api", "apps/api/forge/package.json: @better-auth/expo"], ["api"]);
+  return done(c, [`apps/mobile: an Expo app, a client of apps/${c.ws.main}`, `apps/${c.ws.main}/forge/package.json: @better-auth/expo`], [c.ws.main]);
 }
 
 /** apps/desktop, a Tauri app: the full-stack app with its engine on the user's machine, or a client of the main app. */
 export function addDesktopTo(dir: string, mode: DesktopMode): Change {
   const c = open(dir);
-  if (mode === "full" && c.ws.main !== "web")
+  if (mode === "full" && modeOf(c.root, c.ws.main) !== "framework")
     throw new Error("--desktop full runs the full-stack app on the user's machine, and this monorepo's main app is a backend: use `add desktop client`.");
   if (existsSync(appDir(c, "desktop"))) throw new Error("apps/desktop already exists.");
   addDesktopApp(c, mode);
@@ -155,7 +155,7 @@ export function removeApp(dir: string, name: string): Change {
     if (name === "mobile") delete ws.mobile;
     else delete ws.desktop;
     summary.push(`apps/${name}: deleted`);
-    if (name === "mobile") c.notes.push("apps/api/forge/auth.ts and @better-auth/expo were left as they are: they are harmless without the app, and yours to remove.");
+    if (name === "mobile") c.notes.push(`apps/${ws.main}/forge/auth.ts and @better-auth/expo were left as they are: they are harmless without the app, and yours to remove.`);
     return done(c, summary, []);
   }
   const app = ws.apps[name];
@@ -239,7 +239,6 @@ export function convertToMonorepo(o: ConvertOptions): Change & { moves: string[]
   for (const s of services) checkAppName(s);
   if (new Set(services).size !== services.length) throw new Error("A service is named twice");
   if (o.transport && !TRANSPORTS.includes(o.transport)) throw new Error(`Unknown transport "${o.transport}". Choose ${TRANSPORTS.join(", ")}.`);
-  if (o.mobile && mode !== "backend") throw new Error("The Expo app is a client of a backend, and this project is a full-stack app: Expo has no full-stack option.");
   if (o.desktop === "full" && mode !== "framework") throw new Error("--desktop full runs the full-stack app on the user's machine, and this project is a backend: use --desktop client.");
 
   const moves = readdirSync(root)
@@ -250,7 +249,7 @@ export function convertToMonorepo(o: ConvertOptions): Change & { moves: string[]
     "package.json, turbo.json, README.md, .gitignore and archlast-forge.workspace.json: the monorepo's, at the root",
     "packages/api: the main app's typed API",
     ...services.map((svc) => `apps/${svc}: the ${svc} service`),
-    ...(o.mobile ? ["apps/mobile: an Expo app, a client of apps/api"] : []),
+    ...(o.mobile ? [`apps/mobile: an Expo app, a client of apps/${main}`] : []),
     ...(o.desktop ? [`apps/desktop: a Tauri app (${o.desktop})`] : []),
   ];
   if (o.dryRun) return { root, summary, notes: [], apps: [], moves };

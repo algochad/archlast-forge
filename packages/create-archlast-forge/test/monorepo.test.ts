@@ -30,7 +30,7 @@ test("flags: --microservices and --transport make a monorepo, and names are chec
   expect(() => parseMicroservices("web")).toThrow("taken by the monorepo");
   expect(() => parseMicroservices("a,a")).toThrow("named twice");
   expect(parseFlags(["x", "--mode", "backend", "--mobile"])).toMatchObject({ monorepo: true, mobile: true });
-  expect(() => parseFlags(["x", "--mode", "framework", "--mobile"])).toThrow("Expo has no full-stack option");
+  expect(parseFlags(["x", "--mode", "framework", "--mobile"])).toMatchObject({ mode: "framework", mobile: true, monorepo: true }); // a phone app is a client of a full-stack app too
 });
 
 test("--mobile: an Expo app in apps/mobile, a client of the backend, which gets Better Auth's Expo plugin", () => {
@@ -50,7 +50,12 @@ test("--mobile: an Expo app in apps/mobile, a client of the backend, which gets 
   for (const f of ["App.tsx", "index.ts", "metro.config.js", "tsconfig.json"]) expect(existsSync(join(root, "apps", "mobile", f)), f).toBe(true);
   const check = Bun.spawnSync([process.execPath, require.resolve("prettier/bin/prettier.cjs"), "--check", "."], { cwd: root, stdout: "pipe", stderr: "pipe" });
   expect(check.exitCode).toBe(0);
-  expect(() => scaffoldMonorepo({ dir: join(scratch, "nope"), mode: "framework", services: [], mobile: true })).toThrow("Expo has no full-stack option");
+  // The same for a full-stack main app: apps/mobile is a client of apps/web, and it is apps/web that gets the Expo plugin.
+  const full = scaffoldMonorepo({ dir: join(scratch, "phoneweb"), mode: "framework", services: [], mobile: true });
+  expect(read(full, "apps", "mobile", "src", "client.ts")).toContain('import type { webApi } from "@phoneweb/api";');
+  expect(read(full, "apps", "mobile", "README.md")).toContain("a client of `apps/web`");
+  expect(read(full, "apps", "web", "forge", "auth.ts")).toContain("plugins: [expo()]");
+  expect(read(full, "packages", "api", "index.ts")).toContain('export { api as webApi } from "../../apps/web/forge/_generated/api";');
 });
 
 test("a monorepo with two services: workspaces, turbo, shared types, and the app calling a service over TCP", async () => {

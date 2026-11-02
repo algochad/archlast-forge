@@ -1,12 +1,12 @@
 import { ArchlastForgeClient } from "@archlast/forge-react";
 import { anyApi } from "@archlast/forge-runtime";
 import { expoClient } from "@better-auth/expo/client";
-import type { apiApi } from "@__NAME__/api";
+import type { __API__ } from "@__NAME__/api";
 import * as SecureStore from "expo-secure-store";
 import { AppState } from "react-native";
 
-/** The backend's functions, typed from apps/api (a type-only import, so the app never bundles the backend's code). */
-export const api = anyApi as unknown as typeof apiApi;
+/** The main app's functions, typed from apps/__MAIN__ (a type-only import, so the app never bundles its code). */
+export const api = anyApi as unknown as typeof __API__;
 
 /** A local backend in development, the deployed one in a build: EXPO_PUBLIC_API_URL, read when the app is bundled. */
 const url = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3000";

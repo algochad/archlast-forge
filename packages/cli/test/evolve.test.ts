@@ -115,7 +115,6 @@ test("convert refuses what it can't do safely, and a backend's main app runs on 
   expect(() => convertToMonorepo({ dir: taken })).toThrow("exists already");
   const web = fresh("webapp");
   scaffold({ dir: web, mode: "framework", services: [] });
-  expect(() => convertToMonorepo({ dir: web, mobile: true })).toThrow("Expo has no full-stack option");
   expect(() => convertToMonorepo({ dir: web, microservices: ["web"] })).toThrow("taken by the monorepo");
   expect(existsSync(join(web, "forge"))).toBe(true); // nothing moved
 
@@ -208,7 +207,10 @@ test("add app: another full-stack app or a backend, on its own port, with its ty
 test("add mobile and desktop: only where they fit, and a backend's own auth.ts is left alone", () => {
   const web = fresh("fullstack");
   scaffoldMonorepo({ dir: web, mode: "framework", services: [] });
-  expect(() => addMobileTo(web)).toThrow("Expo has no full-stack option");
+  const phone = addMobileTo(web); // a client of the full-stack app: it serves the same API and sign-in as a backend does
+  expect(phone.apps).toEqual(["web"]);
+  expect(read(web, "apps", "mobile", "src", "client.ts")).toContain('import type { webApi } from "@fullstack/api";');
+  expect(read(web, "apps", "web", "forge", "auth.ts")).toContain("plugins: [expo()]");
   addDesktopTo(web, "full");
   expect(existsSync(join(web, "apps", "desktop", "engine", "desktop-engine.ts"))).toBe(true);
   expect(json(web, WORKSPACE_FILE).desktop).toBe("full");
@@ -319,4 +321,54 @@ test("package names are unique: a backend main app is @<name>/backend, since pac
   expect(fixed.summary.join("\n")).toContain("renamed to @names/backend");
   expect(json(made, "apps", "api", "package.json").name).toBe("@names/backend");
   expect(new Set(packageNames(made)).size).toBe(packageNames(made).length);
+});
+
+test("a monorepo made by hand is adopted: its main app and its package scope have their own names, and packages/api, mobile and desktop follow", () => {
+  // What a hand-made monorepo looks like: a root of its own, a full-stack app that isn't called web, and a shared package.
+  const make = (name: string) => {
+    const root = fresh(name);
+    mkdirSync(join(root, "packages", "shared"), { recursive: true });
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: `archlast-${name}`, private: true, workspaces: ["apps/*", "packages/*"] }, null, 2));
+    writeFileSync(join(root, "turbo.json"), "{}\n");
+    scaffold({ dir: join(root, "apps", "ward"), mode: "framework", services: [], name });
+    const file = join(root, "apps", "ward", "package.json");
+    writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, "utf8")), name: "@hospital/app" }, null, 4));
+    return root;
+  };
+  const root = make("handmade");
+
+  // Without the file, the only app is the main app; with two and no web or api, it can't be told, and the message says how.
+  expect(loadWorkspace(root)).toMatchObject({ inferred: true, name: "archlast-handmade", ws: { main: "ward", transport: "forge-rpc", apps: {} } });
+  scaffold({ dir: join(root, "apps", "clinic"), mode: "backend", services: [], name: "clinic" });
+  expect(() => loadWorkspace(root)).toThrow('Can\'t tell which of clinic, ward is the main app: say so with "main"');
+  rmSync(join(root, "apps", "clinic"), { recursive: true });
+  writeFileSync(join(root, WORKSPACE_FILE), JSON.stringify({ main: "nope", transport: "forge-rpc", apps: {} }));
+  expect(() => loadWorkspace(root)).toThrow("there is no apps/nope");
+  writeFileSync(join(root, WORKSPACE_FILE), JSON.stringify({ main: "ward", scope: "hospital", transport: "forge-rpc", apps: {} }));
+  expect(loadWorkspace(root)).toMatchObject({ inferred: false, name: "hospital", ws: { main: "ward", scope: "hospital" } });
+
+  // sync writes packages/api for it: the scope is the file's, and the app's package is the one its package.json names.
+  syncWorkspace(root);
+  expect(read(root, "packages", "api", "index.ts")).toContain('export { api as wardApi } from "../../apps/ward/forge/_generated/api";');
+  expect(json(root, "packages", "api", "package.json")).toMatchObject({ name: "@hospital/api", devDependencies: { "@hospital/app": "workspace:*" } });
+  expect(json(root, WORKSPACE_FILE).scope).toBe("hospital"); // kept when the file is written again
+
+  // A phone app and a desktop app for it: named for the scope, typed from the main app, which gets the Expo plugin.
+  addMobileTo(root);
+  expect(json(root, "apps", "mobile", "package.json")).toMatchObject({ name: "@hospital/mobile", dependencies: { "@hospital/api": "workspace:*" } });
+  expect(read(root, "apps", "mobile", "src", "client.ts")).toContain('import type { wardApi } from "@hospital/api";');
+  expect(read(root, "apps", "mobile", "src", "client.ts")).toMatch(/scheme: "hospital",\s+storagePrefix: "hospital"/);
+  expect(json(root, "apps", "mobile", "app.json").expo).toMatchObject({ scheme: "hospital" });
+  expect(read(root, "apps", "ward", "forge", "auth.ts")).toContain('trustedOrigins: ["hospital://"]');
+  addDesktopTo(root, "client");
+  expect(json(root, "apps", "desktop", "package.json")).toMatchObject({ name: "@hospital/desktop", dependencies: { "@hospital/api": "workspace:*" } });
+  expect(read(root, "apps", "desktop", "src", "main.tsx")).toContain('import type { wardApi } from "@hospital/api";');
+  expect(json(root, WORKSPACE_FILE)).toMatchObject({ main: "ward", scope: "hospital", mobile: true, desktop: "client" });
+
+  // The full desktop app bundles the main app by its own name, not apps/web.
+  const other = make("handmade2");
+  writeFileSync(join(other, WORKSPACE_FILE), JSON.stringify({ main: "ward", transport: "forge-rpc", apps: {} }));
+  addDesktopTo(other, "full");
+  expect(read(other, "apps", "desktop", "scripts", "bundle-engine.ts")).toContain('join(here, "..", "ward")');
+  expect(() => addDesktopTo(fresh("backendmain"), "full")).toThrow("isn't in a monorepo");
 });

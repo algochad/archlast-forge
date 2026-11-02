@@ -95,13 +95,10 @@ export async function gather(flags: Flags, interactive: boolean, io: Io = {}): P
       : defaultServices(mode);
   }
 
-  // A phone app is a client of a backend; a full-stack app isn't offered one (Expo has no full-stack option).
+  // A phone app is a client of the app: its engine serves the same API and sign-in whether it is a full-stack app or a backend.
   const mobile =
-    mode === "backend" &&
-    (flags.mobile ??
-      (interactive
-        ? await ask<boolean>((o) => p.confirm({ ...o, message: "Add a React Native (Expo) app? It is a client of this backend (Expo has no full-stack option)", initialValue: false }))
-        : false));
+    flags.mobile ??
+    (interactive ? await ask<boolean>((o) => p.confirm({ ...o, message: "Add a React Native (Expo) app? It is a client of this app", initialValue: false })) : false);
   // A desktop app: the full-stack app with its engine on the user's machine (full-stack apps only), or a client of a backend.
   const desktop =
     flags.desktop ??

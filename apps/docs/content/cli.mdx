@@ -59,7 +59,7 @@ All three are the same program (`create-archlast-forge`). `init` forwards everyt
 | `--monorepo` | a Turborepo monorepo: the app in `apps/`, the main app's typed API in `packages/api` ([Monorepos](monorepo.html)). |
 | `--microservices <names>` | backends to add beside the app, comma separated (`orders,billing`), each called from it over [Forge RPC](forge-rpc.html) or another NestJS transport. Implies `--monorepo`. Names: lowercase letters, digits and `-`; not `web`, `api`, `mobile` or `desktop`. |
 | `--transport <forge-rpc\|tcp\|redis\|nats>` | how the services talk. Default `forge-rpc`: typed calls between forge apps, with `packages/contracts`. |
-| `--mobile` | a React Native (Expo) app in `apps/mobile`, a client of the backend ([Mobile apps](mobile.html)). Only with `--mode backend`: Expo has no full-stack option, and asking for one is an error. Implies `--monorepo`. Interactive `init` asks for it only when you build a backend. |
+| `--mobile` | a React Native (Expo) app in `apps/mobile`, a client of the app, a full-stack app or a backend ([Mobile apps](mobile.html)): both serve the same API and sign-in. Implies `--monorepo`. |
 | `--desktop <full\|client>` | a Tauri app in `apps/desktop` ([Desktop apps](desktop.html)): `full` runs the full-stack app, engine included, on the user's machine (with `--mode framework`); `client` is a page that talks to a backend elsewhere. Implies `--monorepo`. |
 | `--install`, `--no-install` | run `bun install` afterwards. When nothing is said: ask, or do not install if not asking. |
 | `--git`, `--no-git` | run `git init -q`. Same defaults. |
@@ -170,7 +170,7 @@ Each is run from anywhere inside a [monorepo](monorepo.html), and installs and r
 |---|---|
 | `add service <name>` | `apps/<name>`, a backend that serves the transport (a [Forge RPC](forge-rpc.html) router by default), and in the main app a service class that calls it, a controller and an action over that class. It gets the next free ports, and the shared `FORGE_RPC_TOKEN`. `packages/contracts` gains its types. |
 | `add app <name>` | `apps/<name>`, a project like `init` makes: a full-stack app by default (with shadcn/ui, as `init` does), or `--mode backend`. It gets the next free port, and its typed API is `@<project>/api/<name>`. |
-| `add mobile` | `apps/mobile`, an Expo app that is a client of `apps/api`. Only where the main app is a backend: Expo has no full-stack option. A backend with an `auth.ts` of its own keeps it, and is told what to add. |
+| `add mobile` | `apps/mobile`, an Expo app that is a client of the main app, a full-stack app or a backend. A main app with an `auth.ts` of its own keeps it, and is told what to add. |
 | `add desktop <full\|client>` | `apps/desktop`, a Tauri app. `full` is only for a full-stack main app. |
 
 Names are lowercase letters, digits and `-`; `web`, `api`, `mobile` and `desktop` are the monorepo's own. A name that is taken, or a file in the main app that the service's calls would overwrite, is refused before anything is written.
@@ -194,7 +194,7 @@ archlast-forge workspace sync     # write the shared packages again from apps/
 
 `sync` is for changes made by hand: an app folder you deleted drops out of the workspace, an app you made in `apps/` joins it, and `packages/api`, `packages/contracts` and the main app's `forge/_services.ts` are written from what is there. It also renames a backend main app's package from `@<project>/api` to `@<project>/backend`: monorepos made by 0.13.0 and before gave both it and `packages/api` that name, and `bun install` refuses two packages of one name.
 
-The monorepo's record is `archlast-forge.workspace.json` at its root (see [Monorepos](monorepo.html#the-workspace-file)); one made without it is worked out from its folders.
+The monorepo's record is `archlast-forge.workspace.json` at its root (see [Monorepos](monorepo.html#the-workspace-file)); one made without it is worked out from its folders. A monorepo made by hand, whose main app isn't called `web` or `api`, is adopted by writing that file with `main` (and `scope`, if its packages aren't scoped by the root's name) and running `workspace sync`: it writes `packages/api` for it, and `add mobile` and `add desktop` work from there.
 
 ## stack
 

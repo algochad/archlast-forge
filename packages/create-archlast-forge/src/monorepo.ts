@@ -9,7 +9,7 @@ import { nameOf } from "./options";
 import { addPrettier, format, isFormatted, scaffold, VERSION } from "./scaffold";
 import type { BaseColor } from "./shadcn";
 import type { Mode, StackService } from "./stack";
-import { backendsOf, camel, checkAppName, env, isMonorepo, packageOf, pascal, servicesOf, TRANSPORT_LABEL, TRANSPORTS, WORKSPACE_FILE, writeWorkspace, type Transport, type Workspace } from "./workspace";
+import { appPackage, backendsOf, camel, checkAppName, env, isMonorepo, modeOf, packageOf, pascal, servicesOf, TRANSPORT_LABEL, TRANSPORTS, WORKSPACE_FILE, writeWorkspace, type Transport, type Workspace } from "./workspace";
 
 export { isMonorepo, TRANSPORT_LABEL, TRANSPORTS, type Transport };
 
@@ -21,7 +21,7 @@ export interface MonorepoOptions {
   /** Backends to add as microservices, by name (`orders`, `billing`). */
   microservices?: string[];
   transport?: Transport;
-  /** A React Native (Expo) app in apps/mobile, a client of the backend (the main app must be one: Expo has no full-stack option). */
+  /** A React Native (Expo) app in apps/mobile, a client of the main app, whether that is a full-stack app or a backend. */
   mobile?: boolean;
   /** A Tauri desktop app in apps/desktop: the full-stack app with its engine on the user's machine, or a client of a backend. */
   desktop?: DesktopMode;
@@ -325,8 +325,8 @@ export function ensureToken(c: Ctx) {
 
 /** A backend main app has to run on this machine in development when it calls services, or its code can't reach their ports. */
 export function ensureMainOnHost(c: Ctx) {
-  if (c.ws.main !== "api" || !servicesOf(c.ws).length) return;
-  patchJson(join(c.root, "apps", "api", "package.json"), (pkg) => {
+  if (modeOf(c.root, c.ws.main) !== "backend" || !servicesOf(c.ws).length) return;
+  patchJson(join(c.root, "apps", c.ws.main, "package.json"), (pkg) => {
     const dev: string | undefined = pkg.scripts?.dev;
     if (dev && /^archlast-forge dev\b/.test(dev) && !dev.includes("--no-docker")) pkg.scripts.dev = dev.replace("archlast-forge dev", "archlast-forge dev --no-docker");
   });
@@ -355,7 +355,7 @@ const sharedPackage = (c: Ctx, pkg: string, of: string[], files: string[] = []) 
       scripts: { typecheck: "tsc --noEmit" },
       dependencies: { "@archlast/forge-runtime": `^${c.version}` },
       // @types/bun: the apps' code the types come from uses process.env and Bun's globals.
-      devDependencies: Object.fromEntries([...of.map((b) => [packageOf(c.name, b), "workspace:*"]), ["@types/bun", "1.4.4"], ["typescript", "^7.0.2"]]),
+      devDependencies: Object.fromEntries([...of.map((b) => [appPackage(c.root, c.name, b), "workspace:*"]), ["@types/bun", "1.4.4"], ["typescript", "^7.0.2"]]),
     },
     null,
     2,
@@ -461,7 +461,6 @@ export function scaffoldMonorepo(o: MonorepoOptions): string {
   const version = o.version ?? VERSION;
   const services = o.microservices ?? [];
   const main = o.mode === "framework" ? "web" : "api";
-  if (o.mobile && o.mode !== "backend") throw new Error("The Expo app is a client of a backend: use --mode backend (Expo has no full-stack option)");
   if (o.desktop === "full" && o.mode !== "framework") throw new Error("--desktop full runs the full-stack app on the user's machine: use --mode framework (or --desktop client for a backend)");
 
   const ws: Workspace = { main, transport: o.transport ?? "forge-rpc", apps: {} };
@@ -554,8 +553,8 @@ function readme(c: Ctx) {
 }
 
 /**
- * apps/mobile: the Expo app (template/mobile), and what the backend in apps/api needs for it: Better Auth's Expo plugin, which lets the app's
- * scheme sign in and keeps sessions working without browser cookies. A backend with an auth.ts of its own keeps it, and is told what to add.
+ * apps/mobile: the Expo app (template/mobile), a client of the main app, and what the main app needs for it: Better Auth's Expo plugin, which
+ * lets the app's scheme sign in and keeps sessions working without browser cookies. A main app with an auth.ts of its own keeps it, and is told what to add.
  */
 export function addMobile(c: Ctx) {
   const { root, name, version } = c;
@@ -567,19 +566,19 @@ export function addMobile(c: Ctx) {
     for (const entry of readdirSync(path)) {
       const p = join(path, entry);
       if (statSync(p).isDirectory()) fill(p);
-      else writeFileSync(p, readFileSync(p, "utf8").replaceAll("__NAME__", name).replaceAll("__VERSION__", version));
+      else writeFileSync(p, readFileSync(p, "utf8").replaceAll("__NAME__", name).replaceAll("__API__", `${camel(c.ws.main)}Api`).replaceAll("__MAIN__", c.ws.main).replaceAll("__VERSION__", version));
     }
   };
   fill(dir);
   writeFileSync(join(dir, ".env"), readFileSync(join(dir, ".env.example"), "utf8"));
   c.written.push("apps/mobile");
-  const forge = join(root, "apps", "api", "forge");
+  const forge = join(root, "apps", c.ws.main, "forge");
   if (existsSync(join(forge, "auth.ts")))
-    c.notes.push(`apps/api/forge/auth.ts is yours, so it is unchanged. For the mobile app to sign in, add plugins: [expo()] (import { expo } from "@better-auth/expo") and trustedOrigins: ["${name}://"] to its defineAuth options.`);
+    c.notes.push(`apps/${c.ws.main}/forge/auth.ts is yours, so it is unchanged. For the mobile app to sign in, add plugins: [expo()] (import { expo } from "@better-auth/expo") and trustedOrigins: ["${name}://"] to its defineAuth options.`);
   else
     put(
       c,
-      "apps/api/forge/auth.ts",
+      `apps/${c.ws.main}/forge/auth.ts`,
       `import { defineAuth } from "@archlast/forge-runtime";
 import { expo } from "@better-auth/expo";
 
@@ -593,7 +592,7 @@ export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [expo(
 
 /** apps/desktop: the Tauri app, the full-stack app with its engine on the user's machine, or a client of a backend. */
 export function addDesktopApp(c: Ctx, mode: DesktopMode) {
-  addDesktop(c.root, c.name, c.version, mode, c.ws.main);
+  addDesktop(c.root, c.name, c.version, mode, c.ws.main, modeOf(c.root, c.ws.main));
   c.written.push("apps/desktop");
   c.ws.desktop = mode;
 }

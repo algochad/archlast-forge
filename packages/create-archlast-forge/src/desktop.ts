@@ -3,6 +3,7 @@
 import { cpSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { deflateSync } from "node:zlib";
+import { camel } from "./workspace";
 
 export const DESKTOP_MODES = ["full", "client"] as const;
 export type DesktopMode = (typeof DESKTOP_MODES)[number];
@@ -64,8 +65,8 @@ export function solidPng(size: number, [r, g, b]: [number, number, number]): Uin
 }
 
 /** Writes apps/desktop into the monorepo at `root`, for the main app `main` (web or api). */
-export function addDesktop(root: string, name: string, version: string, mode: DesktopMode, main: string) {
-  if (mode === "full" && main !== "web") throw new Error("--desktop full runs the full-stack app on the user's machine: use --mode framework (or --desktop client for a backend)");
+export function addDesktop(root: string, name: string, version: string, mode: DesktopMode, main: string, mainMode: "framework" | "backend" = main === "web" ? "framework" : "backend") {
+  if (mode === "full" && mainMode !== "framework") throw new Error("--desktop full runs the full-stack app on the user's machine: use --mode framework (or --desktop client for a backend)");
   const dir = join(root, "apps", "desktop");
   cpSync(TEMPLATE, dir, { recursive: true });
   renameSync(join(dir, "gitignore"), join(dir, ".gitignore"));
@@ -83,7 +84,8 @@ export function addDesktop(root: string, name: string, version: string, mode: De
           p,
           readFileSync(p, "utf8")
             .replaceAll("__MODE_SECTION__", MODE_SECTION[mode](main))
-            .replaceAll("__API__", `${main}Api`)
+            .replaceAll("__API__", `${camel(main)}Api`)
+            .replaceAll("__MAIN__", main)
             .replaceAll("__NAME__", name)
             .replaceAll("__VERSION__", version),
         );

@@ -1,6 +1,6 @@
 # Mobile apps
 
-`init --mobile` adds a React Native app made with [Expo](https://expo.dev) to a backend: a client that calls its functions and keeps queries live, typed from the backend's generated API. It never runs the engine: **there is no full-stack Expo option**, so `--mobile` goes with `--mode backend`, and `init` doesn't offer it for a full-stack app.
+`init --mobile` adds a React Native app made with [Expo](https://expo.dev) to a backend or a full-stack app: a client that calls its functions and keeps queries live, typed from its generated API. Both serve the same `/rpc` and sign-in, so the app doesn't care which it talks to, and `add mobile` ([CLI](cli.html#add)) adds it later. It never runs the engine: **there is no full-stack Expo option**, so `--mobile` goes with `--mode backend`, and `init` doesn't offer it for a full-stack app.
 
 ```bash
 bun create archlast-forge acme --mode backend --mobile        # implies --monorepo
