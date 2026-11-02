@@ -328,7 +328,7 @@ test("a monorepo made by hand is adopted: its main app and its package scope hav
   const make = (name: string) => {
     const root = fresh(name);
     mkdirSync(join(root, "packages", "shared"), { recursive: true });
-    writeFileSync(join(root, "package.json"), JSON.stringify({ name: `archlast-${name}`, private: true, workspaces: ["apps/*", "packages/*"] }, null, 2));
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: `archlast-${name}`, private: true, workspaces: ["apps/*", "packages/*"], devDependencies: { typescript: "~6.0.3" } }, null, 2));
     writeFileSync(join(root, "turbo.json"), "{}\n");
     scaffold({ dir: join(root, "apps", "ward"), mode: "framework", services: [], name });
     const file = join(root, "apps", "ward", "package.json");
@@ -352,10 +352,12 @@ test("a monorepo made by hand is adopted: its main app and its package scope hav
   expect(read(root, "packages", "api", "index.ts")).toContain('export { api as wardApi } from "../../apps/ward/forge/_generated/api";');
   expect(json(root, "packages", "api", "package.json")).toMatchObject({ name: "@hospital/api", devDependencies: { "@hospital/app": "workspace:*" } });
   expect(json(root, WORKSPACE_FILE).scope).toBe("hospital"); // kept when the file is written again
+  expect(json(root, "packages", "api", "package.json").devDependencies.typescript).toBe("~6.0.3"); // the root's pin: one TypeScript in the monorepo
 
   // A phone app and a desktop app for it: named for the scope, typed from the main app, which gets the Expo plugin.
   addMobileTo(root);
   expect(json(root, "apps", "mobile", "package.json")).toMatchObject({ name: "@hospital/mobile", dependencies: { "@hospital/api": "workspace:*" } });
+  expect(json(root, "apps", "mobile", "package.json").devDependencies.typescript).toBe("~6.0.3");
   expect(read(root, "apps", "mobile", "src", "client.ts")).toContain('import type { wardApi } from "@hospital/api";');
   expect(read(root, "apps", "mobile", "src", "client.ts")).toMatch(/scheme: "hospital",\s+storagePrefix: "hospital"/);
   expect(json(root, "apps", "mobile", "app.json").expo).toMatchObject({ scheme: "hospital" });

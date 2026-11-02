@@ -342,6 +342,11 @@ export function finishServices(c: Ctx, added: string[]) {
   ensureMainOnHost(c);
 }
 
+/** The TypeScript the monorepo's root pins, which the packages and apps written here use too (a monorepo has one), else the default. */
+export const rootTypescript = (root: string): string => (existsSync(join(root, "package.json")) ? JSON.parse(readFileSync(join(root, "package.json"), "utf8")).devDependencies?.typescript : undefined) ?? "^7.0.2";
+/** The @types/bun the main app uses, else the default: the shared packages type-check its code. */
+const typesBun = (c: Ctx): string => JSON.parse(readFileSync(join(c.root, "apps", c.ws.main, "package.json"), "utf8")).devDependencies?.["@types/bun"] ?? "1.4.4";
+
 const TSCONFIG =
   JSON.stringify({ compilerOptions: { target: "ES2023", module: "ESNext", moduleResolution: "bundler", strict: true, noEmit: true, skipLibCheck: true, experimentalDecorators: true, types: ["bun"] }, include: ["index.ts"] }, null, 2) + "\n";
 /** A shared package: `of` are the apps whose types it re-exports, and `files` are the files of its own it exports besides index.ts (`@<name>/<pkg>/<file>`). */
@@ -355,7 +360,7 @@ const sharedPackage = (c: Ctx, pkg: string, of: string[], files: string[] = []) 
       scripts: { typecheck: "tsc --noEmit" },
       dependencies: { "@archlast/forge-runtime": `^${c.version}` },
       // @types/bun: the apps' code the types come from uses process.env and Bun's globals.
-      devDependencies: Object.fromEntries([...of.map((b) => [appPackage(c.root, c.name, b), "workspace:*"]), ["@types/bun", "1.4.4"], ["typescript", "^7.0.2"]]),
+      devDependencies: Object.fromEntries([...of.map((b) => [appPackage(c.root, c.name, b), "workspace:*"]), ["@types/bun", typesBun(c)], ["typescript", rootTypescript(c.root)]]),
     },
     null,
     2,
@@ -571,6 +576,7 @@ export function addMobile(c: Ctx) {
   };
   fill(dir);
   writeFileSync(join(dir, ".env"), readFileSync(join(dir, ".env.example"), "utf8"));
+  patchJson(join(dir, "package.json"), (pkg) => (pkg.devDependencies.typescript = rootTypescript(root)));
   c.written.push("apps/mobile");
   const forge = join(root, "apps", c.ws.main, "forge");
   if (existsSync(join(forge, "auth.ts")))
