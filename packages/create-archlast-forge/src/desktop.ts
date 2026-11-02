@@ -69,6 +69,7 @@ export function addDesktop(root: string, name: string, version: string, mode: De
   const dir = join(root, "apps", "desktop");
   cpSync(TEMPLATE, dir, { recursive: true });
   renameSync(join(dir, "gitignore"), join(dir, ".gitignore"));
+  mkdirSync(join(dir, "src-tauri", "src"), { recursive: true }); // git keeps no empty folders, so the template can't have it
   renameSync(join(dir, "src-tauri", `main.${mode}.rs`), join(dir, "src-tauri", "src", "main.rs"));
   const unused = mode === "full" ? ["src-tauri/main.client.rs", "index.html", "config.js", "src", "scripts/build-client.ts"] : ["src-tauri/main.full.rs", "engine", "loading", "scripts/bundle-engine.ts"];
   for (const p of unused) rmSync(join(dir, p), { recursive: true, force: true });
