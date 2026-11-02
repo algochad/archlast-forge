@@ -248,7 +248,7 @@ export function convertToMonorepo(o: ConvertOptions): Change & { moves: string[]
   const summary = [
     `${moves.length} files and folders move to apps/${main}: ${moves.join(", ")}`,
     "package.json, turbo.json, README.md, .gitignore and archlast-forge.workspace.json: the monorepo's, at the root",
-    "packages/api: the typed API of each app",
+    "packages/api: the main app's typed API",
     ...services.map((svc) => `apps/${svc}: the ${svc} service`),
     ...(o.mobile ? ["apps/mobile: an Expo app, a client of apps/api"] : []),
     ...(o.desktop ? [`apps/desktop: a Tauri app (${o.desktop})`] : []),
