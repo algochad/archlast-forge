@@ -125,7 +125,7 @@ import type { ActionCtx } from "@archlast/forge-runtime/nest";
 import { Ctx, Input, Mutation, Router, z } from "@archlast/forge-runtime/nest/rpc";
 
 /**
- * What ${svc} serves over Forge RPC, declared as nestjs-trpc declares routers. \`archlast-forge codegen\` writes its types to
+ * What ${svc} serves over Forge RPC. \`archlast-forge codegen\` writes its types to
  * forge/_generated/rpc.ts, which packages/contracts shares, and other apps call \`${camel(svc)}.hello\` with them.
  */
 @Router({ alias: "${camel(svc)}" })
@@ -363,7 +363,7 @@ ${
 
 ${
   transport === "forge-rpc"
-    ? `Each service in \`apps/\` serves a Forge RPC router (\`forge/<service>.router.ts\`, declared as nestjs-trpc declares one, listening in \`forge/http.ts\`). Its codegen writes the router's types to \`forge/_generated/rpc.ts\`, \`packages/contracts\` shares them, and the main app's backend calls each service with them, from an action each (\`apps/${main}/forge/${camel(services[0]!)}.ts\`). Forge RPC is backend to backend: pages and apps call the main app's functions, never a service directly:`
+    ? `Each service in \`apps/\` serves a Forge RPC router (\`forge/<service>.router.ts\`, served from \`forge/http.ts\`). Its codegen writes the router's types to \`forge/_generated/rpc.ts\`, \`packages/contracts\` shares them, and the main app's backend calls each service with them, from an action each (\`apps/${main}/forge/${camel(services[0]!)}.ts\`). Forge RPC is backend to backend: pages and apps call the main app's functions, never a service directly:`
     : `Each service in \`apps/\` listens for messages with NestJS's ${TRANSPORT_LABEL[transport]} transport (\`forge/http.ts\`, \`forge/<service>.controller.ts\`), and \`apps/${main}\` calls them with an action each (\`forge/${camel(services[0]!)}.ts\`):`
 }
 

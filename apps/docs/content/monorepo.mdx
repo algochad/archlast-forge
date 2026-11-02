@@ -35,7 +35,7 @@ await client.query(ordersApi.messages.list, { paginationOpts: { numItems: 20, cu
 
 ## Services calling services
 
-By default (`--transport forge-rpc`) each service serves a [Forge RPC](forge-rpc.html) router: typed calls between forge apps. The service declares it the way nestjs-trpc does:
+By default (`--transport forge-rpc`) each service serves a [Forge RPC](forge-rpc.html) router: typed calls between forge apps. The service declares it with decorators:
 
 ```ts
 // apps/orders/forge/orders.router.ts

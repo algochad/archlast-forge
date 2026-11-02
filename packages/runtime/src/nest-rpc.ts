@@ -1,5 +1,5 @@
-// Forge RPC: typed request-response calls between forge backends, over HTTP with tRPC. Backend to backend only: never a page, a mobile
-// app or a desktop app, which call their own backend's functions instead (they must never hold FORGE_RPC_TOKEN). A service declares routers the way nestjs-trpc does
+// Forge RPC: typed request-response calls between forge backends, over HTTP. Backend to backend only: never a page, a mobile app or a
+// desktop app, which call their own backend's functions instead (they must never hold FORGE_RPC_TOKEN). A service declares routers
 // (@Router, @Query, @Mutation, @Input), lists them in nest()'s controllers and listens with ForgeRpcServer; `archlast-forge codegen` writes
 // what they serve to forge/_generated/rpc.ts, and a caller types createForgeRpcClient<Rpc>() with it. Calls go through Nest's ClientProxy.
 import { createTRPCUntypedClient, httpBatchLink, TRPCClientError } from "@trpc/client";
@@ -31,7 +31,7 @@ export const RPC_ROUTER = Symbol.for("archlast-forge.rpc.router");
 const PROCEDURES = Symbol("forge-rpc procedures");
 const EXTRAS = "forgeRpc";
 
-/** A schema tRPC validates with: Zod (`z` from here), or any other Standard Schema library. */
+/** A schema the server validates with: Zod (`z` from here), or any other Standard Schema library. */
 export type RpcSchema = { readonly "~standard": unknown };
 export interface ProcedureOptions {
   /** Validates what the caller sends, before the method runs. Without it the procedure takes no input. */
@@ -159,7 +159,7 @@ type RpcCtx = { authorized: boolean };
 
 /**
  * The Forge RPC transport, as a Nest custom strategy: `nest(http, { controllers: [OrdersRouter], microservices: [{ strategy: new
- * ForgeRpcServer({ port: 4001 }) }] })`. It serves every @Router method of the app with tRPC on a Bun server of its own: input and output
+ * ForgeRpcServer({ port: 4001 }) }] })`. It serves every @Router method of the app on a Bun server of its own: input and output
  * validated with the method's schemas, a bearer token checked on every call, errors in the engine's envelope with no stack or internal message.
  */
 export class ForgeRpcServer extends Server implements CustomTransportStrategy {

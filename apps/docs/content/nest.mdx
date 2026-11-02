@@ -347,7 +347,7 @@ export class MathController {
 - In this entry `Ctx` is the engine's: a message has no caller, so `@Ctx()` gives an anonymous `ActionCtx`. Nest's transport context (`RedisContext`, `NatsContext`, ...) is `@TransportCtx()`.
 - Use `host: "0.0.0.0"` in a container so other containers reach it, and publish the port in `compose.yaml` if something outside the stack connects. `ClientsModule` and `ClientProxyFactory` are here too, for sending to other services.
 - With `RUNTIME_WORKERS > 1`, the transports listen in the first function runtime process only, so a port is bound once. Clients (`ClientsModule`) work in every process.
-- Between forge backends, use [Forge RPC](forge-rpc.html) (`@archlast/forge-runtime/nest/rpc`): routers declared as in nestjs-trpc, typed calls from generated types, and the engine's error envelope. It is backend to backend only; frontends call their own backend's functions.
+- Between forge backends, use [Forge RPC](forge-rpc.html) (`@archlast/forge-runtime/nest/rpc`): routers declared with decorators, typed calls from generated types, and the engine's error envelope. It is backend to backend only; frontends call their own backend's functions.
 
 ## Testing
 

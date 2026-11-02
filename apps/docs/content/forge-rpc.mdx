@@ -1,6 +1,6 @@
 # Forge RPC
 
-Forge RPC is how one forge backend calls another: typed request-response calls over HTTP, built on [tRPC](https://trpc.io) v11. A service declares routers the way [nestjs-trpc](https://nestjs-trpc.io) does, `archlast-forge codegen` writes their types, and a caller gets `.query()` and `.mutate()` checked against them. Calls go through Nest's `ClientProxy`, like any other [microservice transport](nest.html#microservices).
+Forge RPC is how one forge backend calls another: typed request-response calls over HTTP. A service declares routers with decorators, `archlast-forge codegen` writes their types, and a caller gets `.query()` and `.mutate()` checked against them. Calls go through Nest's `ClientProxy`, like any other [microservice transport](nest.html#microservices).
 
 Use it between forge backends, such as the services of a [monorepo](monorepo.html), where it is the default transport. To reach something that isn't a forge backend, or for events rather than calls, use one of Nest's transports.
 
@@ -17,7 +17,7 @@ The token every backend shares, `FORGE_RPC_TOKEN`, never leaves the servers, and
 - **Codegen** (`dev`, `build`, `typecheck`) fails when frontend code imports `@archlast/forge-runtime/nest/rpc` or `forge/_generated/rpc`. Frontend code is `src/` in a backend with its own bundler, and `app/` in a full-stack app.
 - **`ForgeRpcClient` and `ForgeRpcServer`** refuse to be made where there is a `window`: a browser, React Native, a Tauri page.
 
-Everything comes from `@archlast/forge-runtime/nest/rpc`, including `z` (Zod 4). Your code never imports `@nestjs/*` or `@trpc/*`.
+Everything comes from `@archlast/forge-runtime/nest/rpc`, including `z` (Zod 4). Your code imports nothing else for it.
 
 ## A router
 
@@ -151,7 +151,7 @@ A failed call answers in the engine's [error envelope](errors.html), `{ message,
 ## Performance
 
 - **Calls made in the same tick** go out as one HTTP request (batches of up to 32), over kept-alive connections. Every call is a POST, so a large query input never goes in a URL.
-- **The server** is a `Bun.serve` running tRPC's fetch adapter. It is about 1.8× faster than tRPC's Node adapter on Bun, and its body limit is `MAX_REQUEST_BYTES`.
+- **The server** is a `Bun.serve` of its own, about 1.8× faster than serving the same calls through Node's `http` module on Bun. Its body limit is `MAX_REQUEST_BYTES`.
 
 `bun benchmarks/forge-rpc/bench.ts` compares it with Nest's TCP transport. It uses one engine and 64 concurrent callers sending through `ClientProxy`, on a 4-core AMD EPYC with Bun 1.4.4, and `BENCH_REDIS_URL` adds Redis. These are two runs:
 
@@ -160,7 +160,7 @@ A failed call answers in the engine's [error envelope](errors.html), `{ message,
 | 16 bytes | 17,600 to 19,000 calls/s (p50 2.9 ms) | 4,600 to 5,000 calls/s (p50 9 to 10 ms) |
 | 64 KB | 780 to 1,080 calls/s | 850 to 930 calls/s |
 
-TCP's framing beats HTTP plus tRPC on small messages, and with 64 KB payloads the two are even. Forge RPC buys typed, validated calls and errors that keep their meaning. For a hot path between two services that exchange tiny messages, measure before choosing it.
+TCP's framing beats HTTP on small messages, and with 64 KB payloads the two are even. Forge RPC buys typed, validated calls and errors that keep their meaning. For a hot path between two services that exchange tiny messages, measure before choosing it.
 
 ## Moving a pattern from TCP
 

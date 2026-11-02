@@ -217,7 +217,7 @@ These are settled decisions, with the reasons from `docs/decisions.md`. Look the
 - **Documents as JSON, validated on write.** "There are no per-field columns, so a schema change never migrates data." The cost is that data can drift from the schema; `archlast-forge migrate` reports mismatches and production startup refuses them.
 - **The function runtime is a child process, not a Worker,** "because Bun documents Worker termination as experimental." In production the single-worker default runs inline for speed.
 - **Code changes restart only the function runtime.** "HTTP and WebSocket stay up." Open connections see the new functions after the reload.
-- **No RPC framework.** tRPC was removed. The protocol is plain JSON over HTTP plus one WebSocket, so any language can call it, and the dashboard API is plain JSON too. Not carried over: request batching.
+- **No RPC framework.** The protocol is plain JSON over HTTP plus one WebSocket, so any language can call it, and the dashboard API is plain JSON too. Not carried over: request batching.
 - **Errors are sanitized.** "Only `ForgeError` and argument validation errors reach callers. Other errors become 'Server error (request id)' outside dev," with the full error in the log under that id.
 - **Actions never retry.** At-most-once is the guarantee you can reason about; retrying side effects is a decision for your code.
 - **Everything in one pass.** Dashboard, PostgreSQL, Redis, storage, scheduler and crons are all in the first release, rather than staged.
