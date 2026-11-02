@@ -158,7 +158,7 @@ async function main() {
   // Cancelling the reader cancels the body, which is how the handler hears that its client left (`res` and `req` emit "close").
   const take = (m: HostMessage | HostEvent) => {
     if (m.t === "cancel") return void pumps.get(m.id)?.cancel().catch(() => {});
-    if (m.t === "ws" || m.t === "relay") return core.event(m);
+    if (m.t === "ws" || m.t === "relay" || m.t === "pool") return core.event(m);
     if (!short(m)) return void answer(m);
     queue.push(m);
     if (!purging) purge();

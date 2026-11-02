@@ -145,6 +145,11 @@ export class Executor {
 
   private limits: NonNullable<ExecutorOptions["limits"]>;
 
+  /** Replaces the read cache (undefined turns it off): a transaction already running keeps the one it started with. */
+  setReadCache(cache?: ReadCache) {
+    this.o.readCache = cache;
+  }
+
   constructor(private o: ExecutorOptions) {
     this.limits = o.limits ?? { functionTimeoutMs: 10_000, actionTimeoutMs: 600_000, maxResultBytes: 8 << 20, maxDocumentBytes: 1 << 20 };
   }

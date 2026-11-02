@@ -43,7 +43,9 @@ export type HostEvent =
   /** The client left a streamed response (by the id of the call that started it). */
   | { t: "cancel"; id: number }
   /** A PubSub event from one worker, for every worker (createPubSub in @archlast/forge-runtime/nest). */
-  | { t: "relay"; topic: string; payload: unknown };
+  | { t: "relay"; topic: string; payload: unknown }
+  /** The pool changed size: a process keeps a read cache only while it is the database's one writer. */
+  | { t: "pool"; workers: number };
 
 /** Function runtime → server: what a gateway sends to one of those sockets, or that it closes it. */
 export type SocketMessage = { t: "ws"; op: "send"; sid: string; data: string | ArrayBuffer } | { t: "ws"; op: "close"; sid: string; code?: number; reason?: string };

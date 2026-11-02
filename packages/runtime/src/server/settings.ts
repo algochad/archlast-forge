@@ -80,7 +80,22 @@ export const SETTINGS: SettingDef[] = [
   { name: "CACHE_TTL_MS", group: "Database", type: "int", min: 0, default: "60000", doc: "The longest a query result is cached. 0 turns the query cache off." },
   { name: "CACHE_MAX_MB", group: "Database", type: "int", min: 1, default: "64", doc: "Memory for the in-process query cache (Redis applies its own limits)." },
   // -- function runtime --
-  { name: "RUNTIME_WORKERS", group: "Runtime", type: "int", min: 1, default: "1", doc: "Function runtime processes per server. Above 1 needs process mode." },
+  {
+    name: "RUNTIME_WORKERS",
+    group: "Runtime",
+    type: "int",
+    min: 1,
+    options: ["auto"],
+    default: "1",
+    doc: "Function runtime processes per server, or auto (the cores times RUNTIME_WORKERS_RATIO). Above 1 needs process mode. In process mode a change applies at once: new processes start beside the others, and removed ones finish their calls first.",
+  },
+  {
+    name: "RUNTIME_WORKERS_RATIO",
+    group: "Runtime",
+    type: "string",
+    default: "0.5",
+    doc: "For RUNTIME_WORKERS=auto: processes per core (0.5: half the cores, rounded down, at least 1).",
+  },
   {
     name: "RUNTIME_MODE",
     group: "Runtime",
@@ -209,7 +224,8 @@ export function liveEnv(env: Record<string, string | undefined>, stored: Record<
 export function checkValue(def: SettingDef, raw: string): string {
   const value = raw.trim();
   if (def.envOnly) throw new ConfigError(`${def.name} can only be set in the environment. ${def.envOnly}`);
-  if (def.type === "int" && (!/^\d+$/.test(value) || Number(value) < (def.min ?? 0))) throw new ConfigError(`${def.name} must be an integer ≥ ${def.min ?? 0}`);
+  if (def.type === "int" && !def.options?.includes(value) && (!/^\d+$/.test(value) || Number(value) < (def.min ?? 0)))
+    throw new ConfigError(`${def.name} must be an integer ≥ ${def.min ?? 0}${def.options ? ` or ${def.options.join(", ")}` : ""}`);
   if (def.type === "bool") {
     const v = value.toLowerCase();
     if (["1", "true", "on", "yes"].includes(v)) return "on";

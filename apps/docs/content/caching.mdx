@@ -60,7 +60,7 @@ With `REDIS_URL` the cache lives in Redis, under keys that start with `archlast-
 
 Inside the function runtime, `read-cache` keeps the rows of document reads by SQL statement and parameters, so repeated reads (the same `ctx.db.get`, the same index range) skip SQLite. It is **exact**: it never returns a row that a committed write has changed.
 
-It is on only when this process is the only writer of the database: SQLite (no `DATABASE_URL`) with a single function runtime (`RUNTIME_WORKERS=1`, the default). With Postgres, or with several runtime processes, it is off, because another writer could change rows behind it. Don't write to the SQLite file from anywhere else while the server runs (use the CLI, which talks to the running server, and the dashboard).
+It is on only when this process is the only writer of the database: SQLite (no `DATABASE_URL`) with a single function runtime (`RUNTIME_WORKERS=1`, the default). With Postgres, or with several runtime processes, it is off, because another writer could change rows behind it. Resizing the pool from the dashboard follows the same rule: the cache is dropped before a second process starts, and a fresh one starts once the pool is back to one. Don't write to the SQLite file from anywhere else while the server runs (use the CLI, which talks to the running server, and the dashboard).
 
 How it stays correct:
 

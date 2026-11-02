@@ -288,6 +288,8 @@ export async function startCore(opts: {
     release,
   };
   function event(msg: HostEvent) {
+    // Another process writing would make cached rows stale: a fresh cache only once this one is the only writer again.
+    if (msg.t === "pool") return exec.setReadCache(!config.databaseUrl && msg.workers === 1 ? new ReadCache() : undefined);
     const take = (globalThis as Record<symbol, unknown>)[msg.t === "relay" ? RELAY : SOCKETS] as ((msg: HostEvent) => void) | undefined;
     if (take) return take(msg);
     if (msg.t === "ws" && msg.op === "open") send({ t: "ws", op: "close", sid: msg.sid, code: 1008, reason: "No WebSocket gateway at this path" });

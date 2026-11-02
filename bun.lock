@@ -68,6 +68,12 @@
         "@types/node": "24",
       },
     },
+    "benchmarks/workers/forge": {
+      "name": "@archlast/forge-bench-workers",
+      "dependencies": {
+        "@archlast/forge-runtime": "workspace:*",
+      },
+    },
     "packages/cli": {
       "name": "@archlast/forge-cli",
       "version": "0.11.1",
@@ -231,6 +237,8 @@
   },
   "packages": {
     "@archlast/forge-bench-twelve-dollar": ["@archlast/forge-bench-twelve-dollar@workspace:benchmarks/twelve-dollar/forge"],
+
+    "@archlast/forge-bench-workers": ["@archlast/forge-bench-workers@workspace:benchmarks/workers/forge"],
 
     "@archlast/forge-cli": ["@archlast/forge-cli@workspace:packages/cli"],
 

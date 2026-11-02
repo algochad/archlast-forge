@@ -1,4 +1,31 @@
+import { readFileSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import { join } from "node:path";
+
+/** CPU cores this process may use: the container's CPU quota when it has one (cgroup v2 `cpu.max`), else the machine's. */
+export function serverCores(): number {
+  const cores = availableParallelism();
+  try {
+    const [quota, period] = readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim().split(/\s+/);
+    if (quota && quota !== "max") return Math.min(cores, Math.max(1, Math.ceil(Number(quota) / Number(period))));
+  } catch {} // not Linux, or no cgroup v2
+  return cores;
+}
+
+/**
+ * The function runtime processes `RUNTIME_WORKERS` asks for: a number, or `auto`, which is the cores times `RUNTIME_WORKERS_RATIO` (0.5 by
+ * default: half the cores, leaving the rest to the server process, the database and whatever else runs there), rounded down, at least 1.
+ */
+export function runtimeWorkersFor(env: Record<string, string | undefined>, cores = serverCores()): { workers: number; auto: boolean; ratio: number; cores: number } {
+  const rawRatio = env.RUNTIME_WORKERS_RATIO?.trim();
+  const ratio = rawRatio ? Number(rawRatio) : 0.5;
+  if (!(ratio > 0 && ratio <= 4)) throw new ConfigError(`RUNTIME_WORKERS_RATIO must be a number above 0 and at most 4, got "${rawRatio}"`);
+  const raw = env.RUNTIME_WORKERS?.trim();
+  if (raw === "auto") return { workers: Math.max(1, Math.floor(cores * ratio)), auto: true, ratio, cores };
+  const workers = raw ? Number(raw) : 1;
+  if (!Number.isInteger(workers) || workers < 1) throw new ConfigError(`RUNTIME_WORKERS must be an integer ≥ 1 or "auto", got "${raw}"`);
+  return { workers, auto: false, ratio, cores };
+}
 
 export interface Limits {
   /** Per-call time limit for queries and mutations. */
@@ -110,10 +137,11 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (databaseUrl && !/^postgres(ql)?:\/\//.test(databaseUrl)) fail(`DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite), got "${databaseUrl.split(":")[0]}:"`);
   // Inline is the default outside dev: no IPC hop per call, about twice the throughput on one core. Dev keeps the child process, so code
   // changes reload without dropping connections, and so does a pool of runtime processes.
-  const runtimeMode = (env.RUNTIME_MODE || (dev || int("RUNTIME_WORKERS", 1, 1) > 1 ? "process" : "inline")) as Config["runtimeMode"];
+  const { workers: runtimeWorkers } = runtimeWorkersFor(env);
+  const runtimeMode = (env.RUNTIME_MODE || (dev || runtimeWorkers > 1 ? "process" : "inline")) as Config["runtimeMode"];
   if (runtimeMode !== "process" && runtimeMode !== "inline") fail(`RUNTIME_MODE must be "process" or "inline", got "${env.RUNTIME_MODE}"`);
   if (runtimeMode === "inline" && dev) fail("RUNTIME_MODE=inline can't reload code when it changes; use it outside dev");
-  if (runtimeMode === "inline" && int("RUNTIME_WORKERS", 1, 1) > 1) fail("RUNTIME_MODE=inline runs one function runtime, in the server process; unset RUNTIME_WORKERS");
+  if (runtimeMode === "inline" && runtimeWorkers > 1) fail("RUNTIME_MODE=inline runs one function runtime, in the server process; unset RUNTIME_WORKERS");
   if (replicas > 1 && !env.REDIS_URL) fail("REPLICAS > 1 requires REDIS_URL, or mutations won't reach subscribers on other servers");
   if (replicas > 1 && !databaseUrl) fail("REPLICAS > 1 requires a Postgres DATABASE_URL; bun:sqlite is single-server");
   if (Boolean(env.S3_ENDPOINT) !== Boolean(env.S3_BUCKET)) fail("Set both S3_ENDPOINT and S3_BUCKET, or neither");
@@ -154,7 +182,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     cacheTtlMs: int("CACHE_TTL_MS", 60_000),
     cacheMaxBytes: int("CACHE_MAX_MB", 64, 1) * 2 ** 20,
     idleTimeoutSeconds: int("IDLE_TIMEOUT_SECONDS", 75, 1),
-    runtimeWorkers: int("RUNTIME_WORKERS", 1, 1),
+    runtimeWorkers,
     runtimeMode,
     limits: {
       functionTimeoutMs: int("FUNCTION_TIMEOUT_MS", 10_000, 1),

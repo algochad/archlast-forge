@@ -356,6 +356,8 @@ export class FunctionRuntime {
   onSample: (sample: Omit<RuntimeSample, "service">) => void = () => {};
 
   private workers: Worker[] = [];
+  /** Processes taken out of the pool by `resize()`: they get no new calls and stop once their calls are done. */
+  private retiring = new Set<Worker>();
   /** Each gateway socket stays with the worker that took its open, because that is where its state is. */
   private sockets = new Map<string, Promise<Worker | undefined>>();
   private starting?: Promise<Manifest>;
@@ -376,16 +378,56 @@ export class FunctionRuntime {
       else if (msg.t === "relay") for (const w of this.workers) if (w.ready) w.event(msg); // to every worker, the sender too: one path for all
     };
     if (this.opts.inline) return new InlineWorker(this.opts, { onMessage });
-    return new RuntimeProcess(index, this.opts, {
+    const worker: Worker = new RuntimeProcess(index, this.opts, {
       onMessage,
       // A crash outside a restart (e.g. out of memory) brings that process back, so one bad call doesn't take the server down.
       onCrash: (i, code) => {
-        if (this.stopping || this.starting || !this.manifest) return;
+        if (this.stopping || this.starting || !this.manifest || this.workers[i] !== worker) return; // a process resize() retired isn't brought back
         console.error(`function runtime ${i} exited (code ${code}); restarting it`);
         this.closeSockets(1011, "The server restarted");
         void this.respawn(i);
       },
     });
+    return worker;
+  }
+
+  /** Processes in the pool. */
+  get size() {
+    return this.workers.length;
+  }
+
+  /**
+   * Grows or shrinks the pool to `count` processes without a restart (process mode only). New processes start beside the others and take calls
+   * once they are ready. Removed ones (the last ones; worker 0, with the scheduler, backups and gateway sockets, always stays) get no new calls
+   * and stop when the calls they have are done, so nothing in flight fails. Subscriptions live in the server, so they carry on either way.
+   */
+  async resize(count: number) {
+    if (this.opts.inline) throw new RuntimeCallError("RUNTIME_MODE=inline runs one function runtime; restart the server to switch to process mode", "internal");
+    if (!Number.isInteger(count) || count < 1) throw new RuntimeCallError(`A pool needs at least one process, got ${count}`, "internal");
+    if (this.starting) await this.starting;
+    // New processes read their own share of the RAM and the read-cache rule from the size they join.
+    this.opts = { ...this.opts, workers: count, env: { ...this.opts.env, RUNTIME_WORKERS: String(count) } };
+    const before = this.workers.length;
+    if (count > before) {
+      this.workers[0]?.event({ t: "pool", workers: count }); // before any other process can write
+      const added = Array.from({ length: count - before }, (_, k) => this.spawn(before + k));
+      this.workers.push(...added);
+      await Promise.all(added.map((w) => w.start()));
+    } else if (count < before) {
+      const removed = this.workers.splice(count);
+      await Promise.all(removed.map((w) => this.retire(w)));
+      this.workers[0]?.event({ t: "pool", workers: count });
+    }
+  }
+
+  /** Lets a process finish its calls (up to an action's time limit), then stops it. */
+  private async retire(w: Worker) {
+    this.retiring.add(w);
+    const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
+    const until = Date.now() + t.actionMs + HARD_TIMEOUT_GRACE_MS;
+    while (w.load > 0 && Date.now() < until && !this.stopping) await Bun.sleep(25);
+    await w.stop();
+    this.retiring.delete(w);
   }
 
   /** A gateway socket's event, for the worker that has it. */
@@ -444,7 +486,7 @@ export class FunctionRuntime {
   async stop() {
     this.stopping = true;
     this.closeSockets(1012, "The server is restarting");
-    await Promise.all(this.workers.map((w) => w.stop()));
+    await Promise.all([...this.workers, ...this.retiring].map((w) => w.stop()));
   }
 
   async restart() {
@@ -479,9 +521,9 @@ export class FunctionRuntime {
     const w = await this.pick(index);
     return w.request(msg, hardTimeoutMs, () => {
       const i = this.workers.indexOf(w);
-      console.error(`function runtime ${i} didn't answer within ${hardTimeoutMs} ms; killing and restarting it`);
+      console.error(`function runtime ${i} didn't answer within ${hardTimeoutMs} ms; killing ${i < 0 ? "it (it was leaving the pool)" : "and restarting it"}`);
       w.kill();
-      void this.respawn(i);
+      if (i >= 0) void this.respawn(i);
     });
   }
 

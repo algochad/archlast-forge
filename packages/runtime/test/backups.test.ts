@@ -391,7 +391,9 @@ describe("settings", () => {
       await admin(srv, "saveSetting", { name: "CACHE_TTL_MS", value: "0" });
       await admin(srv, "saveSetting", { name: "BACKUP_SCHEDULE", value: "0 3 * * *" });
       const after = await admin(srv, "settings");
-      expect(after.settings.find((s: any) => s.name === "RUNTIME_WORKERS")).toMatchObject({ source: "dashboard", value: "2", pending: true });
+      // In process mode the pool resizes at once; other settings wait for a restart.
+      expect(after.settings.find((s: any) => s.name === "RUNTIME_WORKERS")).toMatchObject({ source: "dashboard", value: "2", pending: false, effective: expect.stringMatching(/^2 running/) });
+      expect(after.settings.find((s: any) => s.name === "CACHE_TTL_MS")).toMatchObject({ source: "dashboard", value: "0", pending: true });
       expect(after.settings.find((s: any) => s.name === "BACKUP_SCHEDULE")).toMatchObject({ source: "dashboard", pending: false, live: true });
       expect((await admin(srv, "backups.list")).schedule.cron).toBe("0 3 * * *");
       expect(await admin(srv, "restart", {})).toEqual({ restarting: true });

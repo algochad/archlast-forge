@@ -8,7 +8,7 @@ import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
 import { connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
-import { ConfigError, loadConfig, telemetryPath, type Config } from "./config";
+import { ConfigError, loadConfig, runtimeWorkersFor, telemetryPath, type Config } from "./config";
 import { RESET_TOPIC } from "./docstore";
 import { checkValue, readStoredSettings, SETTING, SETTINGS, validateSettings, withSettings } from "./settings";
 import { createStorage, LocalStorage, serveLocalStorage } from "./storage";
@@ -175,6 +175,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   setLogFormat(config.logFormat);
   if (storedError) log("error", storedError);
   const startedWith = stored;
+  /** How the pool's size was worked out, for the Settings page: from the start, then from each change applied without a restart. */
+  let pool = runtimeWorkersFor(env);
   const serverId = `${hostname()}:${process.pid}`;
   const ttl = config.cacheTtlMs;
   const bus: Bus = config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0 }) : new MemoryBus();
@@ -311,7 +313,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       telemetry: Boolean(store),
       connections,
       subscriptions: subs.size,
-      workers: config.runtimeWorkers,
+      workers: runtime.size,
       uptimeMs: Math.round(process.uptime() * 1000),
     }),
     reload: () => reload(),
@@ -342,6 +344,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             updatedBy: saved?.updatedBy ?? null,
             // Saved, but this server started with something else: a restart applies it.
             pending: !def.live && source !== "environment" && (saved?.value ?? null) !== (startedWith[def.name] ?? null),
+            ...(def.name === "RUNTIME_WORKERS" && {
+              effective: `${runtime.size} running${pool.auto ? ` (auto: ${pool.cores} cores × ${pool.ratio})` : ""} · ${pool.cores} CPU cores detected${config.runtimeMode === "inline" ? " · inline mode: a restart changes the count" : ""}`,
+            }),
           };
         }),
       };
@@ -357,7 +362,23 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         else all[name] = next;
         validateSettings(baseEnv, all, dev); // the engine must still start, and back up, with it
         await runtime.admin("settings.save", { name, value: next }, actor);
-        return { name, live: Boolean(def.live), overridden: baseEnv[name] !== undefined && baseEnv[name] !== "" };
+        const overridden = baseEnv[name] !== undefined && baseEnv[name] !== "";
+        // The pool's size applies at once in process mode: processes start, or finish their calls and stop. Into or out of inline mode needs a restart.
+        let applied: string | undefined;
+        if ((name === "RUNTIME_WORKERS" || name === "RUNTIME_WORKERS_RATIO") && !overridden && config.runtimeMode === "process") {
+          const merged = withSettings(baseEnv, all);
+          const wanted = loadConfig(merged, dev);
+          if (wanted.runtimeMode === "process") {
+            await runtime.resize(wanted.runtimeWorkers);
+            pool = runtimeWorkersFor(merged);
+            for (const n of ["RUNTIME_WORKERS", "RUNTIME_WORKERS_RATIO"]) {
+              if (all[n] === undefined) delete startedWith[n];
+              else startedWith[n] = all[n];
+            }
+            applied = `${runtime.size} function runtime process${runtime.size === 1 ? "" : "es"} running`;
+          }
+        }
+        return { name, live: Boolean(def.live), overridden, ...(applied && { applied }) };
       } catch (e) {
         if (e instanceof ConfigError) throw new HttpError("BAD_REQUEST", e.message);
         throw e;
@@ -591,7 +612,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const auth = req.headers.get("authorization")?.replace(/^Bearer /, "");
         const token = env.METRICS_TOKEN || config.adminKey;
         if (token ? !(auth && sameSecret(auth, token)) : !dev) return new Response("Not found", { status: 404 });
-        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: config.runtimeWorkers, backlog: runtime.backlog() }, queries.snapshot(), loops), {
+        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: runtime.size, backlog: runtime.backlog() }, queries.snapshot(), loops), {
           headers: { "content-type": "text/plain; version=0.0.4" },
         });
       }

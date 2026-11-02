@@ -175,9 +175,22 @@ Every response carries an `x-request-id` header. A request id sent in by the cal
 | Variable | Default | Accepted | What it does |
 |---|---|---|---|
 | `RUNTIME_MODE` | `inline` outside dev; `process` in dev or when `RUNTIME_WORKERS` is above 1 | `process`, `inline` | `inline` runs your functions inside the server process: no message passing per call, about twice the throughput on one core. A function that blocks the event loop for longer than its timeout plus 5 seconds makes a watchdog kill the whole process, so run it under something that restarts it (the engine container does). `process` runs functions in child processes that are restarted alone on a code change or a hang. |
-| `RUNTIME_WORKERS` | `1` | integer ≥ 1 | Function runtime processes per server. A call goes to the process with the fewest calls waiting, so one slow call holds up only what is queued behind it. Needs `process` mode (setting it above 1 selects it). Only the first runs the scheduler, migrations and the schema check. Helps CPU-heavy functions more than write-heavy ones, because SQLite writes share one lock. |
+| `RUNTIME_WORKERS` | `1` | integer ≥ 1, or `auto` | Function runtime processes per server. `auto` is the CPU cores (the container's CPU quota when it has one) times `RUNTIME_WORKERS_RATIO`, rounded down, at least 1: 2 on 4 cores, 4 on 8. A call goes to the process with the fewest calls waiting, so one slow call holds up only what is queued behind it. Needs `process` mode (more than 1 selects it). Only the first runs the scheduler, migrations and the schema check. Helps CPU-heavy functions more than write-heavy ones, because SQLite writes share one lock. In `process` mode a change from the dashboard applies without a restart ([below](#changing-the-worker-count-while-running)). |
+| `RUNTIME_WORKERS_RATIO` | `0.5` | number above 0, up to 4 | For `RUNTIME_WORKERS=auto`: processes per core. Half the cores leaves room for the server process, the database and anything else on the machine. |
 
 `RUNTIME_MODE=inline` is refused in dev (it could not reload code), and refused together with `RUNTIME_WORKERS` above 1.
+
+### Changing the worker count while running
+
+On the dashboard's Settings page, `RUNTIME_WORKERS` shows what is in effect: `2 running (auto: 4 cores × 0.5) · 4 CPU cores detected`. Saving a new value (or `RUNTIME_WORKERS_RATIO`) while the server runs in `process` mode resizes the pool at once, with no restart:
+
+- **Growing**, the new processes start beside the others and take calls once they are ready.
+- **Shrinking**, the last processes get no new calls, finish the ones they have (up to `ACTION_TIMEOUT_MS`), and then stop. The first process, which holds the scheduler, backups and gateway sockets, always stays.
+- **Nothing in flight fails, and subscriptions carry on**: they live in the server, and their re-runs go to whichever processes are in the pool. A process that crashes is started again, as before.
+- The value is saved, so a restart keeps it. A value set in the environment still wins: the dashboard then shows it read-only and changes nothing.
+- Going between one inline runtime and several processes changes `RUNTIME_MODE`, which needs a restart (the page says so).
+
+Measured with 16 clients calling a query that spends 4 ms of CPU (`benchmarks/workers`, 4 cores): 185 calls a second inline, 221 with one process, 348 with two, 599 with four; resizing 1 → 3 → 1 under that load failed no call.
 
 ## CLI and Docker
 

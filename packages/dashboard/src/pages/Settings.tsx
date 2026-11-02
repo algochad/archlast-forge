@@ -22,6 +22,8 @@ type Setting = {
   updatedAt: number | null;
   updatedBy: string | null;
   pending: boolean;
+  /** What is in effect, when that differs from the value (RUNTIME_WORKERS). */
+  effective?: string;
 };
 type SettingsInfo = { restartable: boolean; storedError: string | null; settings: Setting[] };
 
@@ -213,7 +215,12 @@ function EngineSettings({ admin }: { admin: Admin }) {
                   s={s}
                   editable={owner}
                   busy={busy}
-                  save={(value) => run(() => post("saveSetting", { name: s.name, value }), value === null ? `${s.name} back to its default` : `${s.name} saved`).then(info.reload)}
+                  save={(value) =>
+                    run(async () => {
+                      const r = await post<{ applied?: string }>("saveSetting", { name: s.name, value });
+                      toast(`${value === null ? `${s.name} back to its default` : `${s.name} saved`}${r.applied ? `: ${r.applied}` : ""}`);
+                    }).then(info.reload)
+                  }
                 />
               ))}
             </tbody>
@@ -243,6 +250,7 @@ function SettingRow({ s, editable, busy, save }: { s: Setting; editable: boolean
         </div>
         <div className="muted small">{s.doc}</div>
         <div className="faint small">Default: {s.default}</div>
+        {s.effective && <div className="small">In effect: {s.effective}</div>}
       </td>
       <td>
         {locked || !editable ? (
@@ -287,7 +295,7 @@ function SettingRow({ s, editable, busy, save }: { s: Setting; editable: boolean
               <input
                 id={`setting-${s.name}`}
                 className="mono"
-                type={s.secret ? "password" : s.type === "int" ? "number" : "text"}
+                type={s.secret ? "password" : s.type === "int" && !s.options ? "number" : "text"}
                 min={s.type === "int" ? s.min : undefined}
                 value={value}
                 placeholder={s.secret && s.isSet ? "set — type to replace" : "default"}
