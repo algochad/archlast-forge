@@ -8,15 +8,18 @@ import { tempDir } from "./helpers";
 const fixture = join(import.meta.dir, "fixture-nest");
 let srv: RunningServer;
 let tcpPort: number;
+let rpcPort: number;
+const RPC_TOKEN = "t".repeat(24);
 
 beforeAll(async () => {
   const probe = Bun.serve({ port: 0, fetch: () => new Response() });
   tcpPort = probe.port!;
   await probe.stop(true);
+  rpcPort = await freePort();
   // Functions in a child process, so sockets and streamed bodies cross IPC (the production describe below runs them inline).
   srv = await startServer({
     forgeDir: fixture,
-    env: { ...process.env, RUNTIME_MODE: "process", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json", NEST_TCP_PORT: String(tcpPort), API_DOCS: "on" },
+    env: { ...process.env, RUNTIME_MODE: "process", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json", NEST_TCP_PORT: String(tcpPort), NEST_RPC_PORT: String(rpcPort), FORGE_RPC_TOKEN: RPC_TOKEN, API_DOCS: "on" },
   });
 });
 afterAll(() => srv.stop({ graceful: false }));
@@ -295,6 +298,108 @@ describe("microservices", () => {
   });
 });
 
+describe("Forge RPC", () => {
+  // What `archlast-forge codegen` writes for fixture-nest/shop.router.ts (packages/cli/test/rpc-codegen.test.ts checks that it does).
+  type Rpc = {
+    shop: {
+      add: { kind: "query"; input: { a: number; b: number }; output: { sum: number } };
+      order: { kind: "mutation"; input: { userId: string; items: Array<{ sku: string; qty: number }> }; output: { orderId: string; units: number } };
+      notes: { kind: "query"; input: undefined; output: { count: number } };
+      drift: { kind: "query"; input: undefined; output: { ok: boolean } };
+      fail: { kind: "mutation"; input: { kind: "forge" | "rpc" | "crash" }; output: never };
+      slow: { kind: "query"; input: { ms: number }; output: string };
+      missing: { kind: "query"; input: undefined; output: unknown };
+    };
+  };
+  const rpc = async () => import("../src/nest-rpc");
+  const url = () => `http://127.0.0.1:${rpcPort}`;
+  const failure = (p: Promise<unknown>) => p.then(() => undefined, (e: any) => e);
+
+  test("typed calls reach the router's methods: input fields by key, the ActionCtx, a plain send()", async () => {
+    const { createForgeRpcClient, ForgeRpcClient } = await rpc();
+    const { rxjs } = await import("../src/nest");
+    const client = new ForgeRpcClient({ url: url(), token: RPC_TOKEN });
+    const shop = createForgeRpcClient<Rpc>(client).shop;
+    expect(await shop.add.query({ a: 2, b: 3 })).toEqual({ sum: 5 });
+    expect(await shop.order.mutate({ userId: "u1", items: [{ sku: "a", qty: 2 }, { sku: "b", qty: 3 }] })).toEqual({ orderId: "u1-2", units: 5 });
+    expect(typeof (await shop.notes.query()).count).toBe("number");
+    expect(await rxjs.lastValueFrom(client.send("shop.add", { a: 1, b: 1 }))).toEqual({ sum: 2 }); // a query, sent as Nest sends anything
+    // Calls in one tick share an HTTP request.
+    expect(await Promise.all(Array.from({ length: 40 }, (_, i) => shop.add.query({ a: i, b: 1 })))).toEqual(Array.from({ length: 40 }, (_, i) => ({ sum: i + 1 })));
+  });
+
+  test("errors: the service's ForgeError and RpcException come back as ForgeErrors; anything else is a request id, never its message", async () => {
+    const { createForgeRpcClient, ForgeRpcError } = await rpc();
+    const shop = createForgeRpcClient<Rpc>({ url: url(), token: RPC_TOKEN }).shop;
+    const forge = await failure(shop.fail.mutate({ kind: "forge" }));
+    expect(forge).toMatchObject({ name: "ForgeError", data: { reason: "out of stock" } });
+    expect(await failure(shop.fail.mutate({ kind: "rpc" }))).toMatchObject({ name: "ForgeError", message: "bad sku (shop.fail)" });
+    const badInput = await failure(shop.add.query({ a: "2" } as never));
+    expect(badInput.name).toBe("ForgeError");
+    expect(badInput.message).toContain("expected number");
+
+    const crash = await failure(shop.fail.mutate({ kind: "crash" }));
+    expect(crash).toBeInstanceOf(ForgeRpcError);
+    expect(crash).toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: `Server error (request ${crash.requestId})` });
+    expect(crash.requestId).toMatch(/^[0-9a-f-]{36}$/);
+    const drift = await failure(shop.drift.query()); // the method broke its own output schema
+    expect(drift).toMatchObject({ code: "INTERNAL_SERVER_ERROR", message: `Server error (request ${drift.requestId})` });
+    expect(await failure(shop.missing.query())).toMatchObject({ code: "NOT_FOUND" });
+
+    // On the wire: no stack, no SQL, for a crash as for a refused token.
+    const raw = await fetch(`${url()}/shop.fail`, { method: "POST", headers: { authorization: `Bearer ${RPC_TOKEN}`, "content-type": "application/json" }, body: JSON.stringify({ kind: "crash" }) });
+    const body = await raw.text();
+    expect(raw.status).toBe(500);
+    expect(body).not.toContain("SELECT");
+    expect(body).not.toContain("stack");
+  });
+
+  test("the token is checked on every call, and must be long enough on both sides", async () => {
+    const { createForgeRpcClient, ForgeRpcServer, ForgeRpcClient } = await rpc();
+    const wrong = createForgeRpcClient<Rpc>({ url: url(), token: "w".repeat(24) }).shop;
+    expect(await failure(wrong.add.query({ a: 1, b: 1 }))).toMatchObject({ name: "ForgeRpcError", code: "UNAUTHORIZED" });
+    const raw = await fetch(`${url()}/shop.add`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ a: 1, b: 1 }) });
+    expect(raw.status).toBe(401);
+    expect(() => new ForgeRpcClient({ url: url(), token: "short" })).toThrow("16 characters or more");
+    expect(() => new ForgeRpcServer({ port: 0, token: "" })).toThrow("FORGE_RPC_TOKEN");
+  });
+
+  test("backend to backend only: where there is a window (a page, a mobile or desktop app) neither side can be made", async () => {
+    const { ForgeRpcServer, ForgeRpcClient } = await rpc();
+    const g = globalThis as { window?: unknown };
+    g.window = {};
+    try {
+      expect(() => new ForgeRpcClient({ url: url(), token: RPC_TOKEN })).toThrow("Forge RPC is for calls between backends");
+      expect(() => new ForgeRpcServer({ port: 0, token: RPC_TOKEN })).toThrow("Forge RPC is for calls between backends");
+    } finally {
+      delete g.window;
+    }
+  });
+
+  test("a call that outlives its timeout fails with TIMEOUT; one unsubscribed from is aborted and never answers; an unreachable service is SERVICE_UNAVAILABLE", async () => {
+    const { createForgeRpcClient, ForgeRpcClient } = await rpc();
+    const client = new ForgeRpcClient({ url: url(), token: RPC_TOKEN, timeoutMs: 100 });
+    const started = performance.now();
+    expect(await failure(createForgeRpcClient<Rpc>(client).shop.slow.query({ ms: 1000 }))).toMatchObject({ code: "TIMEOUT" });
+    expect(performance.now() - started).toBeLessThan(900);
+
+    const answers: unknown[] = [];
+    const sub = new ForgeRpcClient({ url: url(), token: RPC_TOKEN }).send("shop.slow", { ms: 150 }).subscribe({ next: (v) => answers.push(v), error: (e) => answers.push(e) });
+    sub.unsubscribe();
+    await Bun.sleep(300);
+    expect(answers).toEqual([]);
+
+    const down = createForgeRpcClient<Rpc>({ url: `http://127.0.0.1:${await freePort()}`, token: RPC_TOKEN }).shop;
+    expect(await failure(down.add.query({ a: 1, b: 1 }))).toMatchObject({ code: "SERVICE_UNAVAILABLE" });
+  });
+
+  test("emit() is refused: request-response only", async () => {
+    const { ForgeRpcClient } = await rpc();
+    const { rxjs } = await import("../src/nest");
+    expect(await failure(rxjs.lastValueFrom(new ForgeRpcClient({ url: url(), token: RPC_TOKEN }).emit("shop.add", {})))).toMatchObject({ message: expect.stringContaining("request-response only") });
+  });
+});
+
 /** A free port, for a server or a microservice of its own. */
 async function freePort() {
   const probe = Bun.serve({ port: 0, fetch: () => new Response() });
@@ -329,10 +434,11 @@ test("the transport clients are installed where @nestjs/microservices loads them
 describe("with two function runtime processes", () => {
   let pool: RunningServer;
   let port: number;
+  // Two processes that each load Nest, GraphQL and the fixture: slower than the default 5 s while the rest of the file runs beside them.
   beforeAll(async () => {
     port = await freePort();
     pool = await startFixture("fixture-nest", { RUNTIME_WORKERS: "2", NEST_TCP_PORT: String(port) });
-  });
+  }, 20_000);
   afterAll(() => pool.stop({ graceful: false }));
 
   test("every gateway socket is on the first worker, so a broadcast reaches all of them", async () => {

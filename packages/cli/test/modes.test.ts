@@ -62,6 +62,20 @@ describe("app/ is frontend code too", () => {
     expect(violations).toHaveLength(1);
     expect(violations[0]).toContain("leak.tsx");
   });
+
+  test("nor Forge RPC: it is for calls between backends, so a page can't hold its client or its types", async () => {
+    const dir = fresh();
+    scaffold({ dir, mode: "framework", services: [] });
+    mkdirSync(join(dir, "forge/_generated"), { recursive: true });
+    writeFileSync(
+      join(dir, "app/routes/rpc.tsx"),
+      `import { createForgeRpcClient } from "@archlast/forge-runtime/nest/rpc";\nimport { x } from "../../forge/_generated/rpc";\nexport default () => [createForgeRpcClient, x];\n`,
+    );
+    const violations = await checkFrontendImports(join(dir, "forge"));
+    expect(violations).toHaveLength(2);
+    expect(violations.join("\n")).toContain("Forge RPC is for calls between backends");
+    expect(violations.join("\n")).toContain("Forge RPC types are for other backends");
+  });
 });
 
 describe("the command", () => {
@@ -97,7 +111,7 @@ describe("the command", () => {
     expect(code).toBe(1);
     expect(err).toContain("No production build");
     expect(err).toContain("build --no-docker");
-  });
+  }, 20_000); // the scaffold runs Prettier
 
   test("up in a folder that isn't a project says how to make one", async () => {
     const dir = fresh("empty");

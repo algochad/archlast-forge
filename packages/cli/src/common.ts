@@ -46,7 +46,7 @@ export function trustProxyOrigins(env: Record<string, string | undefined>) {
 export async function generate(dir: string) {
   const modules = await codegen(dir);
   const violations = await checkFrontendImports(dir);
-  if (violations.length) throw new Error(`Frontend code must import only forge/_generated:\n  ${violations.join("\n  ")}`);
+  if (violations.length) throw new Error(`Frontend code must import only forge/_generated (and not Forge RPC, which is for backends):\n  ${violations.join("\n  ")}`);
   return modules;
 }
 

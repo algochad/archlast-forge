@@ -25,6 +25,7 @@ test("flags: --microservices and --transport make a monorepo, and names are chec
   expect(parseFlags(["x", "--microservices", "orders,billing", "--transport", "redis"])).toMatchObject({ monorepo: true, microservices: ["orders", "billing"], transport: "redis" });
   expect(parseFlags(["x", "--monorepo"])).toMatchObject({ monorepo: true });
   expect(() => parseFlags(["x", "--transport", "kafka"])).toThrow('Unknown transport "kafka"');
+  expect(parseFlags(["x", "--transport", "forge-rpc"])).toMatchObject({ monorepo: true, transport: "forge-rpc" });
   expect(() => parseMicroservices("Orders!")).toThrow("isn't a service name");
   expect(() => parseMicroservices("web")).toThrow("taken by the monorepo");
   expect(() => parseMicroservices("a,a")).toThrow("named twice");
@@ -84,6 +85,56 @@ test("a monorepo with two services: workspaces, turbo, shared types, and the app
     for (let i = 0; i < 50 && !first.result; i++) (await Bun.sleep(200), (first = await hello())); // the service's listener starts with its runtime
     expect(first).toEqual({ result: { service: "orders", greeting: "Hello, api", calls: 1 } });
     expect((await hello()).result).toMatchObject({ calls: 2 }); // orders recorded each call in its own database
+  } finally {
+    await api.stop({ graceful: false });
+    await orders.stop({ graceful: false });
+  }
+});
+
+test("Forge RPC, the default: a router per service, its types generated and shared in packages/contracts, and the app calling it", async () => {
+  mkdirSync(join(scratch, "node_modules", "@archlast"), { recursive: true });
+  if (!existsSync(join(scratch, "node_modules", "@archlast", "forge-runtime"))) symlinkSync(join(import.meta.dir, "../../runtime"), join(scratch, "node_modules", "@archlast", "forge-runtime"), "dir");
+  const root = scaffoldMonorepo({ dir: join(scratch, "shop"), mode: "backend", services: [], microservices: ["orders", "user-billing"] });
+  const forge = (app: string, ...p: string[]) => read(root, "apps", app, "forge", ...p);
+  expect(forge("orders", "orders.router.ts")).toContain('@Router({ alias: "orders" })');
+  expect(forge("user-billing", "user-billing.router.ts")).toContain('@Router({ alias: "userBilling" })');
+  expect(forge("orders", "http.ts")).toContain("process.env.ORDERS_RPC_PORT ?? 4001");
+  expect(forge("api", "orders.ts")).toContain('import type { OrdersRpc } from "@shop/contracts";');
+  expect(read(root, "packages", "contracts", "index.ts")).toContain('export type { Rpc as UserBillingRpc } from "../../apps/user-billing/forge/_generated/rpc";');
+  expect(JSON.parse(read(root, "apps", "api", "package.json")).devDependencies["@shop/contracts"]).toBe("workspace:*");
+  const tokens = ["api", "orders", "user-billing"].map((app) => /^FORGE_RPC_TOKEN=(\w+)$/m.exec(read(root, "apps", app, ".env"))?.[1]);
+  expect(new Set(tokens).size).toBe(1); // one secret the apps share
+  expect(tokens[0]).toHaveLength(48);
+  expect(Bun.spawnSync(["grep", "-rl", "@nestjs/", join(root, "apps")]).stdout.toString()).toBe(""); // the runtime's wrapping imports only
+  expect(read(root, "README.md")).toContain("serves a Forge RPC router");
+  expect(read(root, "README.md")).toContain("Forge RPC is backend to backend");
+  expect(read(root, "packages", "contracts", "index.ts")).toContain("Backends only");
+  expect(Bun.spawnSync([process.execPath, require.resolve("prettier/bin/prettier.cjs"), "--check", "."], { cwd: root }).exitCode).toBe(0);
+
+  // Codegen writes each service's types from its router's schemas; the caller type-checks against them, and a wrong argument doesn't.
+  for (const app of ["api", "orders", "user-billing"]) await codegen(join(root, "apps", app, "forge"));
+  expect(forge("orders", "_generated", "rpc.ts")).toContain('hello: { kind: "mutation"; input: { from: string }; output: { service: string; greeting: string; calls: number } };');
+  mkdirSync(join(scratch, "node_modules", "@shop"), { recursive: true });
+  symlinkSync(join(root, "packages", "contracts"), join(scratch, "node_modules", "@shop", "contracts"), "dir"); // as the workspace install links it
+  const typecheck = () => Bun.spawnSync([process.execPath, "check", "-p", join(root, "apps", "api", "forge")], { stdout: "pipe", stderr: "pipe" });
+  expect(typecheck().exitCode).toBe(0);
+  const caller = join(root, "apps", "api", "forge", "orders.ts");
+  const source = read(caller);
+  await Bun.write(caller, source.replace("hello.mutate(args)", "hello.mutate({ from: 1 })"));
+  expect(typecheck().stdout.toString()).toContain("orders.ts");
+  await Bun.write(caller, source);
+
+  // Run: orders serves its router on its port; the main app's action calls it with the shared token.
+  const port = await freePort();
+  const env = (name: string) => ({ ...process.env, PORT: "0", DATA_DIR: join(scratch, `data-rpc-${name}`), ORDERS_RPC_PORT: String(port), ORDERS_RPC_URL: `http://127.0.0.1:${port}`, FORGE_RPC_TOKEN: tokens[0] });
+  const orders = await startServer({ forgeDir: join(root, "apps", "orders", "forge"), dev: true, env: env("orders") });
+  const api = await startServer({ forgeDir: join(root, "apps", "api", "forge"), dev: true, env: env("api") });
+  try {
+    const hello = async () => (await (await fetch(`${api.url}/rpc/orders:hello`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: "api" }) })).json()) as { result?: unknown };
+    let first = await hello();
+    for (let i = 0; i < 50 && !first.result; i++) (await Bun.sleep(200), (first = await hello())); // the service's listener starts with its runtime
+    expect(first).toEqual({ result: { service: "orders", greeting: "Hello, api", calls: 1 } });
+    expect((await hello()).result).toMatchObject({ calls: 2 });
   } finally {
     await api.stop({ graceful: false });
     await orders.stop({ graceful: false });

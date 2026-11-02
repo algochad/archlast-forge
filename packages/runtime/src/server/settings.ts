@@ -57,6 +57,15 @@ export const SETTINGS: SettingDef[] = [
   { name: "ADMIN_KEY", group: "Auth", type: "string", secret: true, default: "generated in dev", doc: "An owner credential for the dashboard and the CLI's data commands.", envOnly: ACCESS },
   { name: "DASHBOARD", group: "Auth", type: "bool", default: "on in dev, off otherwise", doc: "Serve /_dashboard and its API.", envOnly: ACCESS },
   {
+    name: "FORGE_RPC_TOKEN",
+    group: "Auth",
+    type: "string",
+    secret: true,
+    default: "none: Forge RPC refuses to start without one",
+    doc: "The shared secret Forge RPC servers and clients send and check (16 characters or more).",
+    envOnly: "Every app that calls or serves Forge RPC needs the same one: set it where they are deployed.",
+  },
+  {
     name: "API_DOCS",
     group: "Server",
     type: "bool",

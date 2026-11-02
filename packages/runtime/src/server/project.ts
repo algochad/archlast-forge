@@ -26,7 +26,7 @@ const DECORATOR = /^\s*@[A-Za-z_$]|[(,]\s*@[A-Za-z_$]/m;
  * Bun applies the tsconfig of the directory the process runs in, not forge/tsconfig.json, so the engine sets them itself. Each such file
  * is built on its own with every import left external, and an inline source map keeps its stack traces on the right lines.
  */
-function compileDecorators(forgeDir: string) {
+export function compileDecorators(forgeDir: string) {
   if (decorated.has(forgeDir)) return;
   decorated.add(forgeDir);
   const dir = join(tmpdir(), "archlast-forge");

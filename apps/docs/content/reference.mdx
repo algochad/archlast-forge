@@ -426,6 +426,31 @@ interface ForgeGraphQLOptions extends GqlModuleOptions {
 
 `@archlast/forge-runtime/nest/microservices` exports everything `@nestjs/microservices` does (`Transport`, `MessagePattern`, `EventPattern`, `Payload`, `ClientsModule`, `ClientProxyFactory`, ...), except that `Ctx` is the engine's (above) and Nest's transport context decorator is `TransportCtx`.
 
+`@archlast/forge-runtime/nest/rpc` is [Forge RPC](forge-rpc.html), typed calls between forge backends (backend code only: frontends can't import it, and neither class can be made where there is a `window`):
+
+```ts
+function Router(options?: { alias?: string }): ClassDecorator; // procedures are called "<alias>.<method>"; also a Nest controller
+function Query(options?: { input?: Schema; output?: Schema }): MethodDecorator; // Schema: Zod, or any Standard Schema
+function Mutation(options?: { input?: Schema; output?: Schema }): MethodDecorator;
+function Input(key?: string): ParameterDecorator; // the checked input, or one field of it
+const Ctx; // the engine's, as above
+const z; // Zod 4
+
+class ForgeRpcServer extends Server { // nest(http, { microservices: [{ strategy: new ForgeRpcServer({ port }) }] })
+  constructor(options: { port: number; host?: string; token?: string }); // token: FORGE_RPC_TOKEN by default, 16 characters or more
+}
+class ForgeRpcClient extends ClientProxy {
+  constructor(options: { url: string; token?: string; timeoutMs?: number }); // timeoutMs: 5000
+}
+function createForgeRpcClient<Rpc>(transport: ClientProxy | ForgeRpcClientOptions): ForgeRpcClientOf<Rpc>; // Rpc from forge/_generated/rpc.ts
+type ForgeRpcClientOf<Rpc>; // client.<alias>.<procedure>.query(input) on queries, .mutate(input) on mutations
+
+class ForgeRpcContext extends BaseRpcContext { getPattern(): string; getRequestId(): string } // @TransportCtx() in a router method
+class ForgeRpcError extends Error { code: string; data?: unknown; requestId?: string } // a failed call that isn't a ForgeError
+interface ForgeRpcWireError { status: "error"; message: string; code: string; data?: unknown; requestId?: string }
+const FORGE_RPC: symbol; // the transport id router methods are registered under
+```
+
 ### Server entry (`@archlast/forge-runtime/server`)
 
 Bun only. Most projects never import it: the CLI starts the engine for you.

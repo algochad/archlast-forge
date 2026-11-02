@@ -4,7 +4,7 @@
 
 ```bash
 bun create archlast-forge acme --monorepo
-bun create archlast-forge acme --microservices orders,billing --transport tcp   # implies --monorepo
+bun create archlast-forge acme --microservices orders,billing   # implies --monorepo; the services talk Forge RPC
 ```
 
 ```
@@ -17,6 +17,7 @@ acme/
     billing/          a backend: the billing microservice
   packages/
     api/              @acme/api: the backends' api objects and data model types
+    contracts/        @acme/contracts: the services' Forge RPC types, for the backends that call them (--transport forge-rpc, the default)
 ```
 
 Every app is a whole archlast-forge project, made as `init` makes one: its own `forge/`, `compose.yaml`, `Dockerfile` and `.env`, deployed on its own. `bun run dev` at the root starts them all (`turbo run dev`): the main app on port 3000, the services on 3001, 3002 and so on, on this machine (`--no-docker`) so they reach each other's transports. `bun run typecheck` runs each app's codegen and `tsc`, then `packages/api`'s.
@@ -34,7 +35,39 @@ await client.query(ordersApi.messages.list, { paginationOpts: { numItems: 20, cu
 
 ## Services calling services
 
-Each service listens for messages with a [NestJS transport](nest.html#microservices) (`--transport tcp`, the default, `redis` or `nats`), in its `forge/http.ts`, and answers a message pattern with a controller that uses its own database:
+By default (`--transport forge-rpc`) each service serves a [Forge RPC](forge-rpc.html) router: typed calls between forge apps. The service declares it the way nestjs-trpc does:
+
+```ts
+// apps/orders/forge/orders.router.ts
+@Router({ alias: "orders" })
+export class OrdersRouter {
+  @Mutation({ input: z.object({ from: z.string() }), output: z.object({ service: z.string(), greeting: z.string(), calls: z.number() }) })
+  async hello(@Input("from") from: string, @Ctx() ctx: ActionCtx) {
+    const calls = await ctx.runMutation(internal.calls.record, { from });
+    return { service: "orders", greeting: `Hello, ${from}`, calls };
+  }
+}
+```
+
+The service serves the router in its `forge/http.ts`, with `new ForgeRpcServer({ port: Number(process.env.ORDERS_RPC_PORT ?? 4001) })` in `nest()`'s `microservices`. Its codegen writes the router's types to `forge/_generated/rpc.ts`, and `packages/contracts` re-exports them. The main app calls the service from an action, typed:
+
+```ts
+// apps/web/forge/orders.ts
+import type { OrdersRpc } from "@acme/contracts";
+
+const ordersService = createForgeRpcClient<OrdersRpc>({ url: process.env.ORDERS_RPC_URL ?? "http://127.0.0.1:4001" });
+
+export const hello = action({
+  args: { from: v.string() },
+  handler: (_ctx, args) => ordersService.orders.hello.mutate(args),
+});
+```
+
+The backends share `FORGE_RPC_TOKEN`, which the scaffold writes to each one's `.env`.
+
+Forge RPC is backend to backend only. The pages of `apps/web`, `apps/mobile` and `apps/desktop` call the main app's functions (`api.orders.hello` here) with the client, and the main app's `forge/` code calls the service. They never import `@acme/contracts` or a service's address, and they never hold the token. See [Forge RPC](forge-rpc.html#backend-to-backend-only) for the checks that enforce it.
+
+With `--transport tcp`, `redis` or `nats`, each service instead listens with that [NestJS transport](nest.html#microservices), in its `forge/http.ts`, and answers a message pattern with a controller that uses its own database:
 
 ```ts
 // apps/orders/forge/orders.controller.ts
@@ -66,8 +99,9 @@ curl -X POST localhost:3000/rpc/orders:hello -H 'content-type: application/json'
 
 | Transport | Service listens on | Callers set | Needs |
 |---|---|---|---|
+| `forge-rpc` | `<SERVICE>_RPC_PORT` (4001, 4002, … in dev) on every interface | `<SERVICE>_RPC_URL`; the same `FORGE_RPC_TOKEN` in every app | nothing |
 | `tcp` | `<SERVICE>_PORT` (4001, 4002, … in dev) on every interface | `<SERVICE>_HOST`, `<SERVICE>_PORT` | nothing |
 | `redis` | the Redis at `MICROSERVICES_REDIS_URL` (default `redis://127.0.0.1:6379`) | the same URL | a Redis server; `ioredis` (added to each backend's `forge/package.json`) |
 | `nats` | the NATS server at `MICROSERVICES_NATS_URL` (default `nats://127.0.0.1:4222`) | the same URL | a NATS server; `nats` (added to each backend) |
 
-A service listens in the first function runtime process of its server, so a message is handled once per server. In production every app is its own stack: for TCP, put the stacks on one network and give callers the services' hosts and ports; for Redis or NATS, point every app at the same broker.
+A service listens in the first function runtime process of its server, so a message is handled once per server. In production every app is its own stack: for Forge RPC or TCP, put the stacks on one network and give callers the services' hosts and ports; for Redis or NATS, point every app at the same broker.

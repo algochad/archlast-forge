@@ -2,7 +2,7 @@
 export { startServer, type ApiDocsHost, type AppEnv, type AppHost, type RunningServer, type ServerOptions } from "./server";
 export { loadConfig, ConfigError, type Config } from "./config";
 export * as ops from "./cli-ops";
-export { listModules } from "./project";
+export { compileDecorators, listModules } from "./project";
 export { createSqliteDb } from "./db/sqlite";
 export { createPostgresDb } from "./db/postgres";
 export type { Db, DbTx, Dialect, TableSpec } from "./db/types";

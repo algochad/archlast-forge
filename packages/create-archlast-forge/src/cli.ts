@@ -3,7 +3,7 @@ import { existsSync, readdirSync } from "node:fs";
 import { basename, relative, resolve } from "node:path";
 import type { Readable, Writable } from "node:stream";
 import { scaffold } from "./scaffold";
-import { parseMicroservices, scaffoldMonorepo, TRANSPORTS, type Transport } from "./monorepo";
+import { parseMicroservices, scaffoldMonorepo, TRANSPORT_LABEL, TRANSPORTS, type Transport } from "./monorepo";
 import type { DesktopMode } from "./desktop";
 import { BASE_COLORS, BASE_COLOR_HINTS, type BaseColor } from "./shadcn";
 import { defaultServices, nameOf, parseFlags, USAGE, type Flags } from "./options";
@@ -139,8 +139,8 @@ export async function gather(flags: Flags, interactive: boolean, io: Io = {}): P
     const transport =
       flags.transport ??
       (interactive && microservices.length
-        ? await ask<Transport>((o) => p.select<Transport>({ ...o, message: "How do the services talk?", initialValue: "tcp", options: TRANSPORTS.map((t) => ({ value: t, label: t.toUpperCase(), hint: t === "tcp" ? "no server needed" : `needs a ${t === "redis" ? "Redis" : "NATS"} server` })) }))
-        : "tcp");
+        ? await ask<Transport>((o) => p.select<Transport>({ ...o, message: "How do the services talk?", initialValue: "forge-rpc", options: TRANSPORTS.map((t) => ({ value: t, label: TRANSPORT_LABEL[t], hint: t === "forge-rpc" ? "typed calls between forge apps (recommended)" : t === "tcp" ? "untyped messages, no server needed" : `needs a ${TRANSPORT_LABEL[t]} server` })) }))
+        : "forge-rpc");
     monorepo = { microservices, transport, ...(mobile && { mobile: true }), ...(wantsDesktop && { desktop: wantsDesktop }) };
   }
 

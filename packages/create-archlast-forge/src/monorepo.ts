@@ -1,6 +1,7 @@
-// A Turborepo monorepo: the main app in apps/, backends that serve as microservices beside it, wired with a NestJS transport, and the
-// backends' generated API types shared from packages/api.
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
+// A Turborepo monorepo: the main app in apps/, backends that serve as microservices beside it, wired with Forge RPC (or another NestJS
+// transport), and the backends' generated API types shared from packages/api (and their Forge RPC types from packages/contracts).
+import { randomBytes } from "node:crypto";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { nameOf } from "./options";
 import { addPrettier, format, scaffold, VERSION } from "./scaffold";
@@ -8,8 +9,10 @@ import { addDesktop, type DesktopMode } from "./desktop";
 import type { BaseColor } from "./shadcn";
 import type { Mode, StackService } from "./stack";
 
-export const TRANSPORTS = ["tcp", "redis", "nats"] as const;
+/** Forge RPC first: typed calls between forge apps, which is what the services here are. */
+export const TRANSPORTS = ["forge-rpc", "tcp", "redis", "nats"] as const;
 export type Transport = (typeof TRANSPORTS)[number];
+export const TRANSPORT_LABEL: Record<Transport, string> = { "forge-rpc": "Forge RPC", tcp: "TCP", redis: "Redis", nats: "NATS" };
 
 export interface MonorepoOptions {
   dir: string;
@@ -45,7 +48,7 @@ const pascal = (s: string) => camel(s)[0]!.toUpperCase() + camel(s).slice(1);
 const env = (s: string) => s.toUpperCase().replace(/-/g, "_");
 
 /** How a client reaches microservice `name` (the `index`-th) over `transport`, as Nest's options, read from the environment with local defaults. */
-function transportOptions(transport: Transport, name: string, index: number, listen: boolean) {
+function transportOptions(transport: Exclude<Transport, "forge-rpc">, name: string, index: number, listen: boolean) {
   if (transport === "tcp")
     return `{ transport: Transport.TCP, options: { host: process.env.${env(name)}_HOST ?? "${listen ? "0.0.0.0" : "127.0.0.1"}", port: Number(process.env.${env(name)}_PORT ?? ${4001 + index}) } }`;
   if (transport === "redis") return `{ transport: Transport.REDIS, options: redisOptions(process.env.MICROSERVICES_REDIS_URL ?? "redis://127.0.0.1:6379") }`;
@@ -59,7 +62,7 @@ const redisOptions = (url: string) => {
 };
 `;
 /** The client package a transport needs in forge/package.json (TCP needs none). */
-const TRANSPORT_PACKAGE: Record<Transport, [string, string] | undefined> = { tcp: undefined, redis: ["ioredis", "^5.6.1"], nats: ["nats", "^2.29.3"] };
+const TRANSPORT_PACKAGE: Record<Transport, [string, string] | undefined> = { "forge-rpc": undefined, tcp: undefined, redis: ["ioredis", "^5.6.1"], nats: ["nats", "^2.29.3"] };
 
 const write = (path: string, text: string) => (mkdirSync(join(path, ".."), { recursive: true }), writeFileSync(path, text));
 const patchJson = (path: string, change: (json: any) => void) => {
@@ -73,7 +76,7 @@ export function scaffoldMonorepo(o: MonorepoOptions): string {
   const root = resolve(o.dir);
   const name = nameOf(root);
   const version = o.version ?? VERSION;
-  const transport = o.transport ?? "tcp";
+  const transport = o.transport ?? "forge-rpc";
   const services = o.microservices ?? [];
   const main = o.mode === "framework" ? "web" : "api";
   if (o.mobile && o.mode !== "backend") throw new Error("The Expo app is a client of a backend: use --mode backend (Expo has no full-stack option)");
@@ -114,13 +117,52 @@ export const record = internalMutation({
 });
 `,
     );
+    if (transport === "forge-rpc") {
+      write(
+        join(forge, `${svc}.router.ts`),
+        `import { internal } from "./_generated/api";
+import type { ActionCtx } from "@archlast/forge-runtime/nest";
+import { Ctx, Input, Mutation, Router, z } from "@archlast/forge-runtime/nest/rpc";
+
+/**
+ * What ${svc} serves over Forge RPC, declared as nestjs-trpc declares routers. \`archlast-forge codegen\` writes its types to
+ * forge/_generated/rpc.ts, which packages/contracts shares, and other apps call \`${camel(svc)}.hello\` with them.
+ */
+@Router({ alias: "${camel(svc)}" })
+export class ${pascal(svc)}Router {
+  @Mutation({ input: z.object({ from: z.string() }), output: z.object({ service: z.string(), greeting: z.string(), calls: z.number() }) })
+  async hello(@Input("from") from: string, @Ctx() ctx: ActionCtx) {
+    const calls = await ctx.runMutation(internal.calls.record, { from });
+    return { service: "${svc}", greeting: \`Hello, \${from}\`, calls };
+  }
+}
+`,
+      );
+      write(
+        join(forge, "http.ts"),
+        `import { httpAction, httpRouter } from "@archlast/forge-runtime";
+import { nest } from "@archlast/forge-runtime/nest";
+import { ForgeRpcServer } from "@archlast/forge-runtime/nest/rpc";
+import { ${pascal(svc)}Router } from "./${svc}.router";
+
+const http = httpRouter();
+http.route({ method: "GET", path: "/hello", handler: httpAction(async () => Response.json({ message: "Hello from ${svc}" })) });
+
+// ${svc} serves its routers to the other apps here, in the engine's first function runtime process. They send FORGE_RPC_TOKEN (.env).
+nest(http, { controllers: [${pascal(svc)}Router], microservices: [{ strategy: new ForgeRpcServer({ port: Number(process.env.${env(svc)}_RPC_PORT ?? ${4001 + i}) }) }] });
+
+export default http;
+`,
+      );
+      continue;
+    }
     write(
       join(forge, `${svc}.controller.ts`),
       `import { internal } from "./_generated/api";
 import { Controller, type ActionCtx } from "@archlast/forge-runtime/nest";
 import { Ctx, MessagePattern, Payload } from "@archlast/forge-runtime/nest/microservices";
 
-/** What ${svc} answers over the ${transport.toUpperCase()} transport. Other services call it with \`send("${svc}.hello", { from })\`. */
+/** What ${svc} answers over the ${TRANSPORT_LABEL[transport]} transport. Other services call it with \`send("${svc}.hello", { from })\`. */
 @Controller()
 export class ${pascal(svc)}Controller {
   @MessagePattern("${svc}.hello")
@@ -151,13 +193,31 @@ export default http;
 
   // The caller: one action per service in the main app, sending it a message and returning the answer.
   for (const [i, svc] of services.entries())
-    write(
+    if (transport === "forge-rpc")
+      write(
+        join(root, "apps", main, "forge", `${camel(svc)}.ts`),
+        `import { action, v } from "@archlast/forge-runtime";
+import { createForgeRpcClient } from "@archlast/forge-runtime/nest/rpc";
+import type { ${pascal(svc)}Rpc } from "@${name}/contracts";
+
+/** The ${svc} service over Forge RPC, typed from its routers: backend to backend, so pages call \`hello\` below, never the service. */
+const ${camel(svc)}Service = createForgeRpcClient<${pascal(svc)}Rpc>({ url: process.env.${env(svc)}_RPC_URL ?? "http://127.0.0.1:${4001 + i}" });
+
+/** Calls ${svc}: \`api.${camel(svc)}.hello\` from a page or a client, or \`ctx.runAction\` from another function. */
+export const hello = action({
+  args: { from: v.string() },
+  handler: (_ctx, args) => ${camel(svc)}Service.${camel(svc)}.hello.mutate(args),
+});
+`,
+      );
+    else
+      write(
       join(root, "apps", main, "forge", `${camel(svc)}.ts`),
       `import { action, v } from "@archlast/forge-runtime";
 import { rxjs } from "@archlast/forge-runtime/nest";
 import { ClientProxyFactory, Transport } from "@archlast/forge-runtime/nest/microservices";
 ${transport === "redis" ? REDIS_HELPER : ""}
-/** The ${svc} service, over ${transport.toUpperCase()}: connected on first use, kept for every call after. */
+/** The ${svc} service, over ${TRANSPORT_LABEL[transport]}: connected on first use, kept for every call after. */
 const ${camel(svc)} = ClientProxyFactory.create(${transportOptions(transport, svc, i, false)});
 
 /** Calls ${svc}: \`api.${camel(svc)}.hello\` from a page or a client, or \`ctx.runAction\` from another function. */
@@ -170,6 +230,41 @@ export const hello = action({
   const needs = TRANSPORT_PACKAGE[transport];
   if (needs && services.length)
     for (const app of backends) patchJson(join(root, "apps", app, "forge", "package.json"), (pkg) => (pkg.dependencies = { ...pkg.dependencies, [needs[0]]: needs[1] }));
+
+  if (transport === "forge-rpc" && services.length) {
+    // The services' Forge RPC types, for the apps that call them. Not in packages/api: the main app depends on this, and packages/api on it.
+    write(
+      join(root, "packages", "contracts", "package.json"),
+      JSON.stringify(
+        {
+          name: `@${name}/contracts`,
+          private: true,
+          type: "module",
+          exports: { ".": "./index.ts" },
+          scripts: { typecheck: "tsc --noEmit" },
+          dependencies: { "@archlast/forge-runtime": `^${version}` },
+          devDependencies: Object.fromEntries([...services.map((s) => [`@${name}/${s}`, "workspace:*"]), ["typescript", "^7.0.2"]]),
+        },
+        null,
+        2,
+      ) + "\n",
+    );
+    write(
+      join(root, "packages", "contracts", "index.ts"),
+      `// What each service in apps/ serves over Forge RPC, as its codegen writes it (forge/_generated/rpc.ts from its @Router classes):
+// \`createForgeRpcClient<OrdersRpc>({ url })\` in the forge/ code of the backend that calls it. Backends only: a page or an app never imports this.
+${services.map((s) => `export type { Rpc as ${pascal(s)}Rpc } from "../../apps/${s}/forge/_generated/rpc";`).join("\n")}
+`,
+    );
+    write(
+      join(root, "packages", "contracts", "tsconfig.json"),
+      JSON.stringify({ compilerOptions: { target: "ES2023", module: "ESNext", moduleResolution: "bundler", strict: true, noEmit: true, skipLibCheck: true, experimentalDecorators: true }, include: ["index.ts"] }, null, 2) + "\n",
+    );
+    patchJson(join(root, "apps", main, "package.json"), (pkg) => (pkg.devDependencies = { ...pkg.devDependencies, [`@${name}/contracts`]: "workspace:*" }));
+    // One secret for the apps here: each service checks it, each caller sends it.
+    const token = randomBytes(24).toString("hex");
+    for (const app of backends) appendFileSync(join(root, "apps", app, ".env"), `\n# Forge RPC: the secret the apps of this monorepo share to call each other's routers\nFORGE_RPC_TOKEN=${token}\n`);
+  }
 
   if (o.mobile) addMobile(root, name, version);
   if (o.desktop) addDesktop(root, name, version, o.desktop, main);
@@ -245,7 +340,7 @@ ${backends.map((b) => `export type * as ${pascal(b)} from "../../apps/${b}/forge
 }
 
 function readme(name: string, main: string, services: string[], transport: Transport) {
-  const ports = services.map((s, i) => `| \`apps/${s}\` | a backend, and the \`${s}\` microservice | http://localhost:${3001 + i} | ${transport === "tcp" ? `TCP ${4001 + i}` : transport === "redis" ? "Redis (MICROSERVICES_REDIS_URL)" : "NATS (MICROSERVICES_NATS_URL)"} |`);
+  const ports = services.map((s, i) => `| \`apps/${s}\` | a backend, and the \`${s}\` microservice | http://localhost:${3001 + i} | ${transport === "forge-rpc" ? `Forge RPC ${4001 + i}` : transport === "tcp" ? `TCP ${4001 + i}` : transport === "redis" ? "Redis (MICROSERVICES_REDIS_URL)" : "NATS (MICROSERVICES_NATS_URL)"} |`);
   return `# ${name}
 
 A monorepo of [archlast-forge](https://github.com/algochad/archlast-forge) apps, run with [Turborepo](https://turborepo.com).
@@ -255,7 +350,7 @@ A monorepo of [archlast-forge](https://github.com/algochad/archlast-forge) apps,
 | \`apps/${main}\` | the main app${main === "web" ? " (pages and functions)" : " (a backend)"} | http://localhost:3000 | |
 ${ports.join("\n")}
 | \`packages/api\` | the backends' typed APIs (\`@${name}/api\`) | | |
-
+${transport === "forge-rpc" && services.length ? `| \`packages/contracts\` | the services' Forge RPC types (\`@${name}/contracts\`) | | |\n` : ""}
 \`\`\`bash
 bun install
 bun run dev         # every app at once (turbo run dev)
@@ -266,13 +361,17 @@ ${
     ? `
 ## Services calling services
 
-Each service in \`apps/\` listens for messages with NestJS's ${transport.toUpperCase()} transport (\`forge/http.ts\`, \`forge/<service>.controller.ts\`), and \`apps/${main}\` calls them with an action each (\`forge/${camel(services[0]!)}.ts\`):
+${
+  transport === "forge-rpc"
+    ? `Each service in \`apps/\` serves a Forge RPC router (\`forge/<service>.router.ts\`, declared as nestjs-trpc declares one, listening in \`forge/http.ts\`). Its codegen writes the router's types to \`forge/_generated/rpc.ts\`, \`packages/contracts\` shares them, and the main app's backend calls each service with them, from an action each (\`apps/${main}/forge/${camel(services[0]!)}.ts\`). Forge RPC is backend to backend: pages and apps call the main app's functions, never a service directly:`
+    : `Each service in \`apps/\` listens for messages with NestJS's ${TRANSPORT_LABEL[transport]} transport (\`forge/http.ts\`, \`forge/<service>.controller.ts\`), and \`apps/${main}\` calls them with an action each (\`forge/${camel(services[0]!)}.ts\`):`
+}
 
 \`\`\`bash
 curl -X POST localhost:3000/rpc/${camel(services[0]!)}:hello -H 'content-type: application/json' -d '{"from":"${main}"}'
 # {"result":{"service":"${services[0]}","greeting":"Hello, ${main}","calls":1}}
 \`\`\`
-${transport === "tcp" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the TCP ports are reachable. In production, set \`<SERVICE>_HOST\` and \`<SERVICE>_PORT\` for the callers, and expose each service's TCP port to them (one network for the stacks).` : `\nStart a ${transport === "redis" ? "Redis" : "NATS"} server first, and point every app at it with \`${transport === "redis" ? "MICROSERVICES_REDIS_URL" : "MICROSERVICES_NATS_URL"}\` in production.`}
+${transport === "forge-rpc" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the services' ports are reachable, and the apps share \`FORGE_RPC_TOKEN\` from their \`.env\`. In production, give every app the same \`FORGE_RPC_TOKEN\`, the callers \`<SERVICE>_RPC_URL\`, and expose each service's Forge RPC port to them (one network for the stacks).` : transport === "tcp" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the TCP ports are reachable. In production, set \`<SERVICE>_HOST\` and \`<SERVICE>_PORT\` for the callers, and expose each service's TCP port to them (one network for the stacks).` : `\nStart a ${transport === "redis" ? "Redis" : "NATS"} server first, and point every app at it with \`${transport === "redis" ? "MICROSERVICES_REDIS_URL" : "MICROSERVICES_NATS_URL"}\` in production.`}
 `
     : ""
 }`;

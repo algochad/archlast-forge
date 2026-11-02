@@ -33,8 +33,9 @@ export const USAGE = `Usage: bun create archlast-forge [directory] [options]
   --shadcn / --no-shadcn       full-stack apps: use shadcn/ui (Tailwind CSS and components). Default: yes
   --base-color <name>          shadcn/ui's base color: ${BASE_COLORS.join(", ")}. Default: neutral
   --monorepo                   a Turborepo monorepo: the app in apps/, shared API types in packages/api
-  --microservices <names>      backends to add beside it (orders,billing), each called from the app over a NestJS transport
-  --transport <tcp|redis|nats> how the services talk. Default: tcp
+  --microservices <names>      backends to add beside it (orders,billing), each called from the app over Forge RPC or another NestJS transport
+  --transport <forge-rpc|tcp|redis|nats>
+                               how the services talk. Default: forge-rpc (typed calls between forge apps)
   --mobile                     a React Native (Expo) app in apps/mobile, a client of the backend: with --mode backend
                                (Expo has no full-stack option). Implies --monorepo
   --desktop <full|client>      a Tauri desktop app in apps/desktop. full: the full-stack app with its engine on the user's

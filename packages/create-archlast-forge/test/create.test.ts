@@ -258,9 +258,10 @@ describe("gather (prompts)", () => {
     await Bun.sleep(30);
     await t.press(DOWN, "\r", "\r", "\r", "\r", DOWN, "\r"); // backend, its services, no Expo app, no desktop app, a monorepo
     await Bun.sleep(30);
-    await t.press(..."orders,billing".split(""), "\r", DOWN, "\r"); // the services' names, then Redis
+    await t.press(..."orders,billing".split(""), "\r", DOWN, DOWN, "\r"); // the services' names, then Redis (Forge RPC is first, then TCP)
     expect(await done).toMatchObject({ mode: "backend", monorepo: { microservices: ["orders", "billing"], transport: "redis" } });
     expect(t.screen()).toContain("One app, or a monorepo?");
+    expect(t.screen()).toContain("typed calls between forge apps (recommended)");
   });
 
   test("shadcn/ui is asked about for a full-stack app: a base color to pick, or no", async () => {
