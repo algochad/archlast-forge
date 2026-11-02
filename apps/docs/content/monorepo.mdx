@@ -91,6 +91,10 @@ A monorepo that was set up without these commands, with a main app called `medic
 
 Save that as `archlast-forge.workspace.json` at the root and run `archlast-forge workspace sync`. It writes `packages/api` (`@hospital/api`, with `wardApi`), naming each app's package as its own `package.json` does. After that `add mobile`, `add desktop`, `add service` and `workspace` work as they do in a monorepo `init` made. Without the file, a lone app with an `archlast-forge.json` is taken for the main app, and with several the command asks you to say which.
 
+## One dashboard
+
+The main app's dashboard is the monorepo's: each service sends its telemetry there and serves no dashboard of its own, so requests, traces, errors, logs, [nodes](observability.html#nodes) and Nest classes of every app are on one set of pages, and with a service picked in the top bar its data, schema and functions are too. `init`, `add service`, `remove` and `workspace sync` keep the apps' `.env` in step: `MICROSERVICES` in the main app, `DASHBOARD_URL` and `OTEL_SERVICE_NAME` in each service, and the `DASHBOARD_TOKEN` they share. A monorepo made with 0.15.0 or before gets them from `archlast-forge workspace sync`. In production, set them with the addresses the apps reach each other at; see [one dashboard](observability.html#one-dashboard-for-a-main-app-and-its-microservices).
+
 ## Services calling services
 
 By default (`--transport forge-rpc`) each service serves a [Forge RPC](forge-rpc.html) router: typed calls between forge apps. The service declares it with decorators:

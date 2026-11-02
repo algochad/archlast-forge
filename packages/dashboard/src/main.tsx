@@ -2,7 +2,7 @@ import "@fontsource-variable/geist";
 import "@fontsource-variable/geist-mono";
 import { Component, StrictMode, useEffect, useMemo, useRef, useState, type FormEvent, type ReactNode } from "react";
 import { createRoot } from "react-dom/client";
-import { get, login, logout, post, type Admin, type Manifest } from "./api";
+import { backend, get, login, logout, onBackend, post, setBackend, setSelf, type Admin, type Fleet, type Manifest } from "./api";
 import { Avatar, Icon, Logo, Wordmark, type IconName } from "./brand";
 import { ago } from "./format";
 import { PageHead, QuietRange, TelemetryOff } from "./kit";
@@ -19,13 +19,14 @@ import { Hotspots } from "./pages/Hotspots";
 import { Jobs } from "./pages/Jobs";
 import { Keys } from "./pages/Keys";
 import { Logs } from "./pages/Logs";
+import { Microservices } from "./pages/Microservices";
+import { Nodes } from "./pages/Nodes";
 import { ServiceMap } from "./pages/Map";
 import { CustomMetrics } from "./pages/Metrics";
 import { Overview } from "./pages/Overview";
 import { Releases } from "./pages/Releases";
 import { Requests } from "./pages/Requests";
 import { Runtime } from "./pages/Runtime";
-import { Services } from "./pages/Services";
 import { Settings } from "./pages/Settings";
 import { Slos } from "./pages/Slos";
 import { Spans } from "./pages/Spans";
@@ -49,16 +50,30 @@ const PAGES: Record<string, PageDef> = {
   jobs: { label: "Jobs", icon: "jobs", group: "Observe", observe: true, blurb: "Scheduled functions and crons: runs, failures and time in the queue." },
   spans: { label: "Spans", icon: "spans", group: "Performance", observe: true, blurb: "Queries, outbound calls and your own spans, across every request." },
   hotspots: { label: "Hotspots", icon: "hotspots", group: "Performance", observe: true, blurb: "Which code burns the time: modules, classes and dependencies by their own time." },
+  services: {
+    label: "Services",
+    icon: "box",
+    group: "Performance",
+    observe: true,
+    blurb: "Which of your Nest classes burn the time: controllers, providers, gateways and routers, method by method.",
+  },
   map: { label: "Map", icon: "map", group: "Performance", observe: true, blurb: "How clients, services, queues and databases talk to each other." },
   runtime: { label: "Runtime", icon: "runtime", group: "Performance", observe: true, blurb: "CPU, memory and event loop of every process, with connections and cache." },
   releases: { label: "Releases", icon: "releases", group: "Performance", observe: true, blurb: "Each release against the 30 minutes of traffic before and after it." },
   slos: { label: "SLOs", icon: "slo", group: "Performance", observe: true, blurb: "Objectives over the traffic you already record, with their error budget and burn rate." },
   metrics: { label: "Metrics", icon: "metrics", group: "Performance", observe: true, blurb: "Counters, gauges and histograms your code and services report." },
+  microservices: {
+    label: "Microservices",
+    icon: "services",
+    group: "Infrastructure",
+    observe: true,
+    blurb: "Every backend on this dashboard: this app, its microservices and the services sending it telemetry.",
+  },
+  nodes: { label: "Nodes", icon: "nodes", group: "Infrastructure", observe: true, blurb: "Each service's nodes and their processes, as replicas start and stop." },
   data: { label: "Data", icon: "data", group: "Backend", blurb: "Browse, filter and edit documents." },
   files: { label: "Files", icon: "files", group: "Backend", blurb: "Objects in storage, uploaded through presigned URLs." },
   functions: { label: "Functions", icon: "functions", group: "Backend", blurb: "Run any function with typed arguments, or write one on the spot." },
   cache: { label: "Cache", icon: "cache", group: "Backend", blurb: "How much work the query cache is saving." },
-  services: { label: "Services", icon: "services", group: "Admin", observe: true, blurb: "This engine and every service sending it telemetry." },
   alerts: { label: "Alerts", icon: "alerts", group: "Admin", blurb: "Rules over your telemetry, and what they caught." },
   keys: { label: "Ingest keys", icon: "key", group: "Admin", blurb: "Keys other services send OpenTelemetry with." },
   backups: { label: "Backups", icon: "backups", group: "Admin", blurb: "Snapshots of the data, the function source and the files: on a schedule or now, to download or restore." },
@@ -175,9 +190,18 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
   const [palette, setPalette] = useState(false);
   const [theme, setTheme] = useTheme();
   const [collapsed, setCollapsed] = useState<string[]>(() => JSON.parse(stored("afx:nav") ?? "[]"));
-  const manifest = useAsync(() => get<Manifest>("manifest"), [], { interval: 5000 });
+  // The backend the pages show: this app, or one of its microservices (MICROSERVICES), which this app's server forwards the calls to.
+  const [picked, setPicked] = useState(backend);
+  useEffect(() => onBackend(() => setPicked(backend())), []);
+  const fleet = useAsync(() => get<Fleet>("microservices", {}, true), []);
+  useEffect(() => {
+    if (!fleet.data) return;
+    setSelf(fleet.data.self);
+    if (picked && !fleet.data.services.some((s) => s.name === picked)) setBackend(""); // no longer listed
+  }, [fleet.data, picked]);
+  const manifest = useAsync(() => get<Manifest>("manifest"), [picked], { interval: 5000 });
   // Whether the server records telemetry; until it answers, pages wait rather than ask for what may not be there.
-  const server = useAsync(() => get<{ telemetry?: boolean }>("server"), []);
+  const server = useAsync(() => get<{ telemetry?: boolean }>("server", {}, true), []);
   const telemetry = server.data ? server.data.telemetry !== false : server.error ? true : undefined;
   const errors = useObs<{ list: { state: string | null }[] }>("errors", telemetry ? { state: "open" } : null, { live: false });
   const m = manifest.data;
@@ -246,7 +270,8 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
           </div>
           <div className="sidebar-foot" aria-label="Runtime status">
             <span>
-              <span className={`status-dot ${m && !m.error ? "live" : "bad"}`} /> {m ? (m.error ? "Runtime down" : "Runtime healthy") : "Connecting…"}
+              <span className={`status-dot ${m && !m.error ? "live" : "bad"}`} /> {picked ? `${picked}: ` : ""}
+              {m ? (m.error ? "Runtime down" : "Runtime healthy") : "Connecting…"}
             </span>
             {m && (
               <span className="muted">
@@ -263,6 +288,19 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
               <strong>{def.label}</strong>
             </div>
             <span className="push" />
+            {(fleet.data?.services.length ?? 0) > 0 && (
+              <label className="backend-pick" title="The backend the data, functions, cache and settings pages show. Telemetry pages cover every service.">
+                <Icon name="services" size={15} />
+                <select value={picked} onChange={(e) => setBackend(e.target.value)} aria-label="Backend">
+                  <option value="">{fleet.data!.self || "this app"} (main app)</option>
+                  {fleet.data!.services.map((s) => (
+                    <option key={s.name} value={s.name}>
+                      {s.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
             <button className="search-trigger" onClick={() => setPalette(true)} aria-label="Search (Ctrl+K)">
               <Icon name="search" size={16} />
               <span>Search or jump to…</span>
@@ -294,7 +332,7 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
             {telemetry === true && HOLDS_REQUESTS.has(page) && <QuietRange />}
             {m?.error && <p className="note error">The function runtime failed to load: {m.error}</p>}
             <ErrorNote error={manifest.error} />
-            <Boundary key={`${page}:${route.params.toString()}`}>
+            <Boundary key={`${picked}:${page}:${route.params.toString()}`}>
               {def.observe || page === "trace" || page === "alerts" || page === "keys" ? (
                 telemetry === undefined ? (
                   <div className="panel">
@@ -302,7 +340,7 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
                   </div>
                 ) : telemetry || ["users", "jobs", "logs"].includes(page) ? (
                   // Users, Jobs and Logs have a view that works without telemetry, and open on it.
-                  <ObservePage page={page} params={route.params} manifest={m} admin={admin} />
+                  <ObservePage page={page} params={route.params} manifest={m} admin={admin} fleet={fleet.data} />
                 ) : (
                   <TelemetryOff />
                 )
@@ -330,7 +368,7 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
   );
 }
 
-function ObservePage({ page, params, manifest, admin }: { page: string; params: URLSearchParams; manifest?: Manifest; admin: Admin }) {
+function ObservePage({ page, params, manifest, admin, fleet }: { page: string; params: URLSearchParams; manifest?: Manifest; admin: Admin; fleet?: Fleet }) {
   switch (page) {
     case "overview":
       return <Overview />;
@@ -350,6 +388,10 @@ function ObservePage({ page, params, manifest, admin }: { page: string; params: 
       return <Spans params={params} />;
     case "hotspots":
       return <Hotspots />;
+    case "services":
+      return <Hotspots nest />;
+    case "nodes":
+      return <Nodes />;
     case "map":
       return <ServiceMap />;
     case "runtime":
@@ -360,8 +402,8 @@ function ObservePage({ page, params, manifest, admin }: { page: string; params: 
       return <Slos admin={admin} />;
     case "metrics":
       return <CustomMetrics />;
-    case "services":
-      return <Services manifest={manifest} />;
+    case "microservices":
+      return <Microservices manifest={backend() ? undefined : manifest} fleet={fleet} />;
     case "alerts":
       return <Alerts admin={admin} />;
     case "keys":

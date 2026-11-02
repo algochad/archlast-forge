@@ -54,13 +54,48 @@ async function unwrap<T>(res: Response): Promise<T> {
   return body as T;
 }
 
+// The backend the pages show: this app, or one of its microservices (MICROSERVICES) by name, whose admin API this app forwards to.
+// Telemetry is this app's for all of them, so obs.* calls never go elsewhere.
+const BACKEND_KEY = "afx:backend";
+let target = (() => {
+  try {
+    return localStorage.getItem(BACKEND_KEY) ?? "";
+  } catch {
+    return "";
+  }
+})();
+let self = "";
+/** The microservice picked, or "" for this app. */
+export const backend = () => target;
+/** The picked backend's name in telemetry: the microservice's, or this app's own (OTEL_SERVICE_NAME). */
+export const backendService = () => target || self;
+export const setSelf = (name: string) => void (self = name);
+export function setBackend(name: string) {
+  target = name;
+  try {
+    if (name) localStorage.setItem(BACKEND_KEY, name);
+    else localStorage.removeItem(BACKEND_KEY);
+  } catch {}
+  window.dispatchEvent(new Event(BACKEND_KEY));
+}
+export const onBackend = (fn: () => void) => (window.addEventListener(BACKEND_KEY, fn), () => window.removeEventListener(BACKEND_KEY, fn));
+
+/** An admin URL on the picked backend; `here` keeps it on this app. Who is signed in and the telemetry are always this app's. */
+export function adminUrl(op: string, params: Record<string, string> = {}, here = false) {
+  const q = new URLSearchParams(params);
+  if (target && !here && !op.startsWith("obs.") && op !== "me" && op !== "microservices") q.set("target", target);
+  const s = q.toString();
+  return `/_admin/${op}${s ? `?${s}` : ""}`;
+}
+
 /** Read operations. The session cookie authenticates. */
-export const get = <T>(op: string, input: object = {}) =>
-  fetch(`/_admin/${op}?input=${encodeURIComponent(JSON.stringify(input))}`, { credentials: "same-origin" }).then(unwrap<T>);
+export const get = <T>(op: string, input: object = {}, here = false) => fetch(adminUrl(op, { input: JSON.stringify(input) }, here), { credentials: "same-origin" }).then(unwrap<T>);
 
 /** Write operations. */
 export const post = <T>(op: string, input: object = {}) =>
-  fetch(`/_admin/${op}`, { method: "POST", credentials: "same-origin", headers: HEADERS, body: JSON.stringify(input) }).then(unwrap<T>);
+  fetch(adminUrl(op), { method: "POST", credentials: "same-origin", headers: HEADERS, body: JSON.stringify(input) }).then(unwrap<T>);
+
+export type Fleet = { self: string; services: { name: string; url: string }[] };
 
 export const login = (body: { email: string; password: string } | { key: string }) =>
   fetch("/_admin/login", { method: "POST", credentials: "same-origin", headers: HEADERS, body: JSON.stringify(body) }).then(unwrap<Admin>);

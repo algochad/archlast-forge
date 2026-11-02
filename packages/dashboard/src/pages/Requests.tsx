@@ -9,7 +9,7 @@ import { STATUS_STACK } from "./Overview";
 
 type RequestsData = Stats & { previous: { count: number; avg: number; p95: number }; series: Point[]; step: number; operations: Operation[] };
 
-const KINDS = ["query", "mutation", "action", "live", "http", "auth", "page", "server"];
+const KINDS = ["query", "mutation", "action", "live", "http", "rpc", "ws", "auth", "page", "server"];
 
 export function Requests({ params }: { params: URLSearchParams }) {
   const op = params.get("op");

@@ -323,6 +323,47 @@ export function ensureToken(c: Ctx) {
   for (const f of files) if (!/^FORGE_RPC_TOKEN=/m.test(readFileSync(f, "utf8"))) appendFileSync(f, `\n# Forge RPC: the secret the apps of this monorepo share to call each other's routers\nFORGE_RPC_TOKEN=${token}\n`);
 }
 
+/** Sets `key` in an .env file, keeping the rest of it: `null` removes it, and with `keep` a value already there stays. */
+function setEnv(file: string, key: string, value: string | null, comment: string, keep = false) {
+  if (!existsSync(file)) return;
+  const text = readFileSync(file, "utf8");
+  const line = new RegExp(`^${key}=.*$`, "m");
+  const next =
+    value === null
+      ? text.replace(new RegExp(`(?:^# .*\\n)?^${key}=.*\\n?`, "m"), "")
+      : line.test(text)
+        ? keep
+          ? text
+          : text.replace(line, `${key}=${value}`)
+        : `${text.replace(/\n*$/, "\n")}\n# ${comment}\n${key}=${value}\n`;
+  if (next !== text) writeFileSync(file, next);
+}
+const envValue = (file: string, key: string) => (existsSync(file) ? new RegExp(`^${key}=(\\S+)$`, "m").exec(readFileSync(file, "utf8"))?.[1] : undefined);
+
+/**
+ * One dashboard for the monorepo, the main app's: each service sends its telemetry there (DASHBOARD_URL) under its own name, and the main app
+ * lists the services (MICROSERVICES) so their data, schema and functions open on it too. The addresses are the development ones (each app on
+ * this machine, on its port); production sets its own.
+ */
+export function ensureDashboard(c: Ctx) {
+  const services = servicesOf(c.ws).map(([name]) => name);
+  const mainEnv = join(c.root, "apps", c.ws.main, ".env");
+  const files = [mainEnv, ...services.map((s) => join(c.root, "apps", s, ".env"))];
+  if (!services.length) return setEnv(mainEnv, "MICROSERVICES", null, "");
+  const token = files.map((f) => envValue(f, "DASHBOARD_TOKEN")).find(Boolean) ?? randomBytes(24).toString("hex");
+  const mainPort = Number(envValue(mainEnv, "PORT")) || 3000;
+  setEnv(mainEnv, "OTEL_SERVICE_NAME", c.ws.main, "This app's name on the dashboard", true);
+  const listed: string[] = [];
+  for (const svc of services) {
+    const file = join(c.root, "apps", svc, ".env");
+    setEnv(file, "OTEL_SERVICE_NAME", svc, "This service's name on the main app's dashboard, as its MICROSERVICES lists it", true);
+    setEnv(file, "DASHBOARD_URL", `http://localhost:${mainPort}`, `Its telemetry goes to the main app (apps/${c.ws.main}), whose dashboard shows it; it serves none of its own`, true);
+    listed.push(`${envValue(file, "OTEL_SERVICE_NAME") ?? svc}=http://localhost:${c.ws.apps[svc]!.port}`);
+  }
+  setEnv(mainEnv, "MICROSERVICES", listed.join(","), "The services whose data, schema and telemetry this app's dashboard shows (name=address)");
+  for (const f of files) setEnv(f, "DASHBOARD_TOKEN", token, "The secret the main app and its services share for the dashboard", true);
+}
+
 /** A backend main app has to run on this machine in development when it calls services, or its code can't reach their ports. */
 export function ensureMainOnHost(c: Ctx) {
   if (modeOf(c.root, c.ws.main) !== "backend" || !servicesOf(c.ws).length) return;
@@ -339,6 +380,7 @@ export function finishServices(c: Ctx, added: string[]) {
   ensureTransportPackages(c);
   writeShared(c);
   ensureToken(c);
+  ensureDashboard(c);
   ensureMainOnHost(c);
 }
 
@@ -530,6 +572,10 @@ curl -X POST localhost:3000/http/${services[0]}/hello -H 'content-type: applicat
 # {"service":"${services[0]}","greeting":"Hello, ${main}","calls":2}
 \`\`\`
 ${transport === "forge-rpc" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the services' ports are reachable, and the apps share \`FORGE_RPC_TOKEN\` from their \`.env\`. In production, give every app the same \`FORGE_RPC_TOKEN\`, the callers \`<SERVICE>_RPC_URL\`, and expose each service's Forge RPC port to them (one network for the stacks).` : transport === "tcp" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the TCP ports are reachable. In production, set \`<SERVICE>_HOST\` and \`<SERVICE>_PORT\` for the callers, and expose each service's TCP port to them (one network for the stacks).` : `\nStart a ${transport === "redis" ? "Redis" : "NATS"} server first, and point every app at it with \`${transport === "redis" ? "MICROSERVICES_REDIS_URL" : "MICROSERVICES_NATS_URL"}\` in production.`}
+
+## One dashboard
+
+The main app's dashboard (http://localhost:3000/_dashboard) shows every service: their requests, traces, errors, logs, nodes and Nest classes beside the main app's, and, with a service picked at the top, its data, schema and functions. Each service sends its telemetry to the main app (\`DASHBOARD_URL\` and \`OTEL_SERVICE_NAME\` in its \`.env\`) and serves no dashboard of its own; the main app lists the services (\`MICROSERVICES\`), and they share \`DASHBOARD_TOKEN\`. In production set the same with the addresses the apps reach each other at.
 `
     : ""
 }`;

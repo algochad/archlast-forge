@@ -125,6 +125,9 @@ th[aria-sort="ascending"] .th-sort, th[aria-sort="descending"] .th-sort { color:
 /* On a phone a wide table scrolls inside its card instead of widening the page. */
 @media (max-width: 700px) { .obs-table { display: block; overflow-x: auto; } }
 .toolbar-row { display: flex; flex-wrap: wrap; align-items: center; gap: 0.6rem; }
+tr.faded > td { opacity: 0.55; }
+.backend-pick { display: inline-flex; align-items: center; gap: 0.4rem; font-size: 13px; color: var(--muted); }
+.backend-pick select { min-width: 9rem; padding: 0.35rem 0.55rem; font-size: 13px; }
 .pager-row { display: flex; align-items: center; justify-content: space-between; gap: 0.6rem; padding: 0.6rem 0.9rem; border-top: 1px solid var(--border); }
 .pager-row .btn { padding: 0.35rem 0.7rem; font-size: 12.5px; }
 .chips-row { display: inline-flex; flex-wrap: wrap; gap: 0.4rem; }

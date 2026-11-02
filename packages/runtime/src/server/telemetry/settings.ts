@@ -149,7 +149,7 @@ export function buildSettings(db: Db, opts: { deliver?: (url: string, body: obje
     },
     async saveAlertRule(input: Record<string, any>, actor: string) {
       if (!String(input.name ?? "").trim()) throw new Error("A rule needs a name");
-      if (!["error_rate", "failure_rate", "p95", "avg", "requests", "slo_burn"].includes(input.metric)) throw new Error("Unknown metric");
+      if (!["error_rate", "failure_rate", "p95", "avg", "requests", "slo_burn", "nodes"].includes(input.metric)) throw new Error("Unknown metric");
       if (![">", "<"].includes(input.comparator)) throw new Error("comparator is > or <");
       if (!Number.isFinite(Number(input.threshold))) throw new Error("threshold must be a number");
       if (![1, 5, 10, 15, 30, 60].includes(Number(input.windowMin))) throw new Error("window is 1, 5, 10, 15, 30 or 60 minutes");
@@ -202,6 +202,16 @@ export function buildSettings(db: Db, opts: { deliver?: (url: string, body: obje
         const v = sli(w, slo.objective, slo.threshold_ms);
         return v === null ? null : (1 - v) / (1 - Number(slo.target));
       }
+      // Nodes that reported in the window (every server process samples every 10 s): fewer than 1 is a service gone silent, fewer than 2 a
+      // service a scaler (or a crash) left without its spare.
+      if (rule.metric === "nodes") {
+        const [row] = await db.query<{ n: number }>(`SELECT COUNT(*) AS "n" FROM (SELECT DISTINCT "service", "instance" FROM ${T.samples} WHERE "role" = 'server' AND "time" >= ? AND "time" <= ?${rule.service ? ` AND "service" = ?` : ""}) live`, [
+          now - Number(rule.window_min) * 60_000,
+          now,
+          ...(rule.service ? [rule.service] : []),
+        ]);
+        return Number(row?.n ?? 0);
+      }
       const w = await window(db, now - Number(rule.window_min) * 60_000, now, rule.service, rule.operation);
       if (rule.metric === "requests") return w.count;
       if (!w.count) return null;
@@ -223,7 +233,7 @@ export function buildSettings(db: Db, opts: { deliver?: (url: string, body: obje
         const firing = rule.state === "firing";
         if (breached === firing) continue;
         const state = breached ? "firing" : "resolved";
-        const shown = value === null ? "no data" : rule.metric.endsWith("rate") ? `${value.toFixed(2)}%` : rule.metric === "requests" ? String(Math.round(value)) : rule.metric === "slo_burn" ? `${value.toFixed(2)}×` : `${Math.round(value)} ms`;
+        const shown = value === null ? "no data" : rule.metric.endsWith("rate") ? `${value.toFixed(2)}%` : rule.metric === "requests" ? String(Math.round(value)) : rule.metric === "nodes" ? `${value} live` : rule.metric === "slo_burn" ? `${value.toFixed(2)}×` : `${Math.round(value)} ms`;
         const message = breached
           ? `${rule.name}: ${rule.metric.replace("_", " ")} is ${shown} (${rule.comparator} ${rule.threshold}) over the last ${rule.window_min} min`
           : `${rule.name} resolved: ${rule.metric.replace("_", " ")} is ${shown}`;

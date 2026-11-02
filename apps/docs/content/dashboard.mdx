@@ -33,11 +33,11 @@ Buttons a role can't use are hidden, and the server enforces the same rules: a v
 
 ## The pages
 
-The sidebar groups them as Observe, Performance, Backend and Admin, and its foot says whether the function runtime is up, with its functions, tables and the release it runs (a runtime that failed to load shows its error on every page). The top bar has the search, the alert notifications, the theme switch and who you are.
+The sidebar groups them as Observe, Performance, Infrastructure, Backend and Admin, and its foot says whether the function runtime is up, with its functions, tables and the release it runs (a runtime that failed to load shows its error on every page). The top bar has the search, the alert notifications, the theme switch and who you are, and, on a main app with [microservices](observability.html#one-dashboard-for-a-main-app-and-its-microservices), the backend the Backend and Admin pages show: the main app, or one of its microservices.
 
-### Observe and Performance
+### Observe, Performance and Infrastructure
 
-**Overview**, **Requests**, **Errors**, **Logs**, **Users**, **Jobs**, **Spans**, **Hotspots**, **Map**, **Runtime**, **Releases**, **SLOs** and **Metrics** show what the engine records about every request it handles, and what other services send it. [Observability](observability.html#the-pages) describes each one. They share one time range (1H to 30D, or custom), a **Live** switch and, when more than one service reports, a service picker; a request's trace opens from any of them. What they show is stored, not held in memory: stopping and starting the engine on the same data directory keeps it. Each page shows one range though, the last hour by default, so after a quiet spell the page says when the last request was and offers the range that holds it.
+**Overview**, **Requests**, **Errors**, **Logs**, **Users**, **Jobs**, **Spans**, **Hotspots**, **Services** (your Nest classes), **Map**, **Runtime**, **Releases**, **SLOs**, **Metrics**, **Microservices** and **Nodes** show what the engine records about every request it handles, and what other services send it. [Observability](observability.html#the-pages) describes each one. They share one time range (1H to 30D, or custom), a **Live** switch and, when more than one service reports, a service picker; a request's trace opens from any of them. What they show is stored, not held in memory: stopping and starting the engine on the same data directory keeps it. Each page shows one range though, the last hour by default, so after a quiet spell the page says when the last request was and offers the range that holds it.
 
 Three of them have a view that doesn't need telemetry: **Accounts** on Users, **Queue & crons** on Jobs and **Stream** on Logs, described below. With `TELEMETRY=off` these pages open on that view, and the others say telemetry is off.
 
@@ -85,9 +85,9 @@ Every function in the manifest with a kind badge (query, mutation, action) and a
 
 Shown when the query cache is on (`CACHE_TTL_MS`; otherwise the page says how to turn it on). Hit rate, calls served from the cache or by sharing a run already in flight, function runs, the time saved, and charts, over the page's time range (from each server's runtime samples and the recorded requests, so they survive a restart; with `TELEMETRY=off` they count since the server started). Entries and memory used, and entries evicted by writes and for space, are the server's own state right now, so they start again from zero with it. A per-function table marks queries that are cached **per user** (they read `ctx.auth`). Admins can **Clear cache**, which empties this server's cache (or the shared Redis cache) and records it in the audit log. See [caching](caching.html).
 
-### Services, Alerts and Ingest keys
+### Alerts and Ingest keys
 
-The services reporting telemetry, the alert rules over it and the keys other services send it with: see [observability](observability.html#alerts). For scraping by Prometheus, `/metrics` is still there (bearer `METRICS_TOKEN`, or the admin key).
+The alert rules over the telemetry and the keys other services send it with: see [observability](observability.html#alerts). The services reporting are on **Microservices**, under Infrastructure. For scraping by Prometheus, `/metrics` is still there (bearer `METRICS_TOKEN`, or the admin key).
 
 ### Backups
 
@@ -164,7 +164,7 @@ The log has no edit or delete in the UI. Because the arguments of data edits are
 ## Keyboard, search and theme
 
 - **Ctrl or Cmd + K** opens a palette that jumps to a page, a table (in Data) or a function (in Functions), and searches telemetry: operations, errors, users, or a trace by its id.
-- **Alt + 1 … 9 and Alt + 0** jump to the first ten pages in sidebar order: Overview, Requests, Errors, Logs, Users, Jobs, Spans, Hotspots, Map and Runtime.
+- **Alt + 1 … 9 and Alt + 0** jump to the first ten pages in sidebar order: Overview, Requests, Errors, Logs, Users, Jobs, Spans, Hotspots, Services and Map.
 - The address bar follows the view (`#/requests?kind=query&op=todos:list`), so an operation, a trace or an issue can be bookmarked or sent to someone. Links from older versions (`#Data`) still work.
 - The theme follows your system, or switch it to light or dark from the top bar. It is remembered in your browser.
 
@@ -186,11 +186,11 @@ curl -X POST localhost:3000/_admin/banUser -H "x-admin-key: $ADMIN_KEY" -H 'x-fo
 | Role | Operations |
 |---|---|
 | none needed | `login`, `logout`, `me` (who you are, or `null`) |
-| viewer | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env` (names only), `recentLogs`, `subscriptions`, `server`, `cache`, `settings` (secrets never), `backups.list`; telemetry: `obs.overview`, `obs.requests`, `obs.jobs`, `obs.operation`, `obs.trace`, `obs.errors`, `obs.error`, `obs.users`, `obs.user`, `obs.spans`, `obs.span`, `obs.hotspots`, `obs.map`, `obs.runtime`, `obs.metrics`, `obs.releases`, `obs.services`, `obs.logs`, `obs.search`, `obs.slos`, `obs.alertRules`, `obs.alertEvents`, `obs.notifications`, `obs.keys`, `obs.source`, and the write `obs.markSeen` |
+| viewer | `microservices` (this app's name and its `MICROSERVICES`), `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env` (names only), `recentLogs`, `subscriptions`, `server`, `cache`, `settings` (secrets never), `backups.list`; telemetry: `obs.overview`, `obs.requests`, `obs.jobs`, `obs.operation`, `obs.trace`, `obs.errors`, `obs.error`, `obs.users`, `obs.user`, `obs.spans`, `obs.span`, `obs.hotspots` (`{ type: "nest" }` for the Nest classes alone), `obs.map`, `obs.runtime`, `obs.nodes`, `obs.metrics`, `obs.releases`, `obs.services`, `obs.logs`, `obs.search`, `obs.slos`, `obs.alertRules`, `obs.alertEvents`, `obs.notifications`, `obs.keys`, `obs.source`, and the write `obs.markSeen` |
 | admin | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `run`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `clearCache`, `reload`, `backups.create` (`{ files }`), `obs.setErrorState`, `obs.saveSlo`, `obs.deleteSlo`, `obs.saveAlertRule`, `obs.deleteAlertRule`, `obs.testAlert`, `obs.createKey`, `obs.revokeKey` |
 | owner | `runCustom`, `saveSetting` (`{ name, value }`, `null` removes it), `restart`, `env.set` (`{ name, value }`), `env.remove`, `backups.restore` (`{ id, files, config }`), `backups.delete`; `GET /_admin/backups/download?id=` (the archive) and `POST /_admin/backups/upload` (the archive as the body) |
 
-The `obs.*` reads take a time range in milliseconds since the epoch (`from`, `to`) and optionally a `service`; with `TELEMETRY=off` they answer 404. `/_admin/logs/stream` is the server-sent event stream behind the log stream. The shapes of each operation's input and output follow the dashboard's usage and may change between versions; treat this as a convenience, not a stable public API.
+The `obs.*` reads take a time range in milliseconds since the epoch (`from`, `to`) and optionally a `service`; with `TELEMETRY=off` they answer 404. `/_admin/logs/stream` is the server-sent event stream behind the log stream. On a main app with `MICROSERVICES`, `?target=<name>` on any call but `me`, `microservices` and the `obs.*` ones sends it to that microservice, as the signed-in user with their role. The shapes of each operation's input and output follow the dashboard's usage and may change between versions; treat this as a convenience, not a stable public API.
 
 ## Security notes
 

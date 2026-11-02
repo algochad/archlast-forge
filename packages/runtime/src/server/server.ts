@@ -27,11 +27,12 @@ import { QueryRunner, SubscriptionManager, type QueryObserver } from "./subscrip
 import { TelemetryClient } from "./telemetry/client";
 import { now as clock } from "./telemetry/context";
 import { OtlpExporter } from "./telemetry/export";
+import { telemetryForwarder } from "./telemetry/forward";
 import { spanId as newSpanId } from "./telemetry/ids";
 import { failureOf } from "./telemetry/outcome";
 import { normalizePath, Telemetry } from "./telemetry/recorder";
 import { processSampler } from "./telemetry/sampler";
-import type { Span } from "./telemetry/types";
+import type { Span, TelemetryBatch } from "./telemetry/types";
 
 // Next to this module, like child.ts: the telemetry store's thread.
 const TELEMETRY_WORKER = new URL(import.meta.url.endsWith(".ts") ? "./telemetry/worker.ts" : "./telemetry/worker.js", import.meta.url);
@@ -214,10 +215,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   });
   const metrics = new Metrics();
   // Telemetry: the store's worker when it is on, and an exporter when a collector is configured; either needs the recorder.
-  if (config.telemetry && !config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const store = config.telemetry
-    ? new TelemetryClient(TELEMETRY_WORKER, { databaseUrl: config.databaseUrl, path: telemetryPath(config), retentionDays: config.logRetentionDays, alerts: true })
-    : undefined;
+  // A microservice keeps no store: what it records goes to the main app's (DASHBOARD_URL), whose dashboard shows it.
+  const forward = config.telemetry && config.dashboardUrl ? telemetryForwarder(config.dashboardUrl, config.dashboardToken!) : undefined;
+  if (config.telemetry && !forward && !config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
+  const store =
+    config.telemetry && !forward
+      ? new TelemetryClient(TELEMETRY_WORKER, { databaseUrl: config.databaseUrl, path: telemetryPath(config), retentionDays: config.logRetentionDays, alerts: true })
+      : undefined;
   /** Ingest keys checked recently, so an exporter sending every few seconds costs one lookup a minute. */
   const keys = new Map<string, { at: number; key: { service: string | null } | null }>();
   const ingestKey = async (key: string) => {
@@ -230,11 +234,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   };
   const exporter = OtlpExporter.fromEnv(env, config.serviceName);
   const telemetry =
-    store || exporter
+    store || exporter || forward
       ? new Telemetry({
           service: config.serviceName,
           instance: serverId,
-          sink: (batch) => store?.write(batch),
+          sink: (batch) => (forward ? forward(batch) : store?.write(batch)),
           exporter,
           tracesPerSecond: config.telemetryTracesPerSecond,
           detailPerSecond: config.telemetryDetailPerSecond,
@@ -288,7 +292,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const maxBody = config.limits.maxRequestBytes;
   // Files kept on this server's disk are served here; uploads to them, and backups uploaded to the dashboard, may be larger than other requests.
   const localFiles = config.storage === "local" ? (createStorage(config) as LocalStorage) : undefined;
-  const takesUploads = Boolean(localFiles) || config.dashboard;
+  // A microservice answers its main app's dashboard (DASHBOARD_URL) without serving one: its admin API is on, its pages are there.
+  const adminApi = config.dashboard || Boolean(config.dashboardUrl);
+  const takesUploads = Boolean(localFiles) || adminApi;
   // Rebuilt after each load; open sockets use whichever is current, so they see functions added by a reload.
   let rpc: Rpc = buildRpc({ functions: [], tables: {}, crons: [], storage: false }, runtime, queries, subs, rpcOpts);
   let loading: Promise<unknown> = Promise.resolve();
@@ -329,6 +335,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       serverId,
       customFunctions: config.customFunctions,
       telemetry: Boolean(store),
+      dashboardUrl: config.dashboardUrl ?? null,
       connections,
       subscriptions: subs.size,
       workers: runtime.size,
@@ -339,6 +346,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     clearCache: () => queries.clear(),
     customFunctions: config.customFunctions,
     telemetry: store,
+    microservices: () => ({ self: config.serviceName, services: Object.entries(config.microservices).map(([name, url]) => ({ name, url })) }),
     source: (file, line) => sourceContext(resolve(opts.forgeDir), file, line),
     maxRequestBytes: maxBody,
     restart: opts.restart && (() => void opts.restart!().catch((e) => log("error", `restart failed: ${(e as Error).message}`))),
@@ -421,6 +429,14 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   const adminSessions = new Map<string, { admin: AdminInfo | null; at: number }>();
   async function adminOf(req: Request): Promise<AdminInfo | null> {
+    // The main app's dashboard, calling this microservice for someone signed in there, with the role that app gave them.
+    if (config.dashboardUrl) {
+      const token = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+      if (token && sameSecret(token, config.dashboardToken!)) {
+        const role = req.headers.get("x-forge-role");
+        return { email: req.headers.get("x-forge-actor") || "dashboard", role: role === "owner" || role === "admin" ? role : "viewer" };
+      }
+    }
     const key = req.headers.get("x-admin-key");
     if (key && config.adminKey && sameSecret(key, config.adminKey)) return { email: KEY_ADMIN.email, role: KEY_ADMIN.role };
     const token = cookieValue(req.headers.get("cookie"), "afx_admin");
@@ -499,6 +515,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       return new Response(null, { status: 204, headers: { "set-cookie": adminCookie("", 0) } });
     }
     const who = await adminOf(req);
+    // A page of the dashboard showing one of this app's microservices: everything but telemetry, which this app holds for all of them.
+    const target = new URL(req.url).searchParams.get("target");
+    if (target && !path.startsWith("/_admin/obs.") && path !== "/_admin/me" && path !== "/_admin/microservices") return toMicroservice(req, path, target, who, requestId);
     // A backup archive: streamed from the backup folder, or a redirect to a presigned URL of its bucket. Owners only, like restoring.
     if (path === "/_admin/backups/download" && req.method === "GET") {
       if (who?.role !== "owner") return Response.json({ message: "Requires the owner role" }, { status: who ? 403 : 401 });
@@ -561,6 +580,48 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     return admin(path.slice("/_admin/".length), req, { admin: who, requestId });
   }
 
+  /** The same admin call, made to the microservice `name` (MICROSERVICES) for the dashboard user `who`; that service checks their role as its own. */
+  async function toMicroservice(req: Request, path: string, name: string, who: AdminInfo | null, requestId: string): Promise<Response> {
+    if (!who) return Response.json({ message: "Sign in to the dashboard" }, { status: 401 });
+    const base = Object.hasOwn(config.microservices, name) ? config.microservices[name] : undefined;
+    if (!base) return Response.json({ message: `No microservice named "${name}": MICROSERVICES lists ${Object.keys(config.microservices).join(", ") || "none"}` }, { status: 404 });
+    const url = new URL(req.url);
+    url.searchParams.delete("target");
+    const headers = new Headers({ authorization: `Bearer ${config.dashboardToken}`, "x-forge-actor": who.email, "x-forge-role": who.role, "x-forge-admin": "1", "x-request-id": requestId });
+    for (const h of ["content-type", "content-length", "accept"]) if (req.headers.get(h)) headers.set(h, req.headers.get(h)!);
+    try {
+      const res = await fetch(`${base}${path}${url.search}`, {
+        method: req.method,
+        headers,
+        body: req.body,
+        redirect: "manual",
+        signal: req.signal,
+        ...(req.body && { duplex: "half" }),
+      } as RequestInit);
+      const out = new Headers(res.headers);
+      // fetch has already decoded the body, and a session cookie of the service's has no business on this app's origin.
+      for (const h of ["content-encoding", "content-length", "set-cookie", "transfer-encoding", "connection"]) out.delete(h);
+      // The log stream ends quietly when the service goes away (a restart): the dashboard's EventSource connects again. Anything else (a
+      // backup download) fails loudly rather than arrive cut short.
+      if (res.body && out.get("content-type")?.startsWith("text/event-stream")) {
+        const upstream = res.body.getReader();
+        const events = new ReadableStream<Uint8Array>({
+          async pull(c) {
+            const next = await upstream.read().catch(() => ({ done: true as const, value: undefined }));
+            if (next.done) c.close();
+            else c.enqueue(next.value);
+          },
+          cancel: (reason) => upstream.cancel(reason),
+        });
+        return new Response(events, { status: res.status, headers: out });
+      }
+      return new Response(res.body, { status: res.status, headers: out });
+    } catch (e) {
+      if (req.signal.aborted) return new Response(null, { status: 499 });
+      return Response.json({ message: `${name} (${base}) didn't answer: ${(e as Error).message}` }, { status: 502 });
+    }
+  }
+
   const server = Bun.serve<ServerSocket>({
     port: config.port,
     hostname: config.hostname,
@@ -569,7 +630,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     // The dashboard is bundled in production mode everywhere, dev included: minified, with React's production build (which the engine image
     // has, so a development bundle there renders a blank page). Its source isn't watched; edits to it show after a restart.
     development: false,
-    routes: opts.dashboard && config.dashboard ? { "/_dashboard": opts.dashboard } : {},
+    routes: config.dashboardUrl
+      ? { "/_dashboard": () => Response.redirect(`${config.dashboardUrl}/_dashboard#/microservices`, 302) }
+      : opts.dashboard && config.dashboard
+        ? { "/_dashboard": opts.dashboard }
+        : {},
     async fetch(req, srv) {
       const url = new URL(req.url);
       const path = url.pathname;
@@ -779,8 +844,26 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           return cors(req, withId(Response.json({ message: err.message }, { status: 503 })));
         }
       }
+      // A microservice's telemetry (it has DASHBOARD_URL pointing here), in the batches its recorder makes.
+      if (path === "/_telemetry" && req.method === "POST") {
+        if (!store || !config.dashboardToken) return withId(new Response("Not found", { status: 404 }));
+        const token = req.headers.get("authorization")?.replace(/^Bearer\s+/i, "");
+        if (!token || !sameSecret(token, config.dashboardToken)) return withId(Response.json({ message: "Send the DASHBOARD_TOKEN this app has" }, { status: 401 }));
+        try {
+          const batch = JSON.parse(await readText(req, maxBody)) as TelemetryBatch;
+          if (!batch || typeof batch !== "object" || Array.isArray(batch)) throw new Error("Expected a telemetry batch");
+          // Under this app's own name its numbers would add up with this app's, as if one service.
+          if ([...(batch.rollups ?? []), ...(batch.samples ?? []), ...(batch.services ?? [])].some((x) => x?.service === config.serviceName))
+            return withId(Response.json({ message: `A microservice reported as "${config.serviceName}", this app's own name: give it its own OTEL_SERVICE_NAME` }, { status: 409 }));
+          store.write(batch);
+          return withId(Response.json({}));
+        } catch (e) {
+          if (e instanceof HttpError) return withId(errorResponse({ message: e.message, code: e.code, requestId }));
+          return withId(Response.json({ message: (e as Error).message }, { status: 400 }));
+        }
+      }
       if (path.startsWith("/_admin/")) {
-        if (!config.dashboard) return new Response("Not found", { status: 404 });
+        if (!adminApi) return new Response("Not found", { status: 404 });
         if (path === "/_admin/login") {
           const retry = await limited(req, srv, "admin:");
           if (retry) return withId(tooMany(retry));
@@ -928,7 +1011,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   let sampled = { hits: 0, misses: 0, coalesced: 0 };
   const health = processSampler();
   let warnedBusy = 0;
-  const sampler = setInterval(() => {
+  const takeSample = () => {
     // A function runtime with seconds of queries waiting is the ceiling of the app: say so before callers start seeing "busy" and timeouts.
     const backlog = runtime.backlog();
     const busy = backlog.findIndex((b) => b.waitMs > 2000);
@@ -946,8 +1029,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     const h = health();
     loops.set(serverId, { role: "server", p99: h.loopP99, max: h.loopMax });
     telemetry?.sample({ time: Date.now(), instance: serverId, role: "server", ...h, connections, subscriptions: subs.size, inflight: telemetry.inflight, ...cache });
-  }, 10_000);
+  };
+  const sampler = setInterval(takeSample, 10_000);
   sampler.unref?.();
+  // A first sample soon after start, so a node a scaler just added is on the dashboard's Nodes page at once rather than 10 s later.
+  const firstSample = setTimeout(takeSample, 1000);
+  firstSample.unref?.();
 
   return {
     url,
@@ -957,6 +1044,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     async stop({ graceful = true, keepApp = false } = {}) {
       shuttingDown = true;
       clearInterval(sampler);
+      clearTimeout(firstSample);
       // 1012 "service restart": clients reconnect (to another server, behind a load balancer) and refetch.
       for (const ws of sockets) ws.close(1012, "Server restarting");
       if (graceful) await Promise.race([server.stop(false), Bun.sleep(10_000)]);

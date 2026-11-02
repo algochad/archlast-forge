@@ -1,5 +1,5 @@
 import { Fragment, useEffect, useState } from "react";
-import { get, type Log } from "../api";
+import { adminUrl, get, type Log } from "../api";
 import { Icon } from "../brand";
 import { clock, isoish, ms } from "../format";
 import { Card, Chips, Refreshing, SearchBox, TelemetryOff, TraceLink } from "../kit";
@@ -173,7 +173,7 @@ function Live() {
   }, []);
   useEffect(() => {
     if (paused) return;
-    const es = new EventSource("/_admin/logs/stream");
+    const es = new EventSource(adminUrl("logs/stream"));
     es.onopen = () => setConnected(true);
     es.onerror = () => setConnected(false);
     es.onmessage = (e) => setLogs((l) => [JSON.parse(e.data) as LiveLog, ...l].slice(0, 500));

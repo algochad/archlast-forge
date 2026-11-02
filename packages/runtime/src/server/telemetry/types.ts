@@ -33,9 +33,11 @@ export interface Span {
 /**
  * What started a trace. Function kinds for calls over /rpc (a WebSocket subscription is `query` with method WS), `live` for a
  * subscription re-running after a write, `http` for /http routes (and Nest controllers), `auth` for /api/auth, `page` for a full-stack
- * app's document requests, `job`/`cron` for the scheduler, and `server`/`consumer` for entry spans other services sent over OTLP.
+ * app's document requests, `job`/`cron` for the scheduler, `rpc` for a message a Nest microservice transport handed the app (Forge RPC
+ * calls among them, by pattern), `ws` for a Nest gateway's message (`Gateway:event`), and `server`/`consumer` for entry spans other
+ * services sent over OTLP.
  */
-export type RequestKind = "query" | "mutation" | "action" | "live" | "http" | "auth" | "page" | "job" | "cron" | "server" | "consumer";
+export type RequestKind = "query" | "mutation" | "action" | "live" | "http" | "auth" | "page" | "job" | "cron" | "rpc" | "ws" | "server" | "consumer";
 
 export interface ErrorInfo {
   type: string;
@@ -76,6 +78,8 @@ export interface RequestRecord {
 export interface TraceRecord {
   request: RequestRecord;
   spans: Span[];
+  /** How many requests its spans stand for in span statistics, when it was one of a sample recorded in detail (1 / its chance). */
+  detailWeight?: number;
 }
 
 export interface LogRecord {

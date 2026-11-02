@@ -102,12 +102,15 @@ export function useObs<T>(op: string, args: Record<string, unknown> | null = {},
   const on = useTelemetryOn();
   const [state, setState] = useState<{ data?: T; error?: string; loading: boolean; refreshing: boolean }>({ loading: true, refreshing: false });
   const seq = useRef(0);
+  /** A live tick doesn't ask again while the last answer is still coming: on a slow store, ticks would pile up behind each other. */
+  const inflight = useRef(false);
   const key = JSON.stringify(args);
   const withRange = opts.range !== false;
   const load = useCallback(async () => {
     if (!on) return setState({ error: TELEMETRY_OFF, loading: false, refreshing: false });
     if (args === null) return setState({ loading: false, refreshing: false });
     const mine = ++seq.current;
+    inflight.current = true;
     setState((s) => ({ ...s, refreshing: s.data !== undefined, loading: s.data === undefined }));
     try {
       const r = withRange ? range.resolve() : {};
@@ -115,6 +118,8 @@ export function useObs<T>(op: string, args: Record<string, unknown> | null = {},
       if (mine === seq.current) setState({ data, loading: false, refreshing: false });
     } catch (e) {
       if (mine === seq.current) setState((s) => ({ ...s, error: (e as Error).message, loading: false, refreshing: false }));
+    } finally {
+      if (mine === seq.current) inflight.current = false;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [op, key, withRange, range.preset, range.from, range.to, range.service, range.live, on]);
@@ -122,7 +127,7 @@ export function useObs<T>(op: string, args: Record<string, unknown> | null = {},
     void load();
   }, [load]);
   useEffect(() => {
-    if (on && opts.live !== false && range.tick) void load();
+    if (on && opts.live !== false && range.tick && !inflight.current) void load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [range.tick]);
   return { ...state, reload: load };

@@ -10,6 +10,7 @@ let srv: RunningServer;
 let tcpPort: number;
 let rpcPort: number;
 const RPC_TOKEN = "t".repeat(24);
+const ADMIN = "a".repeat(24);
 
 beforeAll(async () => {
   const probe = Bun.serve({ port: 0, fetch: () => new Response() });
@@ -19,7 +20,7 @@ beforeAll(async () => {
   // Functions in a child process, so sockets and streamed bodies cross IPC (the production describe below runs them inline).
   srv = await startServer({
     forgeDir: fixture,
-    env: { ...process.env, RUNTIME_MODE: "process", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json", NEST_TCP_PORT: String(tcpPort), NEST_RPC_PORT: String(rpcPort), FORGE_RPC_TOKEN: RPC_TOKEN, API_DOCS: "on" },
+    env: { ...process.env, RUNTIME_MODE: "process", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json", NEST_TCP_PORT: String(tcpPort), NEST_RPC_PORT: String(rpcPort), FORGE_RPC_TOKEN: RPC_TOKEN, API_DOCS: "on", DASHBOARD: "on", ADMIN_KEY: ADMIN, TELEMETRY_TRACES_PER_SECOND: "100000" },
   });
 }, 20_000); // Nest, GraphQL and the fixture in a child process: slower than the default 5 s under load
 afterAll(() => srv.stop({ graceful: false }));
@@ -406,6 +407,36 @@ describe("Forge RPC", () => {
     const { rxjs } = await import("../src/nest");
     expect(await failure(rxjs.lastValueFrom(new ForgeRpcClient({ url: url(), token: RPC_TOKEN }).emit("shop.add", {})))).toMatchObject({ message: expect.stringContaining("request-response only") });
   });
+});
+
+describe("telemetry", () => {
+  const obs = async (op: string, input: object = {}) => {
+    const now = Date.now();
+    const res = await fetch(`${srv.url}/_admin/obs.${op}?input=${encodeURIComponent(JSON.stringify({ from: now - 600_000, to: now + 60_000, ...input }))}`, { headers: { "x-admin-key": ADMIN } });
+    expect(res.status).toBe(200);
+    return (await res.json()) as any;
+  };
+
+  test("Forge RPC calls, TCP messages and gateway messages are requests: rpc by pattern, ws as Gateway:event, under the caller's trace", async () => {
+    // Made by the tests above (bun runs a file's tests in order); and one more that crosses from a controller to the router.
+    expect((await http("/shop-caller/add?a=1&b=1")).status).toBe(200);
+    await Bun.sleep(1500); // the recorder sends what it has once a second
+    const ops: { kind: string; operation: string; count: number; errors: number }[] = (await obs("requests")).operations;
+    expect(ops.find((o) => o.kind === "rpc" && o.operation === "shop.add")!.count).toBeGreaterThan(40);
+    expect(ops.find((o) => o.kind === "rpc" && o.operation === "shop.fail")!.errors).toBeGreaterThan(0); // the crash; a ForgeError is the caller's
+    expect(ops.some((o) => o.kind === "rpc" && o.operation === "sum")).toBe(true); // the TCP microservice
+    expect(ops.some((o) => o.kind === "ws" && /^\w+:echo$/.test(o.operation))).toBe(true);
+    // The controller's fetch to the router sent its traceparent: both requests are one trace, the call a child of the controller's.
+    const calls: { trace_id: string }[] = (await obs("operation", { kind: "rpc", operation: "shop.add" })).calls;
+    const traces = await Promise.all(calls.map((c) => obs("trace", { traceId: c.trace_id })));
+    const crossing = traces.find((t) => t.requests.some((r: any) => r.kind === "http"));
+    expect(crossing.requests.map((r: any) => r.kind).sort()).toEqual(["http", "rpc"]);
+    // And the Nest classes on their own, for the dashboard's Services page.
+    const classes: { namespace: string; type: string }[] = (await obs("hotspots", { type: "nest" })).list;
+    expect(classes.length).toBeGreaterThan(0);
+    expect(classes.every((c) => c.type === "nest")).toBe(true);
+    expect(classes.map((c) => c.namespace)).toContain("ShopRouter");
+  }, 20_000);
 });
 
 /** A free port, for a server or a microservice of its own. */

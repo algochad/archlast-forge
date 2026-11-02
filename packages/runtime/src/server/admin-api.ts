@@ -29,6 +29,7 @@ const OBS_READS = [
   "spans",
   "span",
   "hotspots",
+  "nodes",
   "map",
   "runtime",
   "metrics",
@@ -78,6 +79,8 @@ export function buildAdminApi(opts: {
   /** Restarts the whole server in this process, when its host can (the CLI can). */
   restart?: () => void;
   maxRequestBytes: number;
+  /** This app's name in telemetry and its microservices (MICROSERVICES), which its dashboard can show. */
+  microservices?: () => { self: string; services: { name: string; url: string }[] };
 }) {
   const forward = (op: string, role: AdminRole, allowed = true): Operation => ({
     role,
@@ -125,6 +128,7 @@ export function buildAdminApi(opts: {
     subscriptions: { role: "viewer", write: false, run: () => opts.subs.list() },
     recentLogs: { role: "viewer", write: false, run: () => opts.recentLogs },
     server: { role: "viewer", write: false, run: () => opts.serverInfo() },
+    microservices: { role: "viewer", write: false, run: () => opts.microservices?.() ?? { self: "", services: [] } },
     /** This server's query cache: contents and per-function counters. */
     cache: { role: "viewer", write: false, run: () => opts.cache() },
     /** Empties this server's cache (or the shared Redis cache) and records it in the audit log. */

@@ -9,7 +9,7 @@ import { Badge, Button, Drawer, Empty, ErrorNote, Field, Skeleton, useAction, us
 type Rule = {
   id: string;
   name: string;
-  metric: "error_rate" | "failure_rate" | "p95" | "avg" | "requests" | "slo_burn";
+  metric: "error_rate" | "failure_rate" | "p95" | "avg" | "requests" | "slo_burn" | "nodes";
   service: string | null;
   operation: string | null;
   comparator: ">" | "<";
@@ -31,6 +31,7 @@ const METRICS: Record<Rule["metric"], { label: string; unit: string }> = {
   avg: { label: "Average latency", unit: "ms" },
   requests: { label: "Requests", unit: "" },
   slo_burn: { label: "SLO burn rate", unit: "×" },
+  nodes: { label: "Live nodes (servers reporting)", unit: "" },
 };
 
 const shown = (rule: Pick<Rule, "metric">, v: number | null) => (v === null ? "no data" : rule.metric === "p95" || rule.metric === "avg" ? ms(v) : rule.metric.endsWith("rate") ? `${Number(v).toFixed(2)}%` : rule.metric === "slo_burn" ? `${Number(v).toFixed(2)}×` : String(Math.round(v)));
@@ -75,7 +76,7 @@ export function Alerts({ admin }: { admin: Admin }) {
                   <td>
                     <strong>{r.name}</strong>
                     {!Number(r.enabled) && <Badge>off</Badge>}
-                    <div className="faint small">{r.metric === "slo_burn" ? "an SLO" : r.operation ?? "all operations"}{r.service ? ` · ${r.service}` : ""}</div>
+                    <div className="faint small">{r.metric === "slo_burn" ? "an SLO" : r.metric === "nodes" ? "nodes" : r.operation ?? "all operations"}{r.service ? ` · ${r.service}` : ""}</div>
                   </td>
                   <td className="mono small">
                     {METRICS[r.metric].label} {r.comparator} {r.threshold}
@@ -202,7 +203,9 @@ function RuleForm({ initial, onClose, onSaved }: { initial: Partial<Rule>; onClo
             )}
           </Field>
         </div>
-        {metric === "slo_burn" ? (
+        {metric === "nodes" ? (
+          <p className="muted small">Counts the service's nodes that sent a sample in the window: below 1, the service has gone silent; below 2, it lost its spare. Name the service below, or leave it empty for every service's nodes.</p>
+        ) : metric === "slo_burn" ? (
           <Field label="SLO">
             {(id) => (
               <select id={id} name="operation" defaultValue={initial.operation ?? ""} required>

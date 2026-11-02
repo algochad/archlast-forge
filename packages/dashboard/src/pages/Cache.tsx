@@ -1,4 +1,4 @@
-import { canWrite, formatBytes, formatDuration, get, hitRate, post, type Admin, type CacheInfo } from "../api";
+import { backendService, canWrite, formatBytes, formatDuration, get, hitRate, post, type Admin, type CacheInfo } from "../api";
 import { axisTime } from "../format";
 import { useObs, useRange, useTelemetryOn } from "../obs";
 import { Badge, Button, Empty, ErrorNote, LineChart, Skeleton, Stat, useAction, useAsync } from "../ui";
@@ -40,8 +40,10 @@ export function Cache({ admin }: { admin: Admin }) {
   const range = useRange();
   const cache = useAsync(() => get<CacheInfo>("cache"), [], { interval: 4000 });
   // What was recorded over the range: it outlives restarts. The counters in `cache` start at zero with each server process.
-  const history = useObs<RuntimeSeries>("runtime");
-  const operations = useObs<Operations>("requests");
+  // The backend shown (this app or the microservice picked), not every service reporting to this dashboard.
+  const service = backendService();
+  const history = useObs<RuntimeSeries>("runtime", service ? { service } : {});
+  const operations = useObs<Operations>("requests", service ? { service } : {});
   const { run, busy } = useAction();
   const c = cache.data;
   if (cache.loading && !c) return <Skeleton rows={6} />;

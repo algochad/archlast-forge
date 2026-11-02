@@ -241,7 +241,7 @@ export class Telemetry {
     r.release ??= this.o.release();
     const minute = Math.floor(r.time / 60_000);
     this.count(minute, r.kind, r.operation, r.duration, r.status, r.cache === "hit" || r.cache === "shared");
-    if (trace.spans.length > 1) this.rollSpans(minute, trace.spans, r.spanId, 1);
+    if (trace.spans.length > 1) this.rollSpans(minute, trace.spans, r.spanId, trace.detailWeight ?? 1);
     this.o.exporter?.export(trace.spans, r);
     const notable = Boolean(r.error) || r.status >= 500 || r.duration > 4 * apdexT(r.kind);
     const weight = this.decide(notable ? "notable" : "normal");

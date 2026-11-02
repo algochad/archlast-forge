@@ -48,7 +48,7 @@ import { STATUS_CODES } from "node:http";
 import { basename } from "node:path";
 import { Readable } from "node:stream";
 import { match } from "path-to-regexp";
-import { EMPTY, filter, fromEvent, mergeMap, takeUntil, type Observable } from "rxjs";
+import { EMPTY, filter, fromEvent, mergeMap, Observable, takeUntil, type Subscription } from "rxjs";
 import { httpAction, type ActionCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
 import { queryValue } from "./server/http";
 import { NEST_MOUNT, type NestRoute } from "./server/openapi";
@@ -83,6 +83,7 @@ const hostOf = () => (globalThis as Record<symbol, unknown>)[Symbol.for("archlas
 interface TelemetryBridge {
   wrap<T extends (...args: any[]) => any>(fn: T, name: string, attrs?: Record<string, string | number | boolean>): T;
   annotate(attrs: Record<string, string | number | boolean>, request?: boolean): void;
+  entry?<T>(kind: "rpc" | "ws", operation: string, traceparent: string | undefined, fn: () => Promise<T>): Promise<T>;
 }
 const telemetry = () => (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.telemetry")] as TelemetryBridge | undefined;
 const TIMED = Symbol.for("archlast-forge.timed");
@@ -98,6 +99,7 @@ export function timeClass(target: Function, kind: string) {
   const proto = target.prototype as Record<string | symbol, unknown> | undefined;
   if (!bridge || !proto || Object.hasOwn(proto, TIMED)) return;
   Object.defineProperty(proto, TIMED, { value: true });
+  if (kind === "controller" || kind === "gateway") UseInterceptors(EntryInterceptor)(target);
   for (const key of Object.getOwnPropertyNames(proto)) {
     const d = Object.getOwnPropertyDescriptor(proto, key);
     if (key === "constructor" || !d || typeof d.value !== "function" || !d.writable) continue;
@@ -106,6 +108,38 @@ export function timeClass(target: Function, kind: string) {
     for (const meta of Reflect.getOwnMetadataKeys(original)) Reflect.defineMetadata(meta, Reflect.getOwnMetadata(meta, original), timed);
     Object.defineProperty(timed, "name", { value: original.name });
     Object.defineProperty(proto, key, { ...d, value: timed });
+  }
+}
+
+/**
+ * A message from a microservice transport (Forge RPC, TCP, Redis, NATS, …) or to a gateway, recorded as a request of its own: kind `rpc` under
+ * its pattern, kind `ws` as `Gateway:event`. HTTP requests aren't: the engine's server records those as they arrive. Values a handler
+ * streams pass through as they come; the request ends with the stream.
+ */
+class EntryInterceptor implements NestInterceptor {
+  intercept(context: ExecutionContext, next: CallHandler): Observable<unknown> {
+    const bridge = telemetry();
+    const type = context.getType<string>();
+    if (!bridge?.entry || (type !== "rpc" && type !== "ws")) return next.handle();
+    let operation: string;
+    let incoming: string | undefined;
+    if (type === "rpc") {
+      const c = context.switchToRpc().getContext() as { getPattern?(): unknown; getChannel?(): unknown; getSubject?(): unknown; getTraceparent?(): string | undefined } | undefined;
+      const pattern = c?.getPattern?.() ?? c?.getChannel?.() ?? c?.getSubject?.();
+      operation = typeof pattern === "string" ? pattern : `${context.getClass().name}.${context.getHandler().name}`;
+      incoming = c?.getTraceparent?.();
+    } else operation = `${context.getClass().name}:${String(Reflect.getMetadata("message", context.getHandler()) ?? context.getHandler().name)}`;
+    return new Observable((subscriber) => {
+      let inner: Subscription | undefined;
+      // next.handle() inside the call: Nest binds the handler to the async context it is asked in, which is then this request's.
+      bridge
+        .entry!(type, operation, incoming, () => new Promise<void>((resolve, reject) => (inner = next.handle().subscribe({ next: (v) => subscriber.next(v), error: reject, complete: resolve }))))
+        .then(
+          () => subscriber.complete(),
+          (e) => subscriber.error(e),
+        );
+      return () => inner?.unsubscribe();
+    });
   }
 }
 

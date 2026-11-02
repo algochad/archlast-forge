@@ -7,12 +7,16 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[], opts: { inter
   const [state, setState] = useState<{ data?: T; error?: string; loading: boolean }>({ loading: true });
   const fnRef = useRef(fn);
   fnRef.current = fn;
+  const busy = useRef(false);
   const load = useCallback(async () => {
+    busy.current = true;
     try {
       const data = await fnRef.current();
       setState({ data, loading: false });
     } catch (e) {
       setState((s) => ({ ...s, error: (e as Error).message, loading: false }));
+    } finally {
+      busy.current = false;
     }
   }, []);
   useEffect(() => {
@@ -20,7 +24,8 @@ export function useAsync<T>(fn: () => Promise<T>, deps: unknown[], opts: { inter
     setState((s) => ({ ...s, loading: true }));
     void load();
     if (!opts.interval) return;
-    const t = setInterval(load, opts.interval);
+    // A poll doesn't start while the last one is still waiting, so a slow server isn't sent a growing queue.
+    const t = setInterval(() => !busy.current && load(), opts.interval);
     return () => clearInterval(t);
   }, [...deps, opts.interval, opts.enabled]);
   return { ...state, reload: load };

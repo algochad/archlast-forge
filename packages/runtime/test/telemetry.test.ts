@@ -4,6 +4,7 @@ import protobuf from "protobufjs";
 import { createSqliteDb } from "../src/server/db/sqlite";
 import type { Db } from "../src/server/db/types";
 import { startServer, type RunningServer } from "../src/server/server";
+import { loadConfig } from "../src/server/config";
 import { countUnder, quantile, record, type Histogram } from "../src/server/telemetry/histogram";
 import { OtlpIngest, parse } from "../src/server/telemetry/otlp";
 import { buildQueries } from "../src/server/telemetry/queries";
@@ -517,6 +518,37 @@ describe.each(dbAdapters.filter(([name]) => name !== "sqlite (:memory:)"))("stor
     expect((await settings.alertRules()).map((r: any) => r.name)).toEqual(["List errors"]);
   });
 
+  test("runtime and nodes read thousands of samples at once: each process's latest, per service, without a lookup per row", async () => {
+    // Two services with three nodes, the server and a worker on each, a sample every 10 s for half a day: 26k rows. The latest-sample query
+    // used to look up each row's instance again (quadratic), which took 89 s on a dev machine's 19k rows and held up every dashboard call.
+    const sample = (service: string, instance: string, role: "server" | "runtime", time: number) => ({ time, service, instance, role, cpu: 10, cpuUser: 8, cpuSystem: 2, rss: 100, heapUsed: 50, heapTotal: 80, loopMean: 1, loopP99: 2, loopMax: 3 });
+    const samples = [];
+    for (const service of ["api", "orders"])
+      for (const node of service === "api" ? ["a:1", "b:2", "c:3"] : ["a:1", "b:2"]) // "a:1" in both: the same host:pid can be two services' (one process in tests)
+        for (let t = now - 12 * 3600_000; t < now - (node === "b:2" ? 600_000 : 0); t += 10_000) samples.push(sample(service, node, "server", t), sample(service, `${node}/w0`, "runtime", t + 1));
+    for (let i = 0; i < samples.length; i += 2000) await store.write({ samples: samples.slice(i, i + 2000) });
+    const range = { from: now - 86_400_000, to: now + 60_000 };
+    const started = performance.now();
+    const [rt, nodes] = await Promise.all([q.runtime(range), q.nodes(range)]);
+    expect(performance.now() - started).toBeLessThan(3000);
+    expect(rt.instances).toHaveLength(10);
+    const api = nodes.filter((n) => n.service === "api");
+    expect(api.map((n) => [n.node, n.live, n.processes.map((p) => p.role)])).toEqual([
+      ["a:1", true, ["server", "runtime"]],
+      ["c:3", true, ["server", "runtime"]],
+      ["b:2", false, ["server", "runtime"]], // stopped ten minutes ago: scaled down
+    ]);
+    expect(nodes.filter((n) => n.service === "orders").map((n) => n.node)).toEqual(["a:1", "b:2"]);
+    expect(api[0]!.first).toBeLessThan(now - 11 * 3600_000);
+    // An alert on live nodes: a service's servers that reported in the window, every service's when none is named.
+    const settings = buildSettings(db);
+    const nodesRule = (service: string | null) => ({ metric: "nodes", window_min: 1, service });
+    expect(await settings.measure(nodesRule("api"), now)).toBe(2);
+    expect(await settings.measure(nodesRule("orders"), now)).toBe(1);
+    expect(await settings.measure(nodesRule(null), now)).toBe(3); // "a:1" is a node of each service
+    expect(await settings.measure(nodesRule("api"), now + 3600_000)).toBe(0); // gone silent
+  }, 60_000);
+
   test("ingest keys are shown once, stored hashed, and stop working when revoked", async () => {
     const settings = buildSettings(db);
     const { key } = await settings.createKey({ name: "billing", service: "billing-api" }, "admin@example.com");
@@ -793,6 +825,104 @@ describe.each([
     } finally {
       await second.stop({ graceful: false });
     }
+  });
+});
+
+describe("a main app and its microservice: one dashboard", () => {
+  let main: RunningServer;
+  let orders: RunningServer;
+  const ADMIN = "m".repeat(32);
+  const TOKEN = "d".repeat(32);
+  const range = () => ({ from: Date.now() - 3600_000, to: Date.now() + 60_000 });
+  const admin = (base: string, op: string, input: object = {}, target?: string) =>
+    fetch(`${base}/_admin/${op}?input=${encodeURIComponent(JSON.stringify(input))}${target ? `&target=${target}` : ""}`, { headers: { "x-admin-key": ADMIN } });
+
+  beforeAll(async () => {
+    const probe = Bun.serve({ port: 0, fetch: () => new Response() });
+    const port = probe.port!;
+    await probe.stop(true);
+    const env = { ...process.env, LOG_FORMAT: "json", DASHBOARD_TOKEN: TOKEN };
+    main = await startServer({ forgeDir: join(import.meta.dir, "fixture"), dev: true, env: { ...env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: ADMIN, OTEL_SERVICE_NAME: "shop", MICROSERVICES: `orders=http://127.0.0.1:${port}` } });
+    orders = await startServer({ forgeDir: join(import.meta.dir, "fixture"), dev: true, env: { ...env, PORT: String(port), DATA_DIR: tempDir(), OTEL_SERVICE_NAME: "orders", DASHBOARD_URL: main.url } });
+  });
+  afterAll(async () => {
+    await orders?.stop({ graceful: false }).catch(() => {}); // a test below stops it already
+    await main?.stop({ graceful: false });
+  });
+
+  test("the microservice's requests and nodes are on the main app's dashboard, under its own name", async () => {
+    await fetch(`${orders.url}/rpc/todos:createList`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "from orders" }) });
+    let services: { service: string; count: number }[] = [];
+    let nodes: { service: string; live: boolean; processes: { role: string }[] }[] = [];
+    for (let i = 0; i < 40; i++) {
+      services = (await (await admin(main.url, "obs.services", range())).json()) as typeof services;
+      nodes = (await (await admin(main.url, "obs.nodes", range())).json()) as typeof nodes;
+      if (services.find((x) => x.service === "orders")?.count && nodes.some((n) => n.service === "orders") && nodes.some((n) => n.service === "shop")) break;
+      await Bun.sleep(150);
+    }
+    expect(services.find((x) => x.service === "orders")!.count).toBeGreaterThan(0);
+    const node = nodes.find((n) => n.service === "orders")!;
+    expect(node.live).toBe(true);
+    expect(node.processes[0]!.role).toBe("server");
+    // Both servers run in this one process, so they share host:pid: a node is a service's, not just a process id.
+    expect(nodes.find((n) => n.service === "shop")!.live).toBe(true);
+    // The microservice keeps no store of its own.
+    expect((await admin(orders.url, "obs.services", range())).status).toBe(401); // and no one but the main app may ask it anything
+  }, 20_000);
+
+  test("the main app's dashboard shows the microservice's data and schema, through the main app, with the user's role", async () => {
+    const list = (await (await admin(main.url, "microservices")).json()) as { self: string; services: { name: string; url: string }[] };
+    expect(list).toEqual({ self: "shop", services: [{ name: "orders", url: expect.stringContaining("http://127.0.0.1:") }] });
+    const manifest = (await (await admin(main.url, "manifest", {}, "orders")).json()) as { functions: { name: string }[] };
+    expect(manifest.functions.map((f) => f.name)).toContain("todos:createList");
+    const page = (await (await admin(main.url, "docs", { table: "lists" }, "orders")).json()) as { page: { name: string }[] };
+    expect(page.page.map((d) => d.name)).toEqual(["from orders"]); // the microservice's table, not this app's
+    expect(((await (await admin(main.url, "docs", { table: "lists" })).json()) as { page: unknown[] }).page).toEqual([]);
+    // Telemetry stays the main app's, target or not.
+    expect((await admin(main.url, "obs.services", range(), "orders")).status).toBe(200);
+    expect((await admin(main.url, "manifest", {}, "nope")).status).toBe(404);
+    // Without a dashboard user nothing is forwarded; the microservice takes the token alone, and serves no dashboard of its own.
+    expect((await fetch(`${main.url}/_admin/manifest?target=orders`)).status).toBe(401);
+    const direct = await fetch(`${orders.url}/_admin/manifest`, { headers: { authorization: `Bearer ${TOKEN}`, "x-forge-role": "viewer" } });
+    expect(direct.status).toBe(200);
+    const write = await fetch(`${orders.url}/_admin/insertDoc`, { method: "POST", headers: { authorization: `Bearer ${TOKEN}`, "x-forge-role": "viewer", "x-forge-admin": "1", "content-type": "application/json" }, body: JSON.stringify({ table: "lists", value: { name: "x" } }) });
+    expect(write.status).toBe(403);
+    const page2 = await fetch(`${orders.url}/_dashboard`, { redirect: "manual" });
+    expect(page2.status).toBe(302);
+    expect(page2.headers.get("location")).toBe(`${main.url}/_dashboard#/microservices`);
+  });
+
+  test("the microservice's live log stream comes through the main app, and ends quietly when the service goes away", async () => {
+    const res = await fetch(`${main.url}/_admin/logs/stream?target=orders`, { headers: { "x-admin-key": ADMIN } });
+    expect(res.headers.get("content-type")).toBe("text/event-stream");
+    const reader = res.body!.getReader();
+    const text = async () => new TextDecoder().decode((await reader.read()).value);
+    expect(await text()).toBe(": connected\n\n");
+    await fetch(`${orders.url}/rpc/todos:createList`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "streamed" }) });
+    expect(await text()).toContain('"name":"todos:createList"');
+    await reader.cancel();
+  });
+
+  test("the main app takes telemetry only with its token, and never under its own name", async () => {
+    const send = (token: string, batch: object) => fetch(`${main.url}/_telemetry`, { method: "POST", headers: { authorization: `Bearer ${token}`, "content-type": "application/json" }, body: JSON.stringify(batch) });
+    expect((await send("w".repeat(32), {})).status).toBe(401);
+    expect((await send(TOKEN, { services: [{ service: "shop", attrs: {}, time: Date.now() }] })).status).toBe(409);
+    expect((await send(TOKEN, { services: [{ service: "billing", attrs: {}, time: Date.now() }] })).status).toBe(200);
+  });
+
+  test("a microservice that is down: its pages answer 502 with why, and the main app carries on", async () => {
+    await orders.stop({ graceful: false });
+    const res = await admin(main.url, "manifest", {}, "orders");
+    expect(res.status).toBe(502);
+    expect(((await res.json()) as { message: string }).message).toContain("orders (http://127.0.0.1:");
+    expect((await fetch(`${main.url}/health`)).status).toBe(200);
+  });
+
+  test("the settings that join them are checked when the server starts", () => {
+    expect(() => loadConfig({ DASHBOARD_URL: "http://main:3000", OTEL_SERVICE_NAME: "orders" }, true)).toThrow("DASHBOARD_TOKEN");
+    expect(() => loadConfig({ DASHBOARD_URL: "http://main:3000", DASHBOARD_TOKEN: TOKEN }, true)).toThrow("OTEL_SERVICE_NAME");
+    expect(() => loadConfig({ MICROSERVICES: "orders", DASHBOARD_TOKEN: TOKEN }, true)).toThrow("name=url");
+    expect(loadConfig({ MICROSERVICES: "orders=http://orders:3000/, billing=https://billing.internal", DASHBOARD_TOKEN: TOKEN }, true).microservices).toEqual({ orders: "http://orders:3000", billing: "https://billing.internal" });
   });
 });
 

@@ -10,7 +10,7 @@ import { createPostgresDb } from "./db/postgres";
 import { createSqliteDb, serverMemory } from "./db/sqlite";
 import type { Db } from "./db/types";
 import type { UserIdentity } from "../functions";
-import { Executor, logContext, type CallHeaders, type LogEntry } from "./executor";
+import { Executor, logContext, serializeError, type CallHeaders, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
 import { checkHttpRequest, matchRoute, routeName } from "./http";
 import { buildOpenApi, type NestRoute } from "./openapi";
@@ -20,7 +20,9 @@ import { createStorage } from "./storage";
 import { Backups } from "./backup/backups";
 import { migrateSystem } from "./system";
 import { ReadCache } from "./read-cache";
-import { annotate, inSpan, instrumentFetch, spanned, traced, type CallTelemetry } from "./telemetry/context";
+import { annotate, inSpan, instrumentFetch, now, spanned, telemetryOf, traced, type CallTelemetry } from "./telemetry/context";
+import { parseTraceparent, spanId, traceId } from "./telemetry/ids";
+import { handledKind, statusOf } from "./telemetry/recorder";
 import { MetricAggregator } from "./telemetry/metrics";
 import { instanceId, processSampler } from "./telemetry/sampler";
 import { releaseOf } from "./project";
@@ -128,8 +130,68 @@ export async function startCore(opts: {
     // For @archlast/forge-runtime/nest: the methods of the app's controllers and services, timed per call.
     wrap: <T extends (...args: any[]) => any>(fn: T, name: string, attrs?: Record<string, string | number | boolean>) => spanned(fn, name, "nest", attrs),
     annotate: (attrs: Record<string, string | number | boolean>, request?: boolean) => annotate(attrs, request),
+    // For @archlast/forge-runtime/nest: a message a microservice transport (Forge RPC among them) or a gateway handed the app is a request of
+    // its own, a trace whose root is this call, under the caller's trace when it sent a traceparent.
+    entry: async <T>(kind: "rpc" | "ws", operation: string, incoming: string | undefined, fn: () => Promise<T>): Promise<T> => {
+      if (!config.telemetry) return fn();
+      const caller = parseTraceparent(incoming);
+      const root = { traceId: caller?.traceId ?? traceId(), parentId: spanId() };
+      const weight = sampleDetail(caller);
+      const start = now();
+      let failure: unknown;
+      let telemetry: CallTelemetry | undefined;
+      try {
+        if (!weight) return await fn();
+        const out = await traced(root, operation, fn);
+        telemetry = out.telemetry;
+        return out.value;
+      } catch (e) {
+        failure = e;
+        telemetry = telemetryOf(e);
+        throw e;
+      } finally {
+        const err = failure === undefined ? undefined : serializeError(failure);
+        const duration = now() - start;
+        const attrs = { "forge.kind": kind };
+        send({
+          t: "trace",
+          trace: {
+            request: {
+              traceId: root.traceId,
+              spanId: root.parentId,
+              time: start,
+              duration,
+              service: "",
+              kind,
+              operation,
+              method: kind === "rpc" ? "RPC" : "WS",
+              status: statusOf(err?.kind),
+              error: err && { type: err.type ?? "Error", message: err.message, stack: err.stack, handled: handledKind(err.kind) },
+              weight: 1,
+              attrs,
+            },
+            spans: [
+              { traceId: root.traceId, spanId: root.parentId, parentId: caller?.parentId, name: operation, type: "request", kind: 2, start, duration, status: err ? 2 : 1, error: err?.message, attrs },
+              ...(telemetry?.spans ?? []),
+            ],
+            detailWeight: weight || 1,
+          },
+        });
+      }
+    },
     metric: (type: "counter" | "gauge" | "histogram", name: string, value: number, attrs?: Record<string, string | number | boolean>, unit?: string) =>
       metrics.record(type, name, value, attrs, unit),
+  };
+  // Messages handed to the app (entry below) recorded in detail, at most this process's share of TELEMETRY_DETAIL_PER_SECOND, as the server
+  // does for the requests it records: past it a message is only counted, and those recorded stand for the rest in span statistics.
+  const detail = { second: 0, count: 0, rate: 0 };
+  const sampleDetail = (incoming: { sampled: boolean } | undefined) => {
+    const sec = Math.floor(Date.now() / 1000);
+    if (sec !== detail.second) [detail.rate, detail.second, detail.count] = [sec === detail.second + 1 ? detail.count : 0, sec, 0];
+    detail.count++;
+    const budget = config.telemetryDetailPerSecond / config.runtimeWorkers;
+    const p = incoming?.sampled || detail.rate <= budget ? 1 : budget / detail.rate;
+    return p >= 1 || Math.random() < p ? 1 / p : 0;
   };
   const sendMetrics = () => {
     const points = metrics.drain();

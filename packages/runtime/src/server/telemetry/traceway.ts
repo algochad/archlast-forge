@@ -151,6 +151,8 @@ export const APDEX_T: Record<string, number> = {
   auth: 750,
   page: 750,
   server: 750,
+  rpc: 500,
+  ws: 500,
   job: 2000,
   cron: 2000,
   consumer: 2000,

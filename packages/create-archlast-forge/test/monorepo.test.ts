@@ -118,6 +118,15 @@ test("Forge RPC, the default: a router per service, its types generated and shar
   const tokens = ["api", "orders", "user-billing"].map((app) => /^FORGE_RPC_TOKEN=(\w+)$/m.exec(read(root, "apps", app, ".env"))?.[1]);
   expect(new Set(tokens).size).toBe(1); // one secret the apps share
   expect(tokens[0]).toHaveLength(48);
+  // One dashboard, the main app's: the services report there, and it lists them by the names they report under.
+  const envOf = (app: string, key: string) => new RegExp(`^${key}=(.*)$`, "m").exec(read(root, "apps", app, ".env"))?.[1];
+  expect(envOf("api", "MICROSERVICES")).toBe("orders=http://localhost:3001,user-billing=http://localhost:3002");
+  expect(["orders", "user-billing"].map((app) => [envOf(app, "OTEL_SERVICE_NAME"), envOf(app, "DASHBOARD_URL")])).toEqual([
+    ["orders", "http://localhost:3000"],
+    ["user-billing", "http://localhost:3000"],
+  ]);
+  expect(new Set(["api", "orders", "user-billing"].map((app) => envOf(app, "DASHBOARD_TOKEN"))).size).toBe(1);
+  expect(envOf("api", "DASHBOARD_TOKEN")).toHaveLength(48);
   expect(Bun.spawnSync(["grep", "-rl", "@nestjs/", join(root, "apps")]).stdout.toString()).toBe(""); // the runtime's wrapping imports only
   expect(read(root, "README.md")).toContain("serves a Forge RPC router");
   expect(read(root, "README.md")).toContain("Forge RPC is backend to backend");

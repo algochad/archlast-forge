@@ -79,6 +79,14 @@ const svc = (service?: string, col = `"service"`) => (service ? { sql: ` AND ${c
 const JOB_KINDS = new Set(["job", "cron", "consumer"]);
 
 export function buildQueries(db: Db) {
+  /** Each process's last runtime sample in [from, to): one pass over the range, by the time index (a lookup per row was quadratic). */
+  const latestSamples = (from: number, to: number, service?: string) => {
+    const s = svc(service);
+    return db.query<Record<string, any>>(
+      `SELECT s.* FROM ${T.samples} s JOIN (SELECT "service", "instance", MAX("time") AS "last" FROM ${T.samples} WHERE "time" >= ? AND "time" < ?${s.sql} GROUP BY "service", "instance") m ON s."service" = m."service" AND s."instance" = m."instance" AND s."time" = m."last" ORDER BY s."instance"`,
+      [from, Number.isFinite(to) ? to : Number.MAX_SAFE_INTEGER, ...s.params],
+    );
+  };
   async function rollupRows(r: Range, where = "", params: unknown[] = []): Promise<RollupRow[]> {
     const s = svc(r.service);
     const from = Math.floor(r.from / 60_000);
@@ -647,8 +655,8 @@ export function buildQueries(db: Db) {
     },
 
     /** Where the time goes: time spent in each module's, class's or dependency's own code, children subtracted. */
-    async hotspots(r: Range) {
-      const rows = await spanRows(r);
+    async hotspots(r: Range & { type?: string }) {
+      const rows = r.type ? await spanRows(r, ` AND "type" = ?`, [r.type]) : await spanRows(r);
       const groups = new Map<string, { namespace: string; type: string; self: number; total: number; count: number; errors: number; methods: Map<string, { name: string; self: number; total: number; count: number; errors: number }> }>();
       for (const row of rows) {
         const k = `${row.type}\u0000${row.namespace}`;
@@ -707,19 +715,16 @@ export function buildQueries(db: Db) {
     async runtime(r: Range) {
       const s = svc(r.service);
       const rows = await db.query<Record<string, any>>(`SELECT * FROM ${T.samples} WHERE "time" >= ? AND "time" < ?${s.sql} ORDER BY "time"`, [r.from, r.to, ...s.params]);
-      const latest = await db.query<Record<string, any>>(
-        `SELECT * FROM ${T.samples} s WHERE "time" = (SELECT MAX("time") FROM ${T.samples} WHERE "instance" = s."instance") AND "time" >= ?${s.sql} ORDER BY "instance"`,
-        [Date.now() - Math.max(r.to - r.from, 3600_000), ...s.params],
-      );
+      const latest = await latestSamples(Date.now() - Math.max(r.to - r.from, 3600_000), Infinity, r.service);
       const step = stepFor(r.from, r.to);
       const at = starts(r.from, r.to, step);
-      const instances = [...new Set(rows.map((x) => x.instance as string))].sort();
+      const byInstance = Map.groupBy(rows, (x) => x.instance as string);
+      const instances = [...byInstance.keys()].sort();
       const keys = ["cpu", "cpu_user", "cpu_system", "rss", "heap_used", "heap_total", "loop_mean", "loop_p99", "loop_max", "connections", "subscriptions", "inflight", "cache_entries"] as const;
       const sums = ["cache_hits", "cache_misses", "cache_shared"] as const;
       const series = instances.map((instance) => {
         const buckets = at.map(() => ({ n: 0, v: {} as Record<string, number> }));
-        for (const row of rows) {
-          if (row.instance !== instance) continue;
+        for (const row of byInstance.get(instance)!) {
           const i = Math.floor((Number(row.time) - at[0]!) / step);
           if (i < 0 || i >= at.length) continue;
           const b = buckets[i]!;
@@ -729,7 +734,7 @@ export function buildQueries(db: Db) {
         }
         return {
           instance,
-          role: rows.find((x) => x.instance === instance)?.role,
+          role: byInstance.get(instance)![0]?.role,
           points: at.map((t, i) => {
             const b = buckets[i]!;
             if (!b.n) return { t };
@@ -738,6 +743,52 @@ export function buildQueries(db: Db) {
         };
       });
       return { step, instances: latest.map((x) => ({ ...x, stale: Date.now() - Number(x.time) > 60_000 })), series };
+    },
+
+    /**
+     * The nodes of each service: a node is one server process (`host:pid`; in a container or a Kubernetes pod the host is its name), with
+     * the function runtime processes it runs (`host:pid/w0`, …). A replica a scaler added is a node, and one it removed stops reporting.
+     * Requests per node come from the per-minute rollups, which keep the node for two days before they are folded into hours.
+     */
+    async nodes(r: Range) {
+      const s = svc(r.service);
+      const latest = await latestSamples(r.from, r.to, r.service);
+      const first = new Map(
+        (
+          await db.query<{ service: string; instance: string; first: number }>(`SELECT "service", "instance", MIN("time") AS "first" FROM ${T.samples} WHERE "time" >= ? AND "time" < ?${s.sql} GROUP BY "service", "instance"`, [
+            r.from,
+            r.to,
+            ...s.params,
+          ])
+        ).map((x) => [`${x.service}\u0000${x.instance}`, Number(x.first)]),
+      );
+      const traffic = new Map(
+        (
+          await db.query<{ service: string; instance: string; n: number; errors: number; client_errors: number; sum: number }>(
+            `SELECT "service", "instance", SUM("count") AS "n", SUM("errors") AS "errors", SUM("client_errors") AS "client_errors", SUM("sum") AS "sum" FROM ${T.rollups} WHERE "minute" >= ? AND "minute" < ? AND "kind" = '*' AND "instance" <> '*'${s.sql} GROUP BY "service", "instance"`,
+            [Math.floor(r.from / 60_000), Math.ceil(r.to / 60_000), ...s.params],
+          )
+        ).map((x) => [`${x.service}\u0000${x.instance}`, { count: Number(x.n), errors: Number(x.errors), clientErrors: Number(x.client_errors), avg: Number(x.n) ? Number(x.sum) / Number(x.n) : null }]),
+      );
+      const nodes = new Map<string, { service: string; node: string; host: string; pid: string; first: number; last: number; processes: Record<string, any>[] }>();
+      for (const x of latest) {
+        const node = String(x.instance).split("/")[0]!;
+        const key = `${x.service}\u0000${node}`;
+        const at = node.lastIndexOf(":");
+        const n = nodes.get(key) ?? nodes.set(key, { service: x.service, node, host: at > 0 ? node.slice(0, at) : node, pid: at > 0 ? node.slice(at + 1) : "", first: Infinity, last: 0, processes: [] }).get(key)!;
+        n.first = Math.min(n.first, first.get(`${x.service}\u0000${x.instance}`) ?? Number(x.time));
+        n.last = Math.max(n.last, Number(x.time));
+        n.processes.push({ ...x, time: Number(x.time) });
+      }
+      const now = Date.now();
+      return [...nodes.values()]
+        .map((n) => ({
+          ...n,
+          live: now - n.last < 60_000, // samples come every 10 s
+          processes: n.processes.sort((a, b) => (a.role === b.role ? String(a.instance).localeCompare(String(b.instance)) : a.role === "server" ? -1 : 1)),
+          requests: traffic.get(`${n.service}\u0000${n.node}`) ?? null,
+        }))
+        .sort((a, b) => a.service.localeCompare(b.service) || Number(b.live) - Number(a.live) || b.last - a.last);
     },
 
     async metrics(r: Range & { name?: string }) {

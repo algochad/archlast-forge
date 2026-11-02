@@ -1,5 +1,5 @@
 import { useRef, useState } from "react";
-import { canWrite, formatBytes, get, post, type Admin } from "../api";
+import { adminUrl, canWrite, formatBytes, get, post, type Admin } from "../api";
 import { Icon } from "../brand";
 import { ago, fullTime, plural } from "../format";
 import { Callout, Card } from "../kit";
@@ -176,7 +176,7 @@ export function Backups({ admin }: { admin: Admin }) {
                     if (!file) return;
                     void run(async () => {
                       toast(`Uploading ${file.name} (${formatBytes(file.size)})…`);
-                      const res = await fetch("/_admin/backups/upload", { method: "POST", credentials: "same-origin", headers: { "x-forge-admin": "1" }, body: file });
+                      const res = await fetch(adminUrl("backups/upload"), { method: "POST", credentials: "same-origin", headers: { "x-forge-admin": "1" }, body: file });
                       const body = await res.json().catch(() => null);
                       if (!res.ok) throw new Error(body?.error?.message ?? body?.message ?? res.statusText);
                     }, "Backup uploaded").then(list.reload);
@@ -249,7 +249,7 @@ export function Backups({ admin }: { admin: Admin }) {
                     <td className="nowrap">
                       {owner && (b.state === "done" || b.state === "found") && (
                         <>
-                          <a className="btn ghost" href={`/_admin/backups/download?id=${encodeURIComponent(b._id)}`} download={b.name} title="Download">
+                          <a className="btn ghost" href={adminUrl("backups/download", { id: b._id })} download={b.name} title="Download">
                             <Icon name="download" size={14} /> Download
                           </a>
                           <Button variant="ghost" disabled={Boolean(running)} onClick={() => setRestoring(b)}>

@@ -12,6 +12,8 @@ The engine records what it does, and the [dashboard](dashboard.html) shows it: e
 | A sign-in, sign-up or session check (`/api/auth`) | An `auth` request. |
 | A page of a [full-stack app](framework.html) | A `page` request named by its route (`GET /posts/:id`); a page nothing matched is `GET (unmatched)`. Assets aren't recorded. |
 | A scheduled function or a cron run | A `job` or `cron`, with the time it waited in the queue after it was due. |
+| A [Forge RPC](forge-rpc.html) call, or a message from another [Nest microservice transport](nest.html#microservices) (TCP, Redis, NATS, …) | An `rpc` request on the service that handled it, named by its pattern (`orders.place`). A Forge RPC call continues the caller's trace, so the main app's request and the service's are one trace. |
+| A message to a Nest [gateway](nest.html#websocket-gateways) | A `ws` request named `Gateway:event` (`ChatGateway:send`). Connecting and disconnecting aren't requests. |
 | A request from another service over [OTLP](#other-services-over-opentelemetry) | An `http`, `server` or `consumer` request of that service. |
 
 Inside a request, the trace has a span for each function (nested calls included), each database statement (`SELECT todos`, with its SQL and the rows it returned), each outbound `fetch` (`POST api.stripe.com`), each method of your Nest classes, and each span you make yourself. A `fetch` from a function carries a W3C `traceparent` header, so a service that is traced too continues the same trace; a call that arrives with one joins the caller's.
@@ -22,7 +24,7 @@ Errors are recorded with their class, message and stack. **Handled** errors are 
 
 - **On SQLite**, in its own file, `DATA_DIR/telemetry.db`, next to `app.db`. Telemetry never queues behind your app's writes (SQLite has one writer) or holds them up, and `archlast-forge backup` doesn't include it.
 - **On Postgres**, in `_otel_*` tables of the app's database, shared by every server. They are not in the data browser.
-- A thread of its own writes it and answers the dashboard's questions, so a slow chart over 30 days doesn't delay a request.
+- A thread of its own writes it and answers the dashboard's questions, so a slow chart over 30 days doesn't delay a request. That thread answers one question at a time, so every read goes through an index: the Runtime and Cache pages over 30 days of a three-process server's samples take about a tenth of a second. A live page doesn't ask again while its last answer is still on the way.
 - **Kept for:** requests, traces and logs, `LOG_RETENTION_DAYS` (7 by default); statistics, metrics, runtime samples and issues, 30 days (or `LOG_RETENTION_DAYS`, if that is longer). Statistics older than two days are folded from minutes into hours, so a 30-day chart stays quick.
 
 ## Sampling
@@ -38,7 +40,7 @@ On a quiet app, which is most of them, everything is recorded and kept. An error
 
 ## The pages
 
-The dashboard's **Observe** and **Performance** sections, and **Services**, **Alerts** and **Ingest keys** under Admin. They share one time range (1H to 30D, or a custom one), a **Live** switch that refreshes as data arrives, and a service picker when more than one service reports.
+The dashboard's **Observe**, **Performance** and **Infrastructure** sections, and **Alerts** and **Ingest keys** under Admin. They share one time range (1H to 30D, or a custom one), a **Live** switch that refreshes as data arrives, and a service picker when more than one service reports.
 
 - **Overview**: requests by status class, latency (average and p95), the operations furthest over their latency budget, the busiest ones, where the time goes, errors handled and unhandled, open issues, jobs, and the last release with its verdict. A regression gets a banner.
 - **Requests**: every operation with its latency (average and p95), failure rate, [Apdex and impact](#apdex-and-impact). An operation's page has its numbers, the shape of its latency (and a note when it has two speeds, like cache hits and misses), its weekly rhythm (traffic or p95 by day and hour, in your time zone) and its recent calls.
@@ -49,14 +51,17 @@ The dashboard's **Observe** and **Performance** sections, and **Services**, **Al
 - **Jobs**: runs, failures, duration and time in the queue for each scheduled function and cron; **Queue & crons** is the scheduler's queue, where jobs can be cancelled and retried.
 - **Spans**: every kind of step inside requests (database statements, outbound calls, functions, Nest methods, your spans) with its latency and failure rate, and a chart of p95 against volume where the busy and slow ones stand out.
 - **Hotspots**: where the time goes, by code: each module, Nest class and dependency by the time spent in its **own** code (with what it waited on subtracted), and its methods.
+- **Services**: your [Nest classes](#nestjs-inside-the-engine) alone, the controllers, providers, gateways and Forge RPC routers: each one's own time and share of it, average own time per call, total time, calls, errors and methods, sortable, with each method below its class.
 - **Map**: clients, services, the scheduler, databases and external hosts, with the traffic between them; links with more than 1% errors are red.
 - **Runtime**: every process (the server, and each function-runtime process when they run apart from it: in development, or with `RUNTIME_WORKERS` above 1) with CPU, memory, heap and event-loop delay, and connections, live queries, the query cache's hit rate and requests in flight over time.
 - **Releases**: each release against the 30 minutes of traffic before and after it: error rate, latency, the operations that moved most, and what changed in the code (spans that are new, or run more often or longer, per request). The verdict is *Regression* (the error rate up by more than a point, or by half from above 2%; or the average or p95 latency up by more than 25%), *Improvement*, *Stable*, *Measuring* (fewer than 20 requests on a side so far) or *Too little traffic* (still fewer when the 30 minutes are over).
-- **SLOs**, **Metrics**, **Services**, **Alerts** and **Ingest keys**: below.
+- **Microservices**: every backend on the dashboard, the main app, its [microservices](#one-dashboard-for-a-main-app-and-its-microservices) and other services reporting over OpenTelemetry: requests, latency, errors, nodes and release, with links to its nodes and (for a microservice) its data.
+- **Nodes**: each service's [nodes](#nodes), live and stopped, with their processes.
+- **SLOs**, **Metrics**, **Alerts** and **Ingest keys**: below.
 
 ### Apdex and impact
 
-Each operation gets an Apdex score: the share of requests that were fast enough, where *satisfied* is at most a threshold T and *tolerating* at most 2T (counted as half), and server errors count as frustrated. T depends on the kind: 250 ms for queries and live re-runs, 400 ms for mutations, 1 s for actions, 750 ms for HTTP endpoints, auth, pages and requests from other services, 2 s for jobs.
+Each operation gets an Apdex score: the share of requests that were fast enough, where *satisfied* is at most a threshold T and *tolerating* at most 2T (counted as half), and server errors count as frustrated. T depends on the kind: 250 ms for queries and live re-runs, 400 ms for mutations, 500 ms for `rpc` and `ws` messages, 1 s for actions, 750 ms for HTTP endpoints, auth, pages and requests from other services, 2 s for jobs.
 
 **Impact** ranks operations by how much they need attention, from 0 to 1: the worst of the inverted Apdex and four floors, so that a problem shows however good the rest looks. The floors are for the share of *frustrated* requests (slower than 2T, or failed: over 10%, 20% or 33%), a p99 over 3, 6 or 8 seconds, more than a quarter of the answers being 4xx, and a large number of frustrated requests. Its sentence says which one it is ("P99 latency is 9.2s"). The score is [Traceway's](#credits).
 
@@ -125,6 +130,27 @@ new NodeSDK({
 
 What the engine reads from OpenTelemetry's conventions: `SERVER` spans are requests and `CONSUMER` spans are jobs; `http.route` and `http.request.method` name them; `http.response.status_code` and the span status say how they ended; `exception` events are errors (with `exception.type`, `.message` and `.stacktrace`); `enduser.id` (or `user.id`, `user.email`) is the user; `db.system` client spans are database calls and `http.*` client spans are outbound calls; `code.namespace` is a span's code unit. Cumulative counters become per-minute increases.
 
+## One dashboard for a main app and its microservices
+
+In a [monorepo](monorepo.html), each microservice is a backend of its own, and the main app's dashboard is the one for all of them. A microservice sends what it records to the main app, which keeps it with its own, so every page above covers the microservices beside the main app: their requests, traces (a call from the main app to a service is one trace), errors, logs, nodes, Nest classes and metrics. With a microservice picked in the top bar, the **Data**, **Files**, **Functions**, **Cache**, **Backups**, **Audit** and **Settings** pages show that service: its schema, documents and functions, through the main app. A microservice serves no dashboard of its own; its `/_dashboard` sends you to the main app's.
+
+| Where | Variable | |
+|---|---|---|
+| Main app | `MICROSERVICES` | Its microservices as `name=url`, comma-separated, at the addresses the main app reaches them at: `orders=http://orders:3000,billing=http://billing:3000`. |
+| Each microservice | `DASHBOARD_URL` | The main app's address, as the service reaches it: `http://api:3000`. Its telemetry goes there. |
+| Each microservice | `OTEL_SERVICE_NAME` | Its name, as the main app's `MICROSERVICES` lists it. Required with `DASHBOARD_URL`. |
+| Both | `DASHBOARD_TOKEN` | A secret of 16 characters or more that they share. |
+
+`archlast-forge init --monorepo`, `add service`, `remove` and `workspace sync` write these to the apps' `.env` for development (each app on this machine, on its port). In production, set them with the addresses the stacks reach each other at.
+
+- **Telemetry**: a microservice keeps no telemetry store. Once a second it posts what it recorded to the main app's `/_telemetry` with the token; while the main app is away (a restart, a deploy) it holds up to a minute of it and sends it when it is back. The main app refuses telemetry under its own name.
+- **Data and settings**: the dashboard sends a page's calls to the main app with the microservice's name, and the main app forwards them to the service with the token and the role of whoever is signed in. The service checks the role as its own dashboard would: a viewer can't edit a document there either. Only the main app may do this: the service accepts the token for its admin API, and nothing else does.
+- Errors' source lines come from the main app's files: for a microservice's stack, the lines aren't shown.
+
+## Nodes
+
+A node is one server process with the function-runtime processes it runs, named by its host and process id; in a container or a Kubernetes pod the host is the container's or the pod's name. When a service scales out (Kubernetes, archlast gaia or any other scaler, or `REPLICAS` behind a load balancer), each new replica is a node, on the **Nodes** page a second after it starts; one that is scaled away stops reporting and is listed as stopped, with when it was last seen. Each node shows its CPU (its processes together, in cores), memory, event-loop delay, connections, and its requests, average latency and error rate, and opens into its processes. Requests per node cover the last two days at most: past that, traffic is kept per service.
+
 ## Exporting to your own collector
 
 With `OTEL_EXPORTER_OTLP_ENDPOINT` (or `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT`) set, the engine also sends every request to that collector as OTLP/HTTP JSON, kept or not, with the spans recorded for it (all of them, below the [detail rate](#sampling)), and the headers in `OTEL_EXPORTER_OTLP_HEADERS`. `OTEL_SERVICE_NAME` names the engine there and here (`archlast-forge` by default). This works with `TELEMETRY=off` too.
@@ -133,7 +159,7 @@ The variable is for a collector, not for this app: it has its requests already. 
 
 ## NestJS inside the engine
 
-When a [Nest app](nest.html) is mounted in `forge/http.ts`, its controllers' routes name their requests (`GET /reports/:kind`), and every method of your controllers, services, resolvers and gateways is a span (`ReportsController.get`, `RenderService.render`), so Hotspots shows which classes burn the time. That needs the decorators from `@archlast/forge-runtime/nest` (`@Injectable`, `@Controller`, and `@Resolver` and `@WebSocketGateway` from their entries), which is how the engine tells your classes from those of libraries. A method that returns a promise is timed until it settles.
+When a [Nest app](nest.html) is mounted in `forge/http.ts`, its controllers' routes name their requests (`GET /reports/:kind`), and every method of your controllers, services, resolvers and gateways is a span (`ReportsController.get`, `RenderService.render`), so the **Services** page (and Hotspots) shows which classes burn the time. Messages from microservice transports and gateways are requests of their own (`rpc` and `ws`, [above](#what-is-recorded)), with the classes they ran as their spans. That needs the decorators from `@archlast/forge-runtime/nest` (`@Injectable`, `@Controller`, and `@Resolver` and `@WebSocketGateway` from their entries), which is how the engine tells your classes from those of libraries. A method that returns a promise is timed until it settles.
 
 ## SLOs
 
@@ -141,7 +167,7 @@ An objective over traffic you already record: **latency** (X% of requests under 
 
 ## Alerts
 
-A rule watches one number over the last 1, 5, 10, 15, 30 or 60 minutes: the server error rate, the failure rate (4xx and 5xx), p95 or average latency, the request count (all requests, or one operation's, or one service's), or an SLO's burn rate. Rules are checked every minute. When one starts or stops holding, it records an event (the bell in the top bar counts the new ones) and, if it has a webhook, posts JSON to it:
+A rule watches one number over the last 1, 5, 10, 15, 30 or 60 minutes: the server error rate, the failure rate (4xx and 5xx), p95 or average latency, the request count (all requests, or one operation's, or one service's), an SLO's burn rate, or a service's **live nodes** (its servers that reported in the window: below 1 it has gone silent, below 2 it lost its spare). Rules are checked every minute. When one starts or stops holding, it records an event (the bell in the top bar counts the new ones) and, if it has a webhook, posts JSON to it:
 
 ```json
 { "text": "Checkout errors: error rate is 7.31% (> 5) over the last 5 min", "state": "firing", "value": 7.31, "time": "2026-10-31T09:12:00.000Z",
@@ -161,6 +187,7 @@ A rule watches one number over the last 1, 5, 10, 15, 30 or 60 minutes: the serv
 | `OTEL_SERVICE_NAME` | `archlast-forge` | The engine's name on these pages and in exported traces. |
 | `FORGE_RELEASE` | | The [release](#releases) name, when your platform doesn't set one of the variables read for it. |
 | `OTEL_EXPORTER_OTLP_ENDPOINT`, `…_HEADERS` | | [Export](#exporting-to-your-own-collector) to a collector too. |
+| `MICROSERVICES`, `DASHBOARD_URL`, `DASHBOARD_TOKEN` | | [One dashboard](#one-dashboard-for-a-main-app-and-its-microservices) for a main app and its microservices. |
 
 The pages need the dashboard (`DASHBOARD=on` in production) and a viewer; changing SLOs, rules, keys and issue states needs an admin, and is in the [audit log](dashboard.html#audit-log).
 

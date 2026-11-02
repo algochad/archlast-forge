@@ -94,6 +94,15 @@ export interface Config {
   telemetryDetailPerSecond: number;
   /** The engine's name in telemetry (OpenTelemetry's service.name). */
   serviceName: string;
+  /**
+   * The main app whose dashboard this engine reports to, when it is one of its microservices (DASHBOARD_URL): its telemetry goes there,
+   * its admin API answers that app's dashboard, and it serves no dashboard of its own.
+   */
+  dashboardUrl?: string;
+  /** The secret a main app and its microservices share for the dashboard (DASHBOARD_TOKEN). */
+  dashboardToken?: string;
+  /** This app's microservices, by name, at the addresses this server reaches them at (MICROSERVICES=orders=http://orders:3000,…). */
+  microservices: Record<string, string>;
 }
 
 export interface S3Config {
@@ -163,6 +172,20 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   // Over http, Better Auth's cookies aren't marked Secure; behind a TLS proxy that silently weakens sessions.
   if (!dev && !authUrl.startsWith("https://") && !bool(env.ALLOW_INSECURE_HTTP, false))
     fail(`BETTER_AUTH_URL must be https:// outside dev (got "${authUrl}"). Set ALLOW_INSECURE_HTTP=1 only for local testing.`);
+  const dashboardUrl = env.DASHBOARD_URL?.trim().replace(/\/+$/, "") || undefined;
+  if (dashboardUrl && !/^https?:\/\/[^/]+/.test(dashboardUrl)) fail(`DASHBOARD_URL must be the main app's address, like http://api:3000, got "${dashboardUrl}"`);
+  const microservices: Record<string, string> = {};
+  for (const entry of (env.MICROSERVICES ?? "").split(",").map((s) => s.trim()).filter(Boolean)) {
+    const [name, url] = [entry.slice(0, entry.indexOf("=")).trim(), entry.slice(entry.indexOf("=") + 1).trim().replace(/\/+$/, "")];
+    if (!/^[A-Za-z0-9][\w.-]*$/.test(name) || !/^https?:\/\/[^/]+/.test(url)) fail(`MICROSERVICES is a list of name=url, like orders=http://orders:3000,billing=http://billing:3000; got "${entry}"`);
+    microservices[name] = url;
+  }
+  const dashboardToken = env.DASHBOARD_TOKEN || undefined;
+  if ((dashboardUrl || Object.keys(microservices).length) && !dashboardToken)
+    fail(`${dashboardUrl ? "DASHBOARD_URL" : "MICROSERVICES"} needs DASHBOARD_TOKEN: the secret the main app and its microservices share`);
+  if (dashboardToken && dashboardToken.length < 16) fail("DASHBOARD_TOKEN must be at least 16 characters");
+  // Its telemetry joins the main app's under this name, which the main app's MICROSERVICES uses too; two engines both named archlast-forge would merge.
+  if (dashboardUrl && !env.OTEL_SERVICE_NAME) fail("DASHBOARD_URL needs OTEL_SERVICE_NAME: this microservice's name, as the main app's MICROSERVICES lists it");
   const logFormat = (env.LOG_FORMAT ?? (dev ? "pretty" : "json")) as Config["logFormat"];
   if (logFormat !== "pretty" && logFormat !== "json") fail(`LOG_FORMAT must be "pretty" or "json"`);
   return {
@@ -212,6 +235,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     telemetryTracesPerSecond: int("TELEMETRY_TRACES_PER_SECOND", 25, 1),
     telemetryDetailPerSecond: int("TELEMETRY_DETAIL_PER_SECOND", 200, 1),
     serviceName: env.OTEL_SERVICE_NAME || "archlast-forge",
+    dashboardUrl,
+    dashboardToken,
+    microservices,
   };
 }
 

@@ -87,13 +87,17 @@ export function Router(options: { alias?: string } = {}): ClassDecorator {
 }
 
 /** What a router method's transport context is (`@TransportCtx() ctx: ForgeRpcContext`): the pattern called and the call's request id. */
-export class ForgeRpcContext extends BaseRpcContext<[pattern: string, requestId: string]> {
+export class ForgeRpcContext extends BaseRpcContext<[pattern: string, requestId: string, traceparent?: string]> {
   getPattern() {
     return this.args[0];
   }
   /** Logged with any error the call ends with, and sent back to the caller with it. */
   getRequestId() {
     return this.args[1];
+  }
+  /** The caller's trace (W3C traceparent), so the call is recorded under it. */
+  getTraceparent() {
+    return this.args[2];
   }
 }
 
@@ -157,7 +161,7 @@ export interface ForgeRpcServerOptions {
   token?: string;
 }
 
-type RpcCtx = { authorized: boolean };
+type RpcCtx = { authorized: boolean; traceparent?: string };
 
 /**
  * The Forge RPC transport, as a Nest custom strategy: `nest(http, { controllers: [OrdersRouter], microservices: [{ strategy: new
@@ -189,7 +193,10 @@ export class ForgeRpcServer extends Server implements CustomTransportStrategy {
             req,
             router,
             allowMethodOverride: true, // every call is a POST, so a large query input never goes in a URL
-            createContext: (): RpcCtx => ({ authorized: timingSafeEqual(digest(req.headers.get("authorization") ?? ""), expected) }),
+            createContext: (): RpcCtx => ({
+              authorized: timingSafeEqual(digest(req.headers.get("authorization") ?? ""), expected),
+              traceparent: req.headers.get("traceparent") ?? undefined,
+            }),
           }),
       });
       callback();
@@ -230,9 +237,9 @@ export class ForgeRpcServer extends Server implements CustomTransportStrategy {
       let p: any = authed;
       if (meta.input) p = p.input(meta.input);
       if (meta.output) p = p.output(meta.output);
-      const resolve = async ({ input }: { input: unknown }) => {
+      const resolve = async ({ input, ctx }: { input: unknown; ctx: RpcCtx }) => {
         try {
-          const result = await handler(input, new ForgeRpcContext([pattern, randomUUID()]));
+          const result = await handler(input, new ForgeRpcContext([pattern, randomUUID(), ctx.traceparent]));
           return rxjs.isObservable(result) ? await rxjs.lastValueFrom(result, { defaultValue: undefined }) : result;
         } catch (e) {
           throw new TRPCError({ code: (e as ForgeRpcWireError)?.code === "BAD_REQUEST" ? "BAD_REQUEST" : "INTERNAL_SERVER_ERROR", cause: new WireCause(toWire(e)) });

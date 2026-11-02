@@ -445,7 +445,7 @@ class ForgeRpcClient extends ClientProxy {
 function createForgeRpcClient<Rpc>(transport: ClientProxy | ForgeRpcClientOptions): ForgeRpcClientOf<Rpc>; // Rpc from forge/_generated/rpc.ts
 type ForgeRpcClientOf<Rpc>; // client.<alias>.<procedure>.query(input) on queries, .mutate(input) on mutations
 
-class ForgeRpcContext extends BaseRpcContext { getPattern(): string; getRequestId(): string } // @TransportCtx() in a router method
+class ForgeRpcContext extends BaseRpcContext { getPattern(): string; getRequestId(): string; getTraceparent(): string | undefined } // @TransportCtx() in a router method
 class ForgeRpcError extends Error { code: string; data?: unknown; requestId?: string } // a failed call that isn't a ForgeError
 interface ForgeRpcWireError { status: "error"; message: string; code: string; data?: unknown; requestId?: string }
 const FORGE_RPC: symbol; // the transport id router methods are registered under
@@ -904,9 +904,10 @@ Everything the engine answers on its one port.
 | `* /api/auth/*` | Better Auth (sign-up, sign-in, sign-out, session, ...). |
 | `POST /otlp/v1/traces`, `/otlp/v1/logs`, `/otlp/v1/metrics` | OpenTelemetry from other services, with an ingest key. See [Observability](observability.html#other-services-over-opentelemetry). |
 | `GET`, `HEAD`, `PUT /_storage/<key>?expires=&sig=` | Files in the [built-in storage](storage.html#built-in-storage), with `STORAGE=local`: a signed PUT stores the body (up to `MAX_UPLOAD_MB`), a signed GET or HEAD serves it (`Range` supported). A bad or expired signature is `403`. |
+| `POST /_telemetry` | On a main app with `MICROSERVICES`: its microservices' telemetry, with `Authorization: Bearer <DASHBOARD_TOKEN>`. See [one dashboard](observability.html#one-dashboard-for-a-main-app-and-its-microservices). |
 | `POST /_cli` | The CLI's data commands. |
 | `/_admin/*` | The dashboard's API. |
-| `GET /_dashboard` | The dashboard (when enabled). |
+| `GET /_dashboard` | The dashboard (when enabled). On a microservice with `DASHBOARD_URL`, a redirect to the main app's. |
 | everything else | The app host in a full-stack app (`/_app/*`, `public/`, pages), otherwise `404 Not found`. |
 
 ### /metrics
@@ -932,14 +933,14 @@ Commands: `migrate.status`, `migrate.run`, `migrate.check`, `export`, `import`, 
 
 ### /_admin
 
-The dashboard's API, available when `DASHBOARD` is on (default in dev, off elsewhere; otherwise `404`). Reads are `GET /_admin/<op>?input=<json>`; changes are `POST /_admin/<op>` with a JSON body and the header `x-forge-admin: 1` (a custom header a cross-site form cannot send). Answers are plain JSON.
+The dashboard's API, available when `DASHBOARD` is on (default in dev, off elsewhere; otherwise `404`), and on a microservice with `DASHBOARD_URL`, for its main app's dashboard. Reads are `GET /_admin/<op>?input=<json>`; changes are `POST /_admin/<op>` with a JSON body and the header `x-forge-admin: 1` (a custom header a cross-site form cannot send). Answers are plain JSON.
 
 Authentication is a session cookie (`afx_admin`, from `POST /_admin/login` with `{ "email", "password" }` or `{ "key" }`; `POST /_admin/logout` ends it) or the `x-admin-key` header. Roles are `viewer`, `admin` and `owner`; each operation needs one.
 
 | Role | Operations |
 |---|---|
 | any signed-in admin | `me` |
-| `viewer` (reads) | `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env`, `subscriptions`, `recentLogs`, `server`, `cache`, `settings`, `backups.list`; `GET /_admin/logs/stream` (server-sent events); the telemetry reads `obs.*` and `obs.markSeen` (listed in [Dashboard](dashboard.html#the-admin-api)) |
+| `viewer` (reads) | `microservices`, `manifest`, `docs`, `docsByIds`, `references`, `counts`, `scheduled`, `crons`, `files`, `users`, `sessions`, `audit`, `env`, `subscriptions`, `recentLogs`, `server`, `cache`, `settings`, `backups.list`; `GET /_admin/logs/stream` (server-sent events); the telemetry reads `obs.*` and `obs.markSeen` (listed in [Dashboard](dashboard.html#the-admin-api)) |
 | `admin` (changes) | `insertDoc`, `patchDoc`, `replaceDoc`, `deleteDoc`, `cancelJob`, `retryJob`, `deleteFile`, `revokeSession`, `banUser`, `run`, `clearCache`, `reload`, `backups.create`, `obs.setErrorState`, `obs.saveSlo`, `obs.deleteSlo`, `obs.saveAlertRule`, `obs.deleteAlertRule`, `obs.testAlert`, `obs.createKey`, `obs.revokeKey` |
 | `owner` | `runCustom` (also needs `ALLOW_CUSTOM_FUNCTIONS`), `saveSetting`, `restart`, `env.set`, `env.remove`, `backups.restore`, `backups.delete`, `GET /_admin/backups/download?id=`, `POST /_admin/backups/upload` |
 

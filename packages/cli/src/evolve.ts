@@ -6,6 +6,7 @@ import type { DesktopMode } from "create-archlast-forge";
 import {
   addDesktopApp,
   addMobile,
+  ensureDashboard,
   ensureToken,
   finishServices,
   newCtx,
@@ -200,9 +201,11 @@ export function syncWorkspace(dir: string): Change {
   }
   writeBarrel(c);
   writeShared(c);
+  ensureDashboard(c);
   summary.push(
     "packages/api" + (ws.transport === "forge-rpc" && servicesOf(ws).length ? ", packages/contracts" : "") + " and the main app's list of services: written from the apps in apps/",
   );
+  if (servicesOf(ws).length) summary.push(`the services report to apps/${ws.main}'s dashboard: DASHBOARD_URL and MICROSERVICES in the apps' .env`);
   return done(c, summary, []);
 }
 

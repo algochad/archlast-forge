@@ -366,7 +366,8 @@ export class MathController {
 The dashboard's [observability](observability.html) pages see inside the Nest app:
 
 - A controller's request is named by its route pattern (`GET /reports/:kind`), not by the URL, so every report is one operation with its own latency and errors.
-- Each method of a class decorated with `@Injectable()` or `@Controller()` from `@archlast/forge-runtime/nest` (and `@Resolver()` and `@WebSocketGateway()` from its entries) is a span named `Class.method`, so a trace shows which service a request spent its time in, and **Hotspots** ranks your classes by their own time. Nest's own classes and those of libraries aren't timed.
+- Each method of a class decorated with `@Injectable()` or `@Controller()` from `@archlast/forge-runtime/nest` (and `@Resolver()` and `@WebSocketGateway()` from its entries) is a span named `Class.method`, so a trace shows which service a request spent its time in, and the **Services** page ranks your classes by their own time, method by method. Nest's own classes and those of libraries aren't timed.
+- A message from a microservice transport (a [Forge RPC](forge-rpc.html) call, or a TCP, Redis or NATS message) is an `rpc` request named by its pattern, and a gateway message a `ws` request named `Gateway:event`, each with the classes it ran as its spans. A Forge RPC call continues the caller's trace.
 - An `HttpException` under 500 is a client error, not an error; anything that answers 500 is grouped into an issue with its stack.
 
 Another NestJS app that runs on its own can report to the same dashboard over OpenTelemetry: see [other services](observability.html#other-services-over-opentelemetry).

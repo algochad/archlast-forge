@@ -237,6 +237,10 @@ A failed call answers in the engine's [error envelope](errors.html), `{ message,
 - **Timeouts:** a `TIMEOUT` on a mutation means the outcome is unknown, because the service may still finish it.
 - **Raw `send()`:** the observable errors with the plain envelope object, as Nest transports do.
 
+## On the dashboard
+
+Each call is a request of the service that served it, of kind `rpc`, named by its pattern (`orders.place`), with its latency, errors and the classes it ran as its spans. The client's call carries the caller's trace, so a request to the main app and the calls it made to services are one trace, and the [map](observability.html#the-pages) draws the link between them. With the services reporting to the main app's [one dashboard](observability.html#one-dashboard-for-a-main-app-and-its-microservices), that trace is on one page.
+
 ## Performance
 
 - **Calls made in the same tick** go out as one HTTP request (batches of up to 32), over kept-alive connections. Every call is a POST, so a large query input never goes in a URL.

@@ -158,7 +158,9 @@ test("add service, again and again: ports, the list the main app mounts, contrac
   expect(existsSync(join(root, "apps", "api", "forge", "orders.ts"))).toBe(false);
   expect(read(root, "apps", "api", "forge", "_services.ts")).toContain("serviceControllers = [UserBillingController]");
   expect(read(root, "packages", "contracts", "index.ts")).not.toContain("Rpc as OrdersRpc");
+  expect(/^MICROSERVICES=(.*)$/m.exec(read(root, "apps", "api", ".env"))![1]).toBe("user-billing=http://localhost:3002"); // the dashboard's list follows
   removeApp(root, "user-billing");
+  expect(read(root, "apps", "api", ".env")).not.toContain("MICROSERVICES");
   expect(read(root, "apps", "api", "forge", "_services.ts")).toContain("serviceControllers: never[] = []"); // http.ts still imports it
   expect(existsSync(join(root, "packages", "contracts"))).toBe(false); // nothing left to share
   expect(json(root, "apps", "api", "package.json").devDependencies?.["@shop/contracts"]).toBeUndefined();
