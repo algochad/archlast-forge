@@ -184,7 +184,13 @@ interface DatabaseWriter extends DatabaseReader {
   patch<T extends TableNames>(id: Id<T>, value: Partial<WithoutSystemFields<Doc<T>>>): Promise<void>;   // shallow merge; undefined removes a field
   replace<T extends TableNames>(id: Id<T>, value: WithoutSystemFields<Doc<T>>): Promise<void>;
   delete(id: Id<TableNames>): Promise<void>;
+  // Every row validated before any is written; "all" (default) writes none if one is invalid, "partial" writes the valid ones.
+  insertMany<T extends TableNames>(table: T, values: WithoutSystemFields<Doc<T>>[], opts?: { mode?: "all" }): Promise<Id<T>[]>;
+  insertMany<T extends TableNames>(table: T, values: WithoutSystemFields<Doc<T>>[], opts: { mode: "partial" }): Promise<{ ids: (Id<T> | null)[]; errors: BatchError[] }>;
+  updateMany<T extends TableNames>(table: T, updates: { id: Id<T>; patch: Partial<WithoutSystemFields<Doc<T>>> }[], opts?: { mode?: "all" }): Promise<null>;
+  updateMany<T extends TableNames>(table: T, updates: { id: Id<T>; patch: Partial<WithoutSystemFields<Doc<T>>> }[], opts: { mode: "partial" }): Promise<{ errors: BatchError[] }>;
 }
+interface BatchError { index: number; message: string }
 ```
 
 `Joined` is the type that `spec` adds. Usage and errors: [Reading data](queries.html).
