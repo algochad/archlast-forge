@@ -1,6 +1,6 @@
 {
   "name": "@archlast/forge-cli",
-  "version": "0.12.0",
+  "version": "0.13.0",
   "description": "The archlast-forge command line: dev, up, build, data and config commands.",
   "license": "MIT",
   "repository": {
