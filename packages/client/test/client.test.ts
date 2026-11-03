@@ -147,9 +147,10 @@ test("a client without browser cookies (React Native) signs its calls and its so
     const events: unknown[][] = [];
     const off = native.watch(api.todos.events, {}, (u) => "value" in u && events.push(u.value as unknown[]));
     await until(() => events.length > 0);
-    const before = events.at(-1)!.length;
     await native.mutation(api.todos.logEvent, { kind: "from a phone" });
-    await until(() => events.at(-1)!.length === before + 1); // the live update arrives
+    // The live update arrives, with the event this call wrote. Not "one more than before": the table is shared with the other tests of this
+    // file, so something else may write in the same moment, and the count would skip the value the test waits for.
+    await until(() => (events.at(-1) as { kind: string }[]).some((e) => e.kind === "from a phone"));
     off();
     expect(asked).toBeGreaterThanOrEqual(3); // asked each time: every call, and the socket
   } finally {
