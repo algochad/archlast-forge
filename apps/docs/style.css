@@ -57,6 +57,7 @@ kbd, code, pre { font-family: var(--mono); }
 .top-links a:hover, .top-links a[aria-current] { color: var(--text); }
 .icon-btn { display: inline-grid; place-items: center; width: 36px; height: 36px; border: 0; background: none; color: var(--muted); }
 .icon-btn:hover { color: var(--text); }
+a.icon-btn { text-decoration: none; }
 .search-btn { display: inline-flex; align-items: center; gap: 10px; height: 34px; min-width: 240px; margin-right: 8px; padding: 0 6px 0 10px; color: var(--muted); background: none; border: 1px solid var(--border-strong); border-radius: var(--r); font-size: 13.5px; }
 .search-btn:hover { color: var(--text); border-color: var(--faint); }
 .search-btn svg { width: 15px; height: 15px; }

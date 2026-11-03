@@ -67,3 +67,7 @@ bun run e2e               # the same projects in Docker: `up`, `dev` with servic
 The browser tests (`packages/framework`) drive Chromium. Install one with `cd packages/framework && bunx playwright-core install chromium` (or set `CHROMIUM_PATH`); without a browser they skip.
 
 CI runs all of these on every push and pull request (`.github/workflows/ci.yml`). Releases are tag-driven (`release.yml`): they publish to npm, which needs an `NPM_TOKEN` secret, and push the engine image to GHCR. The steps, checks and what to do when one fails are in [docs/releasing.md](docs/releasing.md).
+
+## License
+
+MIT: see [LICENSE](LICENSE). Code ported from or copied out of other MIT projects keeps their notices: [packages/runtime/THIRD_PARTY_NOTICES.md](packages/runtime/THIRD_PARTY_NOTICES.md) (Traceway) and [packages/create-archlast-forge/THIRD_PARTY_NOTICES.md](packages/create-archlast-forge/THIRD_PARTY_NOTICES.md) (shadcn/ui), and the Scalar explorer the dashboard vendors carries its own license in `packages/dashboard/vendor/scalar`. Report security problems as [SECURITY.md](SECURITY.md) says.

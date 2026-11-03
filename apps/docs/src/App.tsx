@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import { Link, NavLink, Outlet, Route, Routes, useLocation } from "react-router";
-import { Contrast, Mark, Menu, SearchIcon } from "./icons";
+import { Contrast, GithubIcon, Mark, Menu, SearchIcon } from "./icons";
+import { GITHUB } from "./nav";
 import { DocPage, NotFound } from "./Doc";
 import { Landing } from "./Landing";
 import { Search } from "./Search";
@@ -64,6 +65,7 @@ function Chrome() {
           <span className="search-label">Search docs</span>
           <kbd className="kbd">{mac ? "⌘ K" : "Ctrl K"}</kbd>
         </button>
+        <a className="icon-btn" href={GITHUB} rel="noopener" aria-label="archlast-forge on GitHub, open source"><GithubIcon /></a>
         <button className="icon-btn" type="button" aria-label="Switch light and dark theme" onClick={toggleTheme}><Contrast /></button>
       </header>
       <Outlet context={() => setMenu(false)} />
