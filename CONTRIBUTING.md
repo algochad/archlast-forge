@@ -5,7 +5,7 @@
 1. Branch from `staging` (or fork the repository) and make the change, with its tests and, where it changes behavior, its docs (`apps/docs/content`), the agent skill (`skills/archlast-forge`; see CLAUDE.md) and a line under "Unreleased" in `apps/docs/content/release-notes.mdx`.
 2. Open a pull request **into `staging`**. The `test` check of `.github/workflows/ci.yml` must pass; run what you can first (`bun run typecheck`, `bun run test`, `bun run skill:check`, `bun run --cwd apps/docs build`).
 3. The owner reviews it (`.github/CODEOWNERS`): security, tests for the change, docs, fit with `docs/decisions.md` (the checklist is in [docs/releasing.md](docs/releasing.md#reviewing-a-pull-request)), and merges it into `staging`.
-4. To release, the owner adds the release notes and the version on `staging` and merges `staging` into `master`. That is when the engine image is built; if the merge sets a version npm doesn't have, the release then runs by itself after CI passes (the image, the packages, the tag and the GitHub release). Pull requests and `staging` never publish anything.
+4. To release, the owner merges `staging` into `master`. That is when the engine image is built; if the merge ships something (not only docs, workflows, scripts or tests), the release then runs by itself after CI passes: the version is chosen from what changed (a patch, or a minor for a new export, flag or setting), and the image, the packages, the tag and the GitHub release follow. `[skip release]` in a commit message skips it. Pull requests and `staging` never publish anything.
 
 A pull request into `master` that isn't from this repository's `staging` fails the `source-branch` check. Force pushes to either branch and deleting them are blocked.
 
