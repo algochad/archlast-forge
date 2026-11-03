@@ -6,7 +6,7 @@ How a release reaches every place people get archlast-forge from. Releases are l
 
 | Point | What | How it is published | Needs |
 | ----- | ---- | ------------------- | ----- |
-| git | `master`, and the tag `vX.Y.Z` | `git push` | push access |
+| git | `master` (by pull request: it is protected), and the tag `vX.Y.Z` (`git push`) | a merged PR, then `git push` of the tag | the owner's account |
 | npm | `@archlast/forge-runtime`, `-client`, `-react`, `-vue`, `-svelte`, `-framework`, `-dashboard`, `-cli`, and `create-archlast-forge` | the **publish** job of `.github/workflows/release.yml`, on a `v*` tag | the `NPM_TOKEN` repository secret (a granular token with read and write on all packages, new names included) |
 | GHCR | `ghcr.io/algochad/archlast-forge-engine:X.Y.Z` and `:latest` | the **engine-image** job of the same workflow; it runs first, because a new project's `archlast-forge up` pulls the image the moment the packages exist | `GITHUB_TOKEN` (automatic) |
 | Docs site | `apps/docs`, built and served by Caddy | **not in any workflow**: Coolify builds it (see [the docs site](#the-docs-site)) | the Coolify project |
@@ -16,6 +16,7 @@ The CLI pulls the engine image whose tag equals its own version, so the packages
 ## Rules
 
 - **Publishing can't be taken back.** npm never lets a version be reused, and people may already have pulled an image tag. Publish only when the user asks for a release. A request to commit or push is not one.
+- **Releases come from `master` only.** The release workflow's first job, `on-master`, fails a tag whose commit is not reachable from `master`, and the image push and the npm publish both wait for it, so nothing is published from a branch. Pull requests (and so the `engine-image` check in `ci.yml`) only build the image; they never push it or publish a package.
 - **Never tag before CI is green on the exact commit that gets the tag.** The release workflow rebuilds and smoke-tests, but it is the last line of defense, not the first.
 - **Bun 1.4.4.** Check `bun --version` (mise installs it; see `mise.toml`). If `bun` on the PATH is older, call the mise binary: `~/.local/share/mise/installs/bun/1.4.4/bin/bun`.
 - **The version.** A patch for fixes, a minor for new public API or behavior (0.7.0 added the `access` option), a pre-release such as `0.8.0-rc.1` only when the user asks (read [Known gaps](#known-gaps) first).
@@ -24,7 +25,7 @@ The CLI pulls the engine image whose tag equals its own version, so the packages
 
 Run from the repository root, on `master`, with a clean working tree. `X.Y.Z` is the new version.
 
-1. **Land the change first**, in its own commit(s), with its tests and docs: a message that says what changed and why, and numbers where there are any. The version commit comes after it, so the history reads change, then release.
+1. **Land the change first**, through a pull request, in its own commit(s), with its tests and docs: a message that says what changed and why, and numbers where there are any. The version commit comes after it, so the history reads change, then release.
 2. **Set the version**: `bun scripts/version.ts X.Y.Z`. It sets `version` in every `packages/*/package.json` and nothing else.
 3. **Update the version strings it doesn't touch**, all under `apps/docs/content`:
    - the banner in sample output, `archlast-forge X.Y.Z  ·` (`backend`, `cli`, `framework`, `getting-started`, `tutorial`);
@@ -35,15 +36,19 @@ Run from the repository root, on `master`, with a clean working tree. `X.Y.Z` is
    Find every one with `grep -rn "<previous version>" apps docs packages --include=*.mdx --include=*.md --include=*.json --include=*.ts --include=*.tsx | grep -v node_modules`. What is left should be a deliberate baseline, such as a benchmark README that says which version it measured.
    If the public API changed, make sure `reference.mdx` shows it: its signatures are copied from the source.
 4. **Refresh and check**: `bun install` (updates the workspace versions in `bun.lock`), then `bun install --frozen-lockfile` and `bun run --cwd apps/docs build` must both pass, as CI will run them.
-5. **Commit** as `Version X.Y.Z`. The body says what the release contains (see `git log --grep '^Version'`).
-6. **Push and wait for CI**:
+5. **Commit** as `Version X.Y.Z`, on a branch (`git switch -c release/X.Y.Z`): `master` is protected by a ruleset, so a direct push is refused. The body says what the release contains (see `git log --grep '^Version'`).
+6. **Open the pull request, merge it, and wait for CI on `master`**:
    ```bash
-   git push origin master && sleep 8                        # let the run register
+   git push -u origin release/X.Y.Z
+   gh pr create --fill --base master
+   gh pr checks --watch                                     # `test` and `engine-image` are required
+   gh pr merge --merge --delete-branch                      # the owner may merge without a second reviewer
+   git switch master && git pull --ff-only && sleep 8       # let the run for the merge commit register
    id=$(gh run list --branch master --limit 1 --json databaseId -q '.[0].databaseId')
    until [ "$(gh run view $id --json status -q .status)" = completed ]; do sleep 20; done
    gh run view $id --json conclusion,jobs -q '"conclusion: \(.conclusion)", (.jobs[] | "  \(.name): \(.conclusion)")'
    ```
-   The `test` job typechecks and builds, runs the tests against SQLite, Postgres, Redis and S3, packs the tarballs and serves a full-stack app and a backend from them, then runs the Docker end-to-end scripts. `engine-image` builds the image. Both must be `success`.
+   Use a merge commit (not squash or rebase) so the commit that was checked is the one that gets the tag. The tag goes on the merge commit of `master`, and CI must be green on that exact commit. The `test` job typechecks and builds, runs the tests against SQLite, Postgres, Redis and S3, packs the tarballs and serves a full-stack app and a backend from them, then runs the Docker end-to-end scripts. `engine-image` builds the image. Both must be `success`.
 7. **Tag and push the tag**, which starts the release workflow:
    ```bash
    git tag -a vX.Y.Z -m "Version X.Y.Z"
