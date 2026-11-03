@@ -84,9 +84,21 @@ jobs:
     steps:
       - name: The pull request comes from staging
         env:
+          GH_TOKEN: ${{ github.token }}
           HEAD_REF: ${{ github.head_ref }}
           HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
         run: |
+          # Until the staging branch exists there is nothing to come from: the pull request that introduces it is the one that gets through.
+          # Only a plain "no such branch" counts; any other answer (a rate limit, a token that can't read) fails the check instead of passing it.
+          code=$(curl -s -o /dev/null -w '%{http_code}' -H "Authorization: Bearer $GH_TOKEN" "https://api.github.com/repos/$GITHUB_REPOSITORY/branches/staging")
+          if [ "$code" = "404" ]; then
+            echo "There is no staging branch yet, so this pull request, which introduces the branch model, can't come from it."
+            exit 0
+          fi
+          if [ "$code" != "200" ]; then
+            echo "::error::Could not tell whether the staging branch exists (GitHub answered $code)."
+            exit 1
+          fi
           if [ "$HEAD_REF" != "staging" ] || [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
             echo "::error::master takes pull requests from the staging branch of this repository only (this one is from $HEAD_REPO:$HEAD_REF). Open the pull request into staging; the owner merges staging into master."
             exit 1
