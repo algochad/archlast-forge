@@ -42,7 +42,7 @@ Postgres, Redis or S3 tests run only when their `TEST_*` variable is set (`TEST_
 
 ## Agent skill
 
-`skills/archlast-forge` is the installable skill (`npx skills add algochad/archlast-forge`, the Vercel `skills` format: `SKILL.md` with `name` and `description`, plus `references/*.md`). It teaches agents how to build apps WITH archlast-forge, so it must change in the same commit as anything it describes: a public API or CLI flag, what `create-archlast-forge` writes (the scaffolding reference was written from real scaffolds), the `forge/` layout it recommends (`_modules/`, routers at the top level because codegen only reads non-underscore files), or the docs pages it summarizes. `bun run skill:check` (also in CI) validates front matter, links, that every reference is linked from `SKILL.md`, and that each `import` of an `@archlast/*` package in a code sample names a real export; it can't check prose, so reread the affected reference. The docs page is `apps/docs/content/agent-skill.mdx`.
+`skills/archlast-forge` is the installable skill (`npx skills add algochad/archlast-forge`, the Vercel `skills` format: `SKILL.md` with `name` and `description`, plus `references/*.md`). It teaches agents how to build apps WITH archlast-forge, so it must change in the same commit as anything it describes: a public API or CLI flag, what `create-archlast-forge` writes (the scaffolding reference was written from real scaffolds), the `forge/` layout it recommends (`_modules/`, routers at the top level because codegen only reads non-underscore files), or the docs pages it summarizes. `bun run skill:check` (also in CI) validates front matter, links, that every reference is linked from `SKILL.md`, and that each `import` of an `@archlast/*` package in a code sample names a real export; it can't check prose, so reread the affected reference. Changes that users notice also get a line under "Unreleased" in `apps/docs/content/release-notes.mdx` (the owner turns it into the release's notes on `staging`; CI refuses a version change without them). The docs page is `apps/docs/content/agent-skill.mdx`.
 
 ## Turborepo
 
@@ -52,20 +52,20 @@ Postgres, Redis or S3 tests run only when their `TEST_*` variable is set (`TEST_
 
 Full runbook: `docs/releasing.md`. Read it before releasing; this is the short version.
 
-Publishing points: **npm** (nine packages, lockstep version), the **engine image** on GHCR (`ghcr.io/algochad/archlast-forge-engine:<version>` and `:latest`), and the **docs site** (Coolify, not in a workflow). A `v*` tag runs `.github/workflows/release.yml`, which pushes the image and then publishes to npm (`NPM_TOKEN` secret).
+Publishing points: **npm** (nine packages, lockstep version), the **engine image** on GHCR (`ghcr.io/algochad/archlast-forge-engine:<version>` and `:latest`), and the **docs site** (Coolify, not in a workflow). `.github/workflows/release.yml` starts by itself when CI passes on a merge into `master` that sets a version npm doesn't have: it pushes the image, publishes to npm (`NPM_TOKEN` secret), then tags the commit and writes the GitHub release.
 
 - Publishing can't be taken back (npm never reuses a version). Release only when the user asks for it; a request to commit or push is not one.
-- Never tag before CI is green on the commit that gets the tag.
-- `master` is protected: never push to it. Work on a branch and open a pull request (`CONTRIBUTING.md`).
+- Merging a version change into `master` IS the release (it starts by itself once CI passes), so merge one only when the user asks for a release. Nobody tags by hand: the workflow tags after publishing.
+- `master` and `staging` are protected: never push to either. Work on a branch from `staging` and open a pull request into `staging` (`CONTRIBUTING.md`); only `staging` is merged into `master`, and the engine image is built only when `master` is updated.
 
 1. Commit the change itself first (code, tests, docs).
 2. `bun scripts/version.ts X.Y.Z` (use Bun 1.4.4; a patch for fixes, a minor for new public API). It only sets `packages/*/package.json`: also update the version in the docs' sample output, image tags, the `^X.Y.Z` example and the `reference.mdx` header (grep for the old version), and the API in `reference.mdx` if it changed.
 3. `bun install`, then `bun install --frozen-lockfile` and `bun run --cwd apps/docs build` must pass. Commit as `Version X.Y.Z`, with what the release contains in the body.
-4. `master` is protected (a ruleset: pull requests only, `test` and `engine-image` must pass, no force pushes). Commit `Version X.Y.Z` on `release/X.Y.Z`, `git push -u origin release/X.Y.Z`, `gh pr create --fill`, `gh pr checks --watch`, `gh pr merge --merge --delete-branch` (the owner can merge without a second reviewer; a merge commit keeps the checked commit), `git switch master && git pull --ff-only`, wait for CI on that commit (`gh run view`), then `git tag -a vX.Y.Z -m "Version X.Y.Z" && git push origin vX.Y.Z` and wait for the Release run.
+4. `staging` and `master` are protected (rulesets: pull requests only, `test` must pass, no force pushes; `master` takes only `staging`). Put the release notes in `apps/docs/content/release-notes.mdx` ("Unreleased" becomes `## X.Y.Z`), commit them and `Version X.Y.Z` on `release/X.Y.Z`, `gh pr create --base staging`, `gh pr merge --merge --delete-branch` (the owner can merge without a second reviewer), then `gh pr create --base master --head staging` and merge it with a merge commit. **That merge is the release**: when CI passes on it, `release.yml` publishes the image and the nine packages (a version npm doesn't have; the `plan` job refuses anything else), then makes the tag `vX.Y.Z` and the GitHub release. Nobody tags by hand: watch the Release run (`gh run list --workflow Release`).
 5. Verify, don't trust the green check: `npm view --prefer-online <package> version` for all nine (npm lags a few minutes), and the GHCR manifests for `X.Y.Z` and `latest` (same digest).
 6. Redeploy the docs site in Coolify (the repo doesn't record whether it deploys on push: check, or tell the user).
 
-Known gap: a pre-release tag (`-rc.1`) publishes to npm under `next`, but the image job still moves GHCR `latest`. Don't cut one without changing the workflow.
+A pre-release version (`-rc.1`) publishes under `next`, moves no `latest` (npm or image) and is a GitHub pre-release.
 
 ## Architecture
 

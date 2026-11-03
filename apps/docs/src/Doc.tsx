@@ -135,7 +135,7 @@ export function Article({ slug, Content }: { slug: Slug; Content: Doc["default"]
         <Content components={components} />
       </div>
       <div className="edit">
-        <a href={`${GITHUB}/edit/master/apps/docs/content/${slug}.mdx`} rel="noopener">
+        <a href={`${GITHUB}/edit/staging/apps/docs/content/${slug}.mdx`} rel="noopener">
           Edit this page on GitHub <Arrow />
         </a>
       </div>

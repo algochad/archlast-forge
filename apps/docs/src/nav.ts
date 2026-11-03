@@ -38,6 +38,7 @@ export const PAGES = {
   limits: ["Limits and security", () => import("../content/limits.mdx")],
   reference: ["API reference", () => import("../content/reference.mdx")],
   troubleshooting: ["Troubleshooting", () => import("../content/troubleshooting.mdx")],
+  "release-notes": ["Release notes", () => import("../content/release-notes.mdx")],
 } satisfies Record<string, [string, () => Promise<Doc>]>;
 export type Slug = keyof typeof PAGES;
 
@@ -49,7 +50,7 @@ export const GROUPS: [string, Slug[]][] = [
   ["Server features", ["auth", "storage", "scheduling", "http", "nest", "forge-rpc", "api-docs"]],
   ["Clients and guides", ["clients", "mobile", "desktop", "testing", "recipes", "agent-skill"]],
   ["Run", ["cli", "deployment", "configuration", "dashboard", "backups", "observability", "limits"]],
-  ["Reference", ["reference", "troubleshooting"]],
+  ["Reference", ["reference", "troubleshooting", "release-notes"]],
 ];
 
 export const reading = GROUPS.flatMap(([, slugs]) => slugs);
