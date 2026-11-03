@@ -1,11 +1,13 @@
 name: Release
 
-# A release is a merge into master that sets a version npm doesn't have yet. When CI has passed on that commit of master, this publishes the
-# engine image and the nine packages, then tags the commit vX.Y.Z and writes the GitHub release from the docs' release notes.
+# Every merge into master that ships something is a release. When CI has passed on that commit of master, this works out the version
+# (scripts/release-plan.ts: the next patch after the last release, the next minor when the change adds to what users see, or the version a person
+# set with scripts/version.ts), publishes the engine image and the nine packages with it, then tags the commit vX.Y.Z and writes the GitHub release.
+# The version is not committed: it is stamped into the packages and the image here, and the tag records it.
 #
-# A merge that isn't a release (every package already has the version on npm) ends at the first job. Publishing can't be taken back, so the
-# first job refuses anything that isn't a commit of master with a green CI run, and the notes are required before anything is pushed.
-# A failed run can be re-run, and `gh workflow run Release` tries master's head again: what is already on npm is skipped, and the tag is
+# A merge that ships nothing (docs, workflows, scripts, tests) or a commit that was released already ends at the first job. Publishing can't be
+# taken back, so the first job refuses anything that isn't a commit of master with a green CI run. A failed run can be re-run, and
+# `gh workflow run Release` tries master's head again: the same commit gets the same version, what is already on npm is skipped, and the tag is
 # only made after the packages are published, so there is nothing to delete after a failure.
 on:
   workflow_run:
@@ -31,6 +33,7 @@ jobs:
       release: ${{ steps.plan.outputs.release }}
       version: ${{ steps.plan.outputs.version }}
       prerelease: ${{ steps.plan.outputs.prerelease }}
+      since: ${{ steps.plan.outputs.since }}
       sha: ${{ steps.sha.outputs.sha }}
     steps:
       - id: sha
@@ -58,7 +61,7 @@ jobs:
         with:
           bun-version: 1.4.4
       - id: plan
-        name: Which packages are not on npm yet
+        name: Is this commit a release, and which version
         run: bun scripts/release-plan.ts
 
   # The image goes first: a new project's `archlast-forge up` pulls it as soon as the packages exist. `latest` only moves for real releases.
@@ -70,6 +73,15 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.plan.outputs.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: "Stamp the version, which is not committed: the packages in the image say what the tag says"
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: |
+          bun scripts/version.ts "$VERSION"
+          bun install --lockfile-only   # the image installs from the lockfile with --frozen-lockfile, which has the workspace versions
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
@@ -98,6 +110,10 @@ jobs:
         with:
           bun-version: 1.4.4
       - run: bun install --frozen-lockfile
+      - name: "Stamp the version into the packages: it is not committed, and the tarballs and the tag say what was released"
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+        run: bun scripts/version.ts "$VERSION"
       - name: Pack and smoke-test
         run: bun scripts/pack.ts --smoke
       - name: Publish to npm
@@ -128,6 +144,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           ref: ${{ needs.plan.outputs.sha }}
+          fetch-depth: 0
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
@@ -136,6 +153,7 @@ jobs:
           GH_TOKEN: ${{ github.token }}
           VERSION: ${{ needs.plan.outputs.version }}
           PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+          SINCE: ${{ needs.plan.outputs.since }}
           SHA: ${{ needs.plan.outputs.sha }}
         run: |
           TAG="v$VERSION"
@@ -147,6 +165,6 @@ jobs:
             git tag -a "$TAG" -m "Version $VERSION" "$SHA"
             git push origin "$TAG"
           fi
-          bun scripts/release-notes-section.ts "$VERSION" > notes.md
+          bun scripts/release-notes-section.ts "$VERSION" ${SINCE:+--since "$SINCE"} --sha "$SHA" > notes.md
           KIND=--latest; [ "$PRERELEASE" = "true" ] && KIND=--prerelease
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$VERSION" --notes-file notes.md --verify-tag "$KIND"
