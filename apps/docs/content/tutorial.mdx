@@ -347,7 +347,7 @@ Before moving on, look at what you stored: open http://localhost:3000/_dashboard
 A file named `[id].tsx` is a route parameter. `app/routes/notes/[id].tsx` answers `/notes/anything`, with `params.id` set. Create it:
 
 ```tsx
-import { data, Link, redirect, useNavigate, useParams, type LoaderArgs } from "@archlast/forge-framework";
+import { data, Link, redirect, useNavigate, useParams, useTimeZone, type LoaderArgs } from "@archlast/forge-framework";
 import { ForgeError, useMutation, useQuery } from "@archlast/forge-react";
 import { useState, type FormEvent } from "react";
 import { api } from "../../../forge/_generated/api";
@@ -370,6 +370,7 @@ export default function NotePage() {
 }
 
 function Editor({ note }: { note: Doc<"notes"> }) {
+  const timeZone = useTimeZone();
   const navigate = useNavigate();
   const [title, setTitle] = useState(note.title);
   const [body, setBody] = useState(note.body);
@@ -413,7 +414,7 @@ function Editor({ note }: { note: Doc<"notes"> }) {
         <button type="button" className="btn" onClick={del}>Delete</button>
         {saved && <span> Saved</span>}
       </form>
-      <p><small>Edited {new Date(note.updatedAt).toLocaleString()}</small></p>
+      <p><small>Edited {new Intl.DateTimeFormat("en-US", { dateStyle: "medium", timeStyle: "short", timeZone }).format(note.updatedAt)}</small></p>
     </main>
   );
 }
@@ -421,6 +422,7 @@ function Editor({ note }: { note: Doc<"notes"> }) {
 
 - **Missing notes are 404s.** `throw data("No such note", { status: 404 })` from a loader renders the nearest `ErrorBoundary` (the starter's `root.tsx` has one) with that status code, and on the first request the response really is a 404. The first guard exists because an id in the URL like `/notes/bogus` would otherwise fail the query's argument validation and render as a server error.
 - **The form is local state.** `Editor` copies the note into `useState` once, so typing is not interrupted when the live query updates. `key={note._id}` resets that state when you move to a different note. If another window edits the same note, this window's fields keep what you typed until you save.
+- **Times use `useTimeZone()`.** The server renders in the zone the browser last reported and the browser starts from the same one, so the page hydrates cleanly; `toLocaleString()` would format in the server's zone and make React discard the server HTML (see [Time zones](framework.html#usetimezone-and-usenow)).
 - **Delete** calls the mutation and navigates away. For a moment the live query reports `null` for the deleted note, which is why the page handles it.
 
 Click the note you made. You see the editor. Change the title and press Save: "Saved" appears next to the buttons. Try saving with a title of only spaces, and the message from `checked` appears: *A title is 1 to 120 characters*. That came from your server code, through `ForgeError`.

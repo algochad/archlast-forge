@@ -1,6 +1,6 @@
 # Mobile apps
 
-`init --mobile` adds a React Native app made with [Expo](https://expo.dev) to a backend or a full-stack app: a client that calls its functions and keeps queries live, typed from its generated API. Both serve the same `/rpc` and sign-in, so the app doesn't care which it talks to, and `add mobile` ([CLI](cli.html#add)) adds it later. It never runs the engine: **there is no full-stack Expo option**, so `--mobile` goes with `--mode backend`, and `init` doesn't offer it for a full-stack app.
+`init --mobile` adds a React Native app made with [Expo](https://expo.dev) to a backend or a full-stack app: a client that calls its functions and keeps queries live, typed from its generated API. Both serve the same `/rpc` and sign-in, so the app doesn't care which it talks to, and `add mobile` ([CLI](cli.html#add)) adds it later. It never runs the engine: the pages and functions stay in the main app, so `--mobile` goes with either `--mode backend` or `--mode framework` and the app is a client of whichever you made.
 
 ```bash
 bun create archlast-forge acme --mode backend --mobile        # implies --monorepo
@@ -9,7 +9,7 @@ cd acme && bun install && bun run dev                          # the backend on 
 
 ```
 acme/
-  apps/api/           the backend, with Better Auth's Expo plugin in forge/auth.ts
+  apps/api/           the backend (apps/web/ for a full-stack app), with Better Auth's Expo plugin in forge/auth.ts
   apps/mobile/        the Expo app: App.tsx (sign-in, a live chat), src/client.ts, app.json, .env
   packages/api/       the backend's typed API, which the app imports types from
 ```

@@ -87,7 +87,7 @@ Shown when the query cache is on (`CACHE_TTL_MS`; otherwise the page says how to
 
 ### Alerts and Ingest keys
 
-The alert rules over the telemetry and the keys other services send it with: see [observability](observability.html#alerts). The services reporting are on **Microservices**, under Infrastructure. For scraping by Prometheus, `/metrics` is still there (bearer `METRICS_TOKEN`, or the admin key).
+The alert rules over the telemetry and the keys other services send it with: see [observability](observability.html#alerts). The services reporting are on **Microservices**, under Infrastructure. For scraping by Prometheus, `/metrics` is still there (bearer `METRICS_TOKEN`, which is the admin key unless you set it).
 
 ### Backups
 
@@ -95,7 +95,7 @@ Every backup, newest first, with what it holds (documents and tables, files and 
 
 ### Audit
 
-The audit log: when, who, what, which target and the arguments, newest first (300 entries). It records dashboard writes and the CLI's `import`, `env set`, `env rm`, `admin add`, `admin remove` and `migrate --run` (actor `cli`; never the secret values). Reads and sign-ins aren't in it (sign-ins are in the server log). See [audit log](#audit-log).
+The audit log: when, who, what, which target and the arguments, newest first (300 entries). It records dashboard writes and the CLI's `import`, `restore`, `env set`, `env rm`, `admin add`, `admin remove` and `migrate --run` (actor `cli`; never the secret values). Reads and sign-ins aren't in it (sign-ins are in the server log). See [audit log](#audit-log).
 
 ### Settings
 
@@ -158,12 +158,15 @@ Every change made from the dashboard is recorded in the `_audit` table with the 
 | `obs.saveSlo`, `obs.deleteSlo` | SLOs |
 | `obs.saveAlertRule`, `obs.deleteAlertRule`, `obs.testAlert` | Alerts (webhook URLs are left out of the recorded arguments) |
 | `obs.createKey`, `obs.revokeKey` | Ingest keys (the name, never the key) |
+| `backups.create`, `backups.restore`, `backups.delete`, `backups.import`, `backups.download` | Backups (an upload is `backups.import`) |
+| `settings.save`, `env.set`, `env.remove` | Settings (the name, never the value) |
+| `restart` | Settings → Restart now |
 
 The log has no edit or delete in the UI. Because the arguments of data edits are recorded, **the values you type are stored there**, and every role can read the audit page: don't paste a secret into a document edit.
 
 ## Keyboard, search and theme
 
-- **Ctrl or Cmd + K** opens a palette that jumps to a page, a table (in Data) or a function (in Functions), and searches telemetry: operations, errors, users, or a trace by its id.
+- **Ctrl or Cmd + K** opens a palette that jumps to a page, a table (in Data) or a function (in Functions), and searches telemetry: operations, errors, users, or a trace by its id or by the request id a caller saw (`Server error (request …)`).
 - **Alt + 1 … 9 and Alt + 0** jump to the first ten pages in sidebar order: Overview, Requests, Errors, Logs, Users, Jobs, Spans, Hotspots, Services and Map.
 - The address bar follows the view (`#/requests?kind=query&op=todos:list`), so an operation, a trace or an issue can be bookmarked or sent to someone. Links from older versions (`#Data`) still work.
 - The theme follows your system, or switch it to light or dark from the top bar. It is remembered in your browser.

@@ -56,7 +56,7 @@ type ObjectType<F extends PropertyValidators> = /* required keys, plus optional 
 type Id<TableName extends string> = string & { readonly __tableName: TableName };
 ```
 
-`paginationOptsValidator` is `v.object({ numItems: v.number(), cursor: v.union(v.string(), v.null()) })`. `ValidationError` is the error thrown for any failed check (`name` is `"ValidationError"`); it reaches callers as a `BAD_REQUEST`.
+`paginationOptsValidator` is `v.object({ numItems: v.number(), cursor: v.union(v.string(), v.null()), offset: v.optional(v.number()), withTotal: v.optional(v.boolean()) })`. `ValidationError` is the error thrown for any failed check (`name` is `"ValidationError"`); it reaches callers as a `BAD_REQUEST`.
 
 ### Schema
 

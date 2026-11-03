@@ -647,7 +647,7 @@ Rows pile up, so prune them with the cron in [the cleanup recipe](#a-cron-cleanu
 
 ## Soft delete
 
-**Mode: any.** Keep the row, mark it, and make every query say which rows it wants. Make the flag a `boolean` that is part of the index (`["ownerId", "deleted"]`), not an optional timestamp: an index over a field that is sometimes missing can skip those documents.
+**Mode: any.** Keep the row, mark it, and make every query say which rows it wants. Make the flag a `boolean` that is part of the index (`["ownerId", "deleted"]`), not an optional timestamp: documents that lack an indexed field stay in the index, but range operators (`gt`, `lt`, ...) never match them and `eq("deleted", false)` does not match a missing field.
 
 ```ts
 // forge/notes.ts

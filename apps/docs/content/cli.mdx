@@ -35,7 +35,7 @@ Commands that act on a project look for `forge/schema.ts` in the current directo
 | `--docker` | require Docker: fail instead of falling back when it is missing. |
 | `-h`, `--help` | print the usage text and exit 0. |
 
-Running with no command prints the usage text and exits 0; an unknown command prints it and exits 1. An option the CLI doesn't know is one line (`✗ Unknown option '--prot'. Run `archlast-forge --help` to see the options.`) with exit code 1. `archlast-forge --version` (or `-v`) prints the version. (On `0.1.0` an unknown option printed a stack trace and there was no `--version`; the version was on the first line of the usage text.)
+Running with no command prints the usage text and exits 0; an unknown command prints it and exits 1. An option the CLI doesn't know is one line (`✗ Unknown option '--prot'. To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- "--prot". Run `archlast-forge --help` to see the options.`; the middle sentence is Bun's) with exit code 1. `archlast-forge --version` (or `-v`) prints the version. (On `0.1.0` an unknown option printed a stack trace and there was no `--version`; the version was on the first line of the usage text.)
 
 Failures print `✗ <message>` to stderr and exit 1. Success exits 0. Progress lines use `✓` (done), `→` (working), and `!` (a warning). Colors are off when output is not a terminal, or `NO_COLOR` is set or `TERM=dumb`; `FORCE_COLOR` turns them on. Spinners become single lines in logs and CI.
 
@@ -54,11 +54,11 @@ All three are the same program (`create-archlast-forge`). `init` forwards everyt
 | `dir` | the new folder, which must be empty or not exist. Its name becomes the project and package name (lowercased; anything but letters, digits, `-` and `_` becomes `-`). |
 | `-m`, `--mode <framework\|backend>` | `framework`: a full-stack React app (SQLite with `--services none`). `backend`: the engine plus services, and no pages. `--template` is an alias. |
 | `-s`, `--services <list>` | any of `postgres`, `redis`, `s3`, `caddy`, comma separated, or `none`. Defaults: `postgres,redis,s3,caddy` for `framework`; `postgres,redis,s3` for `backend`. |
-| `--shadcn`, `--no-shadcn` | full-stack apps only: write the starter with shadcn/ui (Tailwind CSS v4, `components.json`, components in `app/components/ui`) or with its plain stylesheet. Default: shadcn/ui. With `--mode backend` it is an error. |
+| `--shadcn`, `--no-shadcn` | full-stack apps only: write the starter with shadcn/ui (Tailwind CSS v4, `components.json`, components in `app/components/ui`) or with its plain stylesheet. Default: shadcn/ui. `--shadcn` with `--mode backend` is an error (`--no-shadcn` is accepted and does nothing). |
 | `--base-color <name>` | the shadcn/ui base color: `neutral` (default), `stone`, `zinc`, `mauve`, `olive`, `mist` or `taupe`. It cannot be changed later (that is shadcn's rule for `components.json`). Passing it implies `--shadcn`; with `--no-shadcn` it is an error. |
 | `--monorepo` | a Turborepo monorepo: the app in `apps/`, the main app's typed API in `packages/api` ([Monorepos](monorepo.html)). |
 | `--microservices <names>` | backends to add beside the app, comma separated (`orders,billing`), each called from it over [Forge RPC](forge-rpc.html) or another NestJS transport. Implies `--monorepo`. Names: lowercase letters, digits and `-`; not `web`, `api`, `mobile` or `desktop`. |
-| `--transport <forge-rpc\|tcp\|redis\|nats>` | how the services talk. Default `forge-rpc`: typed calls between forge apps, with `packages/contracts`. |
+| `--transport <forge-rpc\|tcp\|redis\|nats>` | how the services talk. Default `forge-rpc`: typed calls between forge apps, with `packages/contracts`. Implies `--monorepo`. |
 | `--mobile` | a React Native (Expo) app in `apps/mobile`, a client of the app, a full-stack app or a backend ([Mobile apps](mobile.html)): both serve the same API and sign-in. Implies `--monorepo`. |
 | `--desktop <full\|client>` | a Tauri app in `apps/desktop` ([Desktop apps](desktop.html)): `full` runs the full-stack app, engine included, on the user's machine (with `--mode framework`); `client` is a page that talks to a backend elsewhere. Implies `--monorepo`. |
 | `--install`, `--no-install` | run `bun install` afterwards. When nothing is said: ask, or do not install if not asking. |
@@ -175,7 +175,7 @@ Each is run from anywhere inside a [monorepo](monorepo.html), and installs and r
 | `add mobile` | `apps/mobile`, an Expo app that is a client of the main app, a full-stack app or a backend. A main app with an `auth.ts` of its own keeps it, and is told what to add. |
 | `add desktop <full\|client>` | `apps/desktop`, a Tauri app. `full` is only for a full-stack main app. |
 
-Names are lowercase letters, digits and `-`; `web`, `api`, `mobile` and `desktop` are the monorepo's own. A name that is taken, or a file in the main app that the service's calls would overwrite, is refused before anything is written.
+Names are lowercase letters, digits and `-`, starting with a letter, at most 31 characters; `web`, `api`, `mobile` and `desktop` are the monorepo's own. A name that is taken, or a file in the main app that the service's calls would overwrite, is refused before anything is written.
 
 ## remove
 
@@ -290,7 +290,7 @@ Troubleshooting `dev`:
 archlast-forge codegen [--dir <forge dir>]
 ```
 
-Installs server dependencies if they changed, then writes `forge/_generated/api.ts` and `dataModel.ts` (skipping files whose content is unchanged), and checks that frontend code imports nothing from `forge/` except `forge/_generated`. It checks every relative import in `src/` and `app/` next to the forge folder.
+Installs server dependencies if they changed, then writes `forge/_generated/api.ts` and `dataModel.ts` (skipping files whose content is unchanged), plus `rpc.ts` when `forge/` has [Forge RPC](forge-rpc.html) routers (the types their callers use; the file is deleted when there are none), and checks that frontend code imports nothing from `forge/` except `forge/_generated`. It checks every relative import in `src/` and `app/` next to the forge folder.
 
 ```
 ✓ wrote /home/me/proj/forge/_generated (3 modules)
@@ -299,7 +299,7 @@ Installs server dependencies if they changed, then writes `forge/_generated/api.
 A violation prints and exits 1 (`dev`, `build` and `up` run the same check):
 
 ```
-✗ Frontend code must import only forge/_generated:
+✗ Frontend code must import only forge/_generated (and not Forge RPC, which is for backends):
   app/routes/teapot.tsx imports "../../forge/posts"
 ```
 
@@ -396,7 +396,7 @@ archlast-forge start [--no-docker | --image <tag> [--env-file <file>] [--with <s
 | Docker, no config file, no `--image` | `Pass --image <tag> (from `archlast-forge build`), or --no-docker to run in this process.` |
 | `--no-docker` | runs the engine in this process. A full-stack app is loaded from `.forge/build`. |
 
-In-process output: `✓ archlast-forge on http://localhost:3000 (app and API)` (without the parenthesis for a backend). It needs `BETTER_AUTH_SECRET` and an https `BETTER_AUTH_URL` (or `ALLOW_INSECURE_HTTP=1`), which Bun reads from `.env` in the current directory; `DATA_DIR` defaults to `./data` in the current directory (unlike `dev`, which uses `forge/data`). `SIGTERM` and `SIGINT` stop it gracefully and exit 0 (a second signal exits 1); `SIGHUP` reloads the function runtime. Configuration problems print one line and exit 1 (see [Deployment](deployment.html#environment-for-production)); a full-stack app without a build says ``No production build in …/.forge/build. Run `archlast-forge build --no-docker` first.``
+In-process output: `✓ archlast-forge on http://localhost:3000 (app and API)` (without the parenthesis for a backend). It needs `BETTER_AUTH_SECRET` and an https `BETTER_AUTH_URL` (or `ALLOW_INSECURE_HTTP=1`), which Bun reads from `.env` in the current directory; `DATA_DIR` defaults to `forge/data` next to your functions, the same place `dev` keeps its database. `SIGTERM` and `SIGINT` stop it gracefully and exit 0 (a second signal exits 1); `SIGHUP` reloads the function runtime. Configuration problems print one line and exit 1 (see [Deployment](deployment.html#environment-for-production)); a full-stack app without a build says ``No production build in …/.forge/build. Run `archlast-forge build --no-docker` first.``
 
 ## stop
 
@@ -588,9 +588,8 @@ Everything else you export is passed to the engine when it runs in the CLI's pro
 | `forge/_generated/api.ts`, `dataModel.ts` | `codegen`, `dev`, `build`, `up` | types; commit them |
 | `forge/_generated/.depshash` | the same | stamp for skipping `bun install` |
 | `forge/node_modules`, `forge/bun.lock` | the same | server dependencies |
-| `forge/data/app.db` (+ `-wal`, `-shm`) | `dev` | the development database |
+| `forge/data/app.db` (+ `-wal`, `-shm`) | `dev`, `start --no-docker` | the database, unless `DATA_DIR` says otherwise |
 | `forge/data/.dev-secrets.json` | `dev` | generated `BETTER_AUTH_SECRET` and `ADMIN_KEY`, if none are in the environment |
-| `data/app.db` | `start --no-docker` | the default location without `DATA_DIR` |
 | `.forge/gen`, `.forge/build/<version>`, `.forge/build/latest.json` | `dev`, `build` | a full-stack app's generated entries and bundles |
 | `.env` | `init`, `up` | secrets, once |
 | `archlast-forge.workspace.json`, `apps/`, `packages/`, `turbo.json` | `init --monorepo`, `monorepo`, `add`, `remove`, `workspace sync` | a monorepo and what is in it |

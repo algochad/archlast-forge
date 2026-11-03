@@ -125,7 +125,7 @@ await request.arrayBuffer();  // for binary
 await request.json();         // parsed; throws on invalid JSON
 ```
 
-Bodies are **buffered, not streamed**: the engine reads the whole request before your handler runs, and sends the whole response after it returns. There is no way to stream a large download or an event stream through a handler; hand out a presigned storage URL for big files (see [the redirect example](#download-through-a-presigned-url)). A request body over `MAX_REQUEST_BYTES` (8 MiB by default) is refused with 413 before your code runs.
+Bodies are **buffered, not streamed**: the engine reads the whole request before your handler runs, and sends the whole response after it returns. The one exception is a response whose `content-type` starts with `text/event-stream`: its body is streamed as it is written, so a handler can send server-sent events. A large download can't be streamed; hand out a presigned storage URL for big files (see [the redirect example](#download-through-a-presigned-url)). A request body over `MAX_REQUEST_BYTES` (8 MiB by default) is refused with 413 before your code runs.
 
 ### The response
 
@@ -217,7 +217,7 @@ The JSON error shape is the same one `/rpc` uses, so error-handling code can be 
 - **Rate limit:** `/http` is limited per client IP like function calls (`RATE_LIMIT_PER_MINUTE`, 1200 by default, off in dev). Over the limit the answer is `429 {"message":"Too many requests"}` with `Retry-After`. A provider that sends many webhooks from a small set of IPs can hit it; raise the limit. Behind your own reverse proxy, set `TRUST_PROXY=1` so the limit counts real client IPs and not the proxy's.
 - **Logs and metrics:** a handler call is logged and counted under `http <METHOD> <route>`, where the route is the pattern you registered and not the path the caller used: `http POST /webhooks/acme`, `http GET /download/*` for a prefix. In `/metrics` they are `forge_function_calls_total{function="http GET /health"}` (with the duration histogram next to it); there a call counts as ok when the handler returns a `Response`, whatever its status, and as failed when the handler throws or times out. Requests that match no route (404, 405) and requests refused by the rate limit are not counted there.
 - **Telemetry:** each request is an `http` request on the dashboard, named by its route pattern (`POST /webhooks/acme`), with its status (a 5xx is a server error, a 4xx a client error) and a trace of what the handler did. Requests that match no route are `GET (unmatched)`; requests refused by the rate limit aren't recorded. See [Observability](observability.html).
-- **Not supported:** streaming or server-sent events through a handler, `HEAD` routes, WebSockets, a route list in the dashboard, and `createTestBackend` (see [testing](testing.html); use a real server and `fetch`).
+- **Not supported:** streaming any body but `text/event-stream`, `HEAD` routes, WebSockets, a route list in the dashboard, and `createTestBackend` (see [testing](testing.html); use a real server and `fetch`).
 
 ## Examples
 

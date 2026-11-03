@@ -34,7 +34,7 @@ ${c.bold("Grow")}  (a project that exists: see the monorepo page of the docs)
       --microservices <a,b>   --transport <forge-rpc|tcp|redis|nats>   --mobile   --desktop <full|client>   --dry-run
   add service <name>      a microservice: its own app, and a class in the main app that calls it
   add app <name>          another app of the monorepo   --mode <framework|backend>   --services <list>   --no-shadcn   --base-color <name>
-  add mobile              an Expo app, a client of a backend main app
+  add mobile              an Expo app, a client of the main app
   add desktop <full|client>   a Tauri app
   remove <name>           delete a service or app (and the main app's calls to it), or mobile or desktop
   workspace [sync]        list the monorepo's apps and ports; sync writes packages/api and packages/contracts again from apps/

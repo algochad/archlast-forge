@@ -461,7 +461,7 @@ See [Reactivity](reactivity.html) for how subscriptions use this and [Caching](c
 - **`take` and `first` stop early**; `collect` reads everything. Page large reads.
 - **Counts of ranges are cheap** (`COUNT` over the index) when the query has no `filter`. Aggregates read every document in range.
 - **Joins are batched**, but `take` on a reverse include costs a query per parent.
-- **Query results are cached** per `(function, args)` outside dev (see [Caching](caching.html)), so repeated identical reads cost little.
+- **Query results are cached** per `(function, args)`, in dev too (see [Caching](caching.html)), so repeated identical reads cost little.
 
 ## Limits
 

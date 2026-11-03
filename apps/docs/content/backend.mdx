@@ -103,7 +103,7 @@ curl -s -X POST localhost:3000/rpc/messages:send -H 'content-type: application/j
 # {"error":{"message":"Sign in to post","code":"BAD_REQUEST","data":"Sign in to post","requestId":"…"}}
 ```
 
-Better Auth checks the `Origin` of requests that carry one: an origin it doesn't trust gets `403 {"message":"Invalid origin","code":"INVALID_ORIGIN"}`. Its own address (`BETTER_AUTH_URL`) and everything in `TRUSTED_ORIGINS` are trusted. The full wire protocol, with the WebSocket messages, is in [Clients](clients.html#calling-the-engine-without-the-client). Mobile apps (React Native and others) can use `ArchlastForgeClient`, which needs only `fetch` and `WebSocket`. The client does not add headers for you, and the server reads a session from the `cookie` or `authorization` header, so how a native app obtains and attaches a session token is a Better Auth question (see [Authentication](auth.html)); A native app has not been tested here.
+Better Auth checks the `Origin` of requests that carry one: an origin it doesn't trust gets `403 {"message":"Invalid origin","code":"INVALID_ORIGIN"}`. Its own address (`BETTER_AUTH_URL`) and everything in `TRUSTED_ORIGINS` are trusted. The full wire protocol, with the WebSocket messages, is in [Clients](clients.html#calling-the-engine-without-the-client). Mobile apps (React Native and others) can use `ArchlastForgeClient`, which needs only `fetch` and `WebSocket`. The server reads a session from the `cookie` or `authorization` header, and the client's `headers` and `authPlugins` options attach and keep one outside a browser: `init --mobile` writes an [Expo app](mobile.html) that does it with Better Auth's Expo plugin, and `forge/auth.ts` for the backend.
 
 ### CORS and trusted origins
 

@@ -36,7 +36,7 @@ Rules that follow from this layout:
 - Code in `app/` runs in the browser and on the server. It may import from `forge/_generated` and from nothing else in `forge/`. `archlast-forge codegen` (and `dev`, and `build`) fails with the file and import named if you break this:
 
   ```
-  ✗ Frontend code must import only forge/_generated:
+  ✗ Frontend code must import only forge/_generated (and not Forge RPC, which is for backends):
     app/routes/teapot.tsx imports "../../forge/posts"
   ```
 
@@ -65,7 +65,7 @@ What is skipped silently: names starting with `_` (the `_layout` file is the onl
 
 ### Layouts and groups
 
-A folder with a `_layout.tsx` becomes a layout route: its component renders around every route in the folder, and its `loader` runs for all of them. A layout renders the page below it with `<Outlet />`. A `(group)` folder adds nothing to the URL; with a `_layout.tsx` it is a layout that has no path, and without one it only organises files. Folders nest, so `(app)/dashboard/_layout.tsx` is a layout inside the `(app)` layout.
+A folder with a `_layout.tsx` becomes a layout route: its component renders around every route in the folder, and its `loader` runs for all of them. A layout renders the page below it with `<Outlet />`. A `(group)` folder adds nothing to the URL; with a `_layout.tsx` it is a layout that has no path, and without one it only organises files. Folders nest, so `(app)/dashboard/_layout.tsx` is a layout inside the `(app)` layout. A `_layout.tsx` directly in `app/routes/` is ignored, with no message (there is no folder for it to wrap): the chrome around every page is `app/root.tsx`.
 
 The route id of a file is its path under `app/` without the extension: `routes/blog/[slug]`, `routes/(app)/_layout`, `routes/blog/index`. The root is `root`. You need ids for `useRouteLoaderData("routes/blog/_layout")`, and they appear in server logs and in `window.__FORGE__.hydration.loaderData`.
 
@@ -82,7 +82,7 @@ Bad names fail the build (and show over the page in development) with the file n
 | no `routes` folder | `No routes directory at …/app/routes. Create app/routes/index.tsx for the home page.` |
 | `routes` has no page | `…/app/routes has no routes. Create index.tsx for the home page.` |
 
-A parameter name is a letter or underscore followed by word characters: `[1id]` is rejected as above. Two parameter files at the same level (`[id].tsx` and `[slug].tsx`) are not reported as a conflict, because their paths (`/:id`, `/:slug`) differ as text; the router matches the first and the second never renders. Keep one dynamic file per level.
+A parameter name is a letter or underscore followed by word characters: `[1id]` is rejected as above. Parameter names don't tell routes apart, so two parameter files at the same level (`[id].tsx` and `[slug].tsx`) are a conflict too: `app/routes/blog/[id].tsx and app/routes/blog/[slug].tsx both answer the same URLs (/blog/:id and /blog/:slug: parameter names don't tell routes apart). Keep one.` Keep one dynamic file per level.
 
 ## Route modules
 
@@ -98,7 +98,7 @@ A route module may export:
 
 `app/root.tsx` is the one route that always renders; it also exports `Layout`. Everything else is a plain function or component: a file may export helpers, but the exports above are the ones the framework reads. The type of a module is `RouteModule`, exported by `@archlast/forge-framework`.
 
-From `@archlast/forge-framework` you can import: `Link`, `NavLink`, `Navigate`, `Outlet`, `redirect`, `data`, `isRouteErrorResponse`, `useLoaderData`, `useRouteLoaderData`, `useParams`, `useLocation`, `useNavigate`, `useNavigation`, `useRevalidator`, `useRouteError`, `useSearchParams`, `useViewer`, the types `LoaderArgs`, `LoaderContext`, `Viewer` and `RouteModule`, plus `DefaultLayout` and `DefaultErrorBoundary`. React Router's `Form`, `useFetcher`, `useActionData`, `useSubmit`, `useMatches`, `Await` and `ScrollRestoration` are not exported, because the framework has no route actions and does not stream (see [Not supported](#not-supported)). Import router things from the framework package only: the production image supplies one copy of the router, and a second copy would not share its context.
+From `@archlast/forge-framework` you can import: `Link`, `NavLink`, `Navigate`, `Outlet`, `redirect`, `data`, `isRouteErrorResponse`, `useLoaderData`, `useRouteLoaderData`, `useMatches`, `useParams`, `useLocation`, `useNavigate`, `useNavigation`, `useRevalidator`, `useRouteError`, `useSearchParams`, `useViewer`, `useNow`, `useTimeZone`, the types `LoaderArgs`, `LoaderContext`, `Viewer` and `RouteModule`, plus `DefaultLayout` and `DefaultErrorBoundary`. React Router's `Form`, `useFetcher`, `useActionData`, `useSubmit`, `Await` and `ScrollRestoration` are not exported, because the framework has no route actions and does not stream (see [Not supported](#not-supported)). Import router things from the framework package only: the production image supplies one copy of the router, and a second copy would not share its context.
 
 ### `root.tsx`
 
@@ -170,7 +170,7 @@ The same function runs in two places. On the first request of a visit it runs in
 - **No secrets and no server-only code in a loader.** It is bundled for the browser. `process.env` has only `NODE_ENV`. Anything private belongs in a query, mutation or action in `forge/`.
 - **Authorization lives in the functions.** A loader that redirects anonymous visitors is a convenience for navigation. The check that protects data is `ctx.auth.getUserIdentity()` inside the function.
 - **All matched loaders run at the same time.** A layout's loader and its children's start together, so a layout that redirects does not stop a child's loader from starting (checked: a `console.log` in the dashboard's loader printed on an anonymous request that the layout redirected). Do not rely on a layout loader to keep a child loader from running.
-- **Return JSON.** On the first request the loader's result is serialized into the page as JSON, so a `Date` arrives in the browser as an ISO string, `undefined` fields disappear, and `Map`, `Set` and class instances do not survive. (After a client-side navigation the loader runs in the browser and its result is used as it is, so a value that does not survive JSON would make the page behave differently on first load and on navigation.) Return `null` rather than `undefined` when there is nothing. `useLoaderData<typeof loader>()` types what you returned, not what arrives, so treat dates as strings. Query results are already JSON values.
+- **Return JSON.** On the first request the loader's result is serialized into the page as JSON, so a `Date` arrives in the browser as an ISO string, `undefined` fields disappear, and `Map`, `Set` and class instances do not survive. The server itself renders the page from the object the loader returned, before any serializing, so a value that does not survive JSON also makes the server's HTML differ from the browser's first render: a `Date` rendered with `String(date)` is `Thu Jan 01 …` on the server and an ISO string in the browser, which is a hydration error (see [Times and the clock](#times-and-the-clock)). (After a client-side navigation the loader runs in the browser and its result is used as it is, so such a value would also behave differently on first load and on navigation.) Return `null` rather than `undefined` when there is nothing. `useLoaderData<typeof loader>()` types what you returned, not what arrives, so treat dates as strings. Query results are already JSON values.
 
 ### `ctx.query` and the live cache
 
@@ -785,7 +785,7 @@ archlast-forge start --no-docker     # serve them here
 archlast-forge up                    # or: the image and its services, in Docker
 ```
 
-`build --no-docker` prints what the browser will download:
+`build --no-docker` prints what the browser will download (here for the plain starter, `--no-shadcn`; the default shadcn/ui starter prints `entry.client.js 443 kB (125 kB compressed), entry.client.css 145 kB (82 kB compressed)`, the CSS being Tailwind and the theme):
 
 ```
 → Building the app
@@ -801,7 +801,7 @@ What the build does:
 - **Compression:** text assets of 1 kB or more (`.js`, `.css`, `.svg`, `.json`, `.html`, `.txt`, `.map`) are stored next to the original as `.gz` and `.br`, and the server sends them as they are when the request's `accept-encoding` allows it. No compression happens per request.
 - **Caching:** everything under `/_app/` is served with `cache-control: public, max-age=31536000, immutable`, `vary: accept-encoding` and `x-content-type-options: nosniff`; names carry content hashes, so a new build has new URLs. HTML is never cached.
 - **Preload:** for each matched route, the page's `<head>` gets `modulepreload` links for the route's chunk and every chunk it imports statically (from the build's metafile), and the stylesheet is linked in `<head>`.
-- **Size:** the starter's first load is about 108 kB with brotli (128 kB with gzip): React, the router, live queries and sign-in. Each page adds a couple of kilobytes.
+- **Size:** the plain starter's first load is about 108 kB of JavaScript with brotli (128 kB with gzip): React, the router, live queries and sign-in; the shadcn/ui starter's is about 125 kB, plus its stylesheet. Each page adds a couple of kilobytes.
 
 `start --no-docker` fails with ``No production build in …/.forge/build. Run `archlast-forge build --no-docker` first.`` if there is no build. Starting reads the build once; it does not watch for new ones, so restart after building. Bun loads the project's `.env` from the current directory, so `BETTER_AUTH_SECRET`, `ADMIN_KEY` and the rest are picked up from there (see [Configuration](configuration.html)); `BETTER_AUTH_URL` must be `https://` outside development unless `ALLOW_INSECURE_HTTP=1`.
 

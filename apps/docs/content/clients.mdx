@@ -123,8 +123,8 @@ const client = new ArchlastForgeClient({ url: "http://localhost:3000", WebSocket
 
 Two things to know:
 
-1. **There is no cookie jar.** In a browser, `fetch` and the WebSocket send the session cookie for you. Elsewhere nothing does, so `client.query/mutation/action` run **anonymously**. For a signed-in service account, either call `/rpc/<name>` with your own `fetch` and a `Cookie` header, or use the `bearer()` plugin and send `Authorization: Bearer …` yourself (see [authentication](auth.html#bearer-tokens-for-non-browser-callers)). `client.auth`'s session store also stays "pending" outside a browser.
-2. **Live queries as a user** work if the WebSocket sends the cookie on its handshake. Bun's WebSocket accepts a `headers` option:
+1. **There is no cookie jar.** In a browser, `fetch` and the WebSocket send the session cookie for you. Elsewhere nothing does, so `client.query/mutation/action` run **anonymously** unless you pass the [`headers`](#constructor) option: `headers: () => ({ cookie })` with the `set-cookie` of a sign-in response, or, with the `bearer()` plugin, ``headers: () => ({ authorization: `Bearer ${token}` })`` (see [authentication](auth.html#bearer-tokens-for-non-browser-callers)). `client.auth`'s session store also stays "pending" outside a browser.
+2. **Live queries as a user** work if the WebSocket sends the cookie on its handshake. With `headers` set, the client opens the socket as `new WebSocket(url, undefined, { headers })`, the form React Native's takes; Bun's WebSocket ignores it (checked: the live query ran as anonymous), so there pass a subclass whose constructor takes Bun's `headers` option:
 
 ```ts
 const cookie = "better-auth.session_token=…"; // from a sign-in response's set-cookie

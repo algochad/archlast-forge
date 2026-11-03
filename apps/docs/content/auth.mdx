@@ -329,7 +329,6 @@ The people who sign in to the [dashboard](dashboard.html) are not users of your 
 ## Limits and what isn't there
 
 - No email or SMS sending, and no built-in UI: you bring both.
-- Password reset can't be completed yet (see above), and other flows that consume a verification token (magic link, email OTP) are likely affected the same way.
 - Plugins that add tables need those tables declared in your schema.
 - `UserIdentity` carries four fields; everything else is a `ctx.db.get(userId)` away.
 - Sessions are cookies with a signed token. There is no JWT mode for functions.

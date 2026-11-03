@@ -455,7 +455,7 @@ All `@archlast/forge-*` packages and `create-archlast-forge` share one version a
 
 ### Is it production ready?
 
-It is version 0.1.0 and young: expect changes between 0.x releases, and test an upgrade before you roll it out. What exists: a Docker stack with Postgres, Redis and S3-compatible storage, health checks and graceful shutdown, a stored-data schema check at startup, rate limits, timeouts with a watchdog, structured logs, metrics and tracing, a dashboard with roles and an audit log, and end-to-end tests against real services. What to weigh: SQLite means one server; there is no hosted service, so you operate the database, backups and upgrades yourself; actions run at most once with no automatic retry; one deployment serves one app, with no multi-tenant isolation. [Limits and security](limits.html) has a checklist to go through before you open it to users.
+It is a 0.x release and young: expect changes between 0.x releases, and test an upgrade before you roll it out. What exists: a Docker stack with Postgres, Redis and S3-compatible storage, health checks and graceful shutdown, a stored-data schema check at startup, rate limits, timeouts with a watchdog, structured logs, metrics and tracing, a dashboard with roles and an audit log, and end-to-end tests against real services. What to weigh: SQLite means one server; there is no hosted service, so you operate the database, backups and upgrades yourself; actions run at most once with no automatic retry; one deployment serves one app, with no multi-tenant isolation. [Limits and security](limits.html) has a checklist to go through before you open it to users.
 
 ### How does it compare to Convex?
 

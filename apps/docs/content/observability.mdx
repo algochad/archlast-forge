@@ -144,7 +144,7 @@ In a [monorepo](monorepo.html), each microservice is a backend of its own, and t
 `archlast-forge init --monorepo`, `add service`, `remove` and `workspace sync` write these to the apps' `.env` for development (each app on this machine, on its port). In production, set them with the addresses the stacks reach each other at.
 
 - **Telemetry**: a microservice keeps no telemetry store. Once a second it posts what it recorded to the main app's `/_telemetry` with the token; while the main app is away (a restart, a deploy) it holds up to a minute of it and sends it when it is back. The main app refuses telemetry under its own name.
-- **Data and settings**: the dashboard sends a page's calls to the main app with the microservice's name, and the main app forwards them to the service with the token and the role of whoever is signed in. The service checks the role as its own dashboard would: a viewer can't edit a document there either. Only the main app may do this: the service accepts the token for its admin API, and nothing else does.
+- **Data and settings**: the dashboard sends a page's calls to the main app with the microservice's name, and the main app forwards them to the service with the token and the role of whoever is signed in. The service checks the role as its own dashboard would: a viewer can't edit a document there either. Only the main app may do this: the service accepts the token for its admin API, and nothing else does but its own `ADMIN_KEY`, when it has one.
 - Errors' source lines come from the main app's files: for a microservice's stack, the lines aren't shown.
 
 ## Nodes

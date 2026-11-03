@@ -39,7 +39,7 @@ bun run dev                                          # tauri dev, talking to htt
 FORGE_URL=https://api.example.com bun run build      # the installer, talking to the deployed backend
 ```
 
-The backend has to accept the app's origin: add `tauri://localhost` (macOS, Linux) and `http://tauri.localhost` (Windows) to its `TRUSTED_ORIGINS`. To sign in from the app, give it a session it can send: Better Auth's [bearer plugin](auth.html#bearer-tokens-for-non-browser-callers) and the client's [`headers`](clients.html#constructor) option.
+The backend has to accept the app's origin: add `tauri://localhost` (macOS, Linux) and `http://tauri.localhost` (Windows) to its `TRUSTED_ORIGINS`. In `tauri dev` the page is served from `http://localhost:5174` (`dev:page`), and `dev` trusts only its own address by default, so start the backend with `TRUSTED_ORIGINS=http://localhost:3000,http://localhost:5174 archlast-forge dev` (an origin it doesn't trust gets no CORS headers on `/rpc` calls and a 403 on the WebSocket; checked with `curl`, not from a Tauri window). To sign in from the app, give it a session it can send: Better Auth's [bearer plugin](auth.html#bearer-tokens-for-non-browser-callers) and the client's [`headers`](clients.html#constructor) option.
 
 ## What was checked
 

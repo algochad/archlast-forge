@@ -195,16 +195,17 @@ Components that use `useQuery` and `useMutation` need an `ArchlastForgeProvider`
 bun add -d @testing-library/react @happy-dom/global-registrator
 ```
 
-```toml
-# bunfig.toml
-[test]
-preload = ["./happydom.ts"]
-```
-
 ```ts
 // happydom.ts
 import { GlobalRegistrator } from "@happy-dom/global-registrator";
 GlobalRegistrator.register();
+```
+
+happy-dom replaces global `fetch` and `Response`, which breaks tests that talk to a real server ([below](#testing-a-running-app)). Preload it only for the component tests, and run those apart from the rest, instead of putting it in a `bunfig.toml`:
+
+```bash
+bun test --preload ./happydom.ts test/Todos.test.tsx    # component tests need a DOM
+bun test --path-ignore-patterns '**/*.test.tsx'         # the rest: test backend and real server
 ```
 
 ```ts

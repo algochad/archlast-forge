@@ -589,7 +589,7 @@ const CHANGING = `
 \`\`\`bash
 archlast-forge add service billing     # a microservice: its app, its router, and a class in the main app that calls it
 archlast-forge add app admin           # another full-stack app (--mode backend for a backend)
-archlast-forge add mobile              # an Expo app (a backend main app)
+archlast-forge add mobile              # an Expo app, a client of the main app
 archlast-forge add desktop client      # a Tauri app (full or client)
 archlast-forge remove billing          # an app or a service (and the main app's calls to it), or the mobile or desktop app
 archlast-forge workspace               # what is here and on which ports; \`workspace sync\` rewrites packages/api and packages/contracts
