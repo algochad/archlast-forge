@@ -114,3 +114,18 @@ Which transport: **forge-rpc** unless you need to talk to non-forge services (us
 - Giving two apps the same port or database; each app is its own stack.
 - Forgetting `--yes` in scripts (commands that move files refuse without a terminal).
 - Using `src/` for a full-stack app's frontend (it is `app/`); `src/` is for a backend's separate frontend with its own bundler.
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                                      | Read it for                                                                                        |
+| ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------- |
+| [getting-started](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/getting-started.mdx) | creating and running a project, both modes, the first change                                       |
+| [framework](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/framework.mdx)             | full-stack apps in depth: routes, loaders, NestJS section                                          |
+| [backend](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/backend.mdx)                 | backends: the stack, calling the backend, NestJS section, production checklist                     |
+| [monorepo](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/monorepo.mdx)               | monorepos and microservices: layout, `add`/`remove`/`workspace`, the workspace file, one dashboard |
+| [cli](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/cli.mdx)                         | `init`, `monorepo`, `add`, `remove`, `workspace` and `upgrade` flags                               |
+| [mobile](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/mobile.mdx)                   | the Expo app as a client                                                                           |
+| [desktop](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/desktop.mdx)                 | the Tauri app, `full` and `client`                                                                 |
+| [concepts](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/concepts.mdx)               | the mental model, when a mode choice is unclear                                                    |

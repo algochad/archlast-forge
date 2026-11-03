@@ -382,3 +382,16 @@ Detect with `components.json` (shadcn) and `app/components/ui/`.
 13. Editing `.forge/gen`, `forge/_generated` or `archlast-forge.json`'s mode; putting app packages in `forge/package.json` or the reverse; adding `react` to `dependencies` at another version.
 14. Optimistic updates on a paginated list, or calling a mutation from a loader.
 15. Expecting hot reload or a watching `start`: dev reloads the page on save; `start` serves the build it read at startup.
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                            | Read it for                                                                           |
+| --------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| [framework](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/framework.mdx)   | the full-stack framework in depth: routes, loaders, hydration, styling, build, NestJS |
+| [tutorial](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/tutorial.mdx)     | a full-stack notes app, step by step                                                  |
+| [recipes](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/recipes.mdx)       | auth-gated pages, infinite scroll, optimistic updates, uploads                        |
+| [reactivity](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/reactivity.mdx) | how live queries behave in components                                                 |
+| [clients](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/clients.mdx)       | the React hooks the pages use                                                         |
+| [auth](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/auth.mdx)             | sign-in and the viewer                                                                |

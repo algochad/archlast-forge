@@ -398,3 +398,18 @@ export const checkout = action({
 - Streaming a large download through a handler (buffered): redirect to a presigned URL.
 - Leaving `TRUST_PROXY` unset behind a proxy (everyone shares one rate-limit budget), or setting it when the proxy does not overwrite `X-Forwarded-For`.
 - Reading secrets from the client or `src/`: they belong in `process.env` of `forge/` (`archlast-forge env set` or the server environment).
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                                  | Read it for                                               |
+| --------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------- |
+| [auth](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/auth.mdx)                   | Better Auth, sessions, roles, plugins, dashboard accounts |
+| [storage](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/storage.mdx)             | uploads, downloads, S3 and built-in storage               |
+| [scheduling](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/scheduling.mdx)       | scheduled functions and crons                             |
+| [http](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/http.mdx)                   | HTTP endpoints, validators, CORS, rate limits, streaming  |
+| [api-docs](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/api-docs.mdx)           | OpenAPI and the API docs page                             |
+| [limits](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/limits.mdx)               | every limit and the security model                        |
+| [configuration](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/configuration.mdx) | the variables behind these features                       |
+| [recipes](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/recipes.mdx)             | webhooks, cron cleanup, email, rate limits, uploads       |

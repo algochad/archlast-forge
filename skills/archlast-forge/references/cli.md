@@ -489,3 +489,16 @@ When the target is production, state which server (`--port`, container, `DATABAS
 15. **Forgetting codegen** after changing functions, schema, routers or `_modules`: `bun run typecheck` runs it, then fix what it reports.
 16. **`upgrade` surprises.** It changes versions before installing (a failed install leaves edited files), moves a whole monorepo, and can downgrade. Run it on a clean tree, commit, then `bun run codegen`, tests and `up`.
 17. **Reading `dashboard` as a health check.** It prints a URL and nothing more.
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                                  | Read it for                                                |
+| --------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------- |
+| [cli](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/cli.mdx)                     | the full CLI reference this file summarizes                |
+| [configuration](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/configuration.mdx) | the environment variables the commands and the engine read |
+| [migrations](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/migrations.mdx)       | `migrate`, `export`, `import`                              |
+| [backups](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/backups.mdx)             | `backup` and `restore`                                     |
+| [dashboard](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/dashboard.mdx)         | `admin` accounts and the dashboard the CLI prints          |
+| [monorepo](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/monorepo.mdx)           | `monorepo`, `add`, `remove`, `workspace`                   |
