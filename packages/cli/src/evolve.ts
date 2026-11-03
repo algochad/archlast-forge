@@ -6,6 +6,7 @@ import type { DesktopMode } from "create-archlast-forge";
 import {
   addDesktopApp,
   addMobile,
+  ensureAppNames,
   ensureDashboard,
   ensureToken,
   finishServices,
@@ -113,6 +114,7 @@ export function addApp(dir: string, name: string, o: AddAppOptions = {}): Change
   });
   writeShared(c); // packages/api gains it
   ensureToken(c); // a backend of the monorepo can call its services
+  ensureAppNames(c); // its name: on the dashboard and in its Redis keys
   return done(
     c,
     [

@@ -66,6 +66,7 @@ acme/
 - Ports in dev (`bun run dev` at the root, all apps with `--no-docker`): main 3000, services 3001, 3002, …; RPC 4001, 4002, ….
 - **Type sharing rules:** `packages/api` has the main app's types only (`import { webApi, type Web } from "@acme/api"`); another app's types are in `@acme/api/<app>`. Services are not in `@acme/api`. A TypeScript project imports the types of **one** backend (two backends' generated types collide with `TS2717`). Mobile and desktop import `@acme/api`, never a service.
 - A backend main app's package is `@acme/backend` because `@acme/api` is `packages/api`.
+- **Apps may share one Redis** (and one Postgres server, each with its own database): the engine keeps its cache, topics and rate limits under a prefix from the app's `OTEL_SERVICE_NAME` (`archlast-forge:orders:`). The CLI gives every app its own name (`init`, `add app|service`, `workspace sync`), so services stay apart, and every server of one service has the same name, so scaled instances share their keys. Never give two apps one name, and pass `OTEL_SERVICE_NAME` in each `compose.yaml` (it passes only what it lists); `REDIS_PREFIX` overrides.
 - **One dashboard:** services send telemetry to the main app (`DASHBOARD_URL`, shared `DASHBOARD_TOKEN`, `OTEL_SERVICE_NAME` in each service; `MICROSERVICES=orders=http://…,billing=http://…` in the main app). The commands keep these `.env` values in step; in production set them to the real addresses.
 
 ### Commands that change the layout (run from anywhere in the monorepo)

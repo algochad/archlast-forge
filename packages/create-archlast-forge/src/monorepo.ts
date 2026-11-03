@@ -341,11 +341,21 @@ function setEnv(file: string, key: string, value: string | null, comment: string
 const envValue = (file: string, key: string) => (existsSync(file) ? new RegExp(`^${key}=(\\S+)$`, "m").exec(readFileSync(file, "utf8"))?.[1] : undefined);
 
 /**
+ * Every app of the monorepo gets a name of its own (OTEL_SERVICE_NAME, which an app that has one keeps). The dashboard shows it, and the engine
+ * keys its Redis cache, topics and rate limits by it, so apps that share a Redis stay apart while every server of one app (the same name) shares.
+ */
+export function ensureAppNames(c: Ctx) {
+  for (const name of new Set([c.ws.main, ...Object.keys(c.ws.apps)]))
+    setEnv(join(c.root, "apps", name, ".env"), "OTEL_SERVICE_NAME", name, "This app's name: on the dashboard, and in its Redis keys, so apps that share a Redis stay apart", true);
+}
+
+/**
  * One dashboard for the monorepo, the main app's: each service sends its telemetry there (DASHBOARD_URL) under its own name, and the main app
  * lists the services (MICROSERVICES) so their data, schema and functions open on it too. The addresses are the development ones (each app on
  * this machine, on its port); production sets its own.
  */
 export function ensureDashboard(c: Ctx) {
+  ensureAppNames(c);
   const services = servicesOf(c.ws).map(([name]) => name);
   const mainEnv = join(c.root, "apps", c.ws.main, ".env");
   const files = [mainEnv, ...services.map((s) => join(c.root, "apps", s, ".env"))];

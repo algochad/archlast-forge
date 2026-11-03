@@ -94,6 +94,14 @@ export const SETTINGS: SettingDef[] = [
     doc: "Redis for the bus between servers, a shared cache and shared rate limits.",
     envOnly: "The engine connects to it before it serves anything: a wrong value would keep it from starting.",
   },
+  {
+    name: "REDIS_PREFIX",
+    group: "Database",
+    type: "string",
+    default: "archlast-forge:<OTEL_SERVICE_NAME>:",
+    doc: 'What this service\'s Redis keys and channels start with, so services that share one Redis keep their cached results, topics and rate limits apart. Every server of a service uses the same value: by default it comes from OTEL_SERVICE_NAME, and without a name it is "archlast-forge:", what the engine always used.',
+    envOnly: "The engine connects to Redis with it before it serves anything.",
+  },
   { name: "CACHE_TTL_MS", group: "Database", type: "int", min: 0, default: "60000", doc: "The longest a query result is cached. 0 turns the query cache off." },
   { name: "CACHE_MAX_MB", group: "Database", type: "int", min: 1, default: "64", doc: "Memory for the in-process query cache (Redis applies its own limits)." },
   // -- function runtime --

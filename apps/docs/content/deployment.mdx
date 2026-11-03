@@ -179,6 +179,7 @@ The ingress must pass WebSocket upgrades on `/rpc` and keep idle connections ope
 | `TRUST_PROXY` | `1` behind a proxy | client IPs for rate limits come from `X-Forwarded-For` |
 | `TRUSTED_ORIGINS` | the other browser origins you serve | CORS and Better Auth origin checks |
 | `DATABASE_URL`, `REDIS_URL` | your PostgreSQL and Redis | needed for more than one server |
+| `REDIS_PREFIX` | optional | the name of this service's Redis keys; the default comes from `OTEL_SERVICE_NAME`, so servers of one service agree and services sharing a Redis don't collide (see [Scaling out](#scaling-out)) |
 | `S3_*` | your S3-compatible storage | file storage; `S3_PUBLIC_ENDPOINT` is where browsers reach it |
 | `DASHBOARD` | `off` unless you use it | it is off outside development by default; the stack's compose file turns it on |
 | `METRICS_TOKEN` | a separate bearer token | otherwise `/metrics` uses `ADMIN_KEY` |
@@ -282,6 +283,8 @@ DATABASE_URL=postgres://…     # shared database
 REDIS_URL=redis://…           # cross-server reactivity, cache, rate limits
 REPLICAS=3                    # declares intent; startup fails if the above are missing
 ```
+
+Everything the engine keeps in Redis starts with a prefix, `archlast-forge:<service>:` from `OTEL_SERVICE_NAME`. **Run every server of a service with the same `OTEL_SERVICE_NAME`** and they share their keys, however many you scale to; give **each different service its own name** when they share a Redis, and their caches, topics and rate limits stay apart. An app with no `OTEL_SERVICE_NAME` uses `archlast-forge:`, as the engine always did, so upgrading it moves no keys. `compose.yaml` passes the engine only what it lists under `environment:`, so add `OTEL_SERVICE_NAME` (or `REDIS_PREFIX`) there. If two apps do end up with one prefix, the second to start logs `another app already uses the Redis prefix`. Naming a service that had no name moves its keys, and servers of that service on different versions don't see each other's writes until the last is upgraded (cached entries expire after `CACHE_TTL_MS`): to keep the old keys through the upgrade, set `REDIS_PREFIX=archlast-forge:` on every server first, then name the service and remove it.
 
 - **PostgreSQL** holds the data. Writes run serializable and retry conflicts with jittered backoff; indexes are built concurrently. Back it up with `pg_dump`.
 - **Redis** carries the topics that tell other servers a table changed (each server then re-runs the subscriptions it owns), the shared query cache, and rate-limit counters (including Better Auth's). It holds nothing durable.

@@ -192,7 +192,10 @@ test("add app: another full-stack app or a backend, on its own port, with its ty
   expect(json(root, "packages", "api", "package.json").exports).toMatchObject({ ".": "./index.ts", "./admin": "./admin.ts" });
   expect(read(root, "packages", "api", "index.ts")).not.toContain("adminApi");
   expect(/^FORGE_RPC_TOKEN=/m.test(read(root, "apps", "admin", ".env"))).toBe(true); // it can call the services too
+  const name = (app: string) => /^OTEL_SERVICE_NAME=(.*)$/m.exec(read(root, "apps", app, ".env"))?.[1];
+  expect([name("web"), name("orders"), name("admin")]).toEqual(["web", "orders", "admin"]); // a name of its own: its dashboard name and its Redis keys
   addApp(root, "jobs", { mode: "backend", services: ["postgres"] });
+  expect(name("jobs")).toBe("jobs");
   expect(json(root, "apps", "jobs", "archlast-forge.json")).toEqual({ mode: "backend", services: ["postgres"] });
   expect(json(root, WORKSPACE_FILE).apps).toMatchObject({ orders: { kind: "service", port: 3001 }, admin: { kind: "app", port: 3002 }, jobs: { kind: "app", port: 3003 } });
   addService(root, "billing"); // a service after the apps: the next free ports, not a clash

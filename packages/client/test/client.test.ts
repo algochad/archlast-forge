@@ -83,7 +83,7 @@ test("after the server restarts, the client reconnects and refetches", async () 
 const pg = process.env.TEST_POSTGRES_URL;
 const redis = process.env.TEST_REDIS_URL;
 test.skipIf(!pg || !redis)("two servers: a mutation on one reaches subscribers on the other, and caches invalidate", async () => {
-  const env = { ...process.env, PORT: "0", DATABASE_URL: pg, REDIS_URL: redis, REPLICAS: "2", BETTER_AUTH_SECRET: "x".repeat(32), CACHE_TTL_MS: "60000", ALLOW_INSECURE_HTTP: "1" };
+  const env = { ...process.env, PORT: "0", DATABASE_URL: pg, REDIS_URL: redis, REPLICAS: "2", OTEL_SERVICE_NAME: "orders", BETTER_AUTH_SECRET: "x".repeat(32), CACHE_TTL_MS: "60000", ALLOW_INSECURE_HTTP: "1" };
   const [s1, s2] = [await startServer({ forgeDir: fixture, env }), await startServer({ forgeDir: fixture, env })];
   const [c1, c2] = [new ArchlastForgeClient({ url: s1.url }), new ArchlastForgeClient({ url: s2.url })];
   try {
@@ -156,3 +156,39 @@ test("a client without browser cookies (React Native) signs its calls and its so
     native.close();
   }
 }, 15_000); // a sign-up (password hashing), two live subscriptions and their updates: past 5 s on a busy CI runner
+
+test.skipIf(!redis)("two apps on one Redis: each app's cache and subscriptions are its own", async () => {
+  // Two different backends that happen to have a function of the same name (`todos:listCounts`) and a table of the same name (`lists`), as
+  // the services of a monorepo can. Each has its own database and its own service name; they share one Redis.
+  const app = (service: string) =>
+    startServer({
+      forgeDir: fixture,
+      dev: true,
+      env: { ...process.env, PORT: "0", DATA_DIR: mkdtempSync(join(tmpdir(), "afx-app-")), ADMIN_KEY: "k", REDIS_URL: redis, OTEL_SERVICE_NAME: service, BETTER_AUTH_SECRET: "s".repeat(32), CACHE_TTL_MS: "60000" },
+    });
+  const run = crypto.randomUUID().slice(0, 8); // names of its own, so other tests on this Redis (or an earlier run) share nothing with it
+  const [orders, billing] = [await app(`orders-${run}`), await app(`billing-${run}`)];
+  const [co, cb] = [new ArchlastForgeClient({ url: orders.url }), new ArchlastForgeClient({ url: billing.url })];
+  const names = async (c: ArchlastForgeClient) => ((await c.query(api.todos.listCounts, {})) as { name: string }[]).map((l) => l.name);
+  try {
+    await co.mutation(api.todos.createList, { name: "orders list" });
+    expect(await names(co)).toEqual(["orders list"]); // cached in Redis now
+    // Billing asks the same function with the same arguments: its own (empty) answer, not orders' cached one.
+    expect(await names(cb)).toEqual([]);
+    // And a write in billing doesn't re-run or invalidate orders' subscription or cache.
+    const updates: QueryUpdate[] = [];
+    const off = co.watch(api.todos.listCounts, {}, (u) => updates.push(u));
+    await until(() => updates.length === 1);
+    await cb.mutation(api.todos.createList, { name: "billing list" });
+    await Bun.sleep(300);
+    expect(updates).toHaveLength(1);
+    expect(JSON.stringify(updates.at(-1))).not.toContain("billing list");
+    expect(await names(co)).toEqual(["orders list"]);
+    off();
+  } finally {
+    co.close();
+    cb.close();
+    await orders.stop();
+    await billing.stop();
+  }
+}, 20_000);

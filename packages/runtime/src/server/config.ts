@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { availableParallelism } from "node:os";
-import { join } from "node:path";
+import { join, resolve } from "node:path";
+import { DEFAULT_REDIS_PREFIX } from "./bus";
 
 /** CPU cores this process may use: the container's CPU quota when it has one (cgroup v2 `cpu.max`), else the machine's. */
 export function serverCores(): number {
@@ -16,6 +18,29 @@ export function serverCores(): number {
  * The function runtime processes `RUNTIME_WORKERS` asks for: a number, or `auto`, which is the cores times `RUNTIME_WORKERS_RATIO` (0.5 by
  * default: half the cores, leaving the rest to the server process, the database and whatever else runs there), rounded down, at least 1.
  */
+/**
+ * The prefix of this app's Redis keys: the identity of the service, so every server of one service has the same and two services differ.
+ *  - REDIS_PREFIX, when it is set.
+ *  - Else `archlast-forge:<service>:` from OTEL_SERVICE_NAME, the name the dashboard knows the service by (`init` gives every app of a
+ *    monorepo its own, and every server of a service has the same).
+ *  - Else `archlast-forge:`, what the engine always used: an app that names nothing keeps its keys when the engine is upgraded.
+ * It doesn't depend on a secret, so rotating one moves nothing.
+ */
+export function redisPrefixOf(env: Record<string, string | undefined>): string {
+  const given = env.REDIS_PREFIX?.trim();
+  if (given) {
+    if (!/^[A-Za-z0-9._:-]{1,64}$/.test(given)) throw new ConfigError(`REDIS_PREFIX must be 1 to 64 letters, digits, ".", "_", "-" or ":", got "${given}"`);
+    return given.endsWith(":") ? given : `${given}:`;
+  }
+  const service = env.OTEL_SERVICE_NAME?.trim().toLowerCase().replace(/[^a-z0-9._-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 48);
+  return service && service !== "archlast-forge" ? `${DEFAULT_REDIS_PREFIX}${service}:` : DEFAULT_REDIS_PREFIX;
+}
+
+/** What tells one app from another that has the same prefix, and the same for every server of an app: a hash of its secret (its data folder in development). */
+export function redisOwnerOf(config: Pick<Config, "authSecret" | "dataDir">): string {
+  return createHash("sha256").update("redis-owner\0").update(config.authSecret ? `secret:${config.authSecret}` : `dir:${resolve(config.dataDir)}`).digest("hex").slice(0, 16);
+}
+
 export function runtimeWorkersFor(env: Record<string, string | undefined>, cores = serverCores()): { workers: number; auto: boolean; ratio: number; cores: number } {
   const rawRatio = env.RUNTIME_WORKERS_RATIO?.trim();
   const ratio = rawRatio ? Number(rawRatio) : 0.5;
@@ -50,6 +75,11 @@ export interface Config {
   /** Postgres connections each function-runtime process may open (DATABASE_POOL_SIZE); twice the CPU cores by default. */
   databasePoolSize: number;
   redisUrl?: string;
+  /**
+   * What the engine's Redis keys and channels start with (REDIS_PREFIX, else from the service name: see redisPrefixOf). Servers of one service
+   * share it; services that share a Redis don't, so their cached results, topics and rate limits stay apart. It always ends with ":".
+   */
+  redisPrefix: string;
   s3?: S3Config;
   /** Where files live: an S3 bucket, the engine's own disk (DATA_DIR/storage), or nowhere. */
   storage: "s3" | "local" | "off";
@@ -196,6 +226,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     databaseUrl,
     databasePoolSize: int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1),
     redisUrl: env.REDIS_URL || undefined,
+    redisPrefix: redisPrefixOf(env),
     s3: s3Of(env, "S3_"),
     storage,
     storagePublicUrl: (env.STORAGE_PUBLIC_URL || authUrl).replace(/\/+$/, ""),

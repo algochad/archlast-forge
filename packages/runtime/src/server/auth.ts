@@ -160,7 +160,7 @@ export function createAuth(exec: Executor, tables: TablesSpec, options: AuthOpti
     rateLimit: {
       enabled: !config.dev,
       ...options.rateLimit,
-      ...(redis && { customStorage: new RedisRateLimiter(redis, "archlast-forge:auth-rl:") }),
+      ...(redis && { customStorage: new RedisRateLimiter(redis, `${config.redisPrefix}auth-rl:`) }),
     },
     // The address Better Auth rate limits is the one the server worked out (it honors TRUST_PROXY) and put in this header,
     // not whatever X-Forwarded-For the client sent.
