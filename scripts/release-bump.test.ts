@@ -3,6 +3,7 @@ import {
   compare,
   decideBump,
   latestRelease,
+  markersOf,
   nextVersion,
   parseDiff,
   parseNameStatus,
@@ -78,6 +79,50 @@ describe("whether a merge releases", () => {
       decideBump(change({ messages: ["a [skip release]", "b [release]"] }))
         .bump,
     ).toBe("patch");
+  });
+});
+
+describe("markers and commit types count where they are meant, not where a message talks about them", () => {
+  const prose = [
+    "Releases pick their own version\n\nnone: nothing ships, or [skip release];\nminor: a new export, a feat: commit, or [minor]; [release] forces a release.\n\nThe `[minor]` marker and `[skip release]` are described here.",
+  ];
+  test("a message that explains the markers neither forces, skips nor bumps", () => {
+    expect(decideBump(change({ messages: prose })).bump).toBe("patch");
+    expect(
+      decideBump(
+        change({ paths: ["apps/docs/content/nest.mdx"], messages: prose }),
+      ).bump,
+    ).toBe("skip");
+  });
+  test("a marker at the end of the first line, or on a line of its own, counts", () => {
+    expect(markersOf(["Fix a thing [skip release]"]).has("skip release")).toBe(
+      true,
+    );
+    expect(markersOf(["Fix a thing\n\nBody.\n[minor]\n"]).has("minor")).toBe(
+      true,
+    );
+    expect(markersOf(["Docs [release]"]).has("release")).toBe(true);
+  });
+  test("a marker in the middle of a sentence, in the body, or in code does not", () => {
+    expect(
+      markersOf(["Fix\n\nthis is [minor] in the middle of a line"]).size,
+    ).toBe(0);
+    expect(markersOf(["Fix\n\nends with a marker [minor]"]).size).toBe(0); // the end of a body line, not the first line
+    expect(markersOf(["Fix `[skip release]`"]).size).toBe(0);
+  });
+  test("feat: counts only as a commit type at the start of a first line", () => {
+    expect(
+      decideBump(
+        change({ messages: ["Fix\n\nfeat: this line is in the body"] }),
+      ).bump,
+    ).toBe("patch");
+    expect(
+      decideBump(change({ messages: ["Update things\n\n- a feat: in a list"] }))
+        .bump,
+    ).toBe("patch");
+    expect(decideBump(change({ messages: ["feat: a real one"] })).bump).toBe(
+      "minor",
+    );
   });
 });
 

@@ -56,21 +56,40 @@ const isSettings = (path: string) =>
 export const watchedForDiff = (path: string) =>
   isPublicSurface(path) || isCliSurface(path) || isSettings(path);
 
-const FEAT = /^feat(\([^)]*\))?!?:/m;
-const BREAKING = /(^|\n)BREAKING CHANGE|^[a-z]+(\([^)]*\))?!:/m;
+/** A commit's first line: where a conventional-commit type and a marker belong. */
+const subjectOf = (message: string) => message.split("\n")[0]!.trim();
+/**
+ * The markers a commit asks for: [skip release], [release] and [minor], at the end of its first line ("Fix a thing [skip release]") or on a line
+ * of their own. Not mid-sentence and not in `code`: a message that explains the markers must not act on them.
+ */
+export function markersOf(
+  messages: string[],
+): Set<"skip release" | "release" | "minor"> {
+  const found = new Set<"skip release" | "release" | "minor">();
+  for (const message of messages) {
+    const lines = message.split("\n").map((l) => l.trim());
+    for (const [i, line] of lines.entries()) {
+      const m = /^(?:.*\s)?\[(skip release|release|minor)\]$/i.exec(line);
+      if (m && (i === 0 || line.startsWith("[")))
+        found.add(m[1]!.toLowerCase() as "skip release" | "release" | "minor");
+    }
+  }
+  return found;
+}
+const FEAT = /^feat(\([^)]*\))?!?:/;
+const BREAKING_SUBJECT = /^[a-z]+(\([^)]*\))?!:/;
+const BREAKING_FOOTER = /^BREAKING[ -]CHANGE:/m;
 
 export function decideBump(change: Change): Decision {
-  const text = change.messages.join("\n\n");
+  const marks = markersOf(change.messages);
+  const subjects = change.messages.map(subjectOf);
   const reasons: string[] = [];
 
-  if (
-    /\[skip release\]/i.test(text) &&
-    !/\[release\]/i.test(text.replace(/\[skip release\]/gi, ""))
-  )
+  if (marks.has("skip release") && !marks.has("release"))
     return { bump: "skip", reasons: ["a commit says [skip release]"] };
 
   const shipped = change.files.filter((f) => ships(f.path));
-  const forced = /\[release\]/i.test(text.replace(/\[skip release\]/gi, ""));
+  const forced = marks.has("release");
   if (!shipped.length && !forced)
     return {
       bump: "skip",
@@ -81,9 +100,13 @@ export function decideBump(change: Change): Decision {
   if (!shipped.length) reasons.push("[release] forces a release");
 
   const minor: string[] = [];
-  if (/\[minor\]/i.test(text)) minor.push("a commit says [minor]");
-  if (FEAT.test(text)) minor.push("a feat: commit");
-  if (BREAKING.test(text)) minor.push("a breaking change is marked");
+  if (marks.has("minor")) minor.push("a commit says [minor]");
+  if (subjects.some((l) => FEAT.test(l))) minor.push("a feat: commit");
+  if (
+    subjects.some((l) => BREAKING_SUBJECT.test(l)) ||
+    change.messages.some((m) => BREAKING_FOOTER.test(m))
+  )
+    minor.push("a breaking change is marked");
 
   for (const f of change.files) {
     if (f.status === "A" && /^packages\/[^/]+\/package\.json$/.test(f.path))

@@ -41,12 +41,13 @@ Every merge into `master` that ships something releases itself, from `staging` o
 | What changed since the last release | Release |
 | ----------------------------------- | ------- |
 | nothing a package or the engine image ships: only `apps/docs`, `docs`, `skills`, `.github`, `scripts`, tests, `bun.lock` | **none**: the run ends at `plan` |
-| `[skip release]` in a commit message | **none** |
+| `[skip release]` as a marker (below) | **none** |
 | a fix, an internal change, a dependency: anything that ships and adds nothing to what users see | **patch**: `0.17.0` becomes `0.17.1` |
-| a new or removed public export (the entry files of the packages, the top level of `packages/runtime/src`), a new CLI flag, a new engine setting, a new scaffolded file or package, a `feat:` or breaking (`!:`, `BREAKING CHANGE`) commit, or `[minor]` in a commit message | **minor**: `0.17.4` becomes `0.18.0` |
-| `[release]` in a commit message | at least a patch, even if nothing shipped |
+| a new or removed public export (the entry files of the packages, the top level of `packages/runtime/src`), a new CLI flag, a new engine setting, a new scaffolded file or package, a commit whose first line starts `feat:` or `type!:` (or has a `BREAKING CHANGE:` footer), or the marker `[minor]` | **minor**: `0.17.4` becomes `0.18.0` |
+| the marker `[release]` | at least a patch, even if nothing shipped |
 | `packages/*/package.json` above the last release (someone ran `scripts/version.ts`) | **that version**, as it is: for 0.18.0 by choice, or 1.0.0 |
 
+- **Markers** (`[skip release]`, `[release]`, `[minor]`) count at the end of a commit's first line (`Fix a thing [skip release]`, which is what a squash or the PR title gives) or on a line of their own. Written mid-sentence or in `code`, as in this page, they do nothing, so a message can explain them without acting on them. `feat:` counts only at the start of a first line.
 - **The version is not committed.** The repository's `package.json` keeps the line (`0.17.0`), the workflow works out `0.17.3` from the tags, stamps it into the packages and the image, and the tag `v0.17.3` records it. So the version in the repository can be behind the published one: the last release is the highest `v*` tag (`git tag --list 'v*'`) or `npm view @archlast/forge-runtime version`.
 - **The same commit gets the same version**, so a re-run after a failure finishes the same release (npm's packages are skipped, the image is rebuilt from the same commit).
 - **The notes:** a release whose version a person set uses its `## X.Y.Z` section of the release notes page for its GitHub release; any other release gets the subjects of the commits since the last release, with a link to the comparison. The story of a version is written on the docs' Release notes page when it is worth telling.
