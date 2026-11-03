@@ -22,6 +22,16 @@ bun run up                            # the production stack: builds the image, 
 
 Full documentation is in [`apps/docs`](apps/docs/content). Preview it with `bun run --cwd apps/docs dev` on http://localhost:4000, or build it with `bun run --cwd apps/docs build` (output in `apps/docs/dist`). To serve it from a container, run `docker compose run --build --rm -p 8080:80 docs` in `apps/docs` and open http://localhost:8080. That folder builds on its own, so it can be deployed without the rest of the repo; on Coolify, use the Docker Compose build pack with Base Directory `/apps/docs` and Docker Compose Location `/compose.yaml`, then give the `docs` service a domain (and set `SITE_URL`, such as `https://docs.example.com`, as a build variable for canonical links and `sitemap.xml`). The site is readable without JavaScript: every page is also Markdown at `/<page>.md`, and `/llms.txt` and `/llms-full.txt` list and contain the documentation for AI tools. Start with [Getting started](apps/docs/content/getting-started.mdx), then [Full-stack apps](apps/docs/content/framework.mdx) or [Backends](apps/docs/content/backend.mdx).
 
+## Agent skill
+
+Coding agents (Claude Code, Codex, Cursor and the others that read the [Agent Skills](https://github.com/vercel-labs/skills) format) can learn how to build on archlast-forge: project modes and the files the scaffolder writes, the `forge/` layout, service classes and Nest modules, Forge RPC between services, data and functions, clients, the CLI, deployment and observability.
+
+```bash
+npx skills add algochad/archlast-forge
+```
+
+The skill is in [`skills/archlast-forge`](skills/archlast-forge/SKILL.md); `bun run skill:check` validates it. See [Agent skill](apps/docs/content/agent-skill.mdx).
+
 ## This repository
 
 ```
@@ -37,7 +47,8 @@ packages/dashboard/              admin UI served at /_dashboard
 packages/create-archlast-forge/  project starter: templates for both modes, the stack files (compose.yaml, Dockerfile, .env)
 docker/engine.Dockerfile         the engine image
 docs/                            decisions.md (design decisions), roadmap.md (production readiness)
-scripts/                         pack.ts (tarballs + smoke test), version.ts (lockstep versions)
+skills/archlast-forge/           the agent skill (`npx skills add algochad/archlast-forge`): SKILL.md and references/
+scripts/                         pack.ts (tarballs + smoke test), version.ts (lockstep versions), check-skill.ts
 ```
 
 Work on the demo with `bun run dev` from the root. It runs the demo's backend with `archlast-forge dev` and Vite through Turborepo.

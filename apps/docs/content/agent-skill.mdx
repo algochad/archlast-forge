@@ -1,0 +1,48 @@
+# Agent skill
+
+archlast-forge ships a skill for AI coding agents (Claude Code, Codex, Cursor and the others that read the open [Agent Skills](https://github.com/vercel-labs/skills) format). Once installed, an agent that is asked to build on archlast-forge knows how a project is laid out, where each kind of code goes and what the engine does with it, instead of guessing from other frameworks.
+
+```bash
+npx skills add algochad/archlast-forge
+```
+
+The command finds the skill in this repository's `skills/` folder, asks which agents to install it for, and links it into each one's skills folder: in the current project by default, or in your home folder with `-g`.
+
+| Option | Meaning |
+|---|---|
+| `-l`, `--list` | list the skills the repository has, install nothing |
+| `-s`, `--skill archlast-forge` | install only this skill |
+| `-a`, `--agent claude-code` | install for these agents (`'*'` for all) |
+| `-g`, `--global` | install for your user, not the project |
+| `--copy` | copy the files instead of linking them |
+| `-y`, `--yes` | skip the questions |
+
+`npx skills update` brings an installed skill up to date, and `npx skills remove archlast-forge` removes it. [Update it after you upgrade](cli.html#upgrade) the project: the skill describes the current release.
+
+## What it teaches
+
+The skill is a short `SKILL.md` that the agent loads when the task is about archlast-forge, plus reference files it opens only when it needs them:
+
+| Reference | Covers |
+|---|---|
+| Project modes | choosing a full-stack app, a backend, a monorepo or microservices; the files each owns; `add`, `remove`, `workspace` |
+| Scaffolding | every file `init` writes and whether to edit it: `compose.yaml`, `Dockerfile`, `.env`, the stack services, shadcn/ui, the mobile and desktop apps |
+| CLI | every command and flag, what it writes, which are destructive |
+| Services, modules and controllers | the layout of `forge/`, `ForgeService` classes, `inject()`, Nest modules, controllers, gateways, GraphQL |
+| Forge RPC | routers, the generated types, the service class that calls them, meshes of services, errors |
+| Data and functions | schema, queries, mutations, actions, indexes, errors |
+| Full-stack apps and clients | routes, loaders, live queries, hydration, the clients for other frontends, mobile and desktop |
+| Server features | authentication, storage, scheduling, HTTP endpoints, limits |
+| Testing | tests for your functions and services |
+| Operations | configuration, deployment, scaling, backups, upgrades, troubleshooting |
+| Dashboard and observability | the admin dashboard, traces, issues, SLOs and alerts, custom spans and metrics, a debugging playbook |
+
+It is written against the code, the starters and these docs, and it repeats the rules that the engine enforces: `src/` and `app/` import only `forge/_generated`, queries and mutations do no I/O, a service class never reaches the database with a ctx it wasn't given, and Forge RPC is backend to backend only. The layout it asks for is the one in [Folder layout](nest.html#folder-layout).
+
+## Using it
+
+Ask the agent for the outcome, not the API: "add an orders service that the web app calls", "make this a backend with a Nest controller for the webhook", "add an invoices feature with a mutation and a live list". The skill tells it to look at `archlast-forge.json` and the folder layout first, to follow the project's mode, to use the CLI's `add` commands in a monorepo instead of copying folders, and to run `codegen` and the typecheck before it says it is done.
+
+## Where it lives
+
+The skill is in this repository at [`skills/archlast-forge`](https://github.com/algochad/archlast-forge/tree/master/skills/archlast-forge). It changes with the code: a change to the public API or to what the starters write changes the skill in the same commit, and `bun run skill:check` (also run in CI) checks that its files, links and front matter are in order. The documentation pages remain the full reference; the skill is what an agent needs to start well.

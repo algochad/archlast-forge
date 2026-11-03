@@ -1,0 +1,244 @@
+# Services, modules and controllers (NestJS in forge/)
+
+Read this when you write a service class, a Nest module, a controller, a gateway or a GraphQL resolver in a `forge/` folder, in any project mode. For calls between backends, also read [forge-rpc.md](forge-rpc.md).
+
+NestJS runs inside the engine. The engine owns the server; Nest never calls `listen()`. Every import comes from `@archlast/forge-runtime/nest` (and `/nest/websockets`, `/nest/graphql`, `/nest/microservices`, `/nest/rpc`). Never add or import `@nestjs/*`, `rxjs` (use `rxjs` exported from the nest entry) or `express`.
+
+## Decide where logic goes
+
+| You need                                                                                    | Use                                                                    |
+| ------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
+| Data reads/writes the frontend calls, live queries                                          | `query` / `mutation` in `forge/<feature>.ts` (reactive, transactional) |
+| Logic shared by several functions, or logic worth a class                                   | a service class, called from the function with `inject(ctx, Service)`  |
+| A REST endpoint for outside callers (webhooks, partner APIs, mobile clients that want REST) | a controller (or a plain `http.route()` for one-off routes)            |
+| Calling another forge backend                                                               | a service class holding a Forge RPC client                             |
+| Sockets, GraphQL, message-queue handlers                                                    | gateway, resolver, `@MessagePattern` controller                        |
+
+Rules that hold everywhere:
+
+1. **Writes happen in mutations.** A controller, gateway or resolver gets an `ActionCtx` (no `db`). It calls `ctx.runQuery(api.x.y)` / `ctx.runMutation(api.x.z)`, so every write is one transaction and live queries see it.
+2. **Services do the work, functions and controllers stay thin.** A function's handler is `inject` + one method call. A controller method is validation + one service/function call.
+3. **Queries and mutations never do I/O** (no `fetch`, no RPC). Do I/O in actions, controllers, or services called from them.
+4. **Every `forge/` file whose path has no segment starting with `_` is a function module** (the scanner loads it and `api.<file>` is built from it). Nest classes are not functions, so they go under `_`-prefixed paths, which the scanner, codegen and the client router ignore. See the layout below.
+
+## Folder layout of a clean `forge/`
+
+```
+forge/
+  schema.ts  auth.ts  crons.ts  http.ts      special modules: tables, Better Auth, crons, mounts nest() and routes
+  notes.ts                                   public + internal functions: api.notes.* / internal.notes.* (thin: inject + one call)
+  admin/users.ts                             a folder namespaces functions: api.admin.users.*
+  orders.router.ts                           Forge RPC routers: top level, NOT under _ (codegen only reads non-_ files)
+  _modules/                                  all Nest code, one folder per feature
+    index.ts                                 export const appModules = [NotesModule, BillingModule]   (what http.ts imports)
+    notes/
+      notes.module.ts                        @Module wiring the feature
+      notes.service.ts                       NotesReader / NotesWriter / singletons
+      notes.controller.ts                    REST surface (+ notes.gateway.ts, notes.resolver.ts when needed)
+      notes.guard.ts, notes.dto.ts           feature-local helpers
+    shared/                                  cross-feature providers (clock, config, remote clients) in a shared module
+  _lib/                                      plain helpers with no Nest and no ctx
+  _services.ts                               monorepo main app only: written by `archlast-forge add service` / `remove`. Never edit
+  _generated/                                codegen output, committed, never edit
+  orders.service.ts, orders.controller.ts, orders.ts    monorepo main app only: scaffolded per remote service. Leave them where they are
+  package.json  tsconfig.json
+```
+
+- **Why the underscore:** a function module's file name is its API name. `_modules/…` keeps `notes.service` and `notes.controller` out of the API and out of the client, and lets the folder hold as many classes as a feature needs.
+- **The barrel is `_modules/index.ts`**, not `_modules.ts`: `http.ts` does `import { appModules } from "./_modules"`. Do not create a `_services/` folder: `_services.ts` is the CLI's generated list and a same-named folder would shadow-confuse imports.
+- **Functions stay at the top level** (`forge/notes.ts`) so `api.notes.*` reads naturally; they import services from `./_modules/notes/notes.service`. A service never imports a function file; it receives a `ctx` and uses `ctx.runQuery(api…)` / `ctx.db`.
+- **Routers stay out of `_modules`.** Codegen writes `_generated/rpc.ts` only from non-underscore files, so a `@Router` under `_modules/` produces no types for callers. Put `<service>.router.ts` at the top of `forge/`.
+- **Scaffold-owned files stay put.** `archlast-forge remove`/`workspace sync` find `<svc>.service.ts`, `<svc>.controller.ts`, `<svc>.ts` and `_services.ts` by path. Your own classes go in `_modules/`.
+- A feature module's `providers` list its services; `exports` only what other modules inject. Cross-feature dependency goes through `imports: [OtherModule]`, never a deep relative import of another feature's internals.
+- Small project (one or two features): `_modules/notes/` is still the right place; skip `shared/` until two features need the same provider.
+
+## Set up (check once)
+
+`forge/tsconfig.json` needs `"experimentalDecorators": true` and `"emitDecoratorMetadata": true`; scaffolds since 0.4.0 have them. A full-stack app (or any frontend that imports `forge/_generated`) also needs `"experimentalDecorators": true` in its own `tsconfig.json`. The engine compiles decorator files itself; do not add Babel or SWC.
+
+## Services
+
+```ts
+// forge/_modules/notes/notes.service.ts
+import {
+  ForgeService,
+  Injectable,
+  type MutationCtx,
+  type QueryCtx,
+} from "@archlast/forge-runtime/nest";
+
+@Injectable()
+export class Clock {
+  // no ctx: a singleton for the whole app
+  now() {
+    return Date.now();
+  }
+}
+
+@Injectable()
+export class NotesReader extends ForgeService<QueryCtx> {
+  // request-scoped: one per call
+  recent() {
+    return this.ctx.db.query("notes").order("desc").take(20);
+  }
+}
+
+@Injectable()
+export class NotesWriter extends ForgeService<MutationCtx> {
+  constructor(private readonly clock: Clock) {
+    super();
+  } // always call super()
+  add(text: string) {
+    return this.ctx.db.insert("notes", { text, at: this.clock.now() });
+  }
+}
+```
+
+```ts
+// forge/notes.ts
+import { mutation, query, v } from "@archlast/forge-runtime";
+import { inject } from "@archlast/forge-runtime/nest";
+import { NotesReader, NotesWriter } from "./_modules/notes/notes.service";
+
+export const recent = query({
+  args: {},
+  handler: async (ctx) => (await inject(ctx, NotesReader)).recent(),
+});
+export const add = mutation({
+  args: { text: v.string() },
+  handler: async (ctx, { text }) => (await inject(ctx, NotesWriter)).add(text),
+});
+```
+
+- `ForgeService<C>`: `this.ctx` is the ctx of the call being served. Pick the narrowest ctx: `QueryCtx` reads (usable from queries and mutations), `MutationCtx` writes (mutations only), `ActionCtx` for auth, storage, scheduler, `runQuery`/`runMutation`/`runAction`. `inject()` is a type error when the ctx is too weak (a query cannot inject a `ForgeService<MutationCtx>`).
+- Without the base class: `constructor(@InjectCtx() private readonly ctx: QueryCtx)`.
+- **Scope rules:** a class extending `ForgeService` (or injecting `CTX`) is request-scoped; anything that injects a request-scoped class becomes request-scoped too. A plain `@Injectable()` with no ctx is a singleton. Keep ctx-free logic (clocks, formatters, clients, config, caches) in singletons; request-scoped classes are built on every call.
+- Two `inject()` calls with the same ctx share instances.
+- **Import service classes as values**, never `import type`: Nest reads constructor parameter types at runtime, and a type-only import loses the metadata (the service injects as `undefined`).
+- Reader/writer split (`NotesReader`, `NotesWriter`) is the convention: readers are usable from queries (and so reactive); writers need a mutation.
+- Queries stay reactive through a service because it reads through `this.ctx.db`.
+- Throw `ForgeError` (from `@archlast/forge-runtime`) for errors the caller should see; anything else becomes "Server error (request id)" outside dev.
+
+## Modules
+
+Modules work as in Nest. Use them to group a feature's controller and services; mount them through `nest()`.
+
+```ts
+// forge/_modules/notes/notes.module.ts
+import { Module } from "@archlast/forge-runtime/nest";
+import { NotesController } from "./notes.controller";
+import { Clock, NotesReader, NotesWriter } from "./notes.service";
+
+@Module({
+  controllers: [NotesController],
+  providers: [Clock, NotesReader, NotesWriter],
+  exports: [NotesReader],
+})
+export class NotesModule {}
+```
+
+```ts
+// forge/_modules/index.ts: the feature modules, the way forge/_services.ts lists remote services
+import { NotesModule } from "./notes/notes.module";
+export const appModules = [NotesModule];
+```
+
+```ts
+// forge/http.ts: the only place nest() is called, and it is called once
+import { httpRouter } from "@archlast/forge-runtime";
+import { nest } from "@archlast/forge-runtime/nest";
+import { appModules } from "./_modules";
+
+const http = httpRouter();
+nest(http, { imports: appModules }); // or nest(http, AppModule) when you have a root module
+export default http;
+```
+
+- `nest(http, { controllers, providers, imports, prefix, cors, microservices, websockets, setup, logger })`. A module class as the second argument is the same as `{ imports: [Module] }`. Calling `nest()` twice throws.
+- **`inject(ctx, Service)` resolves a provider from any module** (it looks across the whole app), so a function can inject a service that only a feature module registers. Every service a function injects must be registered in some module or in `providers`.
+- The ctx provider (`CTX`) is global, so `ForgeService` subclasses work in any feature module without importing anything.
+- Module-level `exports`/`imports` matter for constructor injection between classes (as in Nest): a service in module A that a controller in module B injects must be exported by A and A imported by B.
+- Global guards, pipes, interceptors and filters: `{ provide: APP_GUARD, useClass: AuthGuard }` in a module's `providers` (`APP_GUARD`, `APP_PIPE`, `APP_INTERCEPTOR`, `APP_FILTER` come from the nest entry). A global guard/interceptor also runs for gateways and resolvers: check `context.getType()`.
+- Middleware: implement `NestModule.configure(consumer)` on the module.
+- Dynamic modules (`GraphQLModule.forRoot(...)`, `ClientsModule.register(...)`) go in `imports`.
+- One module per feature, all listed in `_modules/index.ts` and mounted with `nest(http, { imports: appModules })` (layout above).
+- `forge/_services.ts` (monorepo main apps) is written by `archlast-forge add service` / `remove`: **do not edit it**. Add your own feature modules beside it: `nest(http, { imports: appModules, controllers: serviceControllers, providers: serviceProviders })`.
+
+## Controllers
+
+```ts
+// forge/_modules/notes/notes.controller.ts
+import {
+  Body,
+  Contract,
+  Controller,
+  Ctx,
+  Get,
+  Post,
+  type ActionCtx,
+} from "@archlast/forge-runtime/nest";
+import { v } from "@archlast/forge-runtime";
+import { api } from "../../_generated/api";
+
+@Controller("notes") // answers at /http/notes (the engine owns /http)
+export class NotesController {
+  @Get()
+  list(@Ctx() ctx: ActionCtx) {
+    return ctx.runQuery(api.notes.recent);
+  }
+
+  @Post()
+  @Contract({
+    body: v.object({ text: v.string() }),
+    returns: v.object({ id: v.string() }),
+    summary: "Add a note",
+  })
+  async add(@Ctx() ctx: ActionCtx, @Body() body: { text: string }) {
+    return { id: await ctx.runMutation(api.notes.add, { text: body.text }) };
+  }
+}
+```
+
+- `@Ctx()` gives the request's `ActionCtx` (auth, storage, scheduler, `runQuery`, `runMutation`). `api` comes from `./_generated/api`.
+- `@Contract({ params, query, body, returns, summary, description, tags })` checks the request with the engine's `v` validators before the handler (400 with the reason) and puts the route in the OpenAPI document. Use it on every public route. Params/query arrive as text and are converted for `v.number()`/`v.boolean()`.
+- A controller may inject a ctx-free singleton or a `ForgeService<ActionCtx>`. Do **not** inject a `ForgeService<QueryCtx|MutationCtx>` into a controller: a request's ctx has no `db`.
+- Return values: object/array → JSON, string → text, `StreamableFile` streams, a Web `Response` is sent as is. Status codes follow Nest (201 for `@Post()`, `@HttpCode()` to change).
+- `@Req()` is `NestRequest` (Express API: `headers`, `query`, `params`, `body`, `cookies`, `rawBody`, `raw`); `@Res()` is `NestResponse` (Express API; once written to it streams). Use `@Res({ passthrough: true })` to set headers and still return a value.
+- `prefix` in `nest()` (default `"/"`, must start and end with `/`) moves every controller below `/http<prefix>`. Routes added with `http.route()` take priority over Nest.
+- CORS: `nest(http, { cors: { origin: "https://app.example.com", credentials: true } })`; `setup: (app) => app.useGlobalPipes(...)` for versioning (URI only), global prefix, etc.
+- Errors: `HttpException` subclasses answer as in Nest; `ForgeError` answers 400 with its data; anything else 500 `Server error (request <id>)`.
+- Auth in a controller: `await ctx.auth.getUserIdentity()` (see server-features.md), or a guard that reads it from `ExecutionContext`'s `@Ctx()`.
+- Unavailable: `listen()`, static assets, view engines. Serve files from `public/` (full-stack) or storage.
+
+## Gateways, GraphQL, microservices (when asked for)
+
+- **WebSocket gateway** (`/nest/websockets`): `@WebSocketGateway({ path: "/chat" })` answers at `ws://host/http/chat`; list the class in `providers`. Messages are JSON `{ event, data }`. `@Ctx()` is the socket's `ActionCtx` (caller from the upgrade request). `websockets: "socket.io"` in `nest()` makes every gateway Socket.IO (client path `/http/socket.io`). Origin must be in `TRUSTED_ORIGINS`. Gateway sockets live in the first runtime process and one server: broadcast to every client through the database (mutation + live query) when several servers run.
+- **GraphQL** (`/nest/graphql`): `GraphQLModule.forRoot<ForgeGraphQLOptions>({ driver: ForgeGraphQLDriver, autoSchemaFile: true })` in `imports`, resolvers in `providers`; served at `/http/graphql`; subscriptions via `createPubSub` (`graphql-transport-ws` on the same path). Resolvers use `@Ctx()` like controllers.
+- **Microservice transports** (`/nest/microservices`): `microservices: [{ transport: Transport.TCP, options: { host: "0.0.0.0", port: 4000 } }]` plus `@MessagePattern`/`@EventPattern` in controllers. Listen in the first runtime process only. Between forge backends prefer Forge RPC.
+- `onSocket(path, handler)` for raw sockets.
+
+## By project mode
+
+- **Full-stack app:** same `forge/` rules. Pages never call controllers; they call `api.*` functions (types from `forge/_generated`). `/http` is reserved by the engine: no route file may use it. Set `experimentalDecorators` in the root `tsconfig.json`.
+- **Backend only:** controllers and gateways serve non-TypeScript or cross-origin clients; the app's own frontend still uses functions. Set `cors` and `TRUSTED_ORIGINS` for browsers on other origins. Publish a transport port in `compose.yaml` only if something outside the stack connects (Caddy proxies HTTP only).
+- **Monorepo main app:** one service class + controller + action per service, listed in `forge/_services.ts` (see [project-modes.md](project-modes.md)). **Monorepo service:** a backend whose `http.ts` serves a Forge RPC router.
+- **Several servers (`REPLICAS`) or `RUNTIME_WORKERS > 1`:** gateway sockets, `createPubSub` events and transports are per server (sockets and transports on the first runtime process). Use the database for anything every client must see.
+
+## Testing
+
+`createTestBackend` (from `@archlast/forge-runtime/testing`) runs functions that `inject()` services the way the server does, with the providers mounted in `forge/http.ts`. Controllers, gateways, GraphQL and transports need a running server (call `/http/...`). See [testing.md](testing.md).
+
+## Common mistakes
+
+- Calling `nest()` more than once, or in a file other than `forge/http.ts`.
+- Forgetting to register a service in `providers` or in a module when only a function injects it ("no provider" at the first call).
+- `import type { OrdersService }` in a constructor: use a value import.
+- Forgetting `super()` in a `ForgeService` constructor, or reading `this.ctx` in the constructor (it is set after construction; use it in methods).
+- Making everything request-scoped: a service that does not need the ctx must not extend `ForgeService`.
+- Controller writing to the database directly or injecting `ForgeService<MutationCtx>`: call a mutation.
+- Doing `fetch`/RPC inside a query or mutation (they run in a transaction and may re-run).
+- Importing `@nestjs/*` or `express` directly; they are not installed in your project.
+- Editing `forge/_services.ts` or `forge/_generated/*` by hand.
+- Putting a `@Router` class under `_modules/` (no `rpc.ts` types are generated for it) or Nest classes at the top level of `forge/` (they become function modules and clutter the API namespace).
+- Putting a route file under `/http` in a full-stack app, or expecting `listen()`/static assets in Nest.
+- Putting two feature classes under the same `@Controller` path or the same `@Router` alias.

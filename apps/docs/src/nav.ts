@@ -28,6 +28,7 @@ export const PAGES = {
   desktop: ["Desktop apps", () => import("../content/desktop.mdx")],
   testing: ["Testing", () => import("../content/testing.mdx")],
   recipes: ["Recipes", () => import("../content/recipes.mdx")],
+  "agent-skill": ["Agent skill", () => import("../content/agent-skill.mdx")],
   cli: ["CLI reference", () => import("../content/cli.mdx")],
   deployment: ["Deployment", () => import("../content/deployment.mdx")],
   configuration: ["Configuration", () => import("../content/configuration.mdx")],
@@ -46,7 +47,7 @@ export const GROUPS: [string, Slug[]][] = [
   ["Project modes", ["framework", "backend", "monorepo"]],
   ["Data and functions", ["schema", "functions", "queries", "reactivity", "caching", "errors", "migrations"]],
   ["Server features", ["auth", "storage", "scheduling", "http", "nest", "forge-rpc", "api-docs"]],
-  ["Clients and guides", ["clients", "mobile", "desktop", "testing", "recipes"]],
+  ["Clients and guides", ["clients", "mobile", "desktop", "testing", "recipes", "agent-skill"]],
   ["Run", ["cli", "deployment", "configuration", "dashboard", "backups", "observability", "limits"]],
   ["Reference", ["reference", "troubleshooting"]],
 ];
