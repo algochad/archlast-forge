@@ -69,7 +69,7 @@ SQLite is `bun:sqlite` only. The decisions file records that the Turso driver wa
 
 ### Redis, storage and the bus
 
-- **Redis is optional.** With one server, topics travel through an in-process bus and the cache lives in memory. With `REDIS_URL`, the bus becomes Redis pub/sub (one channel per topic), so a write on server A wakes subscriptions held by server B. Redis also shares the query cache and the rate-limit counters across servers. Several servers require both Redis and PostgreSQL; startup refuses `REPLICAS > 1` otherwise.
+- **Redis is optional.** With one server, topics travel through an in-process bus and the cache lives in memory. With `REDIS_URL`, the bus becomes Redis pub/sub (one channel per topic), so a write on server A wakes subscriptions held by server B. Redis also shares the query cache and the rate-limit counters across servers. Every key and channel starts with a prefix from the service's name, so several services can share one Redis while every server of one service shares its keys (see [`REDIS_PREFIX`](configuration.html)). Several servers require both Redis and PostgreSQL; startup refuses `REPLICAS > 1` otherwise.
 - **Storage is optional.** Set `S3_ENDPOINT` and `S3_BUCKET` and `ctx.storage` works. File bytes never pass through the engine: functions hand out presigned URLs and browsers upload and download directly ([File storage](storage.html)).
 
 ## What runs where

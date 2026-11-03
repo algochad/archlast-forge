@@ -1,5 +1,5 @@
 import type { RedisClient } from "bun";
-import { answered, connectRedis } from "./bus";
+import { answered, connectRedis, DEFAULT_REDIS_PREFIX } from "./bus";
 
 /** What the cache holds right now. `null` where the backend can't say cheaply (Redis manages its own memory). */
 export interface CacheStats {
@@ -122,28 +122,34 @@ export class MemoryCache implements Cache {
   async close() {}
 }
 
-const P = "archlast-forge:cache:";
-
 export class RedisCache implements Cache {
-  private constructor(private redis: RedisClient) {}
+  /** Every key below this app's prefix: clearing the cache empties this app's entries, not another app's on the same Redis. */
+  private readonly P: string;
 
-  static async connect(url: string) {
-    return new RedisCache(await connectRedis(url));
+  private constructor(
+    private redis: RedisClient,
+    prefix = DEFAULT_REDIS_PREFIX,
+  ) {
+    this.P = `${prefix}cache:`;
+  }
+
+  static async connect(url: string, prefix = DEFAULT_REDIS_PREFIX) {
+    return new RedisCache(await connectRedis(url), prefix);
   }
 
   /** A miss when Redis doesn't answer in time: the query runs instead of the call failing or waiting. */
   async get<T>(key: string) {
-    const raw = await answered(this.redis.get(P + key)).catch(() => null);
+    const raw = await answered(this.redis.get(this.P + key)).catch(() => null);
     return raw === null ? undefined : (JSON.parse(raw) as T);
   }
 
   /** Not kept when Redis doesn't answer in time; the caller already has its result. */
   async set(key: string, value: unknown, { ttlMs, topics = [] }: { ttlMs: number; topics?: string[] }) {
     const store = async () => {
-      await this.redis.send("SET", [P + key, JSON.stringify(value), "PX", String(ttlMs)]);
+      await this.redis.send("SET", [this.P + key, JSON.stringify(value), "PX", String(ttlMs)]);
       for (const t of topics) {
-        await this.redis.send("SADD", [`${P}tag:${t}`, key]);
-        await this.redis.send("PEXPIRE", [`${P}tag:${t}`, String(ttlMs)]);
+        await this.redis.send("SADD", [`${this.P}tag:${t}`, key]);
+        await this.redis.send("PEXPIRE", [`${this.P}tag:${t}`, String(ttlMs)]);
       }
       return true;
     };
@@ -151,15 +157,15 @@ export class RedisCache implements Cache {
   }
 
   async del(key: string) {
-    await this.redis.del(P + key);
+    await this.redis.del(this.P + key);
   }
 
   async invalidate(topics: string[]) {
     let removed = 0;
     for (const t of topics) {
-      const keys = (await this.redis.send("SMEMBERS", [`${P}tag:${t}`])) as string[];
-      if (keys.length) removed += Number(await this.redis.send("DEL", keys.map((k) => P + k)));
-      await this.redis.del(`${P}tag:${t}`);
+      const keys = (await this.redis.send("SMEMBERS", [`${this.P}tag:${t}`])) as string[];
+      if (keys.length) removed += Number(await this.redis.send("DEL", keys.map((k) => this.P + k)));
+      await this.redis.del(`${this.P}tag:${t}`);
     }
     return removed;
   }
@@ -168,11 +174,11 @@ export class RedisCache implements Cache {
     let removed = 0;
     let cursor = "0";
     do {
-      const [next, keys] = (await this.redis.send("SCAN", [cursor, "MATCH", `${P}*`, "COUNT", "500"])) as [string, string[]];
+      const [next, keys] = (await this.redis.send("SCAN", [cursor, "MATCH", `${this.P}*`, "COUNT", "500"])) as [string, string[]];
       cursor = next;
       if (keys.length) {
         await this.redis.send("DEL", keys);
-        removed += keys.filter((k) => !k.startsWith(`${P}tag:`)).length; // tag sets aren't entries
+        removed += keys.filter((k) => !k.startsWith(`${this.P}tag:`)).length; // tag sets aren't entries
       }
     } while (cursor !== "0");
     return removed;

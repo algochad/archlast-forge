@@ -132,10 +132,11 @@ export function renderCompose({ name, services, version }: { name: string; servi
     "BETTER_AUTH_URL: ${BETTER_AUTH_URL:-http://localhost:3000}",
     "ALLOW_INSECURE_HTTP: ${ALLOW_INSECURE_HTTP:-}",
     "DASHBOARD: ${DASHBOARD:-on}",
+    "OTEL_SERVICE_NAME: ${OTEL_SERVICE_NAME:-}", // this app's name on the dashboard, and in its Redis keys; empty is no name
   ];
   if (proxied) env.push("TRUST_PROXY: \"1\"", "TRUSTED_ORIGINS: https://${DOMAIN}");
   if (has("postgres")) env.push("DATABASE_URL: postgres://forge:${POSTGRES_PASSWORD}@postgres:5432/forge");
-  if (has("redis")) env.push("REDIS_URL: redis://redis:6379");
+  if (has("redis")) env.push("REDIS_URL: redis://redis:6379", "REDIS_PREFIX: ${REDIS_PREFIX:-}");
   if (has("s3"))
     env.push("S3_ENDPOINT: http://rustfs:9000", "S3_PUBLIC_ENDPOINT: ${S3_PUBLIC_ENDPOINT}", "S3_BUCKET: forge", "S3_REGION: us-east-1", "S3_ACCESS_KEY_ID: ${S3_ACCESS_KEY}", "S3_SECRET_ACCESS_KEY: ${S3_SECRET_KEY}");
 

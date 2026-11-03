@@ -41,7 +41,9 @@ export function changeStack(root: string, o: { add?: StackService[]; remove?: St
     const version = /archlast-forge-engine:([0-9][^\s}"]*)/.exec(compose)?.[1] ?? VERSION;
     const was = formatText(root, "compose.yaml", renderCompose({ name, services: config.services, version }));
     const now = formatText(root, "compose.yaml", renderCompose({ name, services, version }));
-    if (compose === was) (writeFileSync(composeFile, now), summary.push("compose.yaml: written for the new services"));
+    // Also the version before it passed OTEL_SERVICE_NAME and REDIS_PREFIX on: an unedited older file is still the generated one.
+    const older = was.split("\n").filter((l) => !/^\s+(OTEL_SERVICE_NAME|REDIS_PREFIX): /.test(l)).join("\n");
+    if (compose === was || compose === older) (writeFileSync(composeFile, now), summary.push("compose.yaml: written for the new services"));
     else
       (writeFileSync(join(root, "compose.new.yaml"), now),
         notes.push("compose.yaml has edits of yours, so it is unchanged. What the new services need is in compose.new.yaml: merge it by hand, and delete the file."));

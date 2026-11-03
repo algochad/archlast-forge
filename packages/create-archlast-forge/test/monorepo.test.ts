@@ -126,6 +126,8 @@ test("Forge RPC, the default: a router per service, its types generated and shar
     ["user-billing", "http://localhost:3000"],
   ]);
   expect(new Set(["api", "orders", "user-billing"].map((app) => envOf(app, "DASHBOARD_TOKEN"))).size).toBe(1);
+  // Each app has a name of its own, which is also what keeps its Redis cache, topics and rate limits apart from the others' when they share a Redis.
+  expect(["api", "orders", "user-billing"].map((app) => envOf(app, "OTEL_SERVICE_NAME"))).toEqual(["api", "orders", "user-billing"]);
   expect(envOf("api", "DASHBOARD_TOKEN")).toHaveLength(48);
   expect(Bun.spawnSync(["grep", "-rl", "@nestjs/", join(root, "apps")]).stdout.toString()).toBe(""); // the runtime's wrapping imports only
   expect(read(root, "README.md")).toContain("serves a Forge RPC router");

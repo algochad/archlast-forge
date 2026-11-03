@@ -24,6 +24,12 @@ describe("compose.yaml", () => {
     });
     expect(c.services.app.environment.DATABASE_URL).toBe("postgres://forge:${POSTGRES_PASSWORD}@postgres:5432/forge");
     expect(c.services.app.environment.REDIS_URL).toBe("redis://redis:6379");
+    // The engine gets only what the file lists: the service's name (its dashboard name and the start of its Redis keys, so services that share a
+    // Redis stay apart) and the prefix when Redis is in the stack. Empty means "none", which the engine treats as unset.
+    expect(c.services.app.environment.OTEL_SERVICE_NAME).toBe("${OTEL_SERVICE_NAME:-}");
+    expect(c.services.app.environment.REDIS_PREFIX).toBe("${REDIS_PREFIX:-}");
+    expect(compose(["postgres"]).services.app.environment.REDIS_PREFIX).toBeUndefined(); // no Redis, no prefix
+    expect(compose([]).services.app.environment.OTEL_SERVICE_NAME).toBe("${OTEL_SERVICE_NAME:-}");
     expect(c.services.app.environment.S3_ENDPOINT).toBe("http://rustfs:9000");
     // The database, cache and storage API are not published to the world; only the storage port browsers need is.
     expect(c.services.postgres.ports).toBeUndefined();

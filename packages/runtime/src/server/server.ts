@@ -7,9 +7,9 @@ import { extname, join, relative, resolve } from "node:path";
 import { buildAdminApi } from "./admin-api";
 import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
-import { connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
+import { claimPrefix, connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
-import { ConfigError, loadConfig, runtimeWorkersFor, telemetryPath, type Config } from "./config";
+import { ConfigError, loadConfig, redisOwnerOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
 import { RESET_TOPIC } from "./docstore";
 import { checkValue, readStoredSettings, SETTING, SETTINGS, validateSettings, withSettings } from "./settings";
 import { createStorage, LocalStorage, serveLocalStorage } from "./storage";
@@ -198,9 +198,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   let pool = runtimeWorkersFor(env);
   const serverId = `${hostname()}:${process.pid}`;
   const ttl = config.cacheTtlMs;
-  const bus: Bus = config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0 }) : new MemoryBus();
-  const cache = ttl > 0 ? (config.redisUrl ? await RedisCache.connect(config.redisUrl) : new MemoryCache(10_000, config.cacheMaxBytes)) : undefined;
-  const limiter: RateLimiter = config.redisUrl ? new RedisRateLimiter(await connectRedis(config.redisUrl), "archlast-forge:rl:") : new MemoryRateLimiter();
+  const bus: Bus = config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0, prefix: config.redisPrefix }) : new MemoryBus();
+  const cache = ttl > 0 ? (config.redisUrl ? await RedisCache.connect(config.redisUrl, config.redisPrefix) : new MemoryCache(10_000, config.cacheMaxBytes)) : undefined;
+  const limiterRedis = config.redisUrl ? await connectRedis(config.redisUrl) : undefined;
+  const limiter: RateLimiter = limiterRedis ? new RedisRateLimiter(limiterRedis, `${config.redisPrefix}rl:`) : new MemoryRateLimiter();
+  // Two apps with one prefix on one Redis would share a cache and wake each other: say so at the start, instead of serving the wrong data silently.
+  if (limiterRedis && (await claimPrefix(limiterRedis, config.redisPrefix, redisOwnerOf(config))))
+    log("warn", `another app already uses the Redis prefix "${config.redisPrefix}" (it was written with a different BETTER_AUTH_SECRET): apps that share a Redis need their own OTEL_SERVICE_NAME or REDIS_PREFIX, or they share a cache and wake each other's subscriptions. If you just rotated the secret, this goes away once every server has restarted.`);
 
   const runtimeEnv = { ...env }; // gets the bound URL before the runtime starts
   const runtime = new FunctionRuntime({

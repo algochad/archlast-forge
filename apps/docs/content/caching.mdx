@@ -45,6 +45,7 @@ TTL is a second, independent limit. An entry lives at most `CACHE_TTL_MS` (60 s 
 | `CACHE_TTL_MS` | `60000` | Longest an entry lives, in milliseconds. `0` turns the query cache off: every call runs, nothing is shared. |
 | `CACHE_MAX_MB` | `64` | Memory for the in-process cache, at least `1`. Ignored when `REDIS_URL` is set. |
 | `REDIS_URL` | unset | Shares the cache between servers. |
+| `REDIS_PREFIX` | from the service name | What the keys start with; every server of a service uses the same one, and services sharing a Redis use different ones. |
 
 There are no per-function settings. To keep a query out of the cache, make it depend on something the cache can't share (see below), or give it an argument that changes.
 
@@ -54,7 +55,7 @@ The in-process cache is an LRU. When it holds more than `CACHE_MAX_MB` of estima
 
 ### Redis
 
-With `REDIS_URL` the cache lives in Redis, under keys that start with `archlast-forge:cache:`, with one tag set per topic. Every server reads and fills the same entries, and a write on any server evicts them for all. Redis applies its own memory limits (`maxmemory` and its eviction policy), so `CACHE_MAX_MB` doesn't apply, and the entry and byte counts aren't available: the dashboard and `/metrics` leave them out. While caching is on, the servers also use an all-topics Redis channel to evict (see [Reactivity](reactivity.html#several-servers)). Startup fails if Redis is set and unreachable.
+With `REDIS_URL` the cache lives in Redis, under keys that start with the service's [`REDIS_PREFIX`](configuration.html) and `cache:` (`archlast-forge:orders:cache:` for a service named `orders`; `archlast-forge:cache:` for one with no name), with one tag set per topic. The prefix belongs to the service, so services that share a Redis don't read each other's entries, and clearing the cache empties only this service's. The prefix is the app's own, so apps that share a Redis don't read each other's entries, and clearing the cache empties only this app's. Every server reads and fills the same entries, and a write on any server evicts them for all. Redis applies its own memory limits (`maxmemory` and its eviction policy), so `CACHE_MAX_MB` doesn't apply, and the entry and byte counts aren't available: the dashboard and `/metrics` leave them out. While caching is on, the servers also use an all-topics Redis channel to evict (see [Reactivity](reactivity.html#several-servers)). Startup fails if Redis is set and unreachable.
 
 ## The read cache
 

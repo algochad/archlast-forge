@@ -327,10 +327,12 @@ services:
       BETTER_AUTH_URL: "${BETTER_AUTH_URL:-http://localhost:3000}"
       ALLOW_INSECURE_HTTP: "${ALLOW_INSECURE_HTTP:-}"
       DASHBOARD: "${DASHBOARD:-on}"
+      OTEL_SERVICE_NAME: "${OTEL_SERVICE_NAME:-}"
       TRUST_PROXY: "1"
       TRUSTED_ORIGINS: "https://${DOMAIN}"
       DATABASE_URL: "postgres://forge:${POSTGRES_PASSWORD}@postgres:5432/forge"
       REDIS_URL: "redis://redis:6379"
+      REDIS_PREFIX: "${REDIS_PREFIX:-}"
       S3_ENDPOINT: "http://rustfs:9000"
       S3_PUBLIC_ENDPOINT: "${S3_PUBLIC_ENDPOINT}"
       S3_BUCKET: "forge"
@@ -370,10 +372,12 @@ Every environment variable the file sets for `app`:
 | `BETTER_AUTH_URL` | `.env`, default `http://localhost:3000` | the public address; outside development it must be `https://` unless `ALLOW_INSECURE_HTTP` is set |
 | `ALLOW_INSECURE_HTTP` | `.env`, empty by default | `1` lets plain http through; the starter `.env` sets it without Caddy so a local `up` works |
 | `DASHBOARD` | `.env`, default `on` | `off` hides `/_dashboard` and `/_admin` |
+| `OTEL_SERVICE_NAME` | `.env`, default empty | this app's name on the dashboard and in its Redis keys; `init --monorepo` and `add` set it for every app |
 | `TRUST_PROXY` | `"1"` with Caddy | use `X-Forwarded-For` for client IPs (rate limits) |
 | `TRUSTED_ORIGINS` | `https://${DOMAIN}` with Caddy | browser origins allowed with credentials |
 | `DATABASE_URL` | `postgres://forge:${POSTGRES_PASSWORD}@postgres:5432/forge` | selects PostgreSQL; without it the engine uses SQLite in `/data` |
 | `REDIS_URL` | `redis://redis:6379` | shared bus, query cache and rate limits |
+| `REDIS_PREFIX` | `.env`, default empty | what this app's Redis keys start with; empty uses the service name, see [Configuration](configuration.html) |
 | `S3_ENDPOINT` | `http://rustfs:9000` | where the engine talks to storage, inside the network |
 | `S3_PUBLIC_ENDPOINT` | `.env` | where browsers reach storage; upload and download URLs are signed for it |
 | `S3_BUCKET`, `S3_REGION` | `forge`, `us-east-1` | the bucket `rustfs-init` creates |

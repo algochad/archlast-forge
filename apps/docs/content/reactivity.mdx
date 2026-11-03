@@ -106,7 +106,7 @@ The cost is that each change re-runs and re-sends the whole window. Keep windows
 
 With one server, topics are delivered in memory. With `REPLICAS > 1` you need Postgres and `REDIS_URL`, and the bus becomes Redis pub/sub:
 
-- A server subscribes to a Redis channel per topic its subscriptions need (`archlast-forge:t:<topic>`), so it receives only topics somebody connected to it cares about.
+- A server subscribes to a Redis channel per topic its subscriptions need (`<REDIS_PREFIX>t:<topic>`, below the service's own [prefix](configuration.html)), so it receives only topics somebody connected to it cares about.
 - When the [query cache](caching.html) is on, every server also listens on one all-topics channel to evict cache entries. That channel is only published when `CACHE_TTL_MS` is above `0`.
 - A mutation publishes after it commits, from the server that ran it. Every server filters locally.
 - **Delivery isn't guaranteed.** Pub/sub drops messages while a server is disconnected from Redis, and a failed publish is logged (`publish failed`) and not retried. A subscriber that missed a topic stays out of date until the next relevant write or until its client reconnects. If Redis can be down, expect that.
