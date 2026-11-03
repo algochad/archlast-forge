@@ -4,6 +4,12 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+Nothing yet.
+
+## 0.17.0
+
+Two backends on one Redis no longer share a cache, and AI coding agents get a skill and docs they can read as Markdown.
+
 ### Changed
 
 - **Redis keys belong to a service.** Everything the engine keeps in Redis (the query cache, the topics that wake subscriptions, both rate limiters) now starts with a prefix, `archlast-forge:<service>:`, from [`OTEL_SERVICE_NAME`](configuration.html), or from `REDIS_PREFIX` when you set it. Before, every app used the fixed prefix `archlast-forge:`, so two backends on one Redis, such as the services of a monorepo, shared a query cache (a function with the same name and arguments in both was answered from the other's cached result) and woke each other's subscriptions. Servers of one service share their keys, and different services stay apart.
