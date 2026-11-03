@@ -285,6 +285,17 @@ test("stack: services are added and removed in archlast-forge.json, compose.yaml
   expect(() => changeStack(a, { add: ["redis"] })).toThrow("Nothing to change");
   expect(() => changeStack(a, { add: ["mongo" as never] })).toThrow('Unknown service "mongo"');
 
+  // A compose.yaml made before OTEL_SERVICE_NAME and REDIS_PREFIX were passed on is still the generated one, not an edit of the user's.
+  const old = join(scratch, "old", "app");
+  scaffold({ dir: old, mode: "backend", services: ["postgres", "redis"] });
+  const generated = read(old, "compose.yaml");
+  expect(generated).toContain("OTEL_SERVICE_NAME");
+  writeFileSync(join(old, "compose.yaml"), generated.split("\n").filter((l) => !/^\s+(OTEL_SERVICE_NAME|REDIS_PREFIX): /.test(l)).join("\n"));
+  changeStack(old, { add: ["s3"] });
+  expect(existsSync(join(old, "compose.new.yaml"))).toBe(false);
+  expect(read(old, "compose.yaml")).toContain("rustfs:");
+  expect(read(old, "compose.yaml")).toContain("OTEL_SERVICE_NAME"); // and now passes the name on
+
   // A compose.yaml with a change of the user's is not overwritten.
   const mine = read(a, "compose.yaml").replace("restart: unless-stopped", "restart: always");
   writeFileSync(join(a, "compose.yaml"), mine);
