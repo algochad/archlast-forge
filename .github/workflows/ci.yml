@@ -1,9 +1,12 @@
 name: CI
 
+# Contributors open pull requests into `staging`; the owner reviews them there. `master` only takes staging (the `source-branch` job), and the
+# engine image is built only when master is updated.
 on:
   push:
-    branches: [master]
+    branches: [master, staging]
   pull_request:
+    branches: [master, staging]
 
 concurrency:
   group: ci-${{ github.ref }}
@@ -60,7 +63,11 @@ jobs:
           bun scripts/e2e-docker.ts
           bun scripts/e2e-dev.ts
 
+  # Only when master is updated, which is a merge from staging: not for pull requests (a pull request that doesn't touch the Dockerfile has
+  # nothing to learn from it) and not for staging. It builds the image and runs it, and pushes nothing: the image is published by the release
+  # workflow, from a version tag on a commit of master.
   engine-image:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
@@ -69,3 +76,33 @@ jobs:
         run: docker build -f docker/engine.Dockerfile -t archlast-forge/engine:ci .
       - name: Engine CLI starts
         run: docker run --rm archlast-forge/engine:ci --help | grep -q "archlast-forge"
+
+  # Pull requests into master come from staging only, and from this repository: a fork's branch called staging doesn't count.
+  source-branch:
+    if: github.event_name == 'pull_request' && github.base_ref == 'master'
+    runs-on: ubuntu-latest
+    steps:
+      - name: The pull request comes from staging
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+          HEAD_REPO: ${{ github.event.pull_request.head.repo.full_name }}
+        run: |
+          if [ "$HEAD_REF" != "staging" ] || [ "$HEAD_REPO" != "$GITHUB_REPOSITORY" ]; then
+            echo "::error::master takes pull requests from the staging branch of this repository only (this one is from $HEAD_REPO:$HEAD_REF). Open the pull request into staging; the owner merges staging into master."
+            exit 1
+          fi
+
+  # A pull request into master that changes the version has its release notes in the docs (apps/docs/content/release-notes.mdx).
+  release-notes:
+    if: github.event_name == 'pull_request' && github.base_ref == 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: git fetch origin master
+      - run: bun scripts/check-release-notes.ts origin/master

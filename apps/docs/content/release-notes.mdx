@@ -1,0 +1,46 @@
+# Release notes
+
+What each release changed, newest first. **Unreleased** is on the `staging` branch and goes out with the next version; when a version is released its notes move under its number. The commit messages of the `Version X.Y.Z` commits have the detail.
+
+## Unreleased
+
+### Changed
+
+- **Redis keys belong to a service.** Everything the engine keeps in Redis (the query cache, the topics that wake subscriptions, both rate limiters) now starts with a prefix, `archlast-forge:<service>:`, from [`OTEL_SERVICE_NAME`](configuration.html), or from `REDIS_PREFIX` when you set it. Before, every app used the fixed prefix `archlast-forge:`, so two backends on one Redis, such as the services of a monorepo, shared a query cache (a function with the same name and arguments in both was answered from the other's cached result) and woke each other's subscriptions. Servers of one service share their keys, and different services stay apart.
+  - **Upgrading:** an app with no service name keeps its keys, so nothing moves. Naming a replicated app that had no name moves its keys, and its servers on different versions miss each other's writes until the last is upgraded (cached entries expire after `CACHE_TTL_MS`). Set `REDIS_PREFIX=archlast-forge:` on every server first to avoid that.
+  - Two apps with one prefix on one Redis are reported at startup: `another app already uses the Redis prefix`.
+- **The generated `compose.yaml` passes `OTEL_SERVICE_NAME` and `REDIS_PREFIX` on** from `.env` (empty means none). `archlast-forge stack` still recognizes a `compose.yaml` made before as generated, not as edited by you.
+- **Every app of a monorepo gets its own `OTEL_SERVICE_NAME`** from `init`, `add app`, `add service` and `workspace sync`; one that is already set is kept.
+
+### Added
+
+- **An agent skill:** `npx skills add algochad/archlast-forge` teaches AI coding agents how to build on archlast-forge: project modes, what the scaffolder writes, the CLI, services and modules, Forge RPC, data and functions, clients, operations and observability, each reference pointing back to these pages. See [Agent skill](agent-skill.html).
+- **The docs for agents:** `llms.txt` (also `/index.md`) has key facts, a start-here list by task and a line for every page. Every page is Markdown at `/<page>.md`, with its section and the previous and next page at the top, or at its own address with `Accept: text/markdown`. `/llms-<section>.txt` is one section in one file.
+- **A recommended `forge/` layout:** Nest code in `_modules/<feature>/`, with routers at the top level. See [Folder layout](nest.html#folder-layout).
+
+### Fixed
+
+- Corrections to the docs where they disagreed with the code: where `start --no-docker` keeps its data, SSE streaming, password reset, `--no-shadcn` with a backend, `--transport` implying a monorepo, hydration with `Date` values in loaders, and more.
+
+## 0.16.0
+
+One dashboard for a main app and its microservices, Nodes, your Nest classes as Services, and the dashboard's slowdown fixed.
+
+- **Fixed:** the Runtime and Cache pages over long ranges took up to minutes (a quadratic latest-sample query on the telemetry thread), holding up every other dashboard call, and a proxy in front answered 502. Live pages no longer poll while an answer is on the way.
+- **Microservices** (was Services): with `DASHBOARD_URL`, `OTEL_SERVICE_NAME` and `DASHBOARD_TOKEN` a microservice sends its telemetry to the main app and serves no dashboard. The main app's `MICROSERVICES` lists them, and its backend picker shows a microservice's data, schema and functions.
+- **Nodes:** each service's server processes and their function runtimes, as replicas start and stop, with a live-nodes alert.
+- **Services:** your Nest classes by own time, method by method.
+- Forge RPC calls and microservice messages are `rpc` requests (under the caller's trace), gateway messages `ws` requests.
+- The CLI writes a monorepo's dashboard variables (`init`, `add`, `remove`, `workspace sync`).
+
+## 0.15.0
+
+The CLI adopts a monorepo made by hand, and upgrades a monorepo whole.
+
+- The main app of a monorepo can have any name, and its packages any scope: `archlast-forge.workspace.json` has `main` (a folder) and `scope`. Without the file, the only app with an `archlast-forge.json` is the main app. `workspace sync` writes `packages/api` for it, so `add mobile`, `add desktop` and `workspace` work there.
+- A phone app is a client of any main app, a full-stack app or a backend (`init --mobile` and `add mobile` no longer need a backend).
+- `upgrade` in a monorepo moves every app and package: the projects, and the dependencies of the phone app, the desktop app and the shared packages.
+- Shared packages and the phone app use the root's TypeScript pin and the main app's `@types/bun`, and package names are read from each app's `package.json`.
+- The mobile and desktop templates name the main app and its typed API instead of `apps/api` and `apiApi`.
+
+Earlier releases are in the repository's history: `git log --grep '^Version'`.

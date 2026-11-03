@@ -72,6 +72,8 @@ export const DESCRIPTIONS: Record<Slug, string> = {
     "Exact signatures of every public export of every package, the wire protocol and the HTTP surface.",
   troubleshooting:
     "Find the message or symptom, read the cause, apply the fix.",
+  "release-notes":
+    "What each release changed, newest first, with upgrade notes; Unreleased is what is on the staging branch.",
 };
 
 /** "Start here by task": a task and the pages to read for it, in order. */

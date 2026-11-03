@@ -2,6 +2,20 @@
 
 How a release reaches every place people get archlast-forge from. Releases are lockstep: one version for all nine packages, the engine image, and the version strings in the docs' samples. 0.6.1 and 0.7.0 were released with exactly these steps.
 
+## Branches
+
+Two branches are protected by rulesets (Settings > Rules): nothing is pushed to either, everything is a pull request.
+
+| Branch | What it is | Takes pull requests from | Must pass |
+| ------ | ---------- | ------------------------ | --------- |
+| `staging` | where changes land and are reviewed; the default target for contributors | contributors' branches and forks, and the owner's `release/X.Y.Z` | the `test` job, and the owner's review |
+| `master` | what is released from; the engine image is built when it is updated | `staging` only | the `test`, `source-branch` and (on a version change) `release-notes` jobs |
+
+- **Contributors** branch from `staging` and open their pull request into `staging`. The owner reviews it there (see [Reviewing a pull request](#reviewing-a-pull-request)). Pull requests into `master` from anywhere but `staging` fail the `source-branch` check.
+- **Nothing publishes from `staging`.** The `engine-image` job of `ci.yml` runs only when `master` is updated (a push to `master`, which is a merge from `staging`), and it only builds the image and runs it. The image and the packages are published by `release.yml`, from a `v*` tag on a commit of `master`. Pull requests and `staging` can't overwrite the production image: they never push one.
+- **The release notes** are a commit on `staging` before it is merged into `master`: they move from "Unreleased" to the new version in `apps/docs/content/release-notes.mdx`, so the docs site that is built from `master` has them.
+- The owner can bypass either ruleset, but only through a pull request.
+
 ## The publishing points
 
 | Point | What | How it is published | Needs |
@@ -23,9 +37,9 @@ The CLI pulls the engine image whose tag equals its own version, so the packages
 
 ## Steps
 
-Run from the repository root, on `master`, with a clean working tree. `X.Y.Z` is the new version.
+Run from the repository root, on `staging` (up to date), with a clean working tree. `X.Y.Z` is the new version.
 
-1. **Land the change first**, through a pull request, in its own commit(s), with its tests and docs: a message that says what changed and why, and numbers where there are any. The version commit comes after it, so the history reads change, then release.
+1. **Land the change first**, through a pull request into `staging` (reviewed as below), in its own commit(s), with its tests and docs: a message that says what changed and why, and numbers where there are any. The version commit comes after it, so the history reads change, then release.
 2. **Set the version**: `bun scripts/version.ts X.Y.Z`. It sets `version` in every `packages/*/package.json` and nothing else.
 3. **Update the version strings it doesn't touch**, all under `apps/docs/content`:
    - the banner in sample output, `archlast-forge X.Y.Z  ·` (`backend`, `cli`, `framework`, `getting-started`, `tutorial`);
@@ -35,21 +49,25 @@ Run from the repository root, on `master`, with a clean working tree. `X.Y.Z` is
 
    Find every one with `grep -rn "<previous version>" apps docs packages --include=*.mdx --include=*.md --include=*.json --include=*.ts --include=*.tsx | grep -v node_modules`. What is left should be a deliberate baseline, such as a benchmark README that says which version it measured.
    If the public API changed, make sure `reference.mdx` shows it: its signatures are copied from the source.
-4. **Refresh and check**: `bun install` (updates the workspace versions in `bun.lock`), then `bun install --frozen-lockfile` and `bun run --cwd apps/docs build` must both pass, as CI will run them.
-5. **Commit** as `Version X.Y.Z`, on a branch (`git switch -c release/X.Y.Z`): `master` is protected by a ruleset, so a direct push is refused. The body says what the release contains (see `git log --grep '^Version'`).
-6. **Open the pull request, merge it, and wait for CI on `master`**:
+4. **Write the release notes**: in `apps/docs/content/release-notes.mdx`, rename "Unreleased" to `## X.Y.Z` and open a new empty "Unreleased" above it (Changed, Added, Fixed). Say what a user must do to upgrade, and what moved. The `release-notes` check fails the pull request into `master` if the version changed and this heading is missing; `bun scripts/check-release-notes.ts origin/master` runs it here.
+5. **Refresh and check**: `bun install` (updates the workspace versions in `bun.lock`), then `bun install --frozen-lockfile` and `bun run --cwd apps/docs build` must both pass, as CI will run them.
+6. **Commit** the release notes, then the version, as `Version X.Y.Z`, on a branch from `staging` (`git switch -c release/X.Y.Z`): both branches are protected, so a direct push is refused. The body says what the release contains (see `git log --grep '^Version'`).
+7. **Merge the release into `staging`, then `staging` into `master`**, and wait for CI on `master`:
    ```bash
    git push -u origin release/X.Y.Z
-   gh pr create --fill --base master
-   gh pr checks --watch                                     # `test` and `engine-image` are required
-   gh pr merge --merge --delete-branch                      # the owner may merge without a second reviewer
-   git switch master && git pull --ff-only && sleep 8       # let the run for the merge commit register
+   gh pr create --fill --base staging && gh pr checks --watch   # `test` is required
+   gh pr merge --merge --delete-branch                          # the owner may merge without a second reviewer
+   git switch staging && git pull --ff-only
+   gh pr create --base master --head staging --title "Release X.Y.Z" --fill
+   gh pr checks --watch                                         # `test`, `source-branch` and `release-notes`
+   gh pr merge --merge                                          # a merge commit; keep staging
+   git switch master && git pull --ff-only && sleep 8           # let the run for the merge commit register
    id=$(gh run list --branch master --limit 1 --json databaseId -q '.[0].databaseId')
    until [ "$(gh run view $id --json status -q .status)" = completed ]; do sleep 20; done
    gh run view $id --json conclusion,jobs -q '"conclusion: \(.conclusion)", (.jobs[] | "  \(.name): \(.conclusion)")'
    ```
-   Use a merge commit (not squash or rebase) so the commit that was checked is the one that gets the tag. The tag goes on the merge commit of `master`, and CI must be green on that exact commit. The `test` job typechecks and builds, runs the tests against SQLite, Postgres, Redis and S3, packs the tarballs and serves a full-stack app and a backend from them, then runs the Docker end-to-end scripts. `engine-image` builds the image. Both must be `success`.
-7. **Tag and push the tag**, which starts the release workflow:
+   Use merge commits (not squash or rebase) so the commit that was checked is the one that gets the tag, and `staging` stays an ancestor of `master`. The tag goes on the merge commit of `master`, and CI must be green on that exact commit. The `test` job typechecks and builds, runs the tests against SQLite, Postgres, Redis and S3, packs the tarballs and serves a full-stack app and a backend from them, then runs the Docker end-to-end scripts. On `master`, `engine-image` builds the image (it doesn't run for pull requests or `staging`). Both must be `success`.
+8. **Tag and push the tag**, which starts the release workflow:
    ```bash
    git tag -a vX.Y.Z -m "Version X.Y.Z"
    git push origin vX.Y.Z && sleep 8
@@ -58,7 +76,7 @@ Run from the repository root, on `master`, with a clean working tree. `X.Y.Z` is
    gh run view $id --json conclusion,jobs -q '"conclusion: \(.conclusion)", (.jobs[] | "  \(.name): \(.conclusion)")'
    ```
    The workflow builds and pushes the image, then runs `bun scripts/pack.ts --smoke` and publishes each tarball in `.pack/` with `npm publish --access public`, under `latest` (under `next` when the tag contains a `-`).
-8. **Verify the registries.** A green workflow is not proof: npm can take a few minutes to show a version, so look with `--prefer-online` and retry.
+9. **Verify the registries.** A green workflow is not proof: npm can take a few minutes to show a version, so look with `--prefer-online` and retry.
    ```bash
    for d in packages/*; do
      p=$(bun -e "console.log(require('./$d/package.json').name)")
@@ -70,7 +88,18 @@ Run from the repository root, on `master`, with a clean working tree. `X.Y.Z` is
        https://ghcr.io/v2/algochad/archlast-forge-engine/manifests/$t | grep -iE "^HTTP|docker-content-digest"
    done                                                       # 200, and the same digest for both tags
    ```
-9. **Redeploy the docs site**, so its samples, pages and `llms.txt` match the release (below). Then report what was published, with the commit, the tag and the image digest.
+10. **Redeploy the docs site**, so its samples, pages and `llms.txt` match the release (below). Then report what was published, with the commit, the tag and the image digest.
+
+## Reviewing a pull request
+
+The owner reviews every pull request into `staging` before it merges; the rulesets require a review and a green `test` job, and the review is where the rest is checked:
+
+- **Security:** new input is validated (`v` validators, `ForgeError` for what callers should see); no secret, token or internal detail in a response, log or error; auth checked in every function that isn't public, `internal*` for what clients must not call; no `fetch` or I/O in a query or mutation; new Redis keys built from `config.redisPrefix`; new dependencies are needed, maintained and pinned; no change to a workflow, a ruleset, `release.yml` or a Dockerfile that the pull request doesn't explain.
+- **Tests:** every change of behavior has a test that fails without it, in the package it changes (`bun run test`, `bun run typecheck`); a bug fix has its regression test.
+- **Docs and the skill:** a change to the public API, a CLI flag or what the scaffolder writes updates `apps/docs/content`, the skill (`bun run skill:check`) and "Unreleased" in the release notes.
+- **Fit:** it follows `docs/decisions.md`; a change to a settled choice says so and why.
+
+A pull request from a fork runs the same checks; read what it changes in `.github/` and `scripts/` before approving.
 
 ## The docs site
 
@@ -83,7 +112,7 @@ Check a build before a release with `bun run --cwd apps/docs build`; it fails wh
 ## When it goes wrong
 
 - **CI is red.** Fix it, push, wait for green. Nothing is tagged yet, so nothing is lost.
-- **The release workflow fails before npm** (image build, pack smoke test, a missing `NPM_TOKEN`: the publish step says so). Nothing is on npm. Fix the cause. If the fix is a repository secret, `gh run rerun <id>` is enough. If it is a new commit, the tag has to move: delete it (`git tag -d vX.Y.Z; git push origin :refs/tags/vX.Y.Z`), push the fix, wait for CI, tag again. Only do this while nothing has reached npm. The image job runs first, so `:X.Y.Z` and `:latest` on GHCR may already hold a build of the broken commit until the new run overwrites them; check the digest afterwards (step 8).
+- **The release workflow fails before npm** (image build, pack smoke test, a missing `NPM_TOKEN`: the publish step says so). Nothing is on npm. Fix the cause. If the fix is a repository secret, `gh run rerun <id>` is enough. If it is a new commit, the tag has to move: delete it (`git tag -d vX.Y.Z; git push origin :refs/tags/vX.Y.Z`), push the fix, wait for CI, tag again. Only do this while nothing has reached npm. The image job runs first, so `:X.Y.Z` and `:latest` on GHCR may already hold a build of the broken commit until the new run overwrites them; check the digest afterwards (step 9).
 - **It fails while publishing to npm.** Some packages may be live and npm refuses to publish a version twice, so a rerun stops at the first one that is. Do not finish by hand under the same version. Release the next patch (`X.Y.Z+1`, all packages) and, if the incomplete version could mislead anyone, `npm deprecate` it with a message.
 - **A bad release is out.** It can't be unpublished safely: deprecate the version and release a patch.
 

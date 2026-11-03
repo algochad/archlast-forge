@@ -83,7 +83,7 @@ Where to read a page (`<page>` is its name, such as `nest`):
 1. **The docs site**, when the user or the project gives its address: `<site>/<page>.md` is the page as Markdown. `<site>/llms.txt` indexes every page with a line about each and a start-here list by task; `<site>/llms-full.txt` is everything, `<site>/llms-<section>.txt` one section; asking a page's own address with `Accept: text/markdown` also returns Markdown. Each Markdown page links to the previous and next page, so you can walk from one to the next.
 2. **The repository**, always: `https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/<page>.mdx` (or `apps/docs/content/<page>.mdx` in a checkout of archlast-forge).
 
-Page names: introduction, concepts, getting-started, tutorial, framework, backend, monorepo, schema, functions, queries, reactivity, caching, errors, migrations, auth, storage, scheduling, http, nest, forge-rpc, api-docs, clients, mobile, desktop, testing, recipes, agent-skill, cli, deployment, configuration, dashboard, backups, observability, limits, reference, troubleshooting.
+Page names: introduction, concepts, getting-started, tutorial, framework, backend, monorepo, schema, functions, queries, reactivity, caching, errors, migrations, auth, storage, scheduling, http, nest, forge-rpc, api-docs, clients, mobile, desktop, testing, recipes, agent-skill, cli, deployment, configuration, dashboard, backups, observability, limits, reference, troubleshooting, release-notes.
 
 For an exact signature read `reference`; for a message or symptom read `troubleshooting`; for the engine's variables read `configuration`; for a command read `cli`.
 
