@@ -107,3 +107,14 @@ Telemetry costs about 2 µs a cached request and 7 µs with three spans; writes 
 - Setting `MICROSERVICES` addresses to `localhost` in production, or a service's `OTEL_SERVICE_NAME` different from its name in `MICROSERVICES`.
 - Searching by URL instead of by route pattern (`GET /users/:id`).
 - Treating a 4xx from a controller as an error issue (it is a client error).
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                                  | Read it for                                                                           |
+| --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------- |
+| [dashboard](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/dashboard.mdx)         | sign-in, roles, every page, the admin API, the audit log                              |
+| [observability](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/observability.mdx) | what is recorded, sampling, spans and metrics, OTLP, SLOs, alerts, monorepo dashboard |
+| [api-docs](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/api-docs.mdx)           | the API docs page the dashboard links                                                 |
+| [configuration](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/configuration.mdx) | `DASHBOARD`, `TELEMETRY_*` and related settings                                       |

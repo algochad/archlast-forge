@@ -314,3 +314,15 @@ AppState.addEventListener(
 10. Forgetting `import type` for the `@acme/api` types in mobile and desktop (it would bundle backend code), or putting a custom header through the `headers` option for a cross-origin browser client (preflight fails).
 11. Uploading without saving the `storageId` afterwards, or without the storage's CORS/`S3_PUBLIC_ENDPOINT` set.
 12. Pointing the Expo app at `localhost` from a phone, or forgetting `expo()` and `trustedOrigins: ["<scheme>://"]` in the backend's `forge/auth.ts`.
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                          | Read it for                                                     |
+| ------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------- |
+| [clients](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/clients.mdx)     | the client library, the bindings and the wire protocol in depth |
+| [mobile](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/mobile.mdx)       | the Expo template                                               |
+| [desktop](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/desktop.mdx)     | the Tauri template                                              |
+| [auth](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/auth.mdx)           | sign-in from a client                                           |
+| [reference](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/reference.mdx) | client and hook signatures                                      |

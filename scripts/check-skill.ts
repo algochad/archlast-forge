@@ -2,6 +2,8 @@
 // Checks the agent skills in skills/ (the `npx skills add` format): `bun run skill:check`.
 //  - SKILL.md has front matter with a `name` (equal to its folder, lowercase and hyphens) and a `description`.
 //  - Every relative Markdown link resolves, and every file in references/ is linked from SKILL.md.
+//  - Every reference ends with a "Full documentation" table, every apps/docs/content/<page>.mdx it links exists, and SKILL.md's "Page names:"
+//    line is exactly the docs site's pages (apps/docs/src/nav.ts).
 //  - Every `import { a, b } from "@archlast/..."` in a code block names a package and subpath that exist, and a value that module exports.
 //    That is the check that keeps the skill true when the API changes.
 import { existsSync, readdirSync, readFileSync, statSync } from "node:fs";
@@ -42,6 +44,15 @@ if (!existsSync(SKILLS)) {
   console.error("No skills/ folder.");
   process.exit(1);
 }
+
+/** The docs site's pages, from the keys of PAGES in nav.ts. */
+const pages = new Set(
+  [
+    ...readFileSync(join(ROOT, "apps/docs/src/nav.ts"), "utf8").matchAll(
+      /^  (?:"([\w-]+)"|(\w+)): \["/gm,
+    ),
+  ].map((m) => (m[1] ?? m[2])!),
+);
 
 const moduleCache = new Map<string, Promise<Record<string, unknown>>>();
 const load = (file: string) =>
@@ -92,6 +103,15 @@ for (const name of readdirSync(SKILLS)) {
       if (!existsSync(path)) fail(file, `broken link ${target}`);
       else if (file === skillFile) linked.add(path);
     }
+    // The docs pages it sends the reader to
+    for (const [, page] of body.matchAll(/apps\/docs\/content\/([\w-]+)\.mdx/g))
+      if (!pages.has(page!))
+        fail(
+          file,
+          `links apps/docs/content/${page}.mdx, which is not a docs page`,
+        );
+    if (file !== skillFile && !body.includes("\n## Full documentation\n"))
+      fail(file, 'no "## Full documentation" section');
     // Imports in code blocks
     for (const [, block] of body.matchAll(/```(?:ts|tsx)\n([\s\S]*?)```/g)) {
       for (const [, clause, spec] of block!.matchAll(
@@ -130,6 +150,13 @@ for (const name of readdirSync(SKILLS)) {
       }
     }
   }
+  const listed = /^Page names: (.+)\.$/m.exec(text)?.[1]?.split(/,\s*/);
+  if (!listed) fail(skillFile, 'no "Page names:" line');
+  else if (listed.length !== pages.size || listed.some((p) => !pages.has(p)))
+    fail(
+      skillFile,
+      `"Page names:" must be the docs site's pages: ${[...pages].join(", ")}`,
+    );
   for (const file of files)
     if (file !== skillFile && !linked.has(file))
       fail(file, "not linked from SKILL.md");

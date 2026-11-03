@@ -10,6 +10,28 @@
 		file_server
 	}
 
+	# Markdown for readers that ask for it: `Accept: text/markdown` on a page's own address answers the page's .md, and on / the index.
+	# Every page is also at /<page>.md, and /llms.txt and /llms-full.txt list and contain them. Vary tells caches the two answers differ.
+	header Vary Accept
+	@markdown path *.md
+	header @markdown Content-Type "text/markdown; charset=utf-8"
+	@wantsRoot {
+		header Accept *text/markdown*
+		path /
+	}
+	handle @wantsRoot {
+		rewrite * /index.md
+		file_server
+	}
+	@wantsPage {
+		header Accept *text/markdown*
+		path_regexp page ^/([a-z0-9-]+)/?$
+	}
+	handle @wantsPage {
+		rewrite * /{re.page.1}.md
+		file_server
+	}
+
 	# A page is a folder with an index.html (the text is in it for readers without JavaScript; the app takes over in a browser).
 	# Anything else that is missing is a real 404, shown as the app's "Page not found".
 	handle {

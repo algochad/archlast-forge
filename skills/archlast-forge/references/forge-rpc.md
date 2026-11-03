@@ -217,3 +217,16 @@ Replace `@Controller()` with `@Router({ alias })` and `@MessagePattern("orders.g
 - Returning `Date`/`bigint` through a schema and expecting the same type on the caller.
 - Importing a service's `api` or `dataModel` types into another backend (global `Register` collision `TS2717`); share only `rpc.ts` through contracts.
 - Using the service's `127.0.0.1` URL in production instead of its container host name.
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                                  | Read it for                                                                                 |
+| --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| [forge-rpc](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/forge-rpc.mdx)         | the full Forge RPC reference: routers, types, clients, errors, performance, moving from TCP |
+| [monorepo](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/monorepo.mdx)           | services calling services, transports, the workspace                                        |
+| [nest](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/nest.mdx)                   | microservice transports and `ClientsModule`                                                 |
+| [errors](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/errors.mdx)               | the error envelope                                                                          |
+| [observability](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/observability.mdx) | `rpc` requests and traces across services                                                   |
+| [deployment](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/deployment.mdx)       | networks and ports for several stacks                                                       |

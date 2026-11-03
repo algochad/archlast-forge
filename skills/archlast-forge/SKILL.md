@@ -74,6 +74,19 @@ Any file or folder name starting with `_` is ignored by the function scanner, co
 
 For anything not covered, the documentation site is the full reference: its `/llms.txt` lists every page and `/<page>.md` is each page as Markdown (the pages are also in `apps/docs/content` of the archlast-forge repository).
 
+## Going deeper: the documentation
+
+The references are the short version. The documentation is the full one, and each reference ends with a **Full documentation** table of the pages for its subject. Read the page instead of guessing when an option, flag or signature is not in the reference, when behavior surprises you, or when you need the cause of an error message.
+
+Where to read a page (`<page>` is its name, such as `nest`):
+
+1. **The docs site**, when the user or the project gives its address: `<site>/<page>.md` is the page as Markdown. `<site>/llms.txt` indexes every page with a line about each and a start-here list by task; `<site>/llms-full.txt` is everything, `<site>/llms-<section>.txt` one section; asking a page's own address with `Accept: text/markdown` also returns Markdown. Each Markdown page links to the previous and next page, so you can walk from one to the next.
+2. **The repository**, always: `https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/<page>.mdx` (or `apps/docs/content/<page>.mdx` in a checkout of archlast-forge).
+
+Page names: introduction, concepts, getting-started, tutorial, framework, backend, monorepo, schema, functions, queries, reactivity, caching, errors, migrations, auth, storage, scheduling, http, nest, forge-rpc, api-docs, clients, mobile, desktop, testing, recipes, agent-skill, cli, deployment, configuration, dashboard, backups, observability, limits, reference, troubleshooting.
+
+For an exact signature read `reference`; for a message or symptom read `troubleshooting`; for the engine's variables read `configuration`; for a command read `cli`.
+
 ## 6. Workflows
 
 **New feature in any app** (a notes feature, say):

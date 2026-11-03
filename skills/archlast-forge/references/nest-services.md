@@ -242,3 +242,17 @@ export class NotesController {
 - Putting a `@Router` class under `_modules/` (no `rpc.ts` types are generated for it) or Nest classes at the top level of `forge/` (they become function modules and clutter the API namespace).
 - Putting a route file under `/http` in a full-stack app, or expecting `listen()`/static assets in Nest.
 - Putting two feature classes under the same `@Controller` path or the same `@Router` alias.
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                                  | Read it for                                                                                       |
+| --------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------- |
+| [nest](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/nest.mdx)                   | the full NestJS API: services, controllers, `@Contract`, gateways, GraphQL, microservices, limits |
+| [backend](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/backend.mdx)             | Nest in a backend: the worked example and what is particular to backends                          |
+| [framework](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/framework.mdx)         | Nest in a full-stack app                                                                          |
+| [http](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/http.mdx)                   | plain `forge/http.ts` routes beside Nest, validators, CORS                                        |
+| [testing](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/testing.mdx)             | `createTestBackend` with services, testing a running app                                          |
+| [errors](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/errors.mdx)               | how errors reach callers                                                                          |
+| [observability](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/observability.mdx) | class spans and the Services page                                                                 |

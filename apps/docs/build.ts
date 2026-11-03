@@ -26,9 +26,12 @@ if (process.argv.includes("--serve")) {
   const server = Bun.serve({
     port: 4000,
     async fetch(req) {
-      const path = join(dist, decodeURIComponent(new URL(req.url).pathname));
+      let pathname = decodeURIComponent(new URL(req.url).pathname);
+      // Like the Caddyfile: `Accept: text/markdown` on a page's address answers its Markdown, and on / the index.
+      if (req.headers.get("accept")?.includes("text/markdown") && /^\/([a-z0-9-]*)\/?$/.test(pathname)) pathname = `/${pathname.replace(/\//g, "") || "index"}.md`;
+      const path = join(dist, pathname);
       const file = [path, join(path, "index.html")].find((p) => p.startsWith(dist) && statSync(p, { throwIfNoEntry: false })?.isFile()); // a page is a folder with an index.html
-      return file ? new Response(Bun.file(file)) : new Response(Bun.file(join(dist, "404.html")), { status: 404 });
+      return file ? new Response(Bun.file(file), file.endsWith(".md") ? { headers: { "content-type": "text/markdown; charset=utf-8" } } : undefined) : new Response(Bun.file(join(dist, "404.html")), { status: 404 });
     },
   });
   console.log(`✓ docs on ${server.url}`);

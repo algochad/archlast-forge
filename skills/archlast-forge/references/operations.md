@@ -262,3 +262,19 @@ Start with the log line for the request id, `GET /ready` (it carries the load er
 - Making a required schema field in one step on a database that has old documents.
 - Upgrading packages by hand so CLI, packages and the engine image disagree on versions: use `archlast-forge upgrade`.
 - Running data commands against a remote stack from your laptop and trusting the `✓` (they may have hit local SQLite).
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                                      | Read it for                                                                |
+| ------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| [configuration](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/configuration.mdx)     | every engine variable and setting                                          |
+| [deployment](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/deployment.mdx)           | the stack, other platforms, TLS and proxies, scaling out, logs and metrics |
+| [backend](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/backend.mdx)                 | the stack in detail and the production checklist                           |
+| [backups](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/backups.mdx)                 | archives, schedules, restores                                              |
+| [cli](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/cli.mdx)                         | every command                                                              |
+| [troubleshooting](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/troubleshooting.mdx) | messages and symptoms with causes and fixes                                |
+| [limits](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/limits.mdx)                   | limits and security                                                        |
+| [dashboard](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/dashboard.mdx)             | the admin console                                                          |
+| [observability](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/observability.mdx)     | telemetry, alerts, SLOs                                                    |

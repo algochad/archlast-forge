@@ -450,3 +450,13 @@ bun test --preload ./happydom.ts test/components       # components; happydom.ts
 10. Registering happy-dom in a global `bunfig.toml` preload and then wondering why `startServer`/`fetch` tests fail.
 11. A migration test that seeds the old shape after the old field was removed from the schema: `t.run` writes are validated, so the seed fails. Keep the old field (optional) in the schema until every environment has migrated.
 12. Comparing `_id` or `_creationTime` literally in `toEqual`: use `toMatchObject` on the fields you care about.
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                          | Read it for                                                                                                    |
+| ------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| [testing](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/testing.mdx)     | the full testing guide: setup, `createTestBackend`, auth, scheduled functions, React components, a running app |
+| [recipes](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/recipes.mdx)     | testing a function, deploying a change safely                                                                  |
+| [functions](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/functions.mdx) | what a function may do, which decides what to test                                                             |

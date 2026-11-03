@@ -121,3 +121,18 @@ apps/desktop/  package.json  README.md  .gitignore  src-tauri/ (Cargo.toml build
 - Choosing `--no-shadcn` and then importing shadcn components (or the reverse); base color cannot be changed later.
 - `full` desktop with a backend main app (only `client` is valid there), or a mobile app pointing at `localhost` on a real device.
 - Adding Postgres/Redis/S3 by editing `compose.yaml` only: use `archlast-forge stack add` so `archlast-forge.json`, `.env` and `dev` agree.
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                                      | Read it for                                                                       |
+| ------------------------------------------------------------------------------------------------------------------------- | --------------------------------------------------------------------------------- |
+| [getting-started](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/getting-started.mdx) | what `init` asks and writes, first run                                            |
+| [backend](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/backend.mdx)                 | the stack: `compose.yaml`, `.env`, the image, Caddy, customizing the compose file |
+| [framework](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/framework.mdx)             | `app/` layout, shadcn/ui, what the framework generates                            |
+| [cli](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/cli.mdx)                         | `init` and `stack` options, files the CLI writes                                  |
+| [monorepo](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/monorepo.mdx)               | the monorepo layout and shared packages                                           |
+| [mobile](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/mobile.mdx)                   | the Expo template in depth                                                        |
+| [desktop](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/desktop.mdx)                 | the Tauri template in depth                                                       |
+| [deployment](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/deployment.mdx)           | production environment for the generated stack                                    |

@@ -502,3 +502,20 @@ archlast-forge import data.jsonl [--replace]        # validated against the sche
 14. Adding a required field in one step: stored documents no longer match and production refuses to start. Add it optional, migrate, then require it.
 15. Reading `ctx.auth` in the handler of a query that declares `access`: it throws. Read the caller in `access` only.
 16. Hand-editing `forge/_generated`, or defining `users`/`sessions`/`accounts`/`verifications`/`_storage` tables: both are rejected or overwritten.
+
+## Full documentation
+
+When this file is not enough, read the page instead of guessing: the docs are the full reference (see "Going deeper" in [SKILL.md](../SKILL.md) for where to fetch a page).
+
+| Page                                                                                                            | Read it for                                                                      |
+| --------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------- |
+| [schema](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/schema.mdx)         | tables, validators, indexes, search indexes, relations                           |
+| [functions](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/functions.mdx)   | queries, mutations, actions, internal functions, `ctx`, limits                   |
+| [queries](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/queries.mdx)       | everything on `ctx.db`: indexes, ranges, pagination, search, joins, writes       |
+| [reactivity](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/reactivity.mdx) | how live queries re-run                                                          |
+| [caching](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/caching.mdx)       | the query cache and the read cache                                               |
+| [errors](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/errors.mdx)         | `ForgeError` and the four ways a call fails                                      |
+| [migrations](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/migrations.mdx) | schema changes and data migrations                                               |
+| [recipes](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/recipes.mdx)       | complete answers: per-user data, soft delete, counters, unique values, workflows |
+| [reference](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/reference.mdx)   | exact signatures                                                                 |
+| [tutorial](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/tutorial.mdx)     | an end-to-end example                                                            |

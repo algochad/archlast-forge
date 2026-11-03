@@ -39,6 +39,20 @@ The skill is a short `SKILL.md` that the agent loads when the task is about arch
 
 It is written against the code, the starters and these docs, and it repeats the rules that the engine enforces: `src/` and `app/` import only `forge/_generated`, queries and mutations do no I/O, a service class never reaches the database with a ctx it wasn't given, and Forge RPC is backend to backend only. The layout it asks for is the one in [Folder layout](nest.html#folder-layout).
 
+## Reading the docs as Markdown
+
+An agent that needs more than a reference file holds should read the page itself. The docs are built for that:
+
+| Address | What it is |
+|---|---|
+| `/llms.txt`, `/index.md` | the index: what archlast-forge is, a start-here list by task, and every page with one line about it |
+| `/<page>.md` | a page as Markdown. It opens with its section, the previous and next page and a link back to the index; its links point at other pages' Markdown, so an agent can walk the whole site by following links |
+| `/<page>` or `/` with `Accept: text/markdown` | the same Markdown from the page's own address, with `Vary: Accept` for caches |
+| `/llms-full.txt` | every page in one file, in reading order |
+| `/llms-<section>.txt` | one section in one file (`llms-server-features.txt`, `llms-run.txt`, ...), listed at the end of `/llms.txt` |
+
+Every page is also `apps/docs/content/<page>.mdx` in the repository, which is where each reference of the skill sends the agent for detail: each one ends with a "Full documentation" table of the pages that cover its subject.
+
 ## Using it
 
 Ask the agent for the outcome, not the API: "add an orders service that the web app calls", "make this a backend with a Nest controller for the webhook", "add an invoices feature with a mutation and a live list". The skill tells it to look at `archlast-forge.json` and the folder layout first, to follow the project's mode, to use the CLI's `add` commands in a monorepo instead of copying folders, and to run `codegen` and the typecheck before it says it is done.
