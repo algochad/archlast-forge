@@ -64,8 +64,8 @@ jobs:
           bun scripts/e2e-dev.ts
 
   # Only when master is updated, which is a merge from staging: not for pull requests (a pull request that doesn't touch the Dockerfile has
-  # nothing to learn from it) and not for staging. It builds the image and runs it, and pushes nothing: the image is published by the release
-  # workflow, from a version tag on a commit of master.
+  # nothing to learn from it) and not for staging. It builds the image and runs it, and pushes nothing. When this run succeeds on a merge that
+  # sets a version npm doesn't have, release.yml publishes the image and the packages from this commit.
   engine-image:
     if: github.event_name == 'push' && github.ref == 'refs/heads/master'
     runs-on: ubuntu-latest

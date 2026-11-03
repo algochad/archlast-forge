@@ -1,37 +1,99 @@
 name: Release
 
-# Push a tag like v0.2.0 after `bun scripts/version.ts 0.2.0` and a commit.
+# A release is a merge into master that sets a version npm doesn't have yet. When CI has passed on that commit of master, this publishes the
+# engine image and the nine packages, then tags the commit vX.Y.Z and writes the GitHub release from the docs' release notes.
+#
+# A merge that isn't a release (every package already has the version on npm) ends at the first job. Publishing can't be taken back, so the
+# first job refuses anything that isn't a commit of master with a green CI run, and the notes are required before anything is pushed.
+# A failed run can be re-run, and `gh workflow run Release` tries master's head again: what is already on npm is skipped, and the tag is
+# only made after the packages are published, so there is nothing to delete after a failure.
 on:
-  push:
-    tags: ["v*"]
+  workflow_run:
+    workflows: [CI]
+    types: [completed]
+    branches: [master]
+  workflow_dispatch:
 
 permissions:
   contents: read
   packages: write
+  actions: read
+
+concurrency:
+  group: release
+  cancel-in-progress: false
 
 jobs:
-  # Publishing only ever happens from master: master is protected (pull requests only), so a commit that is on it was reviewed and passed CI.
-  # A tag can point anywhere, so check that the tagged commit is on master before anything is pushed or published.
-  on-master:
+  plan:
+    if: github.event_name == 'workflow_dispatch' || (github.event.workflow_run.conclusion == 'success' && github.event.workflow_run.event == 'push')
+    runs-on: ubuntu-latest
+    outputs:
+      release: ${{ steps.plan.outputs.release }}
+      version: ${{ steps.plan.outputs.version }}
+      prerelease: ${{ steps.plan.outputs.prerelease }}
+      sha: ${{ steps.sha.outputs.sha }}
+    steps:
+      - id: sha
+        run: echo "sha=${{ github.event.workflow_run.head_sha || github.sha }}" >> "$GITHUB_OUTPUT"
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.sha.outputs.sha }}
+          fetch-depth: 0
+      - name: The commit is on master, and CI passed on it
+        env:
+          GH_TOKEN: ${{ github.token }}
+          SHA: ${{ steps.sha.outputs.sha }}
+        run: |
+          git fetch origin master
+          git merge-base --is-ancestor "$SHA" origin/master || {
+            echo "::error::$SHA is not on master. Releases are made from master only. Nothing was published."
+            exit 1
+          }
+          passed=$(gh run list --workflow ci.yml --commit "$SHA" --event push --status success --json conclusion --jq length)
+          [ "$passed" -ge 1 ] || {
+            echo "::error::CI has not passed on $SHA. Nothing was published."
+            exit 1
+          }
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - id: plan
+        name: Which packages are not on npm yet
+        run: bun scripts/release-plan.ts
+
+  # The image goes first: a new project's `archlast-forge up` pulls it as soon as the packages exist. `latest` only moves for real releases.
+  engine-image:
+    needs: plan
+    if: needs.plan.outputs.release == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
         with:
-          fetch-depth: 0
-      - name: The tagged commit is on master
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build and push the engine image
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
         run: |
-          git fetch origin master
-          git merge-base --is-ancestor "$GITHUB_SHA" origin/master || {
-            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on master. Merge the change by pull request, then tag the commit on master. Nothing was published."
-            exit 1
-          }
+          IMAGE=ghcr.io/${{ github.repository_owner }}/archlast-forge-engine
+          TAGS=(-t "$IMAGE:$VERSION")
+          [ "$PRERELEASE" = "true" ] || TAGS+=(-t "$IMAGE:latest")
+          docker build -f docker/engine.Dockerfile "${TAGS[@]}" .
+          docker push "$IMAGE:$VERSION"
+          [ "$PRERELEASE" = "true" ] || docker push "$IMAGE:latest"
 
   publish:
-    # The engine image goes first: a new project's `archlast-forge up` pulls it as soon as the packages exist.
-    needs: [on-master, engine-image]
+    needs: [plan, engine-image]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.sha }}
       - uses: oven-sh/setup-bun@v2
         with:
           bun-version: 1.4.4
@@ -41,28 +103,50 @@ jobs:
       - name: Publish to npm
         env:
           NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
         run: |
           # npm itself publishes: `bun publish` doesn't send the token for new packages.
           test -n "$NPM_TOKEN" || { echo "Add the NPM_TOKEN repository secret (a granular token with read and write on all packages)"; exit 1; }
           echo "//registry.npmjs.org/:_authToken=$NPM_TOKEN" > ~/.npmrc
           # 0.2.0-rc.1 and the like are published under the "next" tag, so `latest` only moves for real releases.
-          TAG=latest; case "$GITHUB_REF_NAME" in *-*) TAG=next;; esac
-          for f in .pack/*.tgz; do npm publish "$f" --access public --tag $TAG; done
+          TAG=latest; [ "$PRERELEASE" = "true" ] && TAG=next
+          for f in .pack/*.tgz; do
+            name=$(tar -xzOf "$f" package/package.json | jq -r .name)
+            # A re-run after a failure: what is already on npm stays as it is.
+            if npm view "$name@$VERSION" version >/dev/null 2>&1; then echo "$name@$VERSION is already on npm: skipped"; continue; fi
+            npm publish "$f" --access public --tag "$TAG"
+          done
 
-  engine-image:
-    needs: on-master
+  # After the packages: a tag and a GitHub release only exist for a release that happened.
+  tag:
+    needs: [plan, publish]
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/login-action@v3
         with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-      - name: Build and push the engine image
+          ref: ${{ needs.plan.outputs.sha }}
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - name: Tag the commit, and write the GitHub release from the release notes
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          PRERELEASE: ${{ needs.plan.outputs.prerelease }}
+          SHA: ${{ needs.plan.outputs.sha }}
         run: |
-          VERSION=${GITHUB_REF_NAME#v}
-          IMAGE=ghcr.io/${{ github.repository_owner }}/archlast-forge-engine
-          docker build -f docker/engine.Dockerfile -t $IMAGE:$VERSION -t $IMAGE:latest .
-          docker push $IMAGE:$VERSION
-          docker push $IMAGE:latest
+          TAG="v$VERSION"
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          if git ls-remote --exit-code --tags origin "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "$TAG exists already"
+          else
+            git tag -a "$TAG" -m "Version $VERSION" "$SHA"
+            git push origin "$TAG"
+          fi
+          bun scripts/release-notes-section.ts "$VERSION" > notes.md
+          KIND=--latest; [ "$PRERELEASE" = "true" ] && KIND=--prerelease
+          gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$VERSION" --notes-file notes.md --verify-tag "$KIND"
