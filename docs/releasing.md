@@ -16,6 +16,7 @@ The CLI pulls the engine image whose tag equals its own version, so the packages
 ## Rules
 
 - **Publishing can't be taken back.** npm never lets a version be reused, and people may already have pulled an image tag. Publish only when the user asks for a release. A request to commit or push is not one.
+- **Releases come from `master` only.** The release workflow's first job, `on-master`, fails a tag whose commit is not reachable from `master`, and the image push and the npm publish both wait for it, so nothing is published from a branch. Pull requests (and so the `engine-image` check in `ci.yml`) only build the image; they never push it or publish a package.
 - **Never tag before CI is green on the exact commit that gets the tag.** The release workflow rebuilds and smoke-tests, but it is the last line of defense, not the first.
 - **Bun 1.4.4.** Check `bun --version` (mise installs it; see `mise.toml`). If `bun` on the PATH is older, call the mise binary: `~/.local/share/mise/installs/bun/1.4.4/bin/bun`.
 - **The version.** A patch for fixes, a minor for new public API or behavior (0.7.0 added the `access` option), a pre-release such as `0.8.0-rc.1` only when the user asks (read [Known gaps](#known-gaps) first).

@@ -10,9 +10,25 @@ permissions:
   packages: write
 
 jobs:
+  # Publishing only ever happens from master: master is protected (pull requests only), so a commit that is on it was reviewed and passed CI.
+  # A tag can point anywhere, so check that the tagged commit is on master before anything is pushed or published.
+  on-master:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: The tagged commit is on master
+        run: |
+          git fetch origin master
+          git merge-base --is-ancestor "$GITHUB_SHA" origin/master || {
+            echo "::error::$GITHUB_REF_NAME points at $GITHUB_SHA, which is not on master. Merge the change by pull request, then tag the commit on master. Nothing was published."
+            exit 1
+          }
+
   publish:
     # The engine image goes first: a new project's `archlast-forge up` pulls it as soon as the packages exist.
-    needs: engine-image
+    needs: [on-master, engine-image]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -34,6 +50,7 @@ jobs:
           for f in .pack/*.tgz; do npm publish "$f" --access public --tag $TAG; done
 
   engine-image:
+    needs: on-master
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
