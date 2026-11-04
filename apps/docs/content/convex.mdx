@@ -1,6 +1,6 @@
 # Compared with Convex
 
-We ran archlast-forge against [Convex](https://www.convex.dev/)'s self-hosted backend, the closest system to it, on one machine with the same workload. This page is the short version: what we measured, the numbers, and what they do and don't tell you. The full report, with every table and the raw data, is [`benchmarks/load/convex-vs-forge.md`](https://github.com/algochad/archlast-forge/blob/staging/benchmarks/load/convex-vs-forge.md) in the repository.
+We ran archlast-forge against [Convex](https://www.convex.dev/)'s self-hosted backend, the closest system to it, on one machine with the same workload. This page is the short version: what we measured, the numbers, and what they do and don't tell you. The full report, with every table, is [`benchmarks/load/convex-vs-forge.md`](https://github.com/algochad/archlast-forge/blob/staging/benchmarks/load/convex-vs-forge.md) in the repository.
 
 ## What we ran
 
@@ -46,4 +46,4 @@ Closed loop, 64 connections, requests per second.
 
 ## Run it yourself
 
-The harness, the Convex project it deploys and every raw result are in `benchmarks/load/convex/` in the repository; the report's last section has the commands. Reproducing the whole matrix takes a few hours.
+The harness and the Convex project it deploys are in `benchmarks/load/convex/` in the repository; the report's section 6 has the commands. Reproducing the whole matrix takes a few hours, and it writes the raw per-run results and logs next to it (not committed: they are large).
