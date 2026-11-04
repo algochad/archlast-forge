@@ -4,7 +4,10 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
-Nothing yet.
+### Changed
+
+- `sum()`, `avg()`, `min()` and `max()` on a query run in SQLite instead of loading every document, when the answer is the same: no `filter()` or `skip()`, every value a number, and for the sum, integers small enough to add exactly. Over 50,000 documents they went from about 160–190 ms to about 19 ms, and a 2,000-document range from about 2.3 ms to about 1 ms. Anything else (reals for the sum, a value that isn't a number) reads the documents as before, so results and errors don't change.
+- `include` with `take` on a reverse relation (`{ table, index, take }`) runs one direct statement per parent instead of building a query for each one, about 1.5–2× faster for 100 parents. `getMany()` builds each document's topic once instead of twice.
 
 ## 0.17.0
 

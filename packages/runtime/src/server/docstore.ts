@@ -448,9 +448,52 @@ export class DocStore {
       return Number(row?.n ?? 0);
     };
 
-    const numbers = async (name: string, field: string) => {
+    const checkNumeric = (name: string, field: string) => {
       const v = t.fields[field];
       if (field !== "_creationTime" && t.strict && v?.kind !== "number") throw new ValidationError(`${name}() needs a number field; "${table}.${field}" isn't one`);
+    };
+
+    /**
+     * How many values a number field has in the range, their sum, and their smallest and largest, from SQL instead of a pass over the
+     * documents. Only when the answer is exactly the one the pass would give; otherwise undefined and the caller reads the documents (which
+     * also words the error for a field that holds something else):
+     * - SQLite, a plain field name, no filter() or skip() (those need the documents);
+     * - every value a number: a stored string, array or boolean sends the caller to the pass, which throws;
+     * - for the sum, integers small enough that adding them in any order is exact (SQLite adds reals differently from a loop);
+     * - fewer documents than the scan limit (past it the pass throws).
+     * The first statement reads the value alone, so an index on the field answers it without reading a document. It cannot tell JSON
+     * `true` from 1 (both read as 1), so when a value is 0 or 1 a second statement asks those documents (only those) for their types.
+     */
+    const sqlStats = async (field: string) => {
+      if (this.dialect.name !== "sqlite" || hasFilter() || offset > 0 || !IDENT.test(field) || field === "_creationTime" || field === "_id") return undefined;
+      const p = plan();
+      const path = `'$.${field}'`;
+      const v = `json_extract("doc", ${path})`;
+      const [row] = await this.select(
+        table,
+        `SELECT COUNT(*) AS "rows", COUNT(${v}) AS "n", SUM(typeof(${v}) NOT IN ('integer', 'null')) AS "nonint", SUM(typeof(${v}) NOT IN ('integer', 'real', 'null')) AS "bad", SUM(${v} IN (0, 1)) AS "amb", TOTAL(${v}) AS "sum", MIN(${v}) AS "min", MAX(${v}) AS "max" FROM "${table}" ${p.where}`,
+        p.params,
+        [p.read],
+      );
+      if (!row || Number(row.rows) >= MAX_SCAN || Number(row.bad ?? 0) > 0) return undefined;
+      if (Number(row.amb ?? 0) > 0) {
+        const [odd] = await this.select(
+          table,
+          `SELECT SUM(json_type("doc", ${path}) NOT IN ('integer', 'real', 'null')) AS "bad" FROM "${table}" ${p.where ? `${p.where} AND` : "WHERE"} ${v} IN (0, 1)`,
+          p.params,
+          [p.read],
+        );
+        if (Number(odd?.bad ?? 0) > 0) return undefined;
+      }
+      const n = Number(row.n ?? 0);
+      const min = row.min === null ? null : Number(row.min);
+      const max = row.max === null ? null : Number(row.max);
+      const exact = Number(row.nonint ?? 0) === 0 && (n === 0 || n * Math.max(Math.abs(min!), Math.abs(max!)) <= Number.MAX_SAFE_INTEGER);
+      return { n, sum: exact ? Number(row.sum ?? 0) : undefined, min, max };
+    };
+
+    const numbers = async (name: string, field: string) => {
+      checkNumeric(name, field);
       const values: number[] = [];
       await each((d) => {
         const x = d[field];
@@ -521,16 +564,30 @@ export class DocStore {
         return finish((await matches(n)).docs);
       },
       count: async () => Math.max(0, (await total()) - offset),
-      sum: async (field: string) => (await numbers("sum", field)).reduce((a, b) => a + b, 0),
+      sum: async (field: string) => {
+        checkNumeric("sum", field);
+        const s = await sqlStats(field);
+        if (s?.sum !== undefined) return s.sum;
+        return (await numbers("sum", field)).reduce((a, b) => a + b, 0);
+      },
       avg: async (field: string) => {
+        checkNumeric("avg", field);
+        const s = await sqlStats(field);
+        if (s?.sum !== undefined) return s.n ? s.sum / s.n : null;
         const xs = await numbers("avg", field);
         return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
       },
       min: async (field: string) => {
+        checkNumeric("min", field);
+        const s = await sqlStats(field);
+        if (s) return s.min;
         const xs = await numbers("min", field);
         return xs.length ? xs.reduce((a, b) => Math.min(a, b)) : null;
       },
       max: async (field: string) => {
+        checkNumeric("max", field);
+        const s = await sqlStats(field);
+        if (s) return s.max;
         const xs = await numbers("max", field);
         return xs.length ? xs.reduce((a, b) => Math.max(a, b)) : null;
       },
@@ -644,10 +701,10 @@ export class DocStore {
     const found = new Map<string, Doc>();
     for (const [table, set] of byTable) {
       const unique = [...set];
-      for (const id of unique) this.reads.add(topic(table, "by_id", [id]));
       for (let i = 0; i < unique.length; i += IN_CHUNK) {
         const chunk = unique.slice(i, i + IN_CHUNK);
         const topics = chunk.map((id) => topic(table, "by_id", [id]));
+        for (const t of topics) this.reads.add(t);
         for (const row of await this.select(table, `${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk, topics)) found.set(row._id, this.toDoc(row));
       }
     }
@@ -701,12 +758,6 @@ export class DocStore {
   private async joinReverse(table: string, docs: Doc[], key: string, rule: Extract<IncludeRule, object>, field: string) {
     const child = this.table(rule.table);
     const order = rule.order ?? "asc";
-    const perParent = (id: string) => {
-      const q = this.query(rule.table)
-        .withIndex(rule.index, (b: any) => b.eq(field, id))
-        .order(order);
-      return q;
-    };
     if (rule.count) {
       // Counts are cached per parent (a write to one parent's children drops only that parent's count); the ones the cache doesn't have
       // come from one grouped query per chunk. A parent with no children isn't in that result and counts 0.
@@ -714,7 +765,7 @@ export class DocStore {
       const countKey = (id: string) => `count\u0000${rule.table}\u0000${field}\u0000${id}`;
       const missing: string[] = [];
       for (const id of new Set(docs.map((d) => d._id))) {
-        this.reads.add(topic(rule.table, rule.index, [id])); // what perParent(id).count() would have read
+        this.reads.add(topic(rule.table, rule.index, [id])); // what counting that parent's children by query would have read
         const hit = this.peek(rule.table, countKey(id));
         if (hit) counts.set(id, hit[0]!.n);
         else missing.push(id);
@@ -739,17 +790,22 @@ export class DocStore {
       for (const d of docs) d[key] = counts.get(d._id) ?? 0;
       return;
     }
+    const rest = [...(child.indexes[rule.index] ?? []).slice(1).filter((f) => f !== "_creationTime"), "_creationTime", "_id"].map((f) => this.col(f));
     if (rule.take !== undefined) {
-      // A limit per parent needs a query per parent.
+      // A limit per parent needs a statement per parent. Each is the one the query builder would write for that parent (the index range after
+      // the equality, in the index's order, with a LIMIT), written directly: building a query object per parent cost more than the statement.
+      const orderBy = rest.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", ");
       for (const d of docs) {
-        const q = perParent(d._id);
-        if (rule.include) q.include(rule.include);
-        d[key] = await q.take(rule.take);
+        const read = topic(rule.table, rule.index, [d._id]);
+        this.reads.add(read);
+        const cond = this.dialect.fieldEquals(field, d._id);
+        const rows = rule.take === 0 ? [] : await this.select(rule.table, `${SELECT} "${rule.table}" WHERE ${cond.sql} ORDER BY ${orderBy} LIMIT ${rule.take}`, cond.params, [read]);
+        const kids = rows.map((r) => this.toDoc(r));
+        d[key] = rule.include ? await this.join(rule.table, kids, rule.include) : kids;
       }
       return;
     }
     // Everything at once: one query for a chunk of parents, grouped afterwards.
-    const rest = [...(child.indexes[rule.index] ?? []).slice(1).filter((f) => f !== "_creationTime"), "_creationTime", "_id"].map((f) => this.col(f));
     const groups = new Map<string, Doc[]>(docs.map((d) => [d._id, []]));
     const ids = [...groups.keys()];
     for (let i = 0; i < ids.length; i += OR_CHUNK) {
