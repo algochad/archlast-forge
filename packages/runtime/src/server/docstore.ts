@@ -957,8 +957,17 @@ export class DocStore {
       }
     });
     if (mode === "all" && errors.length) throw new ValidationError(`updateMany() on "${table}": ${errors.length} of ${updates.length} updates are invalid, so none was applied. Update ${errors[0]!.index}: ${errors[0]!.message}`);
+    if (this.dialect.bulkUpdate && writes.length > 1) {
+      // One statement for all of them. A document updated twice in this call is written once, as the last update left it.
+      const last = new Map(writes.map((w) => [w.id, w.json]));
+      const rows = [...last].map(([id, json]) => ({ id, json }));
+      for (let i = 0; i < rows.length; i += 2000) {
+        const q = this.dialect.bulkUpdate(table, rows.slice(i, i + 2000));
+        await this.tx.execute(q.sql, q.params);
+      }
+    }
     for (const w of writes) {
-      await this.tx.execute(`UPDATE "${table}" SET "doc" = ${this.dialect.jsonParam} WHERE "_id" = ?`, [w.json, w.id]);
+      if (!(this.dialect.bulkUpdate && writes.length > 1)) await this.tx.execute(`UPDATE "${table}" SET "doc" = ${this.dialect.jsonParam} WHERE "_id" = ?`, [w.json, w.id]);
       await this.syncSearch(table, w.id, w.fields);
       this.written(table, { ...w.fields, _id: w.id }, w.old);
     }

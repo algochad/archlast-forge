@@ -28,6 +28,8 @@ export interface Dialect {
    * has a cheaper way than a long list of `?`. `json` is each document's JSON text. Absent: DocStore writes a multi-row VALUES.
    */
   bulkInsert?(table: string, rows: { id: string; time: number; json: string }[]): { sql: string; params: unknown[] };
+  /** Replaces the document of many rows (each id once) in one statement, where that beats a statement per row. Absent: one UPDATE each. */
+  bulkUpdate?(table: string, rows: { id: string; json: string }[]): { sql: string; params: unknown[] };
   /**
    * Rows (`_id`, `_creationTime`, `doc`) of the children of several parents, at most `take` of each in the order `orderBy` says, in one
    * statement, for a database where a statement per parent costs a round trip. Absent: DocStore runs one statement per parent.

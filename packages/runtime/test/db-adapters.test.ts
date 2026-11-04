@@ -186,6 +186,30 @@ for (const [label, make] of dbAdapters) {
         expect(times).toEqual([...times].sort((a, b) => a - b)); // in the order inserted
       });
 
+      test("updateMany of many documents, one of them twice, leaves each as its last update left it", async () => {
+        await setup();
+        const listId = await write((s) => s.insert("lists", { name: "l" }));
+        const ids = (await write((s) => s.insertMany("todos", Array.from({ length: 2500 }, (_, i) => ({ listId, title: `t${i}`, done: false, n: i }))))) as string[];
+        statements = [];
+        await write((s) =>
+          s.updateMany("todos", [
+            ...ids.map((id, i) => ({ id, patch: { title: `u${i}`, done: true } })),
+            { id: ids[7]!, patch: { title: "seven again" } }, // on top of its first update
+            { id: ids[8]!, patch: { n: 800 } },
+          ]),
+        );
+        if (db.dialect.bulkUpdate) expect(statements.filter((q) => q.startsWith("UPDATE")).length).toBe(2); // 2,501 documents, 2,000 to a statement
+        const all = await read((s) => s.query("todos").withIndex("by_list", (b: any) => b.eq("listId", listId)).collect());
+        const byN = new Map(all.map((d) => [d._id, d]));
+        expect(all.length).toBe(2500);
+        expect(byN.get(ids[7]!)).toMatchObject({ title: "seven again", done: true, n: 7 });
+        expect(byN.get(ids[8]!)).toMatchObject({ title: "u8", done: true, n: 800 });
+        expect(byN.get(ids[2499]!)).toMatchObject({ title: "u2499", done: true });
+        expect(all.every((d) => d.done)).toBe(true);
+        // and the index entries moved with the documents
+        expect((await read((s) => s.query("todos").withIndex("by_list_done", (b: any) => b.eq("listId", listId).eq("done", false)).collect())).length).toBe(0);
+      });
+
       test("a filter that looks through more than one batch finds the same documents as a loop", async () => {
         await setup();
         const listId = await write((s) => s.insert("lists", { name: "l" }));

@@ -23,7 +23,7 @@ const N = LISTS * PER;
 const project = await loadProject(join(import.meta.dir, "../../packages/runtime/test/fixture"));
 async function open(): Promise<Db> {
   if (kind === "sqlite") return createSqliteDb(join(mkdtempSync(join(tmpdir(), "dbbench-")), "app.db"), 4, serverMemory());
-  if (kind === "postgres") return createPostgresDb(process.env.DATABASE_URL ?? "postgres://forge:forge@localhost:55432/forge");
+  if (kind === "postgres") return createPostgresDb(process.env.DATABASE_URL ?? "postgres://forge:forge@localhost:55432/forge", Number(process.env.POOL) || undefined);
   if (kind === "mongodb") {
     const { createMongoDb } = await import("../../packages/runtime/src/server/db/mongodb");
     return createMongoDb(process.env.DATABASE_URL ?? "mongodb://localhost:57017/?replicaSet=rs0", { database: "bench" + Date.now() });
