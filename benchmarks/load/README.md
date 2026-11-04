@@ -30,6 +30,8 @@ benchmarks/load/threads.sh 0-2 CACHE_TTL_MS=0 RUNTIME_WORKERS=3   # CPU per proc
   warm-up) and the runtime processes' (from their telemetry samples).
 - `control.ts`: `Bun.serve` answering a fixed body, to measure the machine itself.
 
+Convex's local backend against these cases (same fixture shape, same load generator, same cores): [`convex-vs-forge.md`](convex-vs-forge.md), run by [`convex/`](convex/).
+
 ## Results
 
 A 4-vCPU AMD EPYC shared VM, 7 GB, Linux 6.8, Bun 1.4.3, Node 24.22 for the load, Postgres 16 and Redis 7.0 on one core. 15 s a run,

@@ -1,0 +1,7 @@
+{
+  "name": "convex-bench",
+  "private": true,
+  "type": "module",
+  "description": "The Convex side of benchmarks/load/convex-vs-forge.md. Not a workspace member: npm install here.",
+  "dependencies": { "convex": "latest" }
+}
