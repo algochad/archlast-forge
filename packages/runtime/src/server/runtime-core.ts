@@ -5,9 +5,9 @@ import { validateFields } from "../values";
 import { adminOp } from "./admin-ops";
 import { createAuth } from "./auth";
 import { AUDITED_COMMANDS, runCommand } from "./cli-ops";
-import { loadConfig, sqlitePath } from "./config";
-import { createPostgresDb } from "./db/postgres";
-import { createSqliteDb, serverMemory } from "./db/sqlite";
+import { loadConfig } from "./config";
+import { openDatabase } from "./db/open";
+import { serverMemory } from "./db/sqlite";
 import type { Db } from "./db/types";
 import type { UserIdentity } from "../functions";
 import { Executor, logContext, serializeError, type CallHeaders, type LogEntry } from "./executor";
@@ -204,11 +204,20 @@ export async function startCore(opts: {
   const sampleTimer = health && setInterval(() => send({ t: "sample", sample: { time: Date.now(), instance, role: "runtime", ...health() } }), 10_000);
   const config = loadConfig(opts.env, opts.dev);
 
-  if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
+  if (config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
   // Every function runtime process holds its own connections, so they share the RAM SQLite is given.
-  const db = config.databaseUrl
-    ? createPostgresDb(config.databaseUrl, config.databasePoolSize)
-    : createSqliteDb(sqlitePath(config), undefined, serverMemory() / config.runtimeWorkers);
+  const db = await openDatabase(config, serverMemory() / config.runtimeWorkers);
+  if (config.databaseKind === "postgres" && worker === 0)
+    // Pools open their connections as load needs them, but a busy server can reach the maximum: say if that is more than Postgres allows.
+    void db.query<{ max_connections: string }>("SHOW max_connections").then(
+      ([row]) => {
+        const allowed = Number(row?.max_connections);
+        const most = config.runtimeWorkers * (config.databasePoolSize + config.databaseWritePoolSize) + 3;
+        if (allowed && most > allowed)
+          console.warn(`Postgres allows ${allowed} connections and this server may open up to ${most} (RUNTIME_WORKERS ${config.runtimeWorkers} x (DATABASE_POOL_SIZE ${config.databasePoolSize} + DATABASE_WRITE_POOL_SIZE ${config.databaseWritePoolSize}) + 3), without counting other servers: lower the pools or raise max_connections.`);
+      },
+      () => {},
+    );
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);
@@ -223,7 +232,7 @@ export async function startCore(opts: {
     publish: (topics) => send({ t: "publish", topics }),
     log: emit,
     // Only this process writes the local database when it is the one function runtime, so its own writes keep the cache exact.
-    readCache: !config.databaseUrl && config.runtimeWorkers === 1 ? new ReadCache() : undefined,
+    readCache: config.databaseKind === "sqlite" && config.runtimeWorkers === 1 ? new ReadCache() : undefined,
     // Inside a call, so the warning is listed with the function that ran the query.
     devWarn: config.dev ? (message) => console.warn(message) : undefined,
   });
@@ -378,7 +387,7 @@ export async function startCore(opts: {
   };
   function event(msg: HostEvent) {
     // Another process writing would make cached rows stale: a fresh cache only once this one is the only writer again.
-    if (msg.t === "pool") return exec.setReadCache(!config.databaseUrl && msg.workers === 1 ? new ReadCache() : undefined);
+    if (msg.t === "pool") return exec.setReadCache(config.databaseKind === "sqlite" && msg.workers === 1 ? new ReadCache() : undefined);
     const take = (globalThis as Record<symbol, unknown>)[msg.t === "relay" ? RELAY : SOCKETS] as ((msg: HostEvent) => void) | undefined;
     if (take) return take(msg);
     if (msg.t === "ws" && msg.op === "open") send({ t: "ws", op: "close", sid: msg.sid, code: 1008, reason: "No WebSocket gateway at this path" });

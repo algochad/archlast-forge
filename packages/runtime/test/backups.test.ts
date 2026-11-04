@@ -159,6 +159,15 @@ const setups: [string, () => Promise<Record<string, string>>][] = [
         ],
       ] as [string, () => Promise<Record<string, string>>][])
     : []),
+  ...(process.env.TEST_MONGODB_URL
+    ? ([
+        [
+          "mongodb",
+          // a database of its own: the engine's collections would leak between runs otherwise
+          async () => ({ DATABASE_URL: process.env.TEST_MONGODB_URL!.replace(/\/(\?|$)/, `/afx_backup_${crypto.randomUUID().replaceAll("-", "").slice(0, 12)}$1`) }),
+        ],
+      ] as [string, () => Promise<Record<string, string>>][])
+    : []),
   ...(process.env.TEST_S3_ENDPOINT
     ? ([
         ["s3 files, backups in their bucket", async () => s3Env("S3_")],

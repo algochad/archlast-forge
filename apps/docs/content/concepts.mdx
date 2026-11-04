@@ -56,20 +56,22 @@ With `RUNTIME_WORKERS=n`, the server keeps `n` runtime processes and sends each 
 
 ### Database
 
-Every table is the same three columns: `(_id, _creationTime, doc)`, with `doc` stored as JSON (TEXT in SQLite, JSONB in PostgreSQL). The schema is enforced when you write, not by the database, so changing a field never migrates anything (see [Migrations](migrations.html)). Ids look like `notes:3f9a...` (the table name, a colon and 32 hex characters), which is how `db.get(id)` knows which table to read and how `v.id("notes")` rejects an id from another table.
+Every table is the same three fields: `(_id, _creationTime, doc)`, with `doc` stored as JSON (TEXT in SQLite, JSONB in PostgreSQL, a nested document in MongoDB). The schema is enforced when you write, not by the database, so changing a field never migrates anything (see [Migrations](migrations.html)). Ids look like `notes:3f9a...` (the table name, a colon and 32 hex characters), which is how `db.get(id)` knows which table to read and how `v.id("notes")` rejects an id from another table.
 
-| | SQLite (default) | PostgreSQL (`DATABASE_URL`) |
-|---|---|---|
-| Driver | `bun:sqlite`, WAL mode | Bun's SQL client with a connection pool |
-| Writes | One serialized write connection. Writes that queue up while one runs share a single SQLite transaction, each in its own savepoint ("group commit"), so each sees the ones before it and fails alone | `SERIALIZABLE`, retried on conflicts |
-| Reads | Four read-only connections | `REPEATABLE READ READ ONLY` |
-| Servers | One process | Many (`REPLICAS`, which also needs Redis) |
+| | SQLite (default) | PostgreSQL (`DATABASE_URL`) | MongoDB (`DATABASE_URL`) |
+|---|---|---|---|
+| Driver | `bun:sqlite`, WAL mode | Bun's SQL client with a connection pool | The official `mongodb` driver (loaded only when used) |
+| Writes | One serialized write connection. Writes that queue up while one runs share a single SQLite transaction, each in its own savepoint ("group commit"), so each sees the ones before it and fails alone | `SERIALIZABLE`, retried on conflicts, a pool of their own | Snapshot-isolated transactions with `w: majority`, retried on write conflicts; a mutation that touches one document skips the transaction (a single-document write, conditional on the document being as it was read), and inserts that wait together go out as one command. Two mutations that each read some documents and write others can both commit (write skew), where Postgres aborts one: make them write a document they both depend on |
+| Reads | Four read-only connections | `REPEATABLE READ READ ONLY`; a read of one statement skips the transaction | Snapshot reads; a read of one operation skips the transaction |
+| Servers | One process | Many (`REPLICAS`, which also needs Redis) | Many (`REPLICAS`, which also needs Redis) |
+| Search | FTS5, ranked by BM25 | `tsvector`, ranked by `ts_rank` | The words of each document in an indexed array, ranked by BM25 |
+| Backups | `backup` (a copy of the file) or a full backup | `pg_dump` or a full backup | `mongodump` or a full backup |
 
 SQLite is `bun:sqlite` only. The decisions file records that the Turso driver was tried and dropped: "At 2,000 users it used about 1.7x the runtime CPU of `bun:sqlite`, had a worse latency tail, hung the process when write transactions overlapped on separate connections ... and has no FTS5."
 
 ### Redis, storage and the bus
 
-- **Redis is optional.** With one server, topics travel through an in-process bus and the cache lives in memory. With `REDIS_URL`, the bus becomes Redis pub/sub (one channel per topic), so a write on server A wakes subscriptions held by server B. Redis also shares the query cache and the rate-limit counters across servers. Every key and channel starts with a prefix from the service's name, so several services can share one Redis while every server of one service shares its keys (see [`REDIS_PREFIX`](configuration.html)). Several servers require both Redis and PostgreSQL; startup refuses `REPLICAS > 1` otherwise.
+- **Redis is optional.** With one server, topics travel through an in-process bus and the cache lives in memory. With `REDIS_URL`, the bus becomes Redis pub/sub (one channel per topic), so a write on server A wakes subscriptions held by server B. Redis also shares the query cache and the rate-limit counters across servers. Every key and channel starts with a prefix from the service's name, so several services can share one Redis while every server of one service shares its keys (see [`REDIS_PREFIX`](configuration.html)). Several servers require both Redis and a shared database (PostgreSQL or MongoDB); startup refuses `REPLICAS > 1` otherwise.
 - **Storage is optional.** Set `S3_ENDPOINT` and `S3_BUCKET` and `ctx.storage` works. File bytes never pass through the engine: functions hand out presigned URLs and browsers upload and download directly ([File storage](storage.html)).
 
 ## What runs where

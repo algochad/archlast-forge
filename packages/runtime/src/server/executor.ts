@@ -169,10 +169,14 @@ export class Executor {
   async read<T>(fn: (store: DocStore, tx: DbTx) => Promise<T>): Promise<{ value: T; reads: Set<string> }> {
     for (let attempt = 0; ; attempt++) {
       try {
-        return await this.o.db.transaction("read", async (tx) => {
-          const store = this.store(tx, undefined, attempt < 3); // the last tries go straight to the database
-          return { value: await fn(store, tx), reads: store.reads };
-        });
+        return await this.o.db.transaction(
+          "read",
+          async (tx) => {
+            const store = this.store(tx, undefined, attempt < 3); // the last tries go straight to the database
+            return { value: await fn(store, tx), reads: store.reads };
+          },
+          { rerunnable: true }, // a query is deterministic and writes nothing, so a database may run it again where that is cheaper than a transaction
+        );
       } catch (e) {
         if (!(e instanceof SnapshotMoved)) throw e;
       }
@@ -203,7 +207,16 @@ export class Executor {
         let store: DocStore | undefined;
         let value: T;
         try {
-          value = await this.o.db.transaction("write", (tx) => fn((store = this.store(tx, writes)), tx, after));
+          // The function may be run again by the database (see TransactionOptions.rerunnable), so each run starts from nothing.
+          value = await this.o.db.transaction(
+            "write",
+            (tx) => {
+              writes.clear();
+              after.length = 0;
+              return fn((store = this.store(tx, writes)), tx, after);
+            },
+            { rerunnable: true },
+          );
         } finally {
           // Committed or rolled back: the tables it wrote can be read and cached again.
           for (const t of store?.writing ?? []) this.o.readCache?.settled(t, writes);

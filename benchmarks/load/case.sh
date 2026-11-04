@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One benchmark case. usage: case.sh <label> <server cores> <load: get|getmany|post|fanout> [env assignments for the server...]
+# One benchmark case. usage: case.sh <label> <server cores> <load: get|getmany|post|patch|fanout> [env assignments for the server...]
 # The server runs pinned to <server cores>; the load generator on core 3. Prints one JSON line with load, per-core CPU and loop delay.
 set -u
 B=$(dirname "$0")
@@ -22,6 +22,7 @@ if [ -n "${SECOND_CORES:-}" ]; then
   for _ in $(seq 1 120); do grep -q READY "$B/serve.$P2.log" && break; sleep 0.25; done
   PORTS=$PORT,$P2
 fi
+TODOIDS=$(node -e 'process.stdout.write(JSON.stringify(require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n")))' "$LIST.todos" 2>/dev/null || echo '[]')
 GETPATH="/rpc/todos:listByList?args=$(node -e "process.stdout.write(encodeURIComponent(JSON.stringify({listId:'$LISTID'})))")"
 # Every seeded list (SEED_LISTS=64 on the server), round-robin: identical calls rarely overlap, so none share a run.
 GETPATHS=$(node -e 'const ids=require("fs").readFileSync(process.argv[1],"utf8").trim().split("\n"); process.stdout.write(JSON.stringify(ids.map((id)=>"/rpc/todos:listByList?args="+encodeURIComponent(JSON.stringify({listId:id})))))' "$LIST")
@@ -30,6 +31,8 @@ load() {
     getmany) RATE=${RATE:-} PORTS=${PORTS:-$PORT} REQ_PATHS="$GETPATHS" CONNS=${CONNS:-64} SECONDS=$1 taskset -c 3 node "$B/load.mjs" ;;
     get) RATE=${RATE:-} PORTS=${PORTS:-$PORT} REQ_PATH="$GETPATH" CONNS=${CONNS:-64} SECONDS=$1 taskset -c 3 node "$B/load.mjs" ;;
     post) RATE=${RATE:-} PORTS=${PORTS:-$PORT} POST_PATH=/rpc/todos:add BODY="{\"listId\":\"$LISTID\",\"title\":\"t {n}\"}" CONNS=${CONNS:-64} SECONDS=$1 taskset -c 3 node "$B/load.mjs" ;;
+    # a read-modify-write: toggles the seeded todos in turn (SEED_LISTS=64 on the server: 1,280 of them)
+    patch) RATE=${RATE:-} PORTS=${PORTS:-$PORT} POST_PATH=/rpc/todos:toggle BODY='{"id":"{id}"}' BODY_IDS="$TODOIDS" CONNS=${CONNS:-64} SECONDS=$1 taskset -c 3 node "$B/load.mjs" ;;
     fanout) PORT=$PORT SECONDS=$1 taskset -c 3 bun "$B/fanout.ts" ;;
   esac
 }

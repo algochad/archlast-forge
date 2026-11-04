@@ -100,3 +100,51 @@ writeback on this VM's disk.
   reached about 75% of its core with two servers. Pool sizes of 8, 16 and 32 per process gave the same 1,080–1,240 req/s; 64 dropped it to 233.
 - **Invalidation costs nothing measurable:** a write publishes five topics here, and mutations ran at the same rate with the cache on or
   off, in memory and in Redis.
+
+
+## Our engine under several configurations (`engine-compare.sh`)
+
+`benchmarks/load/engine-compare.sh` runs four cases under each configuration: HTTP queries (cached, and uncached over 64 lists), HTTP mutations, and
+subscription fan-out, the reactive side (1,000 WebSockets watching one query while 10 todos a second are added; delivery is write to client, the
+50 ms debounce included). Same machine as above: server on cores 0–2 (Postgres runs: 0–1, with Postgres on core 2), load generator on core 3,
+10 s a case, one run each, Bun 1.4.4; every request answered (no non-2xx), every subscriber got every update.
+
+| configuration | cached query | uncached query, 64 lists | mutation | fan-out delivery p50 / p99 (1,000 subscribers) |
+|---|---:|---:|---:|---:|
+| sqlite / default | 47,505 req/s (p99 3.63 ms) | 15,394 req/s (p99 8.44 ms) | 8,735 req/s (p99 20.84 ms) | 70 / 111 ms |
+| sqlite / RUNTIME_WORKERS=2 | 47,493 req/s (p99 4.18 ms) | 22,413 req/s (p99 8.88 ms) | 11,087 req/s (p99 58.97 ms) | 68 / 111 ms |
+| sqlite / RUNTIME_WORKERS=3 | 53,153 req/s (p99 3.56 ms) | 21,932 req/s (p99 9.21 ms) | 10,959 req/s (p99 80.63 ms) | 70 / 113 ms |
+| postgres / default | 52,826 req/s (p99 3.37 ms) | 9,540 req/s (p99 17.66 ms) | 3,870 req/s (p99 30.25 ms) | 72 / 109 ms |
+| postgres / RUNTIME_WORKERS=2 | 53,595 req/s (p99 3.39 ms) | 12,451 req/s (p99 14.68 ms) | 4,882 req/s (p99 26.07 ms) | 73 / 114 ms |
+| postgres / tuned server + RUNTIME_WORKERS=2 | 50,844 req/s (p99 3.51 ms) | 12,626 req/s (p99 14.59 ms) | 5,050 req/s (p99 23.31 ms) | 72 / 108 ms |
+| mongodb / default (`WHICH=mongodb`) | 44,413 req/s (p99 3.91 ms) | 2,674 req/s (p99 49.68 ms) | 8,242 req/s (p99 25.69 ms) | 74 / 102 ms |
+| mongodb / RUNTIME_WORKERS=2 | 42,076 req/s (p99 3.91 ms) | 4,771 req/s (p99 45.48 ms) | 6,449 req/s (p99 31.76 ms) | 74 / 105 ms |
+
+- **`RUNTIME_WORKERS=2` is the setting that matters**: uncached queries +46% on SQLite and +31% on Postgres, mutations +27% and +26%. It does nothing for
+  cached queries, which the server answers itself. Three workers on three cores gave no more than two. On SQLite the mutation tail gets worse with
+  workers (p99 21 ms → 59–81 ms): more writers contend for the one database writer.
+- **Server tuning (Postgres) did not show up** at the engine: 12,451 → 12,626 uncached and 4,882 → 5,050 mutations a second is inside the noise.
+- **Reactive delivery is the same everywhere** (p50 ≈ 70 ms, p99 ≈ 110 ms): the 50 ms debounce plus about 20 ms of re-running the query and sending to
+  1,000 sockets; the database and the worker count don't change it at this rate.
+- **MongoDB is the slowest at the engine for uncached reads** (a 7.0 replica set of one node, on core 2; the server on cores 0–1): the driver decodes BSON
+  in JavaScript (0.28 ms of CPU for a 20-document `find`, 0.12 ms of it BSON, so one core serves about 4,400 a second, and the server's core is the one
+  that is full). Cached queries and reactive delivery are the same as on the other databases, because the engine answers those itself.
+- **Mutations on MongoDB, by shape** (`case.sh … post` and `… patch`; the second toggles one of 1,280 todos: read it, write it back). A transaction costs MongoDB
+  several commands and a journal wait, so the adapter avoids it where one document is the whole story (`mongodb.ts`, `Live`): an insert on its own goes out
+  with the other inserts that are waiting as one `insertMany`, and a read of one document followed by a write of it is a find and a conditional update.
+  Anything else (a second document, a query, two writes) runs in a transaction, as before.
+
+  | 64 in flight, server on cores 0–1, database on core 2 | insert one document | read one, write it back |
+  |---|---:|---:|
+  | mongodb, every mutation in a transaction (before) | 1,557 req/s, p50 40 ms | 789 req/s, p50 76 ms |
+  | mongodb, one-document paths without a transaction | 8,242 req/s, p50 6.9 ms | 1,374 req/s, p50 44 ms |
+  | mongodb, same, `?w=1&journal=false` in the URL | 8,625 req/s, p50 6.4 ms | 1,962 req/s, p50 29.5 ms |
+  | postgres (default) | 3,870 req/s, p50 15.6 ms | 1,836 req/s, p50 28.9 ms |
+  | sqlite (default) | 8,735 req/s | 13,319 req/s, p50 4.5 ms |
+
+  The database's core is full in the read-modify-write case (97%). The ceiling for a find and an update with a real change, from the driver alone on the same
+  cores, is 2,216 a second with the default write concern and 3,107 with `w=1&journal=false`: the engine gets 62% of it, the rest being the HTTP request,
+  the function call and validation. What is left is MongoDB's cost for a majority-acknowledged, journaled write.
+- **The same cases for another backend**: `case.sh` takes a server command through `serve.ts`; to compare with a different backend, put it behind the same
+  HTTP paths (`/rpc/todos:listByList` is a GET, `/rpc/todos:add` a POST) and the same WebSocket protocol in `fanout.ts`. Convex's self-hosted backend
+  couldn't be run in this environment (its image's layers are on a host the sandbox's network policy blocks), so there is no Convex column.

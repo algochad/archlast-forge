@@ -83,7 +83,8 @@ export const SETTINGS: SettingDef[] = [
   // -- database and cache --
   { name: "DATA_DIR", group: "Database", type: "string", default: "./data (/data in the image)", doc: "Where the SQLite database, telemetry and the built-in storage live.", envOnly: BOOT },
   { name: "DATABASE_URL", group: "Database", type: "string", secret: true, default: "SQLite in DATA_DIR", doc: "A Postgres database instead of the SQLite file.", envOnly: BOOT },
-  { name: "DATABASE_POOL_SIZE", group: "Database", type: "int", min: 1, default: "twice the CPU cores", doc: "Postgres connections each function-runtime process may open." },
+  { name: "DATABASE_POOL_SIZE", group: "Database", type: "int", min: 1, default: "twice the CPU cores", doc: "Postgres connections each function-runtime process may open for reads." },
+  { name: "DATABASE_WRITE_POOL_SIZE", group: "Database", type: "int", min: 1, default: "twice DATABASE_POOL_SIZE", doc: "Postgres connections each function-runtime process may open for write transactions. More connections hide the latency of a commit; keep the total of all processes under Postgres's max_connections (100 by default)." },
   { name: "SCHEMA_CHECK", group: "Database", type: "bool", default: "on outside dev", doc: "At startup, refuse to serve when stored documents don't match the schema." },
   {
     name: "REDIS_URL",
@@ -302,10 +303,18 @@ export function validateSettings(env: Record<string, string | undefined>, stored
  * Reads `_settings` straight from the database, before the function runtime (which owns it) has started: the server's own configuration
  * (workers, limits, cache) depends on them. Missing table or database: none stored yet.
  */
-export async function readStoredSettings(config: Pick<Config, "databaseUrl" | "dataDir">): Promise<Record<string, string>> {
+export async function readStoredSettings(config: Pick<Config, "databaseUrl" | "databaseKind" | "dataDir">): Promise<Record<string, string>> {
   let rows: { name: string; value: string }[] = [];
   try {
-    if (config.databaseUrl) {
+    if (config.databaseKind === "mongodb") {
+      const { createMongoDb } = await import("./db/mongodb");
+      const db = createMongoDb(config.databaseUrl!, { maxPoolSize: 1 });
+      try {
+        rows = (await db.query(`SELECT "name", "value" FROM "_settings"`)) as typeof rows;
+      } finally {
+        await db.close();
+      }
+    } else if (config.databaseUrl) {
       const sql = new SQL(config.databaseUrl, { max: 1 });
       try {
         rows = [...(await sql.unsafe(`SELECT "name", "value" FROM "_settings"`))] as typeof rows;

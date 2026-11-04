@@ -221,10 +221,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   // Telemetry: the store's worker when it is on, and an exporter when a collector is configured; either needs the recorder.
   // A microservice keeps no store: what it records goes to the main app's (DASHBOARD_URL), whose dashboard shows it.
   const forward = config.telemetry && config.dashboardUrl ? telemetryForwarder(config.dashboardUrl, config.dashboardToken!) : undefined;
-  if (config.telemetry && !forward && !config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
+  if (config.telemetry && !forward && config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
   const store =
     config.telemetry && !forward
-      ? new TelemetryClient(TELEMETRY_WORKER, { databaseUrl: config.databaseUrl, path: telemetryPath(config), retentionDays: config.logRetentionDays, alerts: true })
+      ? new TelemetryClient(TELEMETRY_WORKER, { databaseUrl: config.databaseKind === "postgres" ? config.databaseUrl : undefined, path: telemetryPath(config), retentionDays: config.logRetentionDays, alerts: true })
       : undefined;
   /** Ingest keys checked recently, so an exporter sending every few seconds costs one lookup a minute. */
   const keys = new Map<string, { at: number; key: { service: string | null } | null }>();
