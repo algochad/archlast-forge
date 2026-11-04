@@ -303,10 +303,18 @@ export function validateSettings(env: Record<string, string | undefined>, stored
  * Reads `_settings` straight from the database, before the function runtime (which owns it) has started: the server's own configuration
  * (workers, limits, cache) depends on them. Missing table or database: none stored yet.
  */
-export async function readStoredSettings(config: Pick<Config, "databaseUrl" | "dataDir">): Promise<Record<string, string>> {
+export async function readStoredSettings(config: Pick<Config, "databaseUrl" | "databaseKind" | "dataDir">): Promise<Record<string, string>> {
   let rows: { name: string; value: string }[] = [];
   try {
-    if (config.databaseUrl) {
+    if (config.databaseKind === "mongodb") {
+      const { createMongoDb } = await import("./db/mongodb");
+      const db = createMongoDb(config.databaseUrl!, { maxPoolSize: 1 });
+      try {
+        rows = (await db.query(`SELECT "name", "value" FROM "_settings"`)) as typeof rows;
+      } finally {
+        await db.close();
+      }
+    } else if (config.databaseUrl) {
       const sql = new SQL(config.databaseUrl, { max: 1 });
       try {
         rows = [...(await sql.unsafe(`SELECT "name", "value" FROM "_settings"`))] as typeof rows;

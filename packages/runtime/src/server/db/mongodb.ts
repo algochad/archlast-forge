@@ -6,6 +6,7 @@ import { MongoClient, type AnyBulkWriteOperation, type ClientSession, type Docum
 import { pointReads } from "./coalesce";
 import { hashName, PREFIX } from "./migrate";
 import { searchField, searchWords } from "./mongodb-search";
+import { runSql, SYSTEM_TABLES } from "./mongodb-sql";
 import { scopedTx, type Db, type DbTx, type Dialect, type MongoFilter, type MongoOps, type NumberStats, type Row } from "./types";
 
 /** Not SQL: only the parts DocStore asks of a dialect while it is building statements that this adapter never runs. */
@@ -46,15 +47,13 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
     async (table, ids) => new Map((await database.collection<any>(table).find({ _id: { $in: ids } }, hide(table)).toArray()).map((r) => [r._id as string, r as Row])),
   );
 
-  /** The operations of one transaction (its session), or, without a session, of a read made outside one. */
-  const opsOf = (session: ClientSession | undefined, before?: () => void): MongoOps => {
-    const col = (table: string) => database.collection<any>(table);
-    const s = session ? { session } : {};
-    // MongoDB runs one operation at a time in a transaction and refuses a second that overlaps it. Functions do overlap them (a Promise.all of
-    // gets is ordinary), so a transaction's operations are queued here, in the order they were asked for.
+  /**
+   * MongoDB runs one operation at a time in a transaction and refuses a second that overlaps it. Functions do overlap them (a Promise.all of
+   * gets is ordinary), so a transaction's operations are queued here, in the order they were asked for.
+   */
+  const serial = (session: ClientSession | undefined, before?: () => void) => {
     let queue: Promise<unknown> = Promise.resolve();
-    const guard =
-      <A extends unknown[], R>(f: (...a: A) => Promise<R>) =>
+    return <A extends unknown[], R>(f: (...a: A) => Promise<R>) =>
       (...a: A): Promise<R> => {
         before?.();
         if (!session) return f(...a);
@@ -62,6 +61,12 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
         queue = run.catch(() => {});
         return run;
       };
+  };
+
+  /** The operations of one transaction (its session), or, without a session, of a read made outside one. */
+  const opsOf = (session: ClientSession | undefined, guard: ReturnType<typeof serial>): MongoOps => {
+    const col = (table: string) => database.collection<any>(table);
+    const s = session ? { session } : {};
     return {
       find: guard(async (table, q) => {
         const keys = Object.keys(q.filter);
@@ -139,15 +144,17 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
     };
   };
 
-  const txOf = (session: ClientSession | undefined, before?: () => void): DbTx => ({
-    query: async () => {
-      throw new Error("MongoDB has no SQL: the engine's SQL tables are not stored in it yet");
-    },
-    execute: async () => {
-      throw new Error("MongoDB has no SQL: the engine's SQL tables are not stored in it yet");
-    },
-    mongo: opsOf(session, before),
-  });
+  // The engine's own tables are written as SQL; mongodb-sql.ts runs those statements (in the transaction, so a scheduled job commits with the
+  // mutation that scheduled it).
+  const txOf = (session: ClientSession | undefined, before?: () => void): DbTx => {
+    const guard = serial(session, before);
+    const sql = guard((text: string, params?: unknown[]) => runSql({ database, session }, text, params));
+    return {
+      query: sql as DbTx["query"],
+      execute: async (text, params) => void (await sql(text, params)),
+      mongo: opsOf(session, guard),
+    };
+  };
 
   // A read of one operation needs no transaction (a transaction is 2.3 ms against 0.45 for a find through the driver): it starts without one, and
   // if it makes a second operation it is thrown away and run again inside a snapshot transaction. See the same in postgres.ts.
@@ -219,7 +226,8 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
         for (const [index, c] of Object.entries(t.searchIndexes ?? {})) wanted.set(hashName(t.name, "search", index, c.searchField), { key: { [searchField(index)]: 1 }, search: { index, field: c.searchField } });
         const existing = new Set<string>();
         if (have.has(t.name)) for (const i of await col.listIndexes().toArray()) if (i.name?.startsWith(PREFIX)) existing.add(i.name);
-        for (const name of existing) if (!wanted.has(name)) await col.dropIndex(name);
+        // Servers starting together run this at once: an index another one dropped or built first is fine.
+        for (const name of existing) if (!wanted.has(name)) await col.dropIndex(name).catch((e) => { if (e?.code !== 27) throw e; });
         for (const [name, w] of wanted) {
           if (existing.has(name)) continue;
           await col.createIndex(w.key, { name });
@@ -235,6 +243,17 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
             if (ops.length) await col.bulkWrite(ops);
           }
         }
+      }
+    },
+    async migrateSystem() {
+      await connected;
+      for (const [name, t] of Object.entries(SYSTEM_TABLES)) {
+        await database.createCollection(name).catch((e) => {
+          if (e?.codeName !== "NamespaceExists") throw e;
+        });
+        const col = database.collection<any>(name);
+        for (const fields of t.indexes ?? []) await col.createIndex(Object.fromEntries(fields.map((f) => [f, 1])), { name: `afx_${name}_${fields.join("_")}` });
+        for (const field of t.unique ?? []) await col.createIndex({ [field]: 1 }, { unique: true, name: `afx_${name}_${field}_unique` });
       }
     },
     async close() {

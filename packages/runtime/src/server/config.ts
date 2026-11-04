@@ -72,6 +72,8 @@ export interface Config {
   hostname: string;
   dataDir: string;
   databaseUrl?: string;
+  /** Which database `databaseUrl` is: SQLite when there is none. */
+  databaseKind: "sqlite" | "postgres" | "mongodb";
   /** Postgres connections each function-runtime process may open (DATABASE_POOL_SIZE); twice the CPU cores by default. */
   databasePoolSize: number;
   /** Postgres connections for write transactions (DATABASE_WRITE_POOL_SIZE); twice DATABASE_POOL_SIZE by default. */
@@ -180,7 +182,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const port = int("PORT", 3000);
   const replicas = int("REPLICAS", 1, 1);
   const databaseUrl = env.DATABASE_URL || undefined;
-  if (databaseUrl && !/^postgres(ql)?:\/\//.test(databaseUrl)) fail(`DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite), got "${databaseUrl.split(":")[0]}:"`);
+  const databaseKind: Config["databaseKind"] = !databaseUrl ? "sqlite" : /^postgres(ql)?:\/\//.test(databaseUrl) ? "postgres" : /^mongodb(\+srv)?:\/\//.test(databaseUrl) ? "mongodb" : "sqlite";
+  if (databaseUrl && databaseKind === "sqlite")
+    fail(`DATABASE_URL must be a postgres:// or mongodb:// URL (unset it to use bun:sqlite), got "${databaseUrl.split(":")[0]}:"`);
   // Inline is the default outside dev: no IPC hop per call, about twice the throughput on one core. Dev keeps the child process, so code
   // changes reload without dropping connections, and so does a pool of runtime processes.
   const { workers: runtimeWorkers } = runtimeWorkersFor(env);
@@ -189,7 +193,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (runtimeMode === "inline" && dev) fail("RUNTIME_MODE=inline can't reload code when it changes; use it outside dev");
   if (runtimeMode === "inline" && runtimeWorkers > 1) fail("RUNTIME_MODE=inline runs one function runtime, in the server process; unset RUNTIME_WORKERS");
   if (replicas > 1 && !env.REDIS_URL) fail("REPLICAS > 1 requires REDIS_URL, or mutations won't reach subscribers on other servers");
-  if (replicas > 1 && !databaseUrl) fail("REPLICAS > 1 requires a Postgres DATABASE_URL; bun:sqlite is single-server");
+  if (replicas > 1 && !databaseUrl) fail("REPLICAS > 1 requires a Postgres or MongoDB DATABASE_URL; bun:sqlite is single-server");
   if (Boolean(env.S3_ENDPOINT) !== Boolean(env.S3_BUCKET)) fail("Set both S3_ENDPOINT and S3_BUCKET, or neither");
   // Without S3, development keeps files on the engine's disk; production does only when asked, so a deployment without storage stays one.
   const storage = (env.STORAGE || (env.S3_ENDPOINT ? "s3" : dev ? "local" : "off")) as Config["storage"];
@@ -226,6 +230,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     hostname: env.HOST ?? "0.0.0.0",
     dataDir: env.DATA_DIR ?? "./data",
     databaseUrl,
+    databaseKind,
     databasePoolSize: int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1),
     databaseWritePoolSize: int("DATABASE_WRITE_POOL_SIZE", int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1) * 2, 1),
     redisUrl: env.REDIS_URL || undefined,

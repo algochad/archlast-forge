@@ -2,6 +2,7 @@ import type { Db } from "./db/types";
 
 /** System tables outside the document store. Every server runs this at startup; it's idempotent. */
 export async function migrateSystem(db: Db) {
+  if (db.migrateSystem) return db.migrateSystem();
   const { realType: real, name } = db.dialect;
   const statements = [
     `CREATE TABLE IF NOT EXISTS "_scheduled_functions" ("_id" TEXT PRIMARY KEY, "_creationTime" ${real} NOT NULL, "name" TEXT NOT NULL, "args" TEXT NOT NULL, "scheduledTime" ${real} NOT NULL, "state" TEXT NOT NULL, "error" TEXT, "completedTime" ${real})`,

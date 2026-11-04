@@ -117,6 +117,8 @@ export interface Db extends DbTx {
   transaction<T>(mode: "read" | "write", fn: (tx: DbTx) => Promise<T>, options?: TransactionOptions): Promise<T>;
   /** Creates document tables and syncs their indexes. Documents are JSON, so fields need no migration. */
   migrate(tables: TableSpec[]): Promise<void>;
+  /** Creates the engine's own tables where `system.ts` has no SQL for them (MongoDB: collections and their indexes). */
+  migrateSystem?(): Promise<void>;
   close(): Promise<void>;
 }
 
