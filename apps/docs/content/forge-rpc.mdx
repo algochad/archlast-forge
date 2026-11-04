@@ -126,7 +126,7 @@ export class OrdersService {
 
 - **How a call reads:** `this.orders.orders.create.mutate(...)` is the client, then the router's alias, then the procedure. `.query()` exists only on queries and `.mutate()` only on mutations, and both are typed from the schemas. TypeScript catches a wrong argument or a renamed procedure, and the result has the procedure's output type.
 - **One client per app:** Nest makes the class once, so it has one client. Calls made in the same tick, from any request, share one HTTP request.
-- **Options:** `createForgeRpcClient` takes `{ url, token?, timeoutMs? }`. `token` defaults to `FORGE_RPC_TOKEN`, and `timeoutMs` to 5000.
+- **Options:** `createForgeRpcClient` takes `{ url, token?, timeoutMs?, websocket? }`. `token` defaults to `FORGE_RPC_TOKEN`, `timeoutMs` to 5000, and `websocket` to true (see [Performance](#performance)).
 - **No checks in the caller:** the service checks input and output itself, so nothing is validated twice.
 - **Where to call it from:** controllers, actions and other services. Not queries or mutations: they run in a database transaction, a mutation can run more than once, and neither may do I/O (see [Functions](functions.html)).
 
@@ -243,17 +243,19 @@ Each call is a request of the service that served it, of kind `rpc`, named by it
 
 ## Performance
 
-- **Calls made in the same tick** go out as one HTTP request (batches of up to 32), over kept-alive connections. Every call is a POST, so a large query input never goes in a URL.
-- **The server** is a `Bun.serve` of its own, about 1.8× faster than serving the same calls through Node's `http` module on Bun. Its body limit is `MAX_REQUEST_BYTES`.
+- **A WebSocket, kept open.** The first call connects to the service's Forge RPC port with a WebSocket, and later calls go over it: a round trip costs about a tenth of an HTTP request in Bun. Calls made in the same tick share a frame, and the answers to a frame come back in one frame. If the service can't take a WebSocket (a proxy that refuses the upgrade, an older service, a tRPC server), calls go over HTTP instead and the client doesn't try the WebSocket again for 30 seconds. `new ForgeRpcClient({ url, websocket: false })` always uses HTTP.
+- **HTTP batches.** Over HTTP, calls made in the same tick are one request (up to 32), over kept-alive connections. Every call is a POST, so a large query input never goes in a URL. The calls of one request are answered together, so one slow call holds up the others in its batch; over a WebSocket each call is answered as it finishes.
+- **The server** is a `Bun.serve` of its own, and the protocol is written for Bun: a frame or batch is parsed once, the schemas you give are called directly, and each answer is built from the calls' JSON text. The HTTP wire format is tRPC's, so a tRPC client can call it. Its body limit is `MAX_REQUEST_BYTES`, and a request or frame carries at most 256 calls.
+- **Calls are recorded in the dashboard** as `rpc` requests under their pattern, as with the other microservice transports, and a call made inside a traced call continues its trace.
 
-`bun benchmarks/forge-rpc/bench.ts` compares it with Nest's TCP transport. It uses one engine and 64 concurrent callers sending through `ClientProxy`, on a 4-core AMD EPYC with Bun 1.4.4, and `BENCH_REDIS_URL` adds Redis. These are two runs:
+`bun benchmarks/forge-rpc/bench.ts` compares it with Nest's TCP transport. It uses one engine and 64 concurrent callers sending through `ClientProxy` (both ends in one process), on a 4-core Xeon with Bun 1.4.4, and `BENCH_REDIS_URL` adds Redis. These are two runs, with every answer checked:
 
 | Payload | TCP | Forge RPC |
 |---|---|---|
-| 16 bytes | 17,600 to 19,000 calls/s (p50 2.9 ms) | 4,600 to 5,000 calls/s (p50 9 to 10 ms) |
-| 64 KB | 780 to 1,080 calls/s | 850 to 930 calls/s |
+| 16 bytes | 33,100 to 34,100 calls/s (p50 1.5 ms, p99 5.9 to 6.4 ms) | 137,000 to 146,000 calls/s (p50 0.3 ms, p99 2.7 ms) |
+| 64 KB | 3,150 to 3,270 calls/s | 4,060 to 4,370 calls/s |
 
-TCP's framing beats HTTP on small messages, and with 64 KB payloads the two are even. Forge RPC buys typed, validated calls and errors that keep their meaning. For a hot path between two services that exchange tiny messages, measure before choosing it.
+With the callers in other processes, a server on one core answered about 200,000 to 217,000 calls a second from three clients of 32 callers each, against 54,000 for TCP. With a single caller making one call at a time, Forge RPC answered 49,000 calls a second against TCP's 29,000 in the same process, and 38,000 to 39,000 against 23,000 to 25,000 from three processes. TCP writes to its socket once per message, in each direction; Forge RPC writes once per frame, and it still validates every input and output.
 
 ## Moving a pattern from TCP
 

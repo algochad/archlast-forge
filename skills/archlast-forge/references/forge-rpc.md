@@ -2,7 +2,7 @@
 
 Read this when one forge backend must call another (microservices in a monorepo, a service mesh), or when you add, change or debug a `@Router` class or a class that calls one. Needs [nest-services.md](nest-services.md) for the service/controller conventions it builds on, and [project-modes.md](project-modes.md) for the monorepo wiring.
 
-Forge RPC is request-response, typed, over HTTP (tRPC v11 inside, Nest `ClientProxy` outside). A service declares **routers** with decorators; `archlast-forge codegen` writes their types; callers get `.query()` / `.mutate()` checked against them. It is **backend to backend only**.
+Forge RPC is request-response, typed, over HTTP (tRPC v11's wire format, on Bun's own server and `fetch`; Nest `ClientProxy` outside). A service declares **routers** with decorators; `archlast-forge codegen` writes their types; callers get `.query()` / `.mutate()` checked against them. It is **backend to backend only**.
 
 ## The one rule: frontends never touch it
 
@@ -12,7 +12,7 @@ page / mobile / desktop ──client──▶ main app's forge/ (controller or a
 
 - Pages, mobile and desktop apps call the **main app's** functions (`api.orders.hello`, or `POST /http/orders/hello`). They never import `@<name>/contracts`, never know a service's address, never hold `FORGE_RPC_TOKEN`.
 - Codegen fails if `src/` or `app/` imports `@archlast/forge-runtime/nest/rpc` or `forge/_generated/rpc`; `ForgeRpcClient`/`ForgeRpcServer` throw when a `window` exists.
-- Everything comes from `@archlast/forge-runtime/nest/rpc`, including `z` (Zod 4). Do not install `zod` or `@trpc/*`. `Ctx` is re-exported there; `TransportCtx` and `RpcException` come from `/nest/microservices`.
+- Everything comes from `@archlast/forge-runtime/nest/rpc`, including `z` (Zod 4). Do not install `zod` or `@trpc/*` (nothing here uses tRPC's packages). `Ctx` is re-exported there; `TransportCtx` and `RpcException` come from `/nest/microservices`.
 
 ## 1. The service side (declare and serve)
 

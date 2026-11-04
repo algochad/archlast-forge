@@ -92,14 +92,15 @@ const TIMED = Symbol.for("archlast-forge.timed");
  * Times every method of one of the app's classes, so the dashboard shows where requests spend their time, class by class. Classes are the
  * app's when they are decorated through this package (libraries import Nest's decorators from @nestjs/* directly). It runs when the class
  * is decorated, before Nest binds route handlers to the methods; Nest keeps a handler's routes, guards and pipes as metadata on the method
- * itself, so the timed method carries the same metadata.
+ * itself, so the timed method carries the same metadata. `interceptor: false` leaves out the one that records transport messages, for a
+ * transport that records them itself (Forge RPC).
  */
-export function timeClass(target: Function, kind: string) {
+export function timeClass(target: Function, kind: string, interceptor = true) {
   const bridge = telemetry();
   const proto = target.prototype as Record<string | symbol, unknown> | undefined;
   if (!bridge || !proto || Object.hasOwn(proto, TIMED)) return;
   Object.defineProperty(proto, TIMED, { value: true });
-  if (kind === "controller" || kind === "gateway") UseInterceptors(EntryInterceptor)(target);
+  if (interceptor && (kind === "controller" || kind === "gateway")) UseInterceptors(EntryInterceptor)(target);
   for (const key of Object.getOwnPropertyNames(proto)) {
     const d = Object.getOwnPropertyDescriptor(proto, key);
     if (key === "constructor" || !d || typeof d.value !== "function" || !d.writable) continue;

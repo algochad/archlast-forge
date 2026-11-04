@@ -234,6 +234,27 @@ export function tracedTx(tx: DbTx, system: string): DbTx {
 let fetchPatched = false;
 
 /**
+ * An outbound call that is not a `fetch` (Forge RPC's WebSocket) made from inside a traced call: an `http` client span, and the
+ * `traceparent` for the service to continue the trace with. Undefined when the call isn't traced, which is nearly always.
+ */
+export function outboundSpan(name: string, attrs: Attrs): { traceparent: string; end(error?: string): void } | undefined {
+  const ctx = logContext.getStore();
+  if (!ctx?.trace) return undefined;
+  const id = spanId();
+  const start = now();
+  const span: Span = { traceId: ctx.trace.traceId, spanId: id, parentId: ctx.spanId, name, type: "http", kind: 3, start, duration: 0, attrs };
+  return {
+    traceparent: traceparent(ctx.trace.traceId, id),
+    end(error) {
+      span.duration = now() - start;
+      span.status = error ? 2 : 1;
+      if (error) span.error = error;
+      push(ctx, span);
+    },
+  };
+}
+
+/**
  * Outbound fetches from inside a call become `http` client spans, and carry a `traceparent` header (unless they set one), so a service
  * that is traced too continues the same trace. The URL is recorded without its query string, which often holds credentials.
  */

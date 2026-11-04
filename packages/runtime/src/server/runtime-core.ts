@@ -20,7 +20,7 @@ import { createStorage } from "./storage";
 import { Backups } from "./backup/backups";
 import { migrateSystem } from "./system";
 import { ReadCache } from "./read-cache";
-import { annotate, inSpan, instrumentFetch, now, spanned, telemetryOf, traced, type CallTelemetry } from "./telemetry/context";
+import { annotate, inSpan, instrumentFetch, now, outboundSpan, spanned, telemetryOf, traced, type CallTelemetry } from "./telemetry/context";
 import { parseTraceparent, spanId, traceId } from "./telemetry/ids";
 import { handledKind, statusOf } from "./telemetry/recorder";
 import { MetricAggregator } from "./telemetry/metrics";
@@ -129,6 +129,8 @@ export async function startCore(opts: {
     span: (name: string, fn: () => unknown, attrs?: Record<string, string | number | boolean>) => inSpan(String(name), "custom", attrs, fn, 1),
     // For @archlast/forge-runtime/nest: the methods of the app's controllers and services, timed per call.
     wrap: <T extends (...args: any[]) => any>(fn: T, name: string, attrs?: Record<string, string | number | boolean>) => spanned(fn, name, "nest", attrs),
+    // For Forge RPC's WebSocket client: the span and traceparent that a fetch would have got from the patched global fetch.
+    outbound: (name: string, attrs: Record<string, string | number | boolean>) => outboundSpan(name, attrs),
     annotate: (attrs: Record<string, string | number | boolean>, request?: boolean) => annotate(attrs, request),
     // For @archlast/forge-runtime/nest: a message a microservice transport (Forge RPC among them) or a gateway handed the app is a request of
     // its own, a trace whose root is this call, under the caller's trace when it sent a traceparent.

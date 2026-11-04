@@ -196,8 +196,6 @@
         "@nestjs/microservices": "12.3.2",
         "@nestjs/platform-socket.io": "12.3.2",
         "@nestjs/websockets": "12.3.2",
-        "@trpc/client": "11.19.0",
-        "@trpc/server": "11.19.0",
         "amqp-connection-manager": "5.0.1",
         "amqplib": "2.2.0",
         "better-auth": "1.7.12",
@@ -219,6 +217,8 @@
       },
       "devDependencies": {
         "@seriousme/openapi-schema-validator": "2.11.0",
+        "@trpc/client": "11.19.0",
+        "@trpc/server": "11.19.0",
         "@types/bun": "1.4.4",
         "@types/cors": "^2.8.19",
         "expect-type": "^1.4.0",

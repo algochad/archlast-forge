@@ -724,10 +724,10 @@ export class DocStore {
     const found = new Map<string, Doc>();
     for (const [table, set] of byTable) {
       const unique = [...set];
-      for (const id of unique) this.reads.add(topic(table, "by_id", [id]));
       for (let i = 0; i < unique.length; i += IN_CHUNK) {
         const chunk = unique.slice(i, i + IN_CHUNK);
         const topics = chunk.map((id) => topic(table, "by_id", [id]));
+        for (const t of topics) this.reads.add(t);
         const rows = this.mongo ? await this.mongo.find(table, { filter: { _id: { $in: chunk } } }) : await this.select(table, `${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk, topics);
         for (const row of rows) found.set(row._id, this.toDoc(row));
       }
@@ -782,12 +782,6 @@ export class DocStore {
   private async joinReverse(table: string, docs: Doc[], key: string, rule: Extract<IncludeRule, object>, field: string) {
     const child = this.table(rule.table);
     const order = rule.order ?? "asc";
-    const perParent = (id: string) => {
-      const q = this.query(rule.table)
-        .withIndex(rule.index, (b: any) => b.eq(field, id))
-        .order(order);
-      return q;
-    };
     if (rule.count) {
       // Counts are cached per parent (a write to one parent's children drops only that parent's count); the ones the cache doesn't have
       // come from one grouped query per chunk. A parent with no children isn't in that result and counts 0.
@@ -795,7 +789,7 @@ export class DocStore {
       const countKey = (id: string) => `count\u0000${rule.table}\u0000${field}\u0000${id}`;
       const missing: string[] = [];
       for (const id of new Set(docs.map((d) => d._id))) {
-        this.reads.add(topic(rule.table, rule.index, [id])); // what perParent(id).count() would have read
+        this.reads.add(topic(rule.table, rule.index, [id])); // what counting that parent's children by query would have read
         const hit = this.peek(rule.table, countKey(id));
         if (hit) counts.set(id, hit[0]!.n);
         else missing.push(id);
@@ -836,9 +830,12 @@ export class DocStore {
     if (rule.take !== undefined && !((this.dialect.childrenOf || this.mongo) && rule.take > 0)) {
       // A limit per parent needs a query per parent.
       for (const d of docs) {
-        const q = perParent(d._id);
-        if (rule.include) q.include(rule.include);
-        d[key] = await q.take(rule.take);
+        const read = topic(rule.table, rule.index, [d._id]);
+        this.reads.add(read);
+        const cond = this.dialect.fieldEquals(field, d._id);
+        const rows = rule.take === 0 ? [] : await this.select(rule.table, `${SELECT} "${rule.table}" WHERE ${cond.sql} ORDER BY ${orderBy} LIMIT ${rule.take}`, cond.params, [read]);
+        const kids = rows.map((r) => this.toDoc(r));
+        d[key] = rule.include ? await this.join(rule.table, kids, rule.include) : kids;
       }
       return;
     }
