@@ -1,0 +1,32 @@
+date: 2026-11-04T13:26:44+08:00
+cpu: 11th Gen Intel(R) Core(TM) i7-11700 @ 2.50GHz
+CPU(s):                                  16
+Thread(s) per core:                      2
+Core(s) per socket:                      8
+CPU(s) scaling MHz:                      91%
+L3 cache:                                16 MiB (1 instance)
+ram total: 62Gi
+os: Linux 7.2.5-3-omarchy x86_64
+PRETTY_NAME="Omarchy"
+governor: powersave ; AC online: 
+bun: 1.4.4
+node: v26.8.2
+convex npm client: 1.49.0
+convex-local-backend: release precompiled-2026-11-04-059b229 (binary says: local_backend unknown); sha256 of binary: c1f8f3dc228d48aa9ef30158f747dbd6c3cb228e5c771cbbf129476fca7e28f3
+postgres: postgres (PostgreSQL) 17.11
+mongodb: db version v7.0.45
+docker images: postgres:17-alpine=sha256:266d3c257594e195b309ae9d1805e54c788f1d7b375f56bf6c367aac6c917e7b mongo:7=sha256:8bb4442761a63a8dda452744082cdac9644b429807eb977b42324a63cef59ca4 
+archlast-forge: d7ce7cc09189b617d45712ef07079eb931a61096 (bench/convex-vs-forge), base origin/staging d7ce7cc
+ulimit -n: 524288
+tmp is: tmpfs; data dir fs: btrfs /dev/mapper/root[/@home]
+-- processes using CPU at start --
+    PID PSR %CPU COMMAND
+   4801   6 94.3 qemu-system-x86
+  11957   9 17.6 Isolated Web Co
+  10503  13 17.4 zen-bin
+   3744  14 16.5 gnome-boxes
+   1376  11  6.1 Hyprland
+  10875  12  4.0 Isolated Web Co
+ 118364   9  1.7 mongod
+loadavg: 7.09 8.10 6.16 7/2166 155494
+qemu affinity: pid 4801's current affinity list: 6,7,14,15
