@@ -100,3 +100,30 @@ writeback on this VM's disk.
   reached about 75% of its core with two servers. Pool sizes of 8, 16 and 32 per process gave the same 1,080–1,240 req/s; 64 dropped it to 233.
 - **Invalidation costs nothing measurable:** a write publishes five topics here, and mutations ran at the same rate with the cache on or
   off, in memory and in Redis.
+
+
+## Our engine under several configurations (`engine-compare.sh`)
+
+`benchmarks/load/engine-compare.sh` runs four cases under each configuration: HTTP queries (cached, and uncached over 64 lists), HTTP mutations, and
+subscription fan-out, the reactive side (1,000 WebSockets watching one query while 10 todos a second are added; delivery is write to client, the
+50 ms debounce included). Same machine as above: server on cores 0–2 (Postgres runs: 0–1, with Postgres on core 2), load generator on core 3,
+10 s a case, one run each, Bun 1.4.4; every request answered (no non-2xx), every subscriber got every update.
+
+| configuration | cached query | uncached query, 64 lists | mutation | fan-out delivery p50 / p99 (1,000 subscribers) |
+|---|---:|---:|---:|---:|
+| sqlite / default | 47,505 req/s (p99 3.63 ms) | 15,394 req/s (p99 8.44 ms) | 8,735 req/s (p99 20.84 ms) | 70 / 111 ms |
+| sqlite / RUNTIME_WORKERS=2 | 47,493 req/s (p99 4.18 ms) | 22,413 req/s (p99 8.88 ms) | 11,087 req/s (p99 58.97 ms) | 68 / 111 ms |
+| sqlite / RUNTIME_WORKERS=3 | 53,153 req/s (p99 3.56 ms) | 21,932 req/s (p99 9.21 ms) | 10,959 req/s (p99 80.63 ms) | 70 / 113 ms |
+| postgres / default | 52,826 req/s (p99 3.37 ms) | 9,540 req/s (p99 17.66 ms) | 3,870 req/s (p99 30.25 ms) | 72 / 109 ms |
+| postgres / RUNTIME_WORKERS=2 | 53,595 req/s (p99 3.39 ms) | 12,451 req/s (p99 14.68 ms) | 4,882 req/s (p99 26.07 ms) | 73 / 114 ms |
+| postgres / tuned server + RUNTIME_WORKERS=2 | 50,844 req/s (p99 3.51 ms) | 12,626 req/s (p99 14.59 ms) | 5,050 req/s (p99 23.31 ms) | 72 / 108 ms |
+
+- **`RUNTIME_WORKERS=2` is the setting that matters**: uncached queries +46% on SQLite and +31% on Postgres, mutations +27% and +26%. It does nothing for
+  cached queries, which the server answers itself. Three workers on three cores gave no more than two. On SQLite the mutation tail gets worse with
+  workers (p99 21 ms → 59–81 ms): more writers contend for the one database writer.
+- **Server tuning (Postgres) did not show up** at the engine: 12,451 → 12,626 uncached and 4,882 → 5,050 mutations a second is inside the noise.
+- **Reactive delivery is the same everywhere** (p50 ≈ 70 ms, p99 ≈ 110 ms): the 50 ms debounce plus about 20 ms of re-running the query and sending to
+  1,000 sockets; the database and the worker count don't change it at this rate.
+- **The same cases for another backend**: `case.sh` takes a server command through `serve.ts`; to compare with a different backend, put it behind the same
+  HTTP paths (`/rpc/todos:listByList` is a GET, `/rpc/todos:add` a POST) and the same WebSocket protocol in `fanout.ts`. Convex's self-hosted backend
+  couldn't be run in this environment (its image's layers are on a host the sandbox's network policy blocks), so there is no Convex column.
