@@ -118,3 +118,27 @@ test("WalSyncer: every call is answered, one fsync serves the calls made while i
   await expect(broken.sync()).rejects.toThrow("could not sync");
   await db.close();
 });
+
+test("every write that was answered is in the database after the process is killed", async () => {
+  const file = join(tempDir(), "killed.db");
+  const child = Bun.spawn(["bun", join(import.meta.dir, "fixture-acked-writes.ts"), file, "FULL"], { stdout: "pipe", stderr: "inherit" });
+  const acked = new Set<number>();
+  let rest = "";
+  const reader = child.stdout.getReader();
+  while (acked.size < 3000) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    rest += new TextDecoder().decode(value);
+    const lines = rest.split("\n");
+    rest = lines.pop()!;
+    for (const line of lines) acked.add(Number(line));
+  }
+  child.kill("SIGKILL"); // no chance to flush or close anything
+  await child.exited;
+  expect(acked.size).toBeGreaterThanOrEqual(3000);
+  const db = createSqliteDb(file, 1);
+  const stored = new Set((await db.query<{ k: number }>(`SELECT k FROM "t"`)).map((r) => r.k));
+  const lost = [...acked].filter((k) => !stored.has(k));
+  expect(lost).toEqual([]);
+  await db.close();
+}, 60_000);
