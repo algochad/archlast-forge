@@ -71,6 +71,8 @@ export interface Dialect {
    * WHERE clause or empty. `run` runs a statement. Undefined when this database can't tell (DocStore then reads the documents).
    */
   numberStats?(run: (sql: string, params: unknown[]) => Promise<Row[]>, table: string, field: string, where: string, params: unknown[]): Promise<NumberStats | undefined>;
+  /** The statements indexing many new documents at once (they have no earlier entry to remove), where one write each is slow. Absent: `searchWrite` for each. */
+  searchInsertMany?(table: string, index: string, rows: { id: string; text: string }[]): { sql: string; params: unknown[] }[];
   /** Statements keeping a search index in sync when a document is written; `text` undefined removes it. */
   searchWrite(table: string, index: string, id: string, text: string | undefined): { sql: string; params: unknown[] }[];
   /** Matching ids by relevance; `terms` are lowercase words, the last matched as a prefix. */

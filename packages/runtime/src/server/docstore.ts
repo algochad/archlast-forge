@@ -943,10 +943,18 @@ export class DocStore {
           part.flatMap((d) => [d._id, d._creationTime, d.json]),
         );
     }
-    for (const d of docs) {
-      await this.syncSearch(table, d._id, d.fields);
-      this.written(table, { ...d.fields, _id: d._id });
-    }
+    const many = this.dialect.searchInsertMany;
+    if (many && !this.mongo) {
+      for (const [name, { searchField }] of Object.entries(this.table(table).searchIndexes ?? {})) {
+        const indexed = docs.flatMap((d) => (typeof d.fields[searchField] === "string" ? [{ id: d._id, text: d.fields[searchField] as string }] : []));
+        for (const s of many(table, name, indexed)) await this.tx.execute(s.sql, s.params);
+      }
+      for (const d of docs) this.written(table, { ...d.fields, _id: d._id });
+    } else
+      for (const d of docs) {
+        await this.syncSearch(table, d._id, d.fields);
+        this.written(table, { ...d.fields, _id: d._id });
+      }
     return docs.map((d) => d._id);
   }
 

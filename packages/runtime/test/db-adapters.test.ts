@@ -13,7 +13,12 @@ const tables: TablesSpec = {
     indexes: { by_list: ["listId"], by_list_done: ["listId", "done"] },
     strict: true,
   },
-  notes: { fields: { body: v.string(), tag: v.string(), n: v.number() }, indexes: { by_tag_n: ["tag", "n"] }, strict: true },
+  notes: {
+    fields: { body: v.string(), tag: v.string(), n: v.number() },
+    indexes: { by_tag_n: ["tag", "n"] },
+    searchIndexes: { search_body: { searchField: "body", filterFields: ["tag"] } },
+    strict: true,
+  },
 };
 const specs = Object.entries(tables).map(([name, t]) => ({ name, indexes: t.indexes, searchIndexes: t.searchIndexes }));
 
@@ -233,6 +238,32 @@ for (const [label, make] of dbAdapters) {
         expect(all.every((d) => d.done)).toBe(true);
         // and the index entries moved with the documents
         expect((await read((s) => s.query("todos").withIndex("by_list_done", (b: any) => b.eq("listId", listId).eq("done", false)).collect())).length).toBe(0);
+      });
+
+      test("insertMany into a table with a search index: every document is found by its words, and stays right when it changes", async () => {
+        await setup();
+        const words = ["alpha", "bravo", "charlie", "delta"];
+        await write((s) => s.insertMany("notes", Array.from({ length: 1300 }, (_, i) => ({ body: `${words[i % 4]} note ${i}`, tag: i % 2 ? "odd" : "even", n: i }))));
+        const search = (text: string, tag?: string) =>
+          read((s) =>
+            s
+              .query("notes")
+              .withSearchIndex("search_body", (q: any) => (tag ? q.search("body", text).eq("tag", tag) : q.search("body", text)))
+              .take(2000),
+          );
+        expect((await search("bravo")).length).toBe(325);
+        expect((await search("bravo", "odd")).length).toBe(325);
+        expect((await search("bravo", "even")).length).toBe(0);
+        expect((await search("charlie not")).length).toBe(325); // the last word as a prefix: "not" starts "note"
+        const expected = Array.from({ length: 1300 }, (_, i) => i).filter((i) => i % 4 === 3 && String(i).startsWith("3"));
+        expect((await search("delta note 3")).map((d: any) => d.n).sort((x: number, y: number) => x - y)).toEqual(expected); // two whole words and a prefix
+        const one = (await search("alpha note 1296"))[0]!;
+        await write((s) => s.patch(one._id, { body: "zulu changed" }));
+        expect((await search("alpha note 1296")).length).toBe(0);
+        expect((await search("zulu")).map((d: any) => d._id)).toEqual([one._id]);
+        expect((await search("alpha")).length).toBe(324);
+        await write((s) => s.delete(one._id));
+        expect((await search("zulu")).length).toBe(0);
       });
 
       test("a filter that looks through more than one batch finds the same documents as a loop", async () => {

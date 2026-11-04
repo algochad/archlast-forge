@@ -7,7 +7,7 @@ import { join } from "node:path";
 const dir = process.argv[2] ?? join(import.meta.dir, "results");
 const wanted = process.argv[3]?.split(",");
 const files = readdirSync(dir).filter((f) => f.endsWith(".json")).map((f) => f.replace(/\.json$/, "")).filter((n) => !wanted || wanted.includes(n));
-const order = ["sqlite", "postgres-default", "postgres-tuned", "mongodb"];
+const order = ["sqlite", "sqlite-nocache", "postgres-default", "postgres-tuned", "mongodb"];
 files.sort((a, b) => (order.indexOf(a) + 1 || 99) - (order.indexOf(b) + 1 || 99));
 const runs = files.map((f) => JSON.parse(readFileSync(join(dir, f + ".json"), "utf8")) as { db: string; seeded: number; results: { op: string; p50?: number; p99?: number; perSec?: number }[] });
 const ops = [...new Set(runs.flatMap((r) => r.results.map((x) => x.op)))];

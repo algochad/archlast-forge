@@ -42,6 +42,17 @@ export const sqliteDialect: Dialect = {
     const num = (x: unknown) => (x === null || x === undefined ? null : Number(x));
     return { rows: Number(row.rows), n: Number(row.n ?? 0), bad, nonint: Number(row.nonint ?? 0), sum: Number(row.sum ?? 0), min: num(row.min), max: num(row.max) };
   },
+  // 25,000 documents with a search index were two statements each (a DELETE of an entry that is not there, and an INSERT): seeding ran at 2,700
+  // documents a second. New documents need only the INSERT, and many rows to a statement.
+  searchInsertMany(table, index, rows) {
+    const fts = ftsTable(table, index);
+    const out: { sql: string; params: unknown[] }[] = [];
+    for (let i = 0; i < rows.length; i += 500) {
+      const part = rows.slice(i, i + 500);
+      out.push({ sql: `INSERT INTO "${fts}" (doc_id, body) VALUES ${part.map(() => "(?, ?)").join(", ")}`, params: part.flatMap((r) => [r.id, r.text]) });
+    }
+    return out;
+  },
   searchWrite(table, index, id, text) {
     const fts = ftsTable(table, index);
     const del = { sql: `DELETE FROM "${fts}" WHERE doc_id = ?`, params: [id] };

@@ -11,6 +11,7 @@ psql_() { PGPASSWORD=forge psql -h localhost -p 55432 -U forge -d forge -qAtc "$
 run() { echo "== $1"; DB=$2 SCALE=$SCALE SECONDS=${SECONDS_PER:-3} JSON=$OUT/$1.json "${@:3}" bun benchmarks/db-adapters/bench.ts 2>&1 | grep -v Warning; }
 
 run sqlite sqlite env
+run sqlite-nocache sqlite env CACHE=0
 # Postgres as it comes
 psql_ "alter system reset all" >/dev/null; docker restart archlast-forge-postgres-1 >/dev/null; sleep 6
 run postgres-default postgres env

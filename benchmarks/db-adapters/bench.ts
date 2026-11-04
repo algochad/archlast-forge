@@ -31,9 +31,9 @@ async function open(): Promise<Db> {
   throw new Error(`DB=${kind}?`);
 }
 const db = await open();
-// The row cache is only exact with one writer on SQLite; the others don't have it.
+// The row cache is only exact with one writer on SQLite; the others don't have it (CACHE=0 turns SQLite's off, to compare the databases themselves).
 await db.migrate(tableSpecs(project.tables));
-const exec = new Executor({ db, tables: project.tables, functions: project.functions, publish: () => {}, log: () => {}, readCache: kind === "sqlite" ? new ReadCache() : undefined });
+const exec = new Executor({ db, tables: project.tables, functions: project.functions, publish: () => {}, log: () => {}, readCache: kind === "sqlite" && process.env.CACHE !== "0" ? new ReadCache() : undefined });
 for (const t of ["todos", "lists", "comments", "notes"]) {
   await exec.rewrite(async (s) => { await s.truncate(t); });
 }
