@@ -67,9 +67,9 @@ You started `start`, `up` or the image without a secret. Set `BETTER_AUTH_SECRET
 
 Over http, session cookies are not marked `Secure`. Set `BETTER_AUTH_URL` to the public `https://` address (TLS ends at your proxy or Caddy), or for a trial on one machine set `ALLOW_INSECURE_HTTP=1`. The generated `.env` sets it for you; delete the line once you have HTTPS. If `BETTER_AUTH_URL` is unset the engine uses `http://localhost:<port>`, which is why this message mentions that address.
 
-### `REPLICAS > 1 requires REDIS_URL`, or `… requires a Postgres DATABASE_URL`
+### `REPLICAS > 1 requires REDIS_URL`, or `… requires a Postgres or MongoDB DATABASE_URL`
 
-`REPLICAS` tells the engine you run several servers. It starts nothing, but it refuses to start unless the pieces servers must share exist: Redis for the bus, cache and rate limits, and Postgres for the data. Add both, or remove `REPLICAS`.
+`REPLICAS` tells the engine you run several servers. It starts nothing, but it refuses to start unless the pieces servers must share exist: Redis for the bus, cache and rate limits, and Postgres or MongoDB for the data. Add both, or remove `REPLICAS`.
 
 ### `REDIS_URL is set but Redis is unreachable: Connection closed`
 
@@ -450,7 +450,7 @@ Start with SQLite: no service to run, fast, and one file to back up (`archlast-f
 ### Can I use my own auth, database or frontend?
 
 - **Auth:** Better Auth is built in. You configure it in `forge/auth.ts` (providers, plugins, session settings), and you can add fields to your own tables keyed by `userId`. Replacing it with a different auth system is not supported.
-- **Database:** SQLite or Postgres, with documents in tables defined by your schema. No MySQL or MongoDB. Nothing stops an action from talking to another database or API over the network, but those calls sit outside the engine's transactions and reactivity.
+- **Database:** SQLite, Postgres or MongoDB (a replica set, 6.0 or newer), with documents in tables defined by your schema. No MySQL. Nothing stops an action from talking to another database or API over the network, but those calls sit outside the engine's transactions and reactivity.
 - **Frontend:** any. A backend project has no pages; use the React, Vue or Svelte client, or the plain JSON protocol from any language ([Clients](clients.html)). A full-stack app is React with the engine's server rendering.
 
 ### How do I upgrade?

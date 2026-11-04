@@ -468,13 +468,13 @@ Other errors: `Line 3 of dump.jsonl isn't valid JSON`, `Table "x" in the export 
 archlast-forge backup <file>
 ```
 
-A consistent copy of the SQLite database (`VACUUM INTO`) while the engine runs: `✓ backed up to /home/me/proj/app.db`. With PostgreSQL it refuses and points at `pg_dump` (or `export`).
+A consistent copy of the SQLite database (`VACUUM INTO`) while the engine runs: `✓ backed up to /home/me/proj/app.db`. With PostgreSQL it refuses and points at `pg_dump` (or `export`), with MongoDB at `mongodump`.
 
 ```bash
 archlast-forge backup <file>.tar.gz [--no-files]
 ```
 
-A file name ending in `.tar.gz` or `.tgz` makes a full backup instead, on SQLite or Postgres: the documents, scheduled jobs, environment and settings, the `forge/` source and the files in storage (`--no-files` leaves them out), the same archive the dashboard's Backups page makes. `✓ backed up 18240 documents, 23 source files and 412 files to app.tar.gz`. See [Backups](backups.html).
+A file name ending in `.tar.gz` or `.tgz` makes a full backup instead, on SQLite, Postgres or MongoDB: the documents, scheduled jobs, environment and settings, the `forge/` source and the files in storage (`--no-files` leaves them out), the same archive the dashboard's Backups page makes. `✓ backed up 18240 documents, 23 source files and 412 files to app.tar.gz`. See [Backups](backups.html).
 
 ## restore
 
@@ -490,7 +490,7 @@ Restores a full backup: a safety backup of what is there now goes to the backup 
 
 1. If Docker is in use and the project's app is running as the `app` service of its compose stack (from `0.2.0`), or as an engine container started by the CLI for this project (`archlast-forge-<project>-<hash>` or its `-dev` twin), the command is run inside it with `docker exec … --dir /app/forge`, and for `export` and `backup` the file is copied out with `docker cp` (`✓ copied to <file>`).
 2. Otherwise it posts to `http://localhost:<port>/_cli` with the `x-admin-key` header (`ADMIN_KEY` from the environment, or the dev secret), so the work happens in the running server: an import reaches subscribers, and nothing fights the server for the SQLite write lock. A `401` prints `The server on port 3000 rejected the admin key; set ADMIN_KEY to the one it runs with.`
-3. If no server answers (connection refused), it opens the database itself and runs there: the SQLite file under `DATA_DIR` (default `<forge dir>/data`), or PostgreSQL if `DATABASE_URL` is in your environment.
+3. If no server answers (connection refused), it opens the database itself and runs there: the SQLite file under `DATA_DIR` (default `<forge dir>/data`), or PostgreSQL or MongoDB if `DATABASE_URL` is in your environment.
 
 What follows from this:
 

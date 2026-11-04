@@ -3,7 +3,12 @@
 // same transactions, and this module runs the statements those files make: one SELECT / INSERT / UPDATE / DELETE over one table, WHERE a list of
 // conditions joined by AND (=, <, <=, >, >=, IN, LIKE 'prefix%'), ORDER BY one column, LIMIT, ON CONFLICT, RETURNING. Anything else throws, so a
 // statement written for SQL that MongoDB can't run fails loudly and in a test (test/db-system.test.ts runs every statement the engine makes).
-import type { ClientSession, Collection, Document, Db as MongoDatabase } from "mongodb";
+import type {
+  ClientSession,
+  Collection,
+  Document,
+  Db as MongoDatabase,
+} from "mongodb";
 import type { Row } from "./types";
 
 /** An engine table: its SQL columns (the ones a row has, NULL when unset), its primary key when that isn't `_id`, and its indexes. */
@@ -16,15 +21,56 @@ interface SystemTable {
 }
 
 export const SYSTEM_TABLES: Record<string, SystemTable> = {
-  _scheduled_functions: { columns: ["_id", "_creationTime", "name", "args", "scheduledTime", "state", "error", "completedTime"], indexes: [["state", "scheduledTime"]] },
-  _admins: { columns: ["_id", "email", "passwordHash", "role", "createdAt"], unique: ["email"] },
-  _admin_sessions: { columns: ["_id", "adminId", "expiresAt"], indexes: [["expiresAt"], ["adminId"]] },
-  _audit: { columns: ["_id", "time", "actor", "action", "target", "details"], indexes: [["time"]] },
+  _scheduled_functions: {
+    columns: [
+      "_id",
+      "_creationTime",
+      "name",
+      "args",
+      "scheduledTime",
+      "state",
+      "error",
+      "completedTime",
+    ],
+    indexes: [["state", "scheduledTime"]],
+  },
+  _admins: {
+    columns: ["_id", "email", "passwordHash", "role", "createdAt"],
+    unique: ["email"],
+  },
+  _admin_sessions: {
+    columns: ["_id", "adminId", "expiresAt"],
+    indexes: [["expiresAt"], ["adminId"]],
+  },
+  _audit: {
+    columns: ["_id", "time", "actor", "action", "target", "details"],
+    indexes: [["time"]],
+  },
   _env: { columns: ["name", "value", "updatedAt"], key: "name" },
-  _migrations: { columns: ["name", "state", "cursor", "processed", "error", "updatedAt"], key: "name" },
-  _settings: { columns: ["name", "value", "updatedAt", "updatedBy"], key: "name" },
+  _migrations: {
+    columns: ["name", "state", "cursor", "processed", "error", "updatedAt"],
+    key: "name",
+  },
+  _settings: {
+    columns: ["name", "value", "updatedAt", "updatedBy"],
+    key: "name",
+  },
   _backups: {
-    columns: ["_id", "name", "createdAt", "kind", "state", "bytes", "location", "manifest", "progress", "error", "actor", "server", "finishedAt"],
+    columns: [
+      "_id",
+      "name",
+      "createdAt",
+      "kind",
+      "state",
+      "bytes",
+      "location",
+      "manifest",
+      "progress",
+      "error",
+      "actor",
+      "server",
+      "finishedAt",
+    ],
     indexes: [["createdAt"]],
   },
 };
@@ -38,9 +84,13 @@ export class UniqueViolation extends Error {
 
 // ---- reading the statement ----
 
-type Token = { kind: "id" | "str" | "num" | "param" | "word" | "sym"; value: string };
+type Token = {
+  kind: "id" | "str" | "num" | "param" | "word" | "sym";
+  value: string;
+};
 
-const TOKEN = /\s+|"([^"]*)"|'((?:[^']|'')*)'|(\?)|(-?\d+(?:\.\d+)?)|([A-Za-z_][A-Za-z0-9_]*)|(<=|>=|<>|!=|[(),=<>*.])/y;
+const TOKEN =
+  /\s+|"([^"]*)"|'((?:[^']|'')*)'|(\?)|(-?\d+(?:\.\d+)?)|([A-Za-z_][A-Za-z0-9_]*)|(<=|>=|<>|!=|[(),=<>*.])/y;
 
 function lex(sql: string): Token[] {
   const out: Token[] = [];
@@ -50,7 +100,8 @@ function lex(sql: string): Token[] {
     const m = TOKEN.exec(sql);
     if (!m) throw new Error(`MongoDB can't run this SQL (at ${at}): ${sql}`);
     if (m[1] !== undefined) out.push({ kind: "id", value: m[1] });
-    else if (m[2] !== undefined) out.push({ kind: "str", value: m[2].replaceAll("''", "'") });
+    else if (m[2] !== undefined)
+      out.push({ kind: "str", value: m[2].replaceAll("''", "'") });
     else if (m[3]) out.push({ kind: "param", value: "?" });
     else if (m[4] !== undefined) out.push({ kind: "num", value: m[4] });
     else if (m[5] !== undefined) out.push({ kind: "word", value: m[5] });
@@ -99,7 +150,8 @@ class Reader {
   /** A column or table name: quoted, or a bare word. */
   name(): string {
     const t = this.tokens[this.i++];
-    if (!t || (t.kind !== "id" && t.kind !== "word")) this.fail("expected a name");
+    if (!t || (t.kind !== "id" && t.kind !== "word"))
+      this.fail("expected a name");
     return t.value;
   }
   /** `?`, a string, a number or NULL. */
@@ -134,7 +186,8 @@ export interface Run {
 
 const key = (table: string) => SYSTEM_TABLES[table]?.key ?? "_id";
 /** The field a SQL column is kept in. */
-const fieldOf = (table: string, column: string) => (column === key(table) ? "_id" : column);
+const fieldOf = (table: string, column: string) =>
+  column === key(table) ? "_id" : column;
 
 function whereOf(r: Reader, table: string): Document {
   if (!r.eatWord("WHERE")) return {};
@@ -149,11 +202,31 @@ function whereOf(r: Reader, table: string): Document {
       all.push({ [field]: { $in: values } });
     } else if (r.eatWord("LIKE")) {
       const pattern = String(r.value());
-      all.push({ [field]: { $regex: "^" + pattern.replace(/[.*+?^${}()|[\]\\]/g, "\\$&").replaceAll("%", ".*").replaceAll("_", ".") + "$" } });
+      all.push({
+        [field]: {
+          $regex:
+            "^" +
+            pattern
+              .replace(/[.*+?^${}()|[\]\\]/g, "\\$&")
+              .replaceAll("%", ".*")
+              .replaceAll("_", ".") +
+            "$",
+        },
+      });
     } else {
       const t = r.peek();
       const op = t?.kind === "sym" ? t.value : "";
-      const mongo = ({ "=": "$eq", "<": "$lt", "<=": "$lte", ">": "$gt", ">=": "$gte", "<>": "$ne", "!=": "$ne" } as Record<string, string>)[op];
+      const mongo = (
+        {
+          "=": "$eq",
+          "<": "$lt",
+          "<=": "$lte",
+          ">": "$gt",
+          ">=": "$gte",
+          "<>": "$ne",
+          "!=": "$ne",
+        } as Record<string, string>
+      )[op];
       if (!mongo) r.fail(`unsupported comparison ${op}`);
       r.sym(op);
       const value = r.value();
@@ -182,16 +255,24 @@ function orderOf(r: Reader, table: string): Record<string, 1 | -1> | undefined {
 /** A row as SQL would return it: every column, NULL where the document has none. */
 function rowOf(table: string, doc: Document, columns?: string[]): Row {
   const t = SYSTEM_TABLES[table];
-  if (!t) return columns ? Object.fromEntries(columns.map((c) => [c, doc[c] ?? null])) : doc;
+  if (!t)
+    return columns
+      ? Object.fromEntries(columns.map((c) => [c, doc[c] ?? null]))
+      : doc;
   const out: Row = {};
-  for (const c of columns ?? t.columns) out[c] = (c === t.key ? doc._id : doc[c]) ?? null;
+  for (const c of columns ?? t.columns)
+    out[c] = (c === t.key ? doc._id : doc[c]) ?? null;
   return out;
 }
 
 const columnsOf = (table: string) => SYSTEM_TABLES[table]?.columns;
 
 /** Executes one statement. SELECT and `UPDATE … RETURNING` give rows; the others give none. */
-export async function runSql(run: Run, sql: string, params: unknown[] = []): Promise<Row[]> {
+export async function runSql(
+  run: Run,
+  sql: string,
+  params: unknown[] = [],
+): Promise<Row[]> {
   const r = new Reader(sql, lex(sql), params);
   const s = run.session ? { session: run.session } : {};
   if (r.eatWord("SELECT")) return select(run, r, s);
@@ -233,10 +314,24 @@ async function select(run: Run, r: Reader, s: Options): Promise<Row[]> {
   const col = run.database.collection(table);
   if (count) return [{ [count]: await col.countDocuments(filter, s) }];
   if (max) {
-    const [row] = await col.aggregate([{ $match: filter }, { $group: { _id: null, m: { $max: `$${fieldOf(table, max.column)}` } } }], s).toArray();
+    const [row] = await col
+      .aggregate(
+        [
+          { $match: filter },
+          {
+            $group: {
+              _id: null,
+              m: { $max: `$${fieldOf(table, max.column)}` },
+            },
+          },
+        ],
+        s,
+      )
+      .toArray();
     return [{ [max.as]: row?.m ?? null }];
   }
-  const projection = columns && Object.fromEntries(columns.map((c) => [fieldOf(table, c), 1]));
+  const projection =
+    columns && Object.fromEntries(columns.map((c) => [fieldOf(table, c), 1]));
   let cursor = col.find(filter, { ...s, ...(projection && { projection }) });
   if (sort) cursor = cursor.sort(sort);
   if (limit !== undefined) {
@@ -270,7 +365,8 @@ async function insert(run: Run, r: Reader, s: Options): Promise<Row[]> {
     try {
       await col.insertOne(doc, s);
     } catch (e) {
-      if ((e as { code?: number }).code === 11000) throw new UniqueViolation(table);
+      if ((e as { code?: number }).code === 11000)
+        throw new UniqueViolation(table);
       throw e;
     }
     return [];
@@ -301,7 +397,9 @@ async function insert(run: Run, r: Reader, s: Options): Promise<Row[]> {
   }
   r.finish();
   // What the conflict target fixes is in the filter already, and what DO UPDATE sets can't be set again on insert.
-  const onInsert = Object.fromEntries(Object.entries(doc).filter(([f]) => f !== target && !(f in set)));
+  const onInsert = Object.fromEntries(
+    Object.entries(doc).filter(([f]) => f !== target && !(f in set)),
+  );
   if (Object.keys(set).length) update.$set = set;
   if (Object.keys(onInsert).length) update.$setOnInsert = onInsert;
   // A concurrent upsert of the same key can lose to a unique index; outside a transaction it is run again, inside one the executor retries it.
@@ -310,8 +408,14 @@ async function insert(run: Run, r: Reader, s: Options): Promise<Row[]> {
       await col.updateOne(filter, update, { ...s, upsert: true });
       return [];
     } catch (e) {
-      if ((e as { code?: number }).code === 11000 && !s.session && attempt === 0) continue;
-      if ((e as { code?: number }).code === 11000) throw new UniqueViolation(table);
+      if (
+        (e as { code?: number }).code === 11000 &&
+        !s.session &&
+        attempt === 0
+      )
+        continue;
+      if ((e as { code?: number }).code === 11000)
+        throw new UniqueViolation(table);
       throw e;
     }
   }
@@ -340,7 +444,11 @@ async function update(run: Run, r: Reader, s: Options): Promise<Row[]> {
   const rows: Row[] = [];
   const seen = new Set<unknown>();
   for (;;) {
-    const doc = await (col as Collection<Document>).findOneAndUpdate(filter, { $set: set }, { ...s, returnDocument: "after" });
+    const doc = await (col as Collection<Document>).findOneAndUpdate(
+      filter,
+      { $set: set },
+      { ...s, returnDocument: "after" },
+    );
     if (!doc || seen.has(doc._id)) break;
     seen.add(doc._id);
     rows.push(rowOf(table, doc, columns));

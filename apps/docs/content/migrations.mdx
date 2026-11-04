@@ -11,7 +11,7 @@ Documents are stored as JSON, so there are no columns to alter: adding or removi
 
 Every start (and `archlast-forge migrate`) compares `schema.ts` with the database:
 
-- **New tables** are created. A table is three columns, `(_id, _creationTime, doc)`; `doc` holds the fields as JSON (JSONB on Postgres).
+- **New tables** are created. A table is three columns, `(_id, _creationTime, doc)`; `doc` holds the fields as JSON (JSONB on Postgres; on MongoDB a collection of documents with the fields nested in `doc`).
 - **New indexes** are built. Each one is a database index on the JSON fields, plus `_creationTime` and `_id`. Every table also gets `by_creation_time`.
 - **Changed indexes** are replaced. An index's database name is a hash of its table, name and fields, so changing the fields of `by_list` creates a new index and drops the old one. Until the new one is built, queries on it still return correct results but are slow.
 - **Removed indexes** are dropped.
@@ -213,7 +213,7 @@ JSON Lines: one document per line, tables in schema order.
 
 ### Backup
 
-On SQLite, `backup` makes a consistent copy of the database while the engine runs (`VACUUM INTO`). The result is an ordinary database file: to restore it, stop the engine and put the file at `DATA_DIR/app.db`. On Postgres, use `pg_dump`; `backup` says so and does nothing. For a Docker stack, see [Backends](backend.html#backups-and-restores).
+On SQLite, `backup` makes a consistent copy of the database while the engine runs (`VACUUM INTO`). The result is an ordinary database file: to restore it, stop the engine and put the file at `DATA_DIR/app.db`. On Postgres, use `pg_dump` (`mongodump` on MongoDB); `backup` says so and does nothing. For a Docker stack, see [Backends](backend.html#backups-and-restores).
 
 ### Moving from SQLite to Postgres
 

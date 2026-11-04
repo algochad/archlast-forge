@@ -30,7 +30,16 @@ class NeedsSnapshot extends Error {}
 
 export function createMongoDb(url: string, options: { database?: string; maxPoolSize?: number } = {}): Db {
   const client = new MongoClient(url, { ignoreUndefined: true, enableUtf8Validation: false, maxPoolSize: options.maxPoolSize ?? Math.max(10, navigator.hardwareConcurrency * 4), retryWrites: true });
-  const connected = client.connect();
+  // Everything waits for the connection, and for a database that can do what the adapter needs: transactions (a replica set or a sharded cluster) on 6.0 or newer.
+  const connected = client.connect().then(async () => {
+    const admin = client.db("admin");
+    const [hello, build] = await Promise.all([admin.command({ hello: 1 }), admin.command({ buildInfo: 1 })]);
+    const major = Number(build.versionArray?.[0] ?? String(build.version).split(".")[0]);
+    if (major < 6) throw new Error(`MongoDB ${build.version} is too old: the engine needs 6.0 or newer`);
+    if (!hello.setName && hello.msg !== "isdbgrid")
+      throw new Error("This MongoDB is a standalone server, and the engine needs transactions, which need a replica set (a single node is one: start mongod with --replSet rs0 and run rs.initiate()) or a sharded cluster");
+  });
+  connected.catch(() => {}); // whoever uses the database sees the error; this only keeps it from being an unhandled rejection until then
   const dbName = options.database ?? (new URL(url.replace(/^mongodb(\+srv)?:/, "http:")).pathname.slice(1) || "forge");
   const database = client.db(dbName);
   /** Search indexes of each table: their words are left out of what a read returns. */

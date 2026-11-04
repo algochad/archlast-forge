@@ -148,7 +148,7 @@ apiVersion: apps/v1
 kind: Deployment
 metadata: { name: my-app }
 spec:
-  replicas: 2                       # more than 1 needs DATABASE_URL (Postgres) and REDIS_URL
+  replicas: 2                       # more than 1 needs DATABASE_URL (Postgres or MongoDB) and REDIS_URL
   selector: { matchLabels: { app: my-app } }
   template:
     metadata: { labels: { app: my-app } }
@@ -194,7 +194,7 @@ Bad combinations fail at startup with a message, rather than running half config
 ✗ REPLICAS > 1 requires REDIS_URL, or mutations won't reach subscribers on other servers
 ✗ BETTER_AUTH_URL must be https:// outside dev (got "http://x.test"). Set ALLOW_INSECURE_HTTP=1 only for local testing.
 ✗ BETTER_AUTH_SECRET is required outside dev
-✗ DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite), got "mysql:"
+✗ DATABASE_URL must be a postgres:// or mongodb:// URL (unset it to use bun:sqlite), got "mysql:"
 ✗ Set both S3_ENDPOINT and S3_BUCKET, or neither
 ✗ RUNTIME_MODE must be "process" or "inline", got "thread"
 ```
@@ -287,6 +287,7 @@ REPLICAS=3                    # declares intent; startup fails if the above are 
 Everything the engine keeps in Redis starts with a prefix, `archlast-forge:<service>:` from `OTEL_SERVICE_NAME`. **Run every server of a service with the same `OTEL_SERVICE_NAME`** and they share their keys, however many you scale to; give **each different service its own name** when they share a Redis, and their caches, topics and rate limits stay apart. An app with no `OTEL_SERVICE_NAME` uses `archlast-forge:`, as the engine always did, so upgrading it moves no keys. The generated `compose.yaml` passes `OTEL_SERVICE_NAME` and `REDIS_PREFIX` on from `.env` (empty means none); a `compose.yaml` from before that lists only what it passes, so add them under `environment:`. If two apps do end up with one prefix, the second to start logs `another app already uses the Redis prefix`. Naming a service that had no name moves its keys, and servers of that service on different versions don't see each other's writes until the last is upgraded (cached entries expire after `CACHE_TTL_MS`): to keep the old keys through the upgrade, set `REDIS_PREFIX=archlast-forge:` on every server first, then name the service and remove it.
 
 - **PostgreSQL** holds the data. Writes run serializable and retry conflicts with jittered backoff; indexes are built concurrently. Back it up with `pg_dump`.
+- **MongoDB** (`DATABASE_URL=mongodb://…`) holds the data as collections, with the engine's own tables beside them. It must be a replica set or a sharded cluster, 6.0 or newer (a single node started with `--replSet rs0` and `rs.initiate()` is a replica set; Atlas is one): documents are written in transactions, and the engine refuses to start against a standalone server and says so. Writes are snapshot isolation with majority acknowledgement and retry on write conflicts. The telemetry store stays a SQLite file in `DATA_DIR` on each server. Back it up with `mongodump`, or a full backup.
 - **Redis** carries the topics that tell other servers a table changed (each server then re-runs the subscriptions it owns), the shared query cache, and rate-limit counters (including Better Auth's). It holds nothing durable.
 - **`REPLICAS`** only declares how many servers you run; it makes startup fail fast when the pieces are missing. It does not start anything.
 - **A load balancer** that supports WebSockets. Sticky sessions aren't needed.
@@ -373,7 +374,7 @@ max(forge_event_loop_delay_ms{stat="p99"}) > 100
 
 The engine records every request it handles, with traces, errors, logs, runtime samples and releases, and shows them on the dashboard: see [Observability](observability.html). What that means for a deployment:
 
-- **Where:** on SQLite, `DATA_DIR/telemetry.db`, next to `app.db` on the same volume; `archlast-forge backup` copies `app.db` only, so a restore starts telemetry afresh. On Postgres, `_otel_*` tables in the app's database, shared by every server; `pg_dump --exclude-table='_otel_*'` leaves them out of a backup.
+- **Where:** on SQLite, `DATA_DIR/telemetry.db`, next to `app.db` on the same volume; `archlast-forge backup` copies `app.db` only, so a restore starts telemetry afresh. On MongoDB the same file as on SQLite, one for each server. On Postgres, `_otel_*` tables in the app's database, shared by every server; `pg_dump --exclude-table='_otel_*'` leaves them out of a backup.
 - **Size:** bounded by `LOG_RETENTION_DAYS` for requests, traces and logs, and 30 days for statistics; how many traces are kept is capped by `TELEMETRY_TRACES_PER_SECOND`, whatever the traffic.
 - **Other services** send OpenTelemetry to `https://your-app/otlp` with an ingest key from the dashboard. Each request counts against `RATE_LIMIT_PER_MINUTE` for its client IP (a counter of its own) and must fit in `MAX_REQUEST_BYTES`; behind a proxy, pass `/otlp/*` through like any other path.
 - `TELEMETRY=off` turns all of it off.

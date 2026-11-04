@@ -117,6 +117,8 @@ subscription fan-out, the reactive side (1,000 WebSockets watching one query whi
 | postgres / default | 52,826 req/s (p99 3.37 ms) | 9,540 req/s (p99 17.66 ms) | 3,870 req/s (p99 30.25 ms) | 72 / 109 ms |
 | postgres / RUNTIME_WORKERS=2 | 53,595 req/s (p99 3.39 ms) | 12,451 req/s (p99 14.68 ms) | 4,882 req/s (p99 26.07 ms) | 73 / 114 ms |
 | postgres / tuned server + RUNTIME_WORKERS=2 | 50,844 req/s (p99 3.51 ms) | 12,626 req/s (p99 14.59 ms) | 5,050 req/s (p99 23.31 ms) | 72 / 108 ms |
+| mongodb / default (`WHICH=mongodb`) | 47,015 req/s (p99 3.33 ms) | 3,098 req/s (p99 42.17 ms) | 1,557 req/s (p99 65.07 ms) | 72 / 104 ms |
+| mongodb / RUNTIME_WORKERS=2 | 48,490 req/s (p99 2.94 ms) | 5,790 req/s (p99 36.41 ms) | 1,781 req/s (p99 59.64 ms) | 74 / 109 ms |
 
 - **`RUNTIME_WORKERS=2` is the setting that matters**: uncached queries +46% on SQLite and +31% on Postgres, mutations +27% and +26%. It does nothing for
   cached queries, which the server answers itself. Three workers on three cores gave no more than two. On SQLite the mutation tail gets worse with
@@ -124,6 +126,10 @@ subscription fan-out, the reactive side (1,000 WebSockets watching one query whi
 - **Server tuning (Postgres) did not show up** at the engine: 12,451 → 12,626 uncached and 4,882 → 5,050 mutations a second is inside the noise.
 - **Reactive delivery is the same everywhere** (p50 ≈ 70 ms, p99 ≈ 110 ms): the 50 ms debounce plus about 20 ms of re-running the query and sending to
   1,000 sockets; the database and the worker count don't change it at this rate.
+- **MongoDB is the slowest at the engine for uncached reads and writes** (a 7.0 replica set of one node, on core 2; the server on cores 0–1): the driver decodes
+  BSON in JavaScript (0.28 ms of CPU for a 20-document `find`, 0.12 ms of it BSON, so one core serves about 4,400 a second, and the server's core is the
+  one that is full), and every write is a majority-acknowledged transaction (about 35–40 ms at 64 in flight). Cached queries and reactive delivery are the
+  same as on the other databases, because the engine answers those itself. The engine's tables (scheduler, admins, audit, …) are collections in the same transactions.
 - **The same cases for another backend**: `case.sh` takes a server command through `serve.ts`; to compare with a different backend, put it behind the same
   HTTP paths (`/rpc/todos:listByList` is a GET, `/rpc/todos:add` a POST) and the same WebSocket protocol in `fanout.ts`. Convex's self-hosted backend
   couldn't be run in this environment (its image's layers are on a host the sandbox's network policy blocks), so there is no Convex column.
