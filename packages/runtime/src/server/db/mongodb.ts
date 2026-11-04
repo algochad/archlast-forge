@@ -87,6 +87,11 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
     /** The function was told it needs the transaction. */
     tripped: boolean;
     tail: Promise<unknown>;
+    /** Serializability (see `serialize`): what the transaction read and wrote, and whether it has taken the guard. */
+    scanned: boolean;
+    readIds: Set<string>;
+    wroteIds: Set<string>;
+    guarded: boolean;
   }
   const rowKey = (table: string, id: string) => `${table}\0${id}`;
   /** The function has to be run again inside a transaction. */
@@ -104,6 +109,29 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
     }
     await live.open();
   };
+
+  /**
+   * MongoDB's transactions are snapshot isolation: two that write the same document conflict, but two that each read what the other writes do
+   * not, so a mutation that checks "nobody has this name" and then inserts it can run twice at once, and two doctors can each go off call
+   * because the other still is. The docs promise serializable mutations, so a transaction that reads in a way snapshot isolation does not
+   * protect also writes one shared document, and two such transactions conflict like any two writers of one document: the later is aborted and
+   * the executor runs it again, as it does after a Postgres serialization failure. "Reads in a way it does not protect" is any scan or search,
+   * and a read by id of a document the transaction does not write; a blind insert, and a read-modify-write of the documents it read, have
+   * no such read and never touch it. (A cycle of snapshot-isolation anomalies needs a transaction that read something a concurrent one wrote
+   * without writing it itself; every such transaction takes the guard, so none of them runs concurrently with another.) A scan takes the
+   * guard before it runs, so a conflict is found as early as possible; the by-id reads are judged when the function is done.
+   */
+  const GUARD_ID = "serializable";
+  const takeGuard = async (live: Live) => {
+    if (live.guarded || !live.session) return;
+    live.guarded = true;
+    await database.collection<any>("_serial_guard").updateOne({ _id: GUARD_ID } as Document, { $inc: { n: 1 } }, { upsert: true, session: live.session });
+  };
+  /** Only a write transaction takes it; a read made on its own snapshot cannot be part of an anomaly. */
+  const takeGuardFor = async (live: Live) => {
+    if (live.open) await takeGuard(live);
+  };
+  const needsGuard = (live: Live) => live.scanned || [...live.readIds].some((k) => !live.wroteIds.has(k));
 
   /**
    * MongoDB runs one operation at a time in a transaction and refuses a second that overlaps it. Functions do overlap them (a Promise.all of
@@ -152,12 +180,16 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
         }
         await need(live);
         const key = id !== undefined ? rowKey(table, id) : undefined;
+        if (key !== undefined) live.readIds.add(key);
+        else (await takeGuardFor(live), (live.scanned = true));
         if (key !== undefined && live.rows.has(key)) return live.rows.get(key) ? [live.rows.get(key)!] : [];
         const found = (await col(table).find(q.filter, { ...s, ...hide(table), sort: q.sort as never, limit: q.limit, skip: q.skip, allowDiskUse: true }).toArray()) as Row[];
         if (key !== undefined) live.rows.set(key, found[0]);
         return found;
       }, true),
       search: guard(async (table, q) => {
+        await takeGuardFor(live);
+        live.scanned = true;
         const words = `$${q.field}`;
         const last = q.terms.length - 1;
         // Every term must be there (an equality on the multikey index; the last term a range on it), and the filter fields.
@@ -194,8 +226,10 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
           )
           .toArray()) as Row[];
       }),
-      count: guard((table, filter) => col(table).countDocuments(filter, s)),
+      count: guard(async (table, filter) => (await takeGuardFor(live), (live.scanned = true), col(table).countDocuments(filter, s))),
       stats: guard(async (table, filter, field): Promise<NumberStats | undefined> => {
+        await takeGuardFor(live);
+        live.scanned = true;
         const v = `$doc.${field}`;
         const isNumber = { $isNumber: v };
         const [row] = await col(table)
@@ -225,6 +259,8 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
       // One aggregation for all the parents ($documents makes a row of each; a $lookup with a pipeline finds its children through the index, in
       // order, and stops at the limit): MongoDB allows one operation at a time in a transaction, so a find for each parent could not go out together.
       childrenOf: guard(async (table, field, parents, sort, take) => {
+        await takeGuardFor(live);
+        live.scanned = true;
         const rows = await database
           .aggregate(
             [
@@ -239,6 +275,8 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
         return rows as Row[];
       }),
       countChildren: guard(async (table, field, parents) => {
+        await takeGuardFor(live);
+        live.scanned = true;
         const rows = await col(table)
           .aggregate([{ $match: { [`doc.${field}`]: { $in: parents } } }, { $group: { _id: `$doc.${field}`, n: { $sum: 1 } } }], s)
           .toArray();
@@ -257,7 +295,7 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
           if (seen && matchable(seen.doc)) return void live.held.push({ kind: "replace", table, id: d._id, old: seen.doc, doc: d.doc, search: d.search });
         }
         await need(live);
-        for (const x of docs) live.rows.delete(rowKey(table, x._id));
+        for (const x of docs) (live.rows.delete(rowKey(table, x._id)), live.wroteIds.add(rowKey(table, x._id)));
         await col(table).bulkWrite(
           docs.map((x) => ({ updateOne: { filter: { _id: x._id }, update: { $set: { doc: x.doc, ...x.search } } } })),
           { ...s, ordered: true },
@@ -270,9 +308,11 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
         }
         await need(live);
         live.rows.delete(rowKey(table, id));
+        live.wroteIds.add(rowKey(table, id));
         await col(table).deleteOne({ _id: id } as Document, s);
       }, true),
       clear: guard(async (table) => {
+        live.scanned = true; // it removes whatever is there, which it did not read one by one
         live.rows.clear();
         await col(table).deleteMany({}, s);
       }),
@@ -284,14 +324,17 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
   const txOf = (live: Live, before?: () => void): DbTx => {
     const guard = serial(live, before);
     const run = { database, get session() { return live.session; } };
-    const sql = guard((text: string, params?: unknown[]) => runSql(run, text, params));
+    const sql = guard(async (text: string, params?: unknown[]) => {
+      if (/^\s*select/i.test(text)) (await takeGuardFor(live), (live.scanned = true)); // a read of the engine's own tables is a scan
+      return runSql(run, text, params);
+    });
     return {
       query: sql as DbTx["query"],
       execute: async (text, params) => void (await sql(text, params)),
       mongo: opsOf(live, guard),
     };
   };
-  const liveOf = (session?: ClientSession): Live => ({ session, optimistic: false, held: [], observed: new Map(), rows: new Map(), tripped: false, tail: Promise.resolve() });
+  const liveOf = (session?: ClientSession): Live => ({ session, optimistic: false, held: [], observed: new Map(), rows: new Map(), tripped: false, tail: Promise.resolve(), scanned: false, readIds: new Set(), wroteIds: new Set(), guarded: false });
 
   // A read of one operation needs no transaction (a transaction is 2.3 ms against 0.45 for a find through the driver): it starts without one, and
   // if it makes a second operation it is thrown away and run again inside a snapshot transaction. See the same in postgres.ts.
@@ -393,6 +436,7 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
         } else if (!(await database.collection<any>(h.table).deleteOne({ _id: h.id, doc: h.old })).deletedCount) throw conflict();
       } else {
         if (live.held.length) await live.open!();
+        if (session && needsGuard(live)) await takeGuard(live);
         await session?.commitTransaction();
       }
       return value;
@@ -426,6 +470,7 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
   let closed = false;
   const db: Db = {
     dialect: mongoDialect,
+    serializeRetries: true,
     ...txOf(liveOf()),
     async transaction(mode, fn, opts) {
       await connected;

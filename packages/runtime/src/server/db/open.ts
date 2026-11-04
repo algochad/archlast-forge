@@ -20,5 +20,5 @@ export async function openDatabase(
     return (await import("./mongodb")).createMongoDb(config.databaseUrl!, {
       maxPoolSize: config.databasePoolSize + config.databaseWritePoolSize,
     });
-  return createSqliteDb(sqlitePath(config), undefined, memory);
+  return createSqliteDb(sqlitePath(config), undefined, memory, config.sqliteSynchronous);
 }

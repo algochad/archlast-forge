@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
+import { closeSync, fsync, openSync } from "node:fs";
 import { totalmem } from "node:os";
+import { dirname } from "node:path";
 import { ftsTable, migrateSqlite } from "./migrate";
 import { scopedTx, type Db, type DbTx, type Dialect } from "./types";
 
@@ -82,6 +84,61 @@ setInterval(() => {
   } catch {}
 }, 250);`;
 
+/**
+ * Makes commits durable without stopping the thread that runs the functions. `synchronous = FULL` would fsync inside COMMIT, on that
+ * thread: every commit then costs the disk's sync time (about 3.5 ms on the test disk) in which nothing else runs, and with 64 clients
+ * inserts went from 12,700 to 6,500 a second. Here the writer's connection runs with `synchronous = NORMAL` (the commit is only written
+ * to the WAL) and the WAL file is fsynced through the asynchronous `fs.fsync`, which Bun runs on its thread pool: a write is answered when
+ * an fsync that began after its commit has finished, which is the promise FULL makes, while the writer carries on with the next batch.
+ * Syncs are one at a time, and the commits that arrive while one runs share the next (a second level of group commit); each fsync covers
+ * everything written before it started. (Two at a time were slower: the kernel serializes them.)
+ */
+/** @internal exported for tests */
+export class WalSyncer {
+  private inflight = false;
+  private waiting: { resolve(): void; reject(e: Error): void }[] = [];
+  private dirSynced = false;
+  constructor(
+    private walPath: string,
+    private dbPath: string,
+  ) {}
+  private async fsync(path: string) {
+    const fd = openSync(path, "r"); // fsync flushes the file, not the descriptor's writes: any descriptor on it will do
+    try {
+      await new Promise<void>((resolve, reject) => fsync(fd, (e) => (e ? reject(e) : resolve())));
+    } finally {
+      closeSync(fd);
+    }
+  }
+  private async start() {
+    this.inflight = true;
+    const batch = this.waiting;
+    this.waiting = [];
+    try {
+      try {
+        await this.fsync(this.walPath);
+      } catch (e) {
+        if ((e as { code?: string }).code !== "ENOENT") throw e;
+        await this.fsync(this.dbPath); // no WAL file (yet): whatever was committed went to the database file
+      }
+      // The first sync of a new WAL file also needs its directory entry on disk (SQLite does the same).
+      if (!this.dirSynced) (await this.fsync(dirname(this.walPath)), (this.dirSynced = true));
+      for (const w of batch) w.resolve();
+    } catch (e) {
+      for (const w of batch) w.reject(new Error(`could not sync the write-ahead log: ${(e as Error).message}`));
+    }
+    this.inflight = false;
+    if (this.waiting.length) void this.start();
+  }
+  /** Resolves once an fsync that began after this call has finished. */
+  sync() {
+    return new Promise<void>((resolve, reject) => {
+      this.waiting.push({ resolve, reject });
+      if (!this.inflight) void this.start();
+    });
+  }
+}
+
 const MiB = 2 ** 20;
 const clamp = (x: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, x));
 
@@ -102,9 +159,15 @@ export function sqliteMemory(ram: number, connections: number) {
  * WAL mode, one write connection (group commit, below), a small pool of readers. `:memory:` runs everything on one connection. With
  * `ram` (bytes), the connections are sized to it (`sqliteMemory`) and sorts and temporary indexes stay in memory; without it they keep
  * SQLite's defaults.
+ *
+ * `synchronous` is how hard a commit is pushed to the disk. `FULL` (the default) syncs the WAL at every commit, so a write that was
+ * answered survives a power cut or a crash of the operating system; group commit shares that sync among the writes that queue up. `NORMAL`
+ * syncs only when the WAL is checkpointed: it survives a crash of this process but can lose the last commits to a power cut (the database
+ * itself stays consistent). It is for data that can be lost, like telemetry.
  */
-export function createSqliteDb(path: string, readers = 4, ram?: number): Db {
+export function createSqliteDb(path: string, readers = 4, ram?: number, synchronous: "FULL" | "NORMAL" = "FULL"): Db {
   const memory = path === ":memory:";
+  const syncer = !memory && synchronous === "FULL" ? new WalSyncer(path + "-wal", path) : undefined;
   const sized = ram && !memory ? sqliteMemory(ram, readers + 1) : undefined;
   const open = () => {
     const c = new Database(path, { create: true });
@@ -119,7 +182,7 @@ export function createSqliteDb(path: string, readers = 4, ram?: number): Db {
   };
   const writer = open();
   writer.exec("PRAGMA journal_mode = WAL");
-  writer.exec("PRAGMA synchronous = NORMAL");
+  writer.exec("PRAGMA synchronous = NORMAL"); // with FULL, the WalSyncer does what FULL's COMMIT would (see WalSyncer)
   writer.exec("PRAGMA journal_size_limit = 67108864"); // after a checkpoint lets the WAL restart, it is cut back to 64 MiB
   const pool = memory
     ? []
@@ -138,7 +201,7 @@ export function createSqliteDb(path: string, readers = 4, ram?: number): Db {
 
   // Group commit. Write transactions run one at a time on the writer, but those that queue up meanwhile run back to back in one SQLite
   // transaction, each in its own savepoint, and commit together: one COMMIT (and its locking and WAL work) for the lot. Each still sees the
-  // writes before it, fails alone (its savepoint rolls back), and resolves only after the shared COMMIT, so a reply always means committed.
+  // writes before it, fails alone (its savepoint rolls back), and resolves only after the shared COMMIT, so a reply always means committed (on disk, with `synchronous` FULL).
   // Statements that can't run inside a transaction (PRAGMA, VACUUM), and everything on `:memory:`, go through the same queue, alone.
   type Job = { exclusive: boolean; fn: (tx: DbTx) => Promise<unknown>; resolve(v: unknown): void; reject(e: unknown): void };
   const queue: Job[] = [];
@@ -153,6 +216,15 @@ export function createSqliteDb(path: string, readers = 4, ram?: number): Db {
     savepoint: writer.prepare("SAVEPOINT g"),
     release: writer.prepare("RELEASE g"),
     rollbackTo: writer.prepare("ROLLBACK TO g"),
+  };
+
+  /** Answers jobs whose work is committed: at once, or (`synchronous = FULL`) once the WAL holding it is on disk. */
+  const settle = (jobs: [Job, unknown][]) => {
+    if (!syncer) return void jobs.forEach(([job, value]) => job.resolve(value));
+    syncer.sync().then(
+      () => jobs.forEach(([job, value]) => job.resolve(value)),
+      (e) => jobs.forEach(([job]) => job.reject(e)),
+    );
   };
 
   const enqueue = <T>(exclusive: boolean, fn: (tx: DbTx) => Promise<T>) =>
@@ -176,7 +248,7 @@ export function createSqliteDb(path: string, readers = 4, ram?: number): Db {
           } catch (e) {
             run = Promise.reject(e); // a callback that throws before returning its promise fails its job, not the queue
           }
-          await run.then(job.resolve, job.reject).finally(() => tx.end());
+          await run.then((value) => settle([[job, value]]), job.reject).finally(() => tx.end());
           continue;
         }
         try {
@@ -217,7 +289,7 @@ export function createSqliteDb(path: string, readers = 4, ram?: number): Db {
           for (const [job] of done) job.reject(e);
           continue;
         }
-        for (const [job, value] of done) job.resolve(value);
+        if (done.length) settle(done);
       }
     } finally {
       draining = false;

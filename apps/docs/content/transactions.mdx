@@ -1,0 +1,53 @@
+# Transactions and ACID
+
+What the engine guarantees when you write data, for each database, what it does not, and how each claim is tested. The short version: **a mutation is a serializable, atomic, durable transaction on SQLite, Postgres and MongoDB; a query is one consistent snapshot; actions, files in object storage and notifications to other servers are not part of any transaction.**
+
+## What is a transaction here
+
+| Thing you run | Transaction |
+|---|---|
+| **Query** | One read-only snapshot: every read in it sees the same data, whatever is written meanwhile. |
+| **Mutation** | One read-write transaction. It commits whole or not at all, and the caller hears back only after the commit. What it schedules with `ctx.scheduler` and the rows it adds or removes for stored files are part of it. |
+| **Action** | None. It calls mutations, each its own transaction, and it can fail between two of them. Actions run at most once and are never retried ([How it works](concepts.html)). |
+| **The multi-step flows of Better Auth** (sign-up, linking an account, and the like) | One transaction per flow: the user and its account and session are written together, or none of them are. |
+| **`import`, restore** | One transaction for the whole import (the clearing and every row); a restore is one too. If either fails or is cut off, the data is as it was. |
+
+## The four properties
+
+| | SQLite | Postgres | MongoDB |
+|---|---|---|---|
+| **Atomicity** | A mutation's writes, and what it scheduled, commit together or not at all. A failing mutation in a group of concurrent ones fails alone. | Same. | Same. |
+| **Consistency** | Every write is checked against the schema before it is stored; a write the schema refuses leaves no part of its mutation behind. The engine does not enforce references or uniqueness: your mutation does, and it can, because of isolation. | Same. | Same. |
+| **Isolation** | Serializable: one connection writes at a time, so mutations behave as if run one after another. | Serializable (`SERIALIZABLE`); a conflicting mutation is aborted and run again, up to 10 attempts. | Serializable, built on MongoDB's snapshot transactions (see below); a conflicting mutation is aborted and run again, up to 10 attempts. |
+| **Durability** | `SQLITE_SYNCHRONOUS=FULL` (the default): a write is answered only after the disk has it, so it survives a power cut or a crash of the operating system. `NORMAL` answers before the disk has it. | `synchronous_commit` as Postgres sets it (on by default). | Majority-acknowledged, journaled writes (MongoDB's default). |
+
+### Isolation on MongoDB
+
+MongoDB's own transactions are snapshot isolation: two that write the same document conflict, but two that each read what the other writes do not. That is how a "no one has this name yet, so insert it" mutation can run twice at once, or two doctors can each go off call because the other still is. The engine closes that gap so mutations are serializable on every database:
+
+- A mutation that **scans** (a query, a search, a count) or **reads a document by id that it does not write** also writes one shared guard document. Two such mutations conflict like two writers of one document: the later is aborted and run again.
+- A mutation that only **inserts**, or reads and changes the same documents (a counter, a toggle), never touches the guard and runs as concurrently as before.
+- On MongoDB, mutations that were aborted run again one at a time within a server, so a crowd of contenders does not abort each other round after round.
+
+### Durability on SQLite, and what a read can see
+
+An answered write is on disk. The disk is synced on a thread of its own, so the function runtime is not stopped for it, and writes that arrive while a sync runs share the next one. One consequence worth knowing: for about the length of one sync (a millisecond or a few), a **read can see a commit that is not on disk yet**. A power cut in that window reverts it. The caller whose write it was has not been answered, so it knows nothing was promised, and a mutation that reads it and writes something derived is answered only after the sync that makes both durable. Postgres makes a commit visible only after it is durable, so it has no such window. A server running several runtime processes on one SQLite file (`RUNTIME_WORKERS` above 1) can show a process the other's commit in the same window.
+
+## What is not covered
+
+- **Actions.** No transaction, at most once. Do the writes in mutations; an action that needs several of them to succeed together must be designed as a sequence that is safe to stop in the middle.
+- **Files.** The `_storage` row is part of your mutation's transaction. The object in S3 or the data folder is uploaded by the client afterwards and deleted after the commit that removes its row. So a row can exist whose upload never happened (its URL answers 404), and a crash after that commit can leave an object whose row is gone.
+- **Telling other servers.** After a commit the server tells subscribers, and with several servers the Redis bus tells the others. That message is sent once and not stored: a server that dies between the commit and the message leaves other servers' live queries showing the old data until the next change to those rows or a reconnect. The database itself is not affected.
+- **Caches.** A query's cached result is dropped when a write commits. With one server a read after the commit never sees the old entry; with several, another server's cache learns of the write when the bus message arrives.
+- **MongoDB and Postgres depend on their own configuration.** MongoDB must be a replica set; a connection string with `w=1&journal=false` trades durability for speed, and the engine does not stop you.
+
+## How it is tested
+
+[`packages/runtime/test/acid.test.ts`](https://github.com/algochad/archlast-forge/blob/staging/packages/runtime/test/acid.test.ts) runs the same cases on SQLite (a file and in memory), Postgres and MongoDB:
+
+- **Atomicity:** a mutation that fails after writing (or whose last write the schema refuses) leaves nothing and publishes nothing; what it scheduled disappears too; of 60 concurrent mutations, a fifth failing after their write, exactly the others remain; a failed import changes nothing.
+- **Consistency:** schema-violating writes are never stored; 300 concurrent transfers between eight accounts keep the total.
+- **Isolation:** 200 concurrent increments lose none; 40 concurrent claims of one name store exactly one (no phantoms); two on-call doctors never both leave (no write skew); a query that runs while transfers commit always sees the same total; a write that was answered is visible to the next read.
+- **Durability:** after closing and reopening, everything answered is there; a process killed with SIGKILL in the middle of a transaction keeps what was answered and none of what was not; a process killed under 32 concurrent writers loses none that it had answered.
+
+**What a test cannot do is cut the power.** Durability against a power cut rests on the design (the answer waits for an fsync that began after the commit), not on a measurement.

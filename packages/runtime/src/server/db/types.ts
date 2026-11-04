@@ -125,6 +125,12 @@ export interface Db extends DbTx {
   migrate(tables: TableSpec[]): Promise<void>;
   /** Creates the engine's own tables where `system.ts` has no SQL for them (MongoDB: collections and their indexes). */
   migrateSystem?(): Promise<void>;
+  /**
+   * A mutation aborted for a conflict runs again one at a time with the others in this process that are running again. For a database whose
+   * conflicts are found at once and repeat while many contenders retry together (MongoDB's guard document); not for one that commits retries
+   * in groups (Postgres), where queueing them only lengthens the tail.
+   */
+  serializeRetries?: boolean;
   close(): Promise<void>;
 }
 
