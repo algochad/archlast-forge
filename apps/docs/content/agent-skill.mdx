@@ -21,18 +21,22 @@ The command finds the skill in this repository's `skills/` folder, asks which ag
 
 ## What it teaches
 
-The skill is a short `SKILL.md` that the agent loads when the task is about archlast-forge, plus reference files it opens only when it needs them:
+The skill is a short `SKILL.md` that the agent loads when the task is about archlast-forge, plus reference files it opens only when it needs them. `SKILL.md` states the project's conventions as rules, not suggestions: every feature follows one blueprint, each kind of file has one place, the built-in systems (pagination, live queries, auth, uploads, validation, errors, scheduling) are used directly instead of rebuilt or wrapped, and it lists the mistakes agents have made so they are not repeated.
+
 
 | Reference | Covers |
 |---|---|
+| Feature blueprint | the one way to build a feature, read before any feature work: a table, a `forge/_modules/<feature>/` folder with its module, services and controller, thin function files, the built-in pagination from the query to the page and the REST route, a test, and checks the agent runs before it says it is done. Every file in it was run in a fresh project |
 | Project modes | choosing a full-stack app, a backend, a monorepo or microservices; the files each owns; `add`, `remove`, `workspace` |
 | Scaffolding | every file `init` writes and whether to edit it: `compose.yaml`, `Dockerfile`, `.env`, the stack services, shadcn/ui, the mobile and desktop apps |
 | CLI | every command and flag, what it writes, which are destructive |
-| Services, modules and controllers | the layout of `forge/`, `ForgeService` classes, `inject()`, Nest modules, controllers, gateways, GraphQL |
+| Services, modules and controllers | the layout of `forge/`, `ForgeService` classes, `inject()`, Nest modules, controllers, gateways, GraphQL, NestJS best practices as they apply in the engine |
 | Forge RPC | routers, the generated types, the service class that calls them, meshes of services, errors |
 | Data and functions | schema, queries, mutations, actions, indexes, errors |
 | Full-stack apps and clients | routes, loaders, live queries, hydration, the clients for other frontends, mobile and desktop |
 | Server features | authentication, storage, scheduling, HTTP endpoints, limits |
+| Better Auth plugins | being an OAuth 2.1 / OpenID Connect provider, organizations for multi-tenant SaaS, generating a plugin's tables, the other plugins |
+| Webhooks | sending, receiving or both with the engine's webhooks module, on the app's own database |
 | Testing | tests for your functions and services |
 | Operations | configuration, deployment, scaling, backups, upgrades, troubleshooting |
 | Dashboard and observability | the admin dashboard, traces, issues, SLOs and alerts, custom spans and metrics, a debugging playbook |

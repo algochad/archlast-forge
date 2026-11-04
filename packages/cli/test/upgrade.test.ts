@@ -59,3 +59,24 @@ test("upgrade moves a monorepo whole: every app, service and package, and nothin
   expect(JSON.parse(read(root, "apps/mobile/package.json")).dependencies.expo).toMatch(/^~58/);
   expect(upgradeWorkspaceFiles(root, "0.9.0")).toEqual([]); // already there
 }, 60_000);
+
+test("upgrade gives an older full-stack app's root type-check Bun's types, which the forge/ files its pages reach need", () => {
+  const dir = join(mkdtempSync(join(tmpdir(), "afx-upgrade-types-")), "app");
+  scaffold({ dir, mode: "framework", services: [], version: "0.8.0" });
+  expect(JSON.parse(read(dir, "tsconfig.json")).compilerOptions.types).toEqual(["bun"]); // new apps have them
+  // As older scaffolds wrote them: no types at the root, no @types/bun.
+  writeFileSync(join(dir, "tsconfig.json"), read(dir, "tsconfig.json").replace(/"types": \[\s*"bun"\s*\]/, '"types": []'));
+  const pkg = JSON.parse(read(dir, "package.json"));
+  delete pkg.devDependencies["@types/bun"];
+  writeFileSync(join(dir, "package.json"), JSON.stringify(pkg, null, 4) + "\n");
+
+  const changes = upgradeFiles(join(dir, "forge"), "0.8.0");
+  expect(changes).toEqual([
+    { file: "tsconfig.json", name: "compilerOptions.types", from: "[]", to: '["bun"]' },
+    { file: "package.json", name: "@types/bun", from: "none", to: "1.4.4" },
+  ]);
+  expect(JSON.parse(read(dir, "tsconfig.json")).compilerOptions.types).toEqual(["bun"]);
+  expect(JSON.parse(read(dir, "package.json")).devDependencies["@types/bun"]).toBe("1.4.4");
+  expect(read(dir, "package.json")).toContain('\n    "devDependencies"'); // its four-space indent kept
+  expect(upgradeFiles(join(dir, "forge"), "0.8.0")).toEqual([]);
+}, 30_000);

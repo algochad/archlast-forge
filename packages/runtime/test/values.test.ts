@@ -32,3 +32,9 @@ test("defineSchema adds auth and system tables and rejects bad definitions", () 
   expect(() => defineSchema({ "bad-name": defineTable({}) })).toThrow("must match");
   expect(() => defineSchema({ t: defineTable({ a: v.string() }).index("by_b", ["b" as "a"]) })).toThrow('unknown field "b"');
 });
+
+test("v.any() takes any JSON value, and can be optional", () => {
+  for (const x of [1, "a", null, true, [1, "b"], { nested: { deep: [1] } }]) expect(() => validate(v.any(), x)).not.toThrow();
+  expect(() => validate(v.object({ meta: v.optional(v.any()) }), {})).not.toThrow();
+  expect(() => validate(v.object({ meta: v.any() }), { meta: { anything: [true] } })).not.toThrow();
+});

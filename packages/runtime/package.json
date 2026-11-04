@@ -27,15 +27,20 @@
     "./nest/websockets": "./src/nest-websockets.ts",
     "./nest/microservices": "./src/nest-microservices.ts",
     "./nest/graphql": "./src/nest-graphql.ts",
-    "./nest/rpc": "./src/nest-rpc.ts"
+    "./nest/rpc": "./src/nest-rpc.ts",
+    "./nest/webhooks": "./src/nest-webhooks.ts",
+    "./forge-rpc": "./src/forge-rpc/index.ts"
   },
   "scripts": {
-    "typecheck": "bun check && bun check -p test-types && bun check -p test/fixture-nest && bun check -p test/fixture-nest-io && bun check -p test/fixture-nest-sdl",
+    "typecheck": "bun check && bun check -p test-types && bun check -p test/fixture-nest && bun check -p test/fixture-nest-io && bun check -p test/fixture-nest-sdl && bun check -p test/fixture-webhooks && bun check -p test/fixture-root",
     "test": "bun test",
-    "build": "rm -rf dist && bun build ./src/index.ts ./src/server/index.ts ./src/server/child.ts ./src/server/telemetry/worker.ts ./src/testing.ts ./src/nest.ts ./src/nest-websockets.ts ./src/nest-microservices.ts ./src/nest-graphql.ts ./src/nest-rpc.ts --root ./src --outdir ./dist --target bun --splitting --packages external && tsc -p tsconfig.build.json"
+    "build": "rm -rf dist && bun build ./src/index.ts ./src/server/index.ts ./src/server/child.ts ./src/server/telemetry/worker.ts ./src/testing.ts ./src/nest.ts ./src/nest-websockets.ts ./src/nest-microservices.ts ./src/nest-graphql.ts ./src/nest-rpc.ts ./src/nest-webhooks.ts --root ./src --outdir ./dist --target bun --splitting --packages external && bun build ./src/forge-rpc/index.ts --outfile ./dist/forge-rpc/index.js --target bun --packages external --minify && tsc -p tsconfig.build.json"
   },
   "devDependencies": {
+    "@better-auth/oauth-provider": "1.7.12",
     "@seriousme/openapi-schema-validator": "2.11.0",
+    "@trpc/client": "11.19.0",
+    "@trpc/server": "11.19.0",
     "@types/bun": "1.4.4",
     "@types/cors": "^2.8.19",
     "expect-type": "^1.4.0",
@@ -51,8 +56,6 @@
     "@nestjs/microservices": "12.3.2",
     "@nestjs/platform-socket.io": "12.3.2",
     "@nestjs/websockets": "12.3.2",
-    "@trpc/client": "11.19.0",
-    "@trpc/server": "11.19.0",
     "amqp-connection-manager": "5.0.1",
     "amqplib": "2.2.0",
     "better-auth": "1.7.12",
@@ -63,6 +66,7 @@
     "graphql-yoga": "6.0.1",
     "ioredis": "6.0.0",
     "kafkajs": "2.2.4",
+    "mongodb": "7.8.0",
     "mqtt": "5.16.1",
     "nats": "2.29.3",
     "path-to-regexp": "8.4.2",

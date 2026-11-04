@@ -12,6 +12,11 @@ export interface RouteModule {
   shouldRevalidate?: ShouldRevalidateFunction;
   /** Root only: the `<html>` document that wraps the app and its error page. */
   Layout?: ComponentType<{ children: ReactNode }>;
+  /**
+   * Root only: Better Auth client plugins (`organizationClient()`, `oauthProviderClient()`, `genericOAuthClient()`, …) for the app's auth
+   * client, on the server render and in the browser. `useAuth<typeof authPlugins>()` gives their methods typed.
+   */
+  authPlugins?: unknown[];
 }
 
 /** A route in the generated manifest: its module is imported up front (server) or on demand (browser). */

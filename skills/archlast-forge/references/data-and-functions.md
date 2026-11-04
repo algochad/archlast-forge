@@ -4,6 +4,8 @@ Read this when you write or change `forge/schema.ts`, any query, mutation or act
 Checked against archlast-forge 0.16.0. `forge/` is the backend; `app/` (full-stack) or `src/` (backend + own frontend) is the frontend.
 Auth setup, scheduling and crons, HTTP routes, file storage and client hooks are covered in the other references.
 
+> **Examples here are API references, not the project's structure.** To stay short they call `ctx.db` (and `ctx.auth`, `ctx.storage`, `ctx.scheduler`) inline in a handler. In a project that code goes in the feature's `Reader`/`Writer`/`ActionCtx` service in `forge/_modules/<feature>/`, and the handler is `inject` + one call: see [feature-blueprint.md](feature-blueprint.md).
+
 ## 1. Layout and import rules
 
 ```
@@ -253,6 +255,7 @@ export const send = action({
 
 - At most once, no retries, by the server or the client. Record intent with a mutation first, do the I/O, record the outcome with a second mutation. Make external calls idempotent (send an idempotency key).
 - Every `ctx.runMutation` is its own transaction: if the second fails, the first stays committed. Need atomic? Do both writes in one mutation.
+- Mutations are serializable on every database (SQLite, Postgres, MongoDB): "look for a row, insert if none" inside one mutation cannot race with another, and a read-modify-write loses no update. A conflict is retried (ten attempts), so a mutation's handler may run more than once; a mutation under extreme contention on one document can still come back with the conflict error. Actions, files in object storage and the notification to other servers are not part of any transaction.
 - Schedule work from a mutation with `ctx.scheduler.runAfter(ms, internal.mod.fn, args)`: the job exists only if the mutation commits. Only mutations and actions can be scheduled. Details: the scheduling reference.
 - Annotate the handler's return type (`Promise<...>`) whenever it references `api.<its own module>` or `internal.<its own module>`, or two modules call each other. A `returns` validator alone does not break the cycle.
 
@@ -405,7 +408,9 @@ export const page = query({
 });
 ```
 
-- The client hooks (`usePaginatedQuery`, `useNumberedPage`) need exactly this shape: an arg named `paginationOpts` and a return of `PaginationResult`. To transform rows, spread the result and replace `page`.
+- **This is the only way to paginate.** Do not add `offset`/`limit`/`page` arguments, encode cursors yourself, `collect()` and slice, or return a `hasMore` flag: `.paginate()` already gives `page`, `isDone`, `continueCursor` and (with `withTotal`) `total`, live and keyset-based.
+- The client hooks (`usePaginatedQuery`, `useNumberedPage`) need exactly this shape: an arg named `paginationOpts` and a return of `PaginationResult`. Return `.paginate()`'s result as it is; do not reshape it into `{ items, nextPage }` or wrap it in a helper. To change the rows (say, add a joined field), spread the result and replace only `page`.
+- In a project, the `.paginate()` call is a `Reader` method (`list(paginationOpts: PaginationOptions)`) and the function passes `paginationOpts` through; a REST controller passes `{ numItems, cursor }` to the same function and returns its result (see [feature-blueprint.md](feature-blueprint.md)).
 - First page `{ numItems, cursor: null }`, next `{ numItems, cursor: continueCursor }`; stop when `isDone`. Cursors are keyset-based (stable under inserts) and opaque; one from another query shape throws `Invalid pagination cursor`.
 - Numbered pages: `paginationOpts` also takes `offset` and `withTotal: true` (adds `total`). Inside a function use `skip`: `all().skip((page - 1) * size).take(size)` plus `all().count()` for the total.
 - Search queries cannot paginate: `take` them.

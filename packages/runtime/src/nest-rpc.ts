@@ -1,14 +1,14 @@
-// Forge RPC: typed request-response calls between forge backends, over HTTP. Backend to backend only: never a page, a mobile app or a
+// Forge RPC: typed request-response calls between forge backends, over HTTP (the protocol and its fast path are in forge-rpc/). Backend to backend only: never a page, a mobile app or a
 // desktop app, which call their own backend's functions instead (they must never hold FORGE_RPC_TOKEN). A service declares routers
 // (@Router, @Query, @Mutation, @Input), lists them in nest()'s controllers and listens with ForgeRpcServer; `archlast-forge codegen` writes
 // what they serve to forge/_generated/rpc.ts, and a caller types createForgeRpcClient<Rpc>() with it. Calls go through Nest's ClientProxy.
-import { createTRPCUntypedClient, httpBatchLink, TRPCClientError } from "@trpc/client";
-import { initTRPC, TRPCError } from "@trpc/server";
-import { fetchRequestHandler } from "@trpc/server/adapters/fetch";
-import { createHash, randomUUID, timingSafeEqual } from "node:crypto";
+import { createHash, timingSafeEqual } from "node:crypto";
 import { isForgeError, ForgeError } from "./errors";
+// By the package's own name, so the build keeps it external and its own (minified) file: see "build" in package.json.
+import { createCaller, createRpc, RpcFailure, type Procedure } from "@archlast/forge-runtime/forge-rpc";
 // By the packages' own names, as the other Nest entries do: the build keeps them entries of their own.
-import { Catch, Controller, rxjs, UseFilters, type ArgumentsHost } from "@archlast/forge-runtime/nest";
+import { Catch, rxjs, timeClass, UseFilters, type ArgumentsHost } from "@archlast/forge-runtime/nest";
+import { Controller } from "@nestjs/common";
 import {
   BaseRpcContext,
   ClientProxy,
@@ -30,6 +30,14 @@ export const FORGE_RPC = Symbol.for("archlast-forge.rpc");
 export const RPC_ROUTER = Symbol.for("archlast-forge.rpc.router");
 const PROCEDURES = Symbol("forge-rpc procedures");
 const EXTRAS = "forgeRpc";
+const ORIGINAL = Symbol("forge-rpc original exception");
+const bridge = () =>
+  (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.telemetry")] as
+    | {
+        entry?: <T>(kind: "rpc", operation: string, incoming: string | undefined, fn: () => Promise<T>) => Promise<T>;
+        outbound?: (name: string, attrs: Record<string, string | number | boolean>) => { traceparent: string; end(error?: string): void } | undefined;
+      }
+    | undefined;
 
 /** A schema the server validates with: Zod (`z` from here), or any other Standard Schema library. */
 export type RpcSchema = { readonly "~standard": unknown };
@@ -81,19 +89,22 @@ export function Router(options: { alias?: string } = {}): ClassDecorator {
       MessagePattern(`${alias}.${name}`, FORGE_RPC, { [EXTRAS]: p })(cls.prototype, name, descriptor);
     }
     UseFilters(ForgeRpcFilter)(cls);
+    // Timed like any controller, but without the interceptor that records transport messages: ForgeRpcServer records each call itself,
+    // around the handler and without an observable of its own.
+    timeClass(cls, "controller", false);
     Controller()(cls);
     cls[RPC_ROUTER] = { alias, procedures };
   };
 }
 
 /** What a router method's transport context is (`@TransportCtx() ctx: ForgeRpcContext`): the pattern called and the call's request id. */
-export class ForgeRpcContext extends BaseRpcContext<[pattern: string, requestId: string, traceparent?: string]> {
+export class ForgeRpcContext extends BaseRpcContext<[pattern: string, requestId: string | undefined, traceparent?: string]> {
   getPattern() {
     return this.args[0];
   }
-  /** Logged with any error the call ends with, and sent back to the caller with it. */
-  getRequestId() {
-    return this.args[1];
+  /** Logged with any error the call ends with, and sent back to the caller with it. Made when first asked for: most calls never need one. */
+  getRequestId(): string {
+    return (this.args[1] ??= crypto.randomUUID());
   }
   /** The caller's trace (W3C traceparent), so the call is recorded under it. */
   getTraceparent() {
@@ -115,8 +126,10 @@ export interface ForgeRpcWireError {
 class ForgeRpcFilter {
   catch(exception: unknown, host: ArgumentsHost) {
     const rpc = host.switchToRpc().getContext<Partial<ForgeRpcContext>>();
-    const requestId = rpc?.getRequestId?.() ?? randomUUID();
-    return rxjs.throwError(() => wireOf(exception, rpc?.getPattern?.() ?? "a procedure", requestId));
+    const requestId = rpc?.getRequestId?.() ?? crypto.randomUUID();
+    const wire = wireOf(exception, rpc?.getPattern?.() ?? "a procedure", requestId);
+    Object.defineProperty(wire, ORIGINAL, { value: exception }); // for the transport, which records the call with the exception that ended it
+    return rxjs.throwError(() => wire);
   }
 }
 Catch()(ForgeRpcFilter);
@@ -145,13 +158,6 @@ function tokenOf(token: string | undefined): string {
 }
 const digest = (s: string) => createHash("sha256").update(s).digest();
 
-/** Carries a wire error through tRPC to the error formatter. */
-class WireCause extends Error {
-  constructor(readonly wire: ForgeRpcWireError) {
-    super(wire.message);
-  }
-}
-
 export interface ForgeRpcServerOptions {
   /** The port to listen on. Callers reach it at `http://<host>:<port>`. */
   port: number;
@@ -160,8 +166,6 @@ export interface ForgeRpcServerOptions {
   /** The shared secret callers send as a bearer token. Default: FORGE_RPC_TOKEN. */
   token?: string;
 }
-
-type RpcCtx = { authorized: boolean; traceparent?: string };
 
 /**
  * The Forge RPC transport, as a Nest custom strategy: `nest(http, { controllers: [OrdersRouter], microservices: [{ strategy: new
@@ -181,23 +185,28 @@ export class ForgeRpcServer extends Server implements CustomTransportStrategy {
 
   listen(callback: (err?: unknown) => void) {
     try {
-      const router = this.router();
       const expected = this.expected;
+      // The one header that ever passed is remembered, so a call that carries it costs a lookup, not a digest. A Set hashes the whole string
+      // before it compares anything, so how far a wrong guess matches is not something timing can show.
+      const accepted = new Set<string>();
+      const maxBody = Number(process.env.MAX_REQUEST_BYTES) || 8 * 1024 * 1024;
+      const rpc = createRpc({
+        maxPayload: maxBody,
+        procedures: this.procedures(),
+        authorized: (header) => {
+          if (header === null) return false;
+          if (accepted.has(header)) return true;
+          if (!timingSafeEqual(digest(header), expected)) return false;
+          accepted.add(header);
+          return true;
+        },
+      });
       this.server = Bun.serve({
         port: this.options.port,
         hostname: this.options.host,
-        maxRequestBodySize: Number(process.env.MAX_REQUEST_BYTES) || 8 * 1024 * 1024,
-        fetch: (req) =>
-          fetchRequestHandler({
-            endpoint: "",
-            req,
-            router,
-            allowMethodOverride: true, // every call is a POST, so a large query input never goes in a URL
-            createContext: (): RpcCtx => ({
-              authorized: timingSafeEqual(digest(req.headers.get("authorization") ?? ""), expected),
-              traceparent: req.headers.get("traceparent") ?? undefined,
-            }),
-          }),
+        maxRequestBodySize: maxBody,
+        fetch: (req, server) => rpc.fetch(req, server),
+        websocket: rpc.websocket,
       });
       callback();
     } catch (e) {
@@ -207,48 +216,44 @@ export class ForgeRpcServer extends Server implements CustomTransportStrategy {
     }
   }
 
-  /** One tRPC procedure per router method the app registered, under `<alias>.<method>`. */
-  private router() {
-    const t = initTRPC.context<RpcCtx>().create({
-      isDev: false, // tRPC's dev mode puts stack traces in responses
-      errorFormatter({ shape, error, path }) {
-        const wire = error.cause instanceof WireCause ? error.cause.wire : undefined;
-        let requestId = wire?.requestId;
-        let message = shape.message;
-        if (shape.data.code === "INTERNAL_SERVER_ERROR") {
-          if (!requestId) {
-            requestId = randomUUID();
-            console.error(`[forge-rpc] ${path ?? "a call"} failed (request ${requestId}):`, error.cause ?? error); // an output that broke its schema, say
-          }
-          message = `Server error (request ${requestId})`;
-        }
-        return { message, code: shape.code, data: { code: shape.data.code, httpStatus: shape.data.httpStatus, path, requestId, data: wire?.data } };
-      },
-    });
-    const authed = t.procedure.use(({ ctx, next }) => {
-      if (!ctx.authorized) throw new TRPCError({ code: "UNAUTHORIZED", message: "Forge RPC: the bearer token is missing or wrong" });
-      return next();
-    });
-    const routes: Record<string, Record<string, unknown>> = {};
+  /** One procedure per router method the app registered, under `<alias>.<method>`. */
+  private procedures() {
+    const procedures = new Map<string, Procedure>();
     for (const [pattern, handler] of this.messageHandlers) {
       const meta = handler.extras?.[EXTRAS] as (ProcedureOptions & { kind: ProcedureKind }) | undefined;
       if (!meta || handler.isEventHandler) continue; // another transport's handler
-      const [alias, name] = pattern.split(".") as [string, string];
-      let p: any = authed;
-      if (meta.input) p = p.input(meta.input);
-      if (meta.output) p = p.output(meta.output);
-      const resolve = async ({ input, ctx }: { input: unknown; ctx: RpcCtx }) => {
-        try {
-          const result = await handler(input, new ForgeRpcContext([pattern, randomUUID(), ctx.traceparent]));
-          return rxjs.isObservable(result) ? await rxjs.lastValueFrom(result, { defaultValue: undefined }) : result;
-        } catch (e) {
-          throw new TRPCError({ code: (e as ForgeRpcWireError)?.code === "BAD_REQUEST" ? "BAD_REQUEST" : "INTERNAL_SERVER_ERROR", cause: new WireCause(toWire(e)) });
-        }
-      };
-      (routes[alias] ??= {})[name] = meta.kind === "query" ? p.query(resolve) : p.mutation(resolve);
+      procedures.set(pattern, {
+        kind: meta.kind,
+        input: meta.input,
+        output: meta.output,
+        run: async (input, traceparent) => {
+          let wire: ForgeRpcWireError | undefined;
+          const invoke = async () => {
+            try {
+              const result = await handler(input, new ForgeRpcContext([pattern, undefined, traceparent]));
+              return rxjs.isObservable(result) ? await rxjs.lastValueFrom(result, { defaultValue: undefined }) : result;
+            } catch (e) {
+              wire = toWire(e);
+              throw (e as { [ORIGINAL]?: unknown } | undefined)?.[ORIGINAL] ?? e; // what the telemetry entry records is the exception, not its wire form
+            }
+          };
+          try {
+            // Recorded here, under the caller's trace, as the generic interceptor would (a router doesn't get it): no observable around the call.
+            const entry = bridge()?.entry;
+            return await (entry ? entry("rpc", pattern, traceparent, invoke) : invoke());
+          } catch (e) {
+            const w = wire ?? toWire(e);
+            if (w.code === "BAD_REQUEST") throw new RpcFailure("BAD_REQUEST", w.message, w.data, w.requestId);
+            // Anything else is a request id, never its message.
+            const requestId = w.requestId ?? crypto.randomUUID();
+            if (!w.requestId) console.error(`[forge-rpc] ${pattern} failed (request ${requestId}):`, e);
+            throw new RpcFailure("INTERNAL_SERVER_ERROR", `Server error (request ${requestId})`, undefined, requestId);
+          }
+        },
+      });
     }
-    if (!Object.keys(routes).length) throw new Error("Forge RPC: no @Router class to serve: list them in nest()'s controllers");
-    return t.router(Object.fromEntries(Object.entries(routes).map(([alias, procs]) => [alias, t.router(procs as any)])));
+    if (!procedures.size) throw new Error("Forge RPC: no @Router class to serve: list them in nest()'s controllers");
+    return procedures;
   }
 
   close() {
@@ -281,6 +286,8 @@ export interface ForgeRpcClientOptions {
   token?: string;
   /** How long a call may take before it fails with TIMEOUT. Default 5000. */
   timeoutMs?: number;
+  /** Keep a WebSocket open to the service, which is much faster than HTTP requests and falls back to them when the service can't take one. Default true. */
+  websocket?: boolean;
 }
 
 /**
@@ -288,62 +295,43 @@ export interface ForgeRpcClientOptions {
  * in the same tick go out as one HTTP request, over kept-alive connections. Request-response only: emit() fails.
  */
 export class ForgeRpcClient extends ClientProxy {
-  private readonly rpc: ReturnType<typeof createTRPCUntypedClient>;
-  private readonly timeoutMs: number;
+  private readonly call: ReturnType<typeof createCaller>;
   private authorization?: string;
 
   constructor(private readonly options: ForgeRpcClientOptions) {
     super();
     backendOnly();
-    this.timeoutMs = options.timeoutMs ?? 5000;
-    this.rpc = createTRPCUntypedClient({ links: [httpBatchLink({ url: options.url, methodOverride: "POST", maxItems: 32, headers: () => ({ authorization: this.authorization! }) })] });
+    // The token is read at the first call, not when the client is made: ClientsModule.register() and class fields make clients as
+    // their module loads, and an app that never calls the service shouldn't fail to load for want of one.
+    this.call = createCaller({ url: options.url, timeoutMs: options.timeoutMs ?? 5000, websocket: options.websocket, trace: (pattern) => bridge()?.outbound?.(`RPC ${options.url.replace(/^\w+:\/\//, "")}`, { "rpc.system": "forge-rpc", "rpc.method": pattern }), authorization: () => (this.authorization ??= `Bearer ${tokenOf(options.token)}`) });
   }
 
   async connect() {}
-  async close() {}
+  async close() {
+    this.call.close();
+  }
   unwrap<T>(): T {
-    return this.rpc as T;
+    return this.call as T;
+  }
+
+  /** Nest's `send()` routes through connect(), serializers and an rxjs pipeline; nothing here needs any of it. */
+  override send<TResult = any, TInput = any>(pattern: any, data: TInput): rxjs.Observable<TResult> {
+    if (pattern === undefined || pattern === null || data === undefined || data === null) return rxjs.throwError(() => new Error("Forge RPC: send() needs a pattern and some data (use {} for none)"));
+    const name = this.normalizePattern(pattern);
+    return new rxjs.Observable<TResult>((subscriber) =>
+      this.call(name, data, (err, response) => {
+        if (err) subscriber.error(err);
+        else {
+          subscriber.next(response as TResult);
+          subscriber.complete();
+        }
+      }),
+    );
   }
 
   protected publish(packet: ReadPacket, callback: (packet: WritePacket) => void): () => void {
-    const pattern = this.normalizePattern(packet.pattern);
-    // The token is read at the first call, not when the client is made: ClientsModule.register() and class fields make clients as
-    // their module loads, and an app that never calls the service shouldn't fail to load for want of one.
-    try {
-      this.authorization ??= `Bearer ${tokenOf(this.options.token)}`;
-    } catch (e) {
-      callback({ err: { status: "error", message: (e as Error).message, code: "UNAUTHORIZED" } satisfies ForgeRpcWireError, isDisposed: true });
-      return () => {};
-    }
-    const abort = new AbortController();
-    let done = false;
-    const finish = (p: WritePacket) => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      callback(p);
-    };
-    const timer = setTimeout(() => {
-      finish({ err: { status: "error", message: `Forge RPC: ${pattern} took longer than ${this.timeoutMs} ms`, code: "TIMEOUT" } satisfies ForgeRpcWireError, isDisposed: true });
-      abort.abort();
-    }, this.timeoutMs);
-    // A mutation call reaches queries too (the server allows the POST), so a plain send() needs no contract to know which it is.
-    this.rpc.mutation(pattern, packet.data, { signal: abort.signal }).then(
-      (response) => finish({ response, isDisposed: true }),
-      (e) => finish({ err: this.wireOf(e, pattern), isDisposed: true }),
-    );
-    return () => {
-      if (done) return;
-      done = true;
-      clearTimeout(timer);
-      abort.abort();
-    };
-  }
-
-  private wireOf(e: unknown, pattern: string): ForgeRpcWireError {
-    const d = e instanceof TRPCClientError ? (e.data as { code?: string; data?: unknown; requestId?: string } | undefined) : undefined;
-    if (d?.code) return { status: "error", message: (e as Error).message, code: d.code, ...(d.data !== undefined && { data: d.data }), ...(d.requestId && { requestId: d.requestId }) };
-    return { status: "error", message: `Forge RPC: ${this.options.url} did not answer ${pattern} (${(e as Error)?.message ?? e})`, code: "SERVICE_UNAVAILABLE" };
+    // A mutation-style POST reaches queries too (the server allows it), so a plain send() needs no contract to know which a pattern is.
+    return this.call(this.normalizePattern(packet.pattern), packet.data, (err, response) => callback(err ? { err, isDisposed: true } : { response, isDisposed: true }));
   }
 
   protected async dispatchEvent(): Promise<never> {

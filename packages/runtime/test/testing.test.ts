@@ -38,3 +38,13 @@ test("a query with access checks the caller in the testing library too, and its 
   await expect(ada.query(api.todos.sharedPeek)).rejects.toThrow("declares access");
   await t.close();
 });
+
+test("withIdentity makes a real session, with the fields a plugin keeps on it (an active organization)", async () => {
+  const t = await createTestBackend(join(import.meta.dir, "fixture"));
+  const ada = await t.withIdentity({ email: "ada@example.com", session: { activeOrganizationId: "organizations:abc" } });
+  const me = (await ada.query(api.todos.whoami)) as { sessionId: string; userId: string };
+  expect(me.sessionId).toMatch(/^sessions:/);
+  const session = await t.run(async (ctx) => (ctx.db as any).get(me.sessionId));
+  expect(session).toMatchObject({ userId: me.userId, activeOrganizationId: "organizations:abc" });
+  await t.close();
+});

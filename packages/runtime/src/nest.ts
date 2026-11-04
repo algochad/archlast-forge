@@ -92,14 +92,15 @@ const TIMED = Symbol.for("archlast-forge.timed");
  * Times every method of one of the app's classes, so the dashboard shows where requests spend their time, class by class. Classes are the
  * app's when they are decorated through this package (libraries import Nest's decorators from @nestjs/* directly). It runs when the class
  * is decorated, before Nest binds route handlers to the methods; Nest keeps a handler's routes, guards and pipes as metadata on the method
- * itself, so the timed method carries the same metadata.
+ * itself, so the timed method carries the same metadata. `interceptor: false` leaves out the one that records transport messages, for a
+ * transport that records them itself (Forge RPC).
  */
-export function timeClass(target: Function, kind: string) {
+export function timeClass(target: Function, kind: string, interceptor = true) {
   const bridge = telemetry();
   const proto = target.prototype as Record<string | symbol, unknown> | undefined;
   if (!bridge || !proto || Object.hasOwn(proto, TIMED)) return;
   Object.defineProperty(proto, TIMED, { value: true });
-  if (kind === "controller" || kind === "gateway") UseInterceptors(EntryInterceptor)(target);
+  if (interceptor && (kind === "controller" || kind === "gateway")) UseInterceptors(EntryInterceptor)(target);
   for (const key of Object.getOwnPropertyNames(proto)) {
     const d = Object.getOwnPropertyDescriptor(proto, key);
     if (key === "constructor" || !d || typeof d.value !== "function" || !d.writable) continue;
@@ -250,7 +251,10 @@ export interface NestOptions {
   controllers?: Type[];
   providers?: Provider[];
   imports?: (Type | DynamicModule | Promise<DynamicModule> | ForwardReference)[];
-  /** Where the controllers and gateways are served, below /http. Default "/": `@Controller("users")` answers at /http/users. */
+  /**
+   * Where the controllers and gateways are served, below /http (and at the root as well with `httpRouter({ root: true })`). Default "/":
+   * `@Controller("users")` answers at /http/users. With a root router, `prefix: "/api/"` serves `@Controller("users")` at /api/users.
+   */
   prefix?: string;
   /** CORS for the controllers, as Nest's `enableCors()` takes it: `true`, the options of the `cors` package, or a function of the request. */
   cors?: NestApplicationOptions["cors"];
@@ -278,7 +282,7 @@ const METHODS = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"] as const;
  * and its providers are what `inject()` resolves in functions. Routes added with `http.route()` keep priority: exact paths win, then the
  * longest prefix.
  */
-export function nest(http: { route(spec: HttpRoute): void }, options: NestOptions | Type) {
+export function nest(http: { route(spec: HttpRoute): void; root?: boolean }, options: NestOptions | Type) {
   if (started) throw new Error("nest() is called once, in forge/http.ts: put every controller and provider in that one call (or in modules it imports)");
   const o: NestOptions = typeof options === "function" ? { imports: [options] } : options;
   const prefix = (mountPrefix = o.prefix ?? "/");
@@ -306,7 +310,7 @@ export function nest(http: { route(spec: HttpRoute): void }, options: NestOption
   const handler = httpAction(async (ctx, request) => (await started!).adapter.handle(request, ctx));
   (handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] = true;
   for (const method of METHODS) http.route({ method, pathPrefix: prefix, handler });
-  (globalThis as Record<symbol, unknown>)[NEST_ROUTES] = async () => routesOf((await started!).app, prefix);
+  (globalThis as Record<symbol, unknown>)[NEST_ROUTES] = async () => routesOf((await started!).app, http.root ? prefix : `/http${prefix}`);
 }
 
 /**
@@ -368,7 +372,7 @@ function routesOf(app: INestApplication, prefix: string): NestRoute[] {
         const paths = Reflect.getMetadata("path", fn) as string | string[] | undefined;
         if (method === undefined || paths === undefined || !METHOD_NAMES[method]) continue;
         for (const base of bases)
-          for (const p of [paths].flat()) routes.push({ method: METHOD_NAMES[method]!, path: join("http", prefix, base, p), name: `${cls.name}.${key}`, contract: Reflect.getMetadata(CONTRACT, fn) });
+          for (const p of [paths].flat()) routes.push({ method: METHOD_NAMES[method]!, path: join(prefix, base, p), name: `${cls.name}.${key}`, contract: Reflect.getMetadata(CONTRACT, fn) });
       }
     }
   return routes;

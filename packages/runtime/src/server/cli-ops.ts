@@ -2,9 +2,8 @@
 import { mkdirSync } from "node:fs";
 import { validateFields, ValidationError } from "../values";
 import { addAdmin, listAdmins, removeAdmin, type AdminRole } from "./admin-ops";
-import { loadConfig, sqlitePath, type Config } from "./config";
-import { createPostgresDb } from "./db/postgres";
-import { createSqliteDb } from "./db/sqlite";
+import { loadConfig, type Config } from "./config";
+import { openDatabase } from "./db/open";
 import type { Db } from "./db/types";
 import { Executor } from "./executor";
 import { loadProject, tableSpecs, type Project } from "./project";
@@ -36,8 +35,8 @@ export async function openProject(forgeDir: string, env: Record<string, string |
   try {
     config = loadConfig(withSettings(cliEnv, stored), dev);
   } catch {}
-  if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl, config.databasePoolSize) : createSqliteDb(sqlitePath(config));
+  if (config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
+  const db = await openDatabase(config);
   await migrateSystem(db);
   for (const { name, value } of await db.query<{ name: string; value: string }>(`SELECT "name", "value" FROM "_env"`)) env[name] ??= value;
   const project = await loadProject(forgeDir);
@@ -151,20 +150,18 @@ export async function importData(p: ProjectDb, file: string, { replace = false }
     const [{ n }] = (await p.db.query<{ n: number }>(`SELECT COUNT(*) AS n FROM "${t}"`)) as [{ n: number }];
     if (Number(n) && !replace) throw new ValidationError(`Table "${t}" already has ${n} documents; pass --replace to clear it first`);
   }
-  if (replace)
-    await p.exec.mutate(async (s) => {
-      for (const t of tables) for (const d of await s.query(t).collect()) await s.delete(d._id);
-    });
-  for (let i = 0; i < rows.length; i += 500)
-    await p.exec.mutate(async (s) => {
-      for (const r of rows.slice(i, i + 500)) await s.restore(r.table, r._id, r._creationTime, r.doc);
-    });
+  // One transaction for the clearing and every row, so an import that fails (or is cut off) changes nothing, and nobody reads the tables
+  // half-cleared or half-loaded. It publishes one reset, like a restore, instead of a topic per document.
+  await p.exec.rewrite(async (s) => {
+    if (replace) for (const t of tables) for (const d of await s.query(t).collect()) await s.delete(d._id);
+    for (const r of rows) await s.restore(r.table, r._id, r._creationTime, r.doc);
+  });
   return rows.length;
 }
 
 /** A consistent copy of the SQLite database. Postgres has its own tools. */
 export async function backup(p: ProjectDb, file: string) {
-  if (p.db.dialect.name !== "sqlite") throw new ValidationError("For Postgres, back up with pg_dump (or use `archlast-forge export`).");
+  if (p.db.dialect.name !== "sqlite") throw new ValidationError(`For ${p.db.dialect.name === "mongodb" ? "MongoDB, back up with mongodump" : "Postgres, back up with pg_dump"} (or use \`archlast-forge export\`, or a full backup).`);
   await p.db.execute(`VACUUM INTO ?`, [file]);
 }
 
@@ -204,8 +201,8 @@ export { addAdmin, listAdmins, removeAdmin, type AdminRole };
 /** Opens just the database (no user code), for env and admin commands. */
 export async function openDb(env: Record<string, string | undefined> = process.env) {
   const config = loadConfig({ ...env, ALLOW_INSECURE_HTTP: "1", BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET || "cli" }, true);
-  if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
-  const db = config.databaseUrl ? createPostgresDb(config.databaseUrl, config.databasePoolSize) : createSqliteDb(sqlitePath(config));
+  if (config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
+  const db = await openDatabase(config);
   await migrateSystem(db);
   return db;
 }

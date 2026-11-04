@@ -86,7 +86,7 @@ Details:
 - **Code is not restored.** It ships with git and your image. The Backups page marks a backup made with different code from what runs now, and its source is in the archive if you need it.
 - **Environment variables and settings are off by default.** Restoring into another deployment would replace its API keys and settings with the backup's. When you do restore them, reload the runtime (Settings) for the variables and restart for the settings.
 - **Writes wait** while the transaction runs. SQLite has one writer, and a mutation that waits longer than `FUNCTION_TIMEOUT_MS` fails, so restore a large backup at a quiet time.
-- **Across databases:** the format doesn't depend on the database, so a backup made on SQLite restores into Postgres and the other way round.
+- **Across databases:** the format doesn't depend on the database, so a backup made on SQLite restores into Postgres or MongoDB and the other way round.
 - One restore at a time. The Backups page shows each step and the result.
 
 ## The older commands
@@ -95,7 +95,7 @@ Details:
 
 ## Not supported
 
-- Point-in-time recovery or continuous archiving of the write-ahead log. On Postgres, use its own tools for that; on SQLite, schedule backups as often as you need.
+- Point-in-time recovery or continuous archiving of the write-ahead log. On Postgres or MongoDB, use their own tools for that; on SQLite, schedule backups as often as you need.
 - Incremental backups: every backup is complete.
 - Encrypting archives. Encrypt the bucket (server-side encryption) or the disk.
 - Restoring one table: take `data/documents.jsonl` out of the archive and use `archlast-forge import --replace` with the lines you want.

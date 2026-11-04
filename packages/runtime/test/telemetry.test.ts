@@ -334,7 +334,8 @@ describe("recorder", () => {
   });
 });
 
-describe.each(dbAdapters.filter(([name]) => name !== "sqlite (:memory:)"))("store on %s", (_name, make) => {
+// The telemetry store is SQL (MongoDB keeps documents only; telemetry stays in SQLite beside it).
+describe.each(dbAdapters.filter(([name]) => name !== "sqlite (:memory:)" && name !== "mongodb"))("store on %s", (_name, make) => {
   let db: Db;
   let store: TelemetryStore;
   let q: ReturnType<typeof buildQueries>;

@@ -3,7 +3,7 @@ import type { Db, Dialect, TableSpec } from "./types";
 export const PREFIX = "afx_";
 
 /** Index names hash their definition, so changing an index's fields drops and recreates it. */
-const hashName = (...parts: string[]) => PREFIX + Bun.hash(parts.join("\0")).toString(16);
+export const hashName = (...parts: string[]) => PREFIX + Bun.hash(parts.join("\0")).toString(16);
 
 /** SQLite FTS5 table backing one search index. */
 export const ftsTable = (table: string, index: string) => `afx_fts_${Bun.hash(`${table}\0${index}`).toString(16)}`;

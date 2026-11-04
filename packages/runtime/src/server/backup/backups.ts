@@ -23,7 +23,7 @@ export interface BackupManifest {
   engine: string;
   createdAt: number;
   kind: BackupKind;
-  dialect: "sqlite" | "postgres";
+  dialect: "sqlite" | "postgres" | "mongodb";
   release?: string;
   /** Documents in each table. */
   tables: Record<string, number>;
@@ -297,7 +297,7 @@ export async function writeArchive(d: BackupDeps, path: string, o: { kind: Backu
       engine: engineVersion,
       createdAt: Date.now(),
       kind: o.kind,
-      dialect: d.db.dialect.name === "postgres" ? "postgres" : "sqlite",
+      dialect: d.db.dialect.name,
       ...(d.release && { release: d.release }),
       tables,
       system,

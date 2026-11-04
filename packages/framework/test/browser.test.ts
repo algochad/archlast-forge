@@ -34,6 +34,14 @@ async function open(path: string) {
 const run = (name: string, fn: () => Promise<void>) => test(name, async () => (browser ? fn() : console.warn(`skipped: ${name}`)), 60_000);
 
 describe("in a real browser", () => {
+  run("app/root.tsx's authPlugins reach useAuth() in the browser too, and hydration matches", async () => {
+    const { page, problems } = await open("/plugin");
+    expect(await page.textContent("#plugin")).toBe("hello, server and browser");
+    await page.click("#plugin");
+    expect(await page.textContent("#plugin")).toBe("hello, a click");
+    expect(problems).toEqual([]);
+  });
+
   run("hydrates without a single warning, and the page is interactive", async () => {
     const { page, problems } = await open("/");
     expect(await page.textContent("#counter")).toBe("clicked 0");

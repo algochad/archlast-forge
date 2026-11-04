@@ -2,6 +2,8 @@
 
 Read this when you add sign-in or roles, file uploads, delayed or recurring work, webhooks or plain HTTP routes, or when a call is refused by a limit. Config and deployment of the same features: [operations.md](operations.md). Dashboard and the Observe pages: [dashboard-and-observability.md](dashboard-and-observability.md).
 
+> **Examples here call `ctx.auth`, `ctx.storage` and `ctx.scheduler` inline to stay short.** In a project that code belongs in the feature's services in `forge/_modules/<feature>/` (an `ActionCtx` service for storage and other I/O), with thin handlers: see [feature-blueprint.md](feature-blueprint.md).
+
 All of this lives in `forge/` (server only). Special modules, skipped when functions are listed: `schema.ts`, `auth.ts`, `crons.ts`, `http.ts`. Files or folders starting with `_` are never function modules. A function is named `<file path>:<export>` (`files:generateUploadUrl`, `admin/users:list`).
 
 | Need                             | File                       | API                                               |
@@ -236,7 +238,7 @@ export default crons;
 
 ## HTTP endpoints (`forge/http.ts`)
 
-For things that cannot be a function call: webhooks, public JSON, downloads, health checks. Routes live under the fixed prefix **`/http`**: `path: "/lists"` answers at `/http/lists` and the handler sees `/lists`. There is no way to register a root path (use a proxy rewrite for `/.well-known/…`).
+For things that cannot be a function call: webhooks, public JSON, downloads, health checks. Routes live under the prefix **`/http`**: `path: "/lists"` answers at `/http/lists` and the handler sees `/lists`. **`httpRouter({ root: true })`** also serves every route at its own path (`/lists`, `/api/v1/...`, `/webhooks/stripe`), after the engine's paths and, in a full-stack app, before the pages; a route inside an engine path (`/rpc`, `/api/auth`, `/_admin`, ...) fails at load. See [nest-services.md](nest-services.md) for Nest under a root prefix.
 
 ```ts
 // forge/http.ts

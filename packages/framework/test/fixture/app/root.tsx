@@ -1,6 +1,10 @@
 import { Link, Outlet, useViewer } from "@archlast/forge-framework";
+import type { BetterAuthClientPlugin } from "@archlast/forge-client";
 import type { ReactNode } from "react";
 import "./styles.css";
+
+/** A Better Auth client plugin of the app's own: its action reaches useAuth() on the server render and in the browser. */
+export const authPlugins = [{ id: "hello", getActions: () => ({ hello: (name: string) => `hello, ${name}` }) } satisfies BetterAuthClientPlugin];
 
 export function Layout({ children }: { children: ReactNode }) {
   return (

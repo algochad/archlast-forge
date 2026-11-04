@@ -72,8 +72,14 @@ export interface Config {
   hostname: string;
   dataDir: string;
   databaseUrl?: string;
+  /** Which database `databaseUrl` is: SQLite when there is none. */
+  databaseKind: "sqlite" | "postgres" | "mongodb";
   /** Postgres connections each function-runtime process may open (DATABASE_POOL_SIZE); twice the CPU cores by default. */
   databasePoolSize: number;
+  /** SQLite's `synchronous` for the app database (SQLITE_SYNCHRONOUS): `FULL` syncs every commit, `NORMAL` only at checkpoints. */
+  sqliteSynchronous: "FULL" | "NORMAL";
+  /** Postgres connections for write transactions (DATABASE_WRITE_POOL_SIZE); twice DATABASE_POOL_SIZE by default. */
+  databaseWritePoolSize: number;
   redisUrl?: string;
   /**
    * What the engine's Redis keys and channels start with (REDIS_PREFIX, else from the service name: see redisPrefixOf). Servers of one service
@@ -160,8 +166,11 @@ export class ConfigError extends Error {
   override name = "ConfigError";
 }
 
-/** Paths the engine answers itself, which the API docs can't take. */
-const RESERVED = ["/rpc", "/http", "/api/auth", "/_dashboard", "/_admin", "/_cli", "/_storage", "/_app", "/health", "/ready", "/metrics", "/otlp"];
+/** Paths the engine answers itself, which the API docs and root-mounted HTTP routes can't take. */
+export const RESERVED = ["/rpc", "/http", "/api/auth", "/_dashboard", "/_admin", "/_cli", "/_storage", "/_app", "/_telemetry", "/health", "/ready", "/metrics", "/otlp"];
+
+/** The engine path a path lies in (itself or below it), if any. */
+export const reservedPathOf = (path: string) => RESERVED.find((r) => path === r || path.startsWith(`${r}/`));
 const bool = (v: string | undefined, fallback: boolean) => (v === undefined || v === "" ? fallback : ["1", "true", "on", "yes"].includes(v.toLowerCase()));
 
 /** Fails fast on missing or contradictory settings. */
@@ -178,7 +187,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const port = int("PORT", 3000);
   const replicas = int("REPLICAS", 1, 1);
   const databaseUrl = env.DATABASE_URL || undefined;
-  if (databaseUrl && !/^postgres(ql)?:\/\//.test(databaseUrl)) fail(`DATABASE_URL must be a postgres:// URL (unset it to use bun:sqlite), got "${databaseUrl.split(":")[0]}:"`);
+  const databaseKind: Config["databaseKind"] = !databaseUrl ? "sqlite" : /^postgres(ql)?:\/\//.test(databaseUrl) ? "postgres" : /^mongodb(\+srv)?:\/\//.test(databaseUrl) ? "mongodb" : "sqlite";
+  if (databaseUrl && databaseKind === "sqlite")
+    fail(`DATABASE_URL must be a postgres:// or mongodb:// URL (unset it to use bun:sqlite), got "${databaseUrl.split(":")[0]}:"`);
   // Inline is the default outside dev: no IPC hop per call, about twice the throughput on one core. Dev keeps the child process, so code
   // changes reload without dropping connections, and so does a pool of runtime processes.
   const { workers: runtimeWorkers } = runtimeWorkersFor(env);
@@ -187,7 +198,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (runtimeMode === "inline" && dev) fail("RUNTIME_MODE=inline can't reload code when it changes; use it outside dev");
   if (runtimeMode === "inline" && runtimeWorkers > 1) fail("RUNTIME_MODE=inline runs one function runtime, in the server process; unset RUNTIME_WORKERS");
   if (replicas > 1 && !env.REDIS_URL) fail("REPLICAS > 1 requires REDIS_URL, or mutations won't reach subscribers on other servers");
-  if (replicas > 1 && !databaseUrl) fail("REPLICAS > 1 requires a Postgres DATABASE_URL; bun:sqlite is single-server");
+  if (replicas > 1 && !databaseUrl) fail("REPLICAS > 1 requires a Postgres or MongoDB DATABASE_URL; bun:sqlite is single-server");
   if (Boolean(env.S3_ENDPOINT) !== Boolean(env.S3_BUCKET)) fail("Set both S3_ENDPOINT and S3_BUCKET, or neither");
   // Without S3, development keeps files on the engine's disk; production does only when asked, so a deployment without storage stays one.
   const storage = (env.STORAGE || (env.S3_ENDPOINT ? "s3" : dev ? "local" : "off")) as Config["storage"];
@@ -197,7 +208,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (!dev && !env.BETTER_AUTH_SECRET) fail("BETTER_AUTH_SECRET is required outside dev");
   const apiDocsPath = (env.API_DOCS_PATH || "/_api").replace(/\/+$/, "");
   if (!/^\/[A-Za-z0-9._~\/-]+$/.test(apiDocsPath)) fail(`API_DOCS_PATH must be a path like "/_api", got "${env.API_DOCS_PATH}"`);
-  if (RESERVED.some((r) => apiDocsPath === r || apiDocsPath.startsWith(`${r}/`))) fail(`API_DOCS_PATH can't be under ${RESERVED.find((r) => apiDocsPath === r || apiDocsPath.startsWith(`${r}/`))}, which the engine serves`);
+  if (reservedPathOf(apiDocsPath)) fail(`API_DOCS_PATH can't be under ${reservedPathOf(apiDocsPath)}, which the engine serves`);
   const authUrl = env.BETTER_AUTH_URL ?? `http://localhost:${port}`;
   // Over http, Better Auth's cookies aren't marked Secure; behind a TLS proxy that silently weakens sessions.
   if (!dev && !authUrl.startsWith("https://") && !bool(env.ALLOW_INSECURE_HTTP, false))
@@ -216,6 +227,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (dashboardToken && dashboardToken.length < 16) fail("DASHBOARD_TOKEN must be at least 16 characters");
   // Its telemetry joins the main app's under this name, which the main app's MICROSERVICES uses too; two engines both named archlast-forge would merge.
   if (dashboardUrl && !env.OTEL_SERVICE_NAME) fail("DASHBOARD_URL needs OTEL_SERVICE_NAME: this microservice's name, as the main app's MICROSERVICES lists it");
+  const sqliteSynchronous = (env.SQLITE_SYNCHRONOUS || "FULL").toUpperCase() as Config["sqliteSynchronous"];
+  if (sqliteSynchronous !== "FULL" && sqliteSynchronous !== "NORMAL") fail(`SQLITE_SYNCHRONOUS must be "FULL" or "NORMAL", got "${env.SQLITE_SYNCHRONOUS}"`);
   const logFormat = (env.LOG_FORMAT ?? (dev ? "pretty" : "json")) as Config["logFormat"];
   if (logFormat !== "pretty" && logFormat !== "json") fail(`LOG_FORMAT must be "pretty" or "json"`);
   return {
@@ -224,7 +237,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     hostname: env.HOST ?? "0.0.0.0",
     dataDir: env.DATA_DIR ?? "./data",
     databaseUrl,
+    databaseKind,
+    sqliteSynchronous,
     databasePoolSize: int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1),
+    databaseWritePoolSize: int("DATABASE_WRITE_POOL_SIZE", int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1) * 2, 1),
     redisUrl: env.REDIS_URL || undefined,
     redisPrefix: redisPrefixOf(env),
     s3: s3Of(env, "S3_"),

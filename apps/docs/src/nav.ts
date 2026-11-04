@@ -11,6 +11,7 @@ export const PAGES = {
   monorepo: ["Monorepos and microservices", () => import("../content/monorepo.mdx")],
   schema: ["Schema and validators", () => import("../content/schema.mdx")],
   functions: ["Functions", () => import("../content/functions.mdx")],
+  transactions: ["Transactions and ACID", () => import("../content/transactions.mdx")],
   queries: ["Reading data", () => import("../content/queries.mdx")],
   reactivity: ["Reactivity", () => import("../content/reactivity.mdx")],
   caching: ["Caching", () => import("../content/caching.mdx")],
@@ -20,6 +21,7 @@ export const PAGES = {
   storage: ["File storage", () => import("../content/storage.mdx")],
   scheduling: ["Scheduling and crons", () => import("../content/scheduling.mdx")],
   http: ["HTTP endpoints", () => import("../content/http.mdx")],
+  webhooks: ["Webhooks", () => import("../content/webhooks.mdx")],
   nest: ["Controllers and services", () => import("../content/nest.mdx")],
   "forge-rpc": ["Forge RPC", () => import("../content/forge-rpc.mdx")],
   "api-docs": ["API docs and OpenAPI", () => import("../content/api-docs.mdx")],
@@ -36,6 +38,7 @@ export const PAGES = {
   backups: ["Backups", () => import("../content/backups.mdx")],
   observability: ["Observability", () => import("../content/observability.mdx")],
   limits: ["Limits and security", () => import("../content/limits.mdx")],
+  convex: ["Compared with Convex", () => import("../content/convex.mdx")],
   reference: ["API reference", () => import("../content/reference.mdx")],
   troubleshooting: ["Troubleshooting", () => import("../content/troubleshooting.mdx")],
   "release-notes": ["Release notes", () => import("../content/release-notes.mdx")],
@@ -46,10 +49,11 @@ export type Slug = keyof typeof PAGES;
 export const GROUPS: [string, Slug[]][] = [
   ["Start", ["introduction", "concepts", "getting-started", "tutorial"]],
   ["Project modes", ["framework", "backend", "monorepo"]],
-  ["Data and functions", ["schema", "functions", "queries", "reactivity", "caching", "errors", "migrations"]],
-  ["Server features", ["auth", "storage", "scheduling", "http", "nest", "forge-rpc", "api-docs"]],
+  ["Data and functions", ["schema", "functions", "transactions", "queries", "reactivity", "caching", "errors", "migrations"]],
+  ["Server features", ["auth", "storage", "scheduling", "http", "webhooks", "nest", "forge-rpc", "api-docs"]],
   ["Clients and guides", ["clients", "mobile", "desktop", "testing", "recipes", "agent-skill"]],
   ["Run", ["cli", "deployment", "configuration", "dashboard", "backups", "observability", "limits"]],
+  ["Benchmarks", ["convex"]],
   ["Reference", ["reference", "troubleshooting", "release-notes"]],
 ];
 

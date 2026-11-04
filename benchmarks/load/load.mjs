@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 // Closed-loop HTTP/1.1 load on raw keep-alive sockets (after benchmarks/twelve-dollar/rawload.mjs), for one request shape.
-//   env: PORTS (comma list, round-robin over connections) CONNS SECONDS, and either REQ_PATH (GET) or POST_PATH + BODY (a template; {n} -> a counter)
+//   OK_BODY (optional): a substring every 2xx body must contain, else the response counts as non-2xx (Convex answers 200 to a failed function).
+//   env: PORTS (comma list, round-robin over connections) CONNS SECONDS, and either REQ_PATH (GET) or POST_PATH + BODY (a template; {n} -> a counter,
+//   {id} -> the next of BODY_IDS, a JSON list)
 // Prints JSON: requests, rps, p50/p90/p99/max (ms), non-2xx count.
 import net from "node:net";
 
@@ -9,9 +11,11 @@ const PORTS = (env.PORTS ?? "3100").split(",").map(Number);
 const CONNS = Number(env.CONNS ?? 64);
 const SECONDS = Number(env.SECONDS ?? 20);
 let n = 0;
+const ids = env.BODY_IDS ? JSON.parse(env.BODY_IDS) : undefined;
 const next = env.POST_PATH
   ? () => {
-      const body = env.BODY.replaceAll("{n}", String(n++));
+      const body = env.BODY.replaceAll("{n}", String(n)).replaceAll("{id}", ids ? ids[n % ids.length] : "");
+      n++;
       return Buffer.from(`POST ${env.POST_PATH} HTTP/1.1\r\nHost: x\r\nContent-Type: application/json\r\nContent-Length: ${Buffer.byteLength(body)}\r\n\r\n${body}`);
     }
   : env.REQ_PATHS
@@ -55,7 +59,7 @@ function connection(port) {
         const text = buf.toString("latin1", 0, head);
         const len = Number(/content-length: (\d+)/i.exec(text)?.[1] ?? 0);
         if (buf.length < head + 4 + len) return;
-        if (!/^HTTP\/1\.1 2/.test(text)) bad++;
+        if (!/^HTTP\/1\.1 2/.test(text) || (env.OK_BODY && !buf.toString("latin1", head + 4, head + 4 + len).includes(env.OK_BODY))) bad++;
         buf = buf.subarray(head + 4 + len);
         done++;
         lat.push(performance.now() - sentAt);

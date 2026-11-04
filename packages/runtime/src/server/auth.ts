@@ -88,7 +88,16 @@ export const CLIENT_IP_HEADER = "x-archlast-client-ip";
 /** While Better Auth resolves a session, the topics its reads touched, so the answer can be kept exactly as long as they are unchanged. */
 const sessionReads = new AsyncLocalStorage<Set<string>>();
 
-/** Better Auth adapter over the document store: auth data lives in users/sessions/accounts/verifications. */
+/**
+ * Better Auth adapter over the document store: auth data lives in users/sessions/accounts/verifications.
+ *
+ * Better Auth wraps its multi-step flows (sign-up writes a user, an account and a session; deleting a user removes its sessions and
+ * accounts; a password reset changes the password and spends the token) in `adapter.transaction`. That used to be `false`, so each step
+ * was a transaction of its own and a failure or a crash between two steps left a user without an account, or a spent token with the
+ * old password. `transaction` now runs the whole flow in one write transaction of the store: every call the flow makes joins it, sees
+ * what the earlier ones wrote, and all of it commits together or not at all. The store may run the flow again after a serialization
+ * conflict; Better Auth resets what it queued for after the commit when it does.
+ */
 function documentAdapter(exec: Executor, tables: TablesSpec) {
   const read = async <T>(fn: (s: DocStore) => Promise<T>) => {
     const { value, reads } = await exec.read(fn);
@@ -96,54 +105,67 @@ function documentAdapter(exec: Executor, tables: TablesSpec) {
     if (into) for (const t of reads) into.add(t);
     return value;
   };
-  return createAdapterFactory({
-    config: {
-      adapterId: "archlast-forge",
-      adapterName: "archlast-forge document store",
-      usePlural: true,
-      supportsJSON: true,
-      supportsArrays: true,
-      supportsBooleans: true,
-      supportsDates: true,
-      disableIdGeneration: true,
-      transaction: false,
-      mapKeysTransformOutput: { _id: "id" },
-      // Better Auth reads the id of a row it just got back through this, to update it atomically (password reset, magic links, one-time codes).
-      mapKeysTransformInput: { id: "_id" },
-      customTransformInput: ({ data }) => (data instanceof Date ? data.getTime() : data),
-      customTransformOutput: ({ data, fieldAttributes }) => (fieldAttributes.type === "date" && typeof data === "number" ? new Date(data) : data),
-    },
-    adapter: () => ({
-      create: ({ model, data }) => exec.mutate(async (s) => (await s.get(await s.insert(model, data))) as any),
-      findOne: ({ model, where }) => read(async (s) => ((await find(s, tables, model, where, { limit: 1 }))[0] ?? null) as any),
-      findMany: ({ model, where, limit, offset, sortBy }) => read((s) => find(s, tables, model, where, { limit, offset, sortBy }) as any),
-      count: ({ model, where }) => read(async (s) => (await find(s, tables, model, where)).length),
-      update: ({ model, where, update }) =>
-        exec.mutate(async (s) => {
-          const [doc] = await find(s, tables, model, where, { limit: 1 });
-          if (!doc) return null;
-          await s.patch(doc._id, update as Doc);
-          return (await s.get(doc._id)) as any;
-        }),
-      updateMany: ({ model, where, update }) =>
-        exec.mutate(async (s) => {
-          const docs = await find(s, tables, model, where);
-          for (const d of docs) await s.patch(d._id, update);
-          return docs.length;
-        }),
-      delete: ({ model, where }) =>
-        exec.mutate(async (s) => {
-          const [doc] = await find(s, tables, model, where, { limit: 1 });
-          if (doc) await s.delete(doc._id);
-        }),
-      deleteMany: ({ model, where }) =>
-        exec.mutate(async (s) => {
-          const docs = await find(s, tables, model, where);
-          for (const d of docs) await s.delete(d._id);
-          return docs.length;
-        }),
-    }),
+  const config = {
+    adapterId: "archlast-forge",
+    adapterName: "archlast-forge document store",
+    usePlural: true,
+    supportsJSON: true,
+    supportsArrays: true,
+    supportsBooleans: true,
+    supportsDates: true,
+    disableIdGeneration: true,
+    mapKeysTransformOutput: { _id: "id" },
+    // Better Auth reads the id of a row it just got back through this, to update it atomically (password reset, magic links, one-time codes).
+    mapKeysTransformInput: { id: "_id" },
+    customTransformInput: ({ data }: { data: unknown }) => (data instanceof Date ? data.getTime() : data),
+    customTransformOutput: ({ data, fieldAttributes }: { data: unknown; fieldAttributes: { type?: unknown } }) =>
+      fieldAttributes.type === "date" && typeof data === "number" ? new Date(data) : data,
+  };
+  /** The adapter's calls, over `write` (one mutation each, or the transaction's store) and `reader` (a read of its own, or the same store). */
+  const calls = (write: <T>(fn: (s: DocStore) => Promise<T>) => Promise<T>, reader: <T>(fn: (s: DocStore) => Promise<T>) => Promise<T>) => () => ({
+    create: ({ model, data }: any) => write(async (s) => (await s.get(await s.insert(model, data))) as any),
+    findOne: ({ model, where }: any) => reader(async (s) => ((await find(s, tables, model, where, { limit: 1 }))[0] ?? null) as any),
+    findMany: ({ model, where, limit, offset, sortBy }: any) => reader((s) => find(s, tables, model, where, { limit, offset, sortBy }) as any),
+    count: ({ model, where }: any) => reader(async (s) => (await find(s, tables, model, where)).length),
+    update: ({ model, where, update }: any) =>
+      write(async (s) => {
+        const [doc] = await find(s, tables, model, where, { limit: 1 });
+        if (!doc) return null;
+        await s.patch(doc._id, update as Doc);
+        return (await s.get(doc._id)) as any;
+      }),
+    updateMany: ({ model, where, update }: any) =>
+      write(async (s) => {
+        const docs = await find(s, tables, model, where);
+        for (const d of docs) await s.patch(d._id, update);
+        return docs.length;
+      }),
+    delete: ({ model, where }: any) =>
+      write(async (s) => {
+        const [doc] = await find(s, tables, model, where, { limit: 1 });
+        if (doc) await s.delete(doc._id);
+      }),
+    deleteMany: ({ model, where }: any) =>
+      write(async (s) => {
+        const docs = await find(s, tables, model, where);
+        for (const d of docs) await s.delete(d._id);
+        return docs.length;
+      }),
   });
+  let betterAuthOptions: Parameters<ReturnType<typeof createAdapterFactory>>[0] | undefined;
+  const factory = createAdapterFactory({
+    config: {
+      ...config,
+      transaction: (cb) =>
+        exec.mutate((store) => {
+          // Inside the transaction every call, read or write, goes to its store, so it sees the writes before it.
+          const inStore = <T>(fn: (s: DocStore) => Promise<T>) => fn(store);
+          return cb(createAdapterFactory({ config: { ...config, transaction: false }, adapter: calls(inStore, inStore) as any })(betterAuthOptions!) as any);
+        }),
+    },
+    adapter: calls((fn) => exec.mutate(fn), read) as any,
+  });
+  return (options: Parameters<typeof factory>[0]) => ((betterAuthOptions = options), factory(options));
 }
 
 export function createAuth(exec: Executor, tables: TablesSpec, options: AuthOptions, config: Config) {

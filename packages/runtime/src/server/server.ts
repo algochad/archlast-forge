@@ -9,7 +9,8 @@ import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
 import { claimPrefix, connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
-import { ConfigError, loadConfig, redisOwnerOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
+import { ConfigError, loadConfig, redisOwnerOf, reservedPathOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
+import { matchRoute } from "./http";
 import { RESET_TOPIC } from "./docstore";
 import { checkValue, readStoredSettings, SETTING, SETTINGS, validateSettings, withSettings } from "./settings";
 import { createStorage, LocalStorage, serveLocalStorage } from "./storage";
@@ -45,6 +46,9 @@ const subprotocol = (req: Request) => {
   const wanted = req.headers.get("sec-websocket-protocol")?.split(",")[0]?.trim();
   return wanted ? { "sec-websocket-protocol": wanted } : undefined;
 };
+
+/** The root addresses of Better Auth's metadata (RFC 8414, and OpenID Connect's form of it), for the issuer <origin>/api/auth. */
+const WELL_KNOWN_AUTH = /^\/\.well-known\/(oauth-authorization-server|openid-configuration)\/api\/auth\/?$/;
 
 /** A frontend the engine serves next to the API (framework mode). */
 export interface AppHost {
@@ -221,10 +225,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   // Telemetry: the store's worker when it is on, and an exporter when a collector is configured; either needs the recorder.
   // A microservice keeps no store: what it records goes to the main app's (DASHBOARD_URL), whose dashboard shows it.
   const forward = config.telemetry && config.dashboardUrl ? telemetryForwarder(config.dashboardUrl, config.dashboardToken!) : undefined;
-  if (config.telemetry && !forward && !config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
+  if (config.telemetry && !forward && config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
   const store =
     config.telemetry && !forward
-      ? new TelemetryClient(TELEMETRY_WORKER, { databaseUrl: config.databaseUrl, path: telemetryPath(config), retentionDays: config.logRetentionDays, alerts: true })
+      ? new TelemetryClient(TELEMETRY_WORKER, { databaseUrl: config.databaseKind === "postgres" ? config.databaseUrl : undefined, path: telemetryPath(config), retentionDays: config.logRetentionDays, alerts: true })
       : undefined;
   /** Ingest keys checked recently, so an exporter sending every few seconds costs one lookup a minute. */
   const keys = new Map<string, { at: number; key: { service: string | null } | null }>();
@@ -302,6 +306,27 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   // Rebuilt after each load; open sockets use whichever is current, so they see functions added by a reload.
   let rpc: Rpc = buildRpc({ functions: [], tables: {}, crons: [], storage: false }, runtime, queries, subs, rpcOpts);
   let loading: Promise<unknown> = Promise.resolve();
+  /** The routes served at the root, for the manifest they came with (a reload brings new ones). */
+  let rootRoutes: { manifest: Manifest; routes: NonNullable<Manifest["rootRoutes"]> } | undefined;
+  /** Whether a root-mounted route (`httpRouter({ root: true })`) takes this path: one that matches it, under any method (a 405 is the route's). */
+  const atRoot = async (method: string, path: string) => {
+    if (reservedPathOf(path) || WELL_KNOWN_AUTH.test(path)) return false;
+    if (!runtime.manifest) await loading;
+    const manifest = runtime.manifest;
+    if (!manifest?.rootRoutes?.length) return false;
+    if (rootRoutes?.manifest !== manifest) {
+      // With pages, a route for every path would leave none for them: such a route stays under /http.
+      const everything = (r: { path?: string; pathPrefix?: string }) => r.pathPrefix === "/" || r.path === "/";
+      const hidden = opts.app ? manifest.rootRoutes.filter(everything) : [];
+      if (hidden.length)
+        console.warn(
+          `[forge] forge/http.ts serves ${[...new Set(hidden.map((r) => r.path ?? r.pathPrefix))].join(", ")} at the root, which would hide the app's pages: those routes stay under /http. Give them a prefix of their own, such as nest(http, { prefix: "/api/" }).`,
+        );
+      rootRoutes = { manifest, routes: manifest.rootRoutes.filter((r) => !hidden.includes(r)) };
+    }
+    const match = matchRoute(rootRoutes.routes, method, path);
+    return "route" in match || match.status === 405;
+  };
   const load = () => {
     const p = runtime.start().then(async (manifest) => {
       rpc = buildRpc(manifest, runtime, queries, subs, rpcOpts);
@@ -746,10 +771,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (srv.upgrade(req, { data })) return;
         return new Response("WebSocket upgrade failed", { status: 400 });
       }
-      // HTTP actions (forge/http.ts). Before the OPTIONS branch below, so a route can answer its own preflight and set its own headers.
-      if (path === "/http" || path.startsWith("/http/")) {
+      // HTTP actions (forge/http.ts): under /http, and at the root for a router with `root: true` when the path is none of the engine's
+      // own. Before the OPTIONS branch below, so a route can answer its own preflight and set its own headers.
+      const httpPath = path === "/http" || path.startsWith("/http/") ? path.slice("/http".length) || "/" : (await atRoot(req.method, path)) ? path : undefined;
+      if (httpPath !== undefined) {
         const routed = new URL(req.url);
-        routed.pathname = path.slice("/http".length) || "/"; // the handler sees the path it registered
+        routed.pathname = httpPath; // the handler sees the path it registered
         // A WebSocket for a Nest gateway (or GraphQL subscriptions): the socket is the server's, its events go to the function runtime.
         if (req.headers.get("upgrade")?.toLowerCase() === "websocket") {
           if (!originAllowed(req)) return new Response("Origin not allowed. Add it to TRUSTED_ORIGINS.", { status: 403 });
@@ -812,7 +839,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             headers: { "access-control-allow-methods": "GET, POST, OPTIONS", "access-control-allow-headers": "content-type, authorization, x-request-id" },
           }),
         );
-      if (path.startsWith("/rpc/") || path.startsWith("/api/auth")) {
+      // RFC 8414 (and OpenID Connect's form of it) puts an authorization server's metadata at the root, with the issuer's path after the
+      // well-known name. The issuer is <origin>/api/auth, so /.well-known/oauth-authorization-server/api/auth is the document Better Auth
+      // serves at /api/auth/.well-known/oauth-authorization-server (the OAuth Provider plugin's; without the plugin, its 404).
+      const wellKnown = req.method === "GET" || req.method === "HEAD" ? WELL_KNOWN_AUTH.exec(path) : null;
+      const authPath = wellKnown ? `/api/auth/.well-known/${wellKnown[1]}` : path;
+      if (path.startsWith("/rpc/") || authPath.startsWith("/api/auth")) {
         const retry = await limited(req, srv);
         if (retry) return cors(req, withId(tooMany(retry)));
       }
@@ -827,7 +859,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const headers = pickAuthHeaders((n) => req.headers.get(n));
         return cors(req, await rpc.call(name, req, url, { headers, requestId, traceparent: req.headers.get("traceparent") ?? undefined })); // sets x-request-id itself
       }
-      if (path.startsWith("/api/auth")) {
+      if (authPath.startsWith("/api/auth")) {
         let body: string | undefined;
         try {
           body = req.method === "GET" || req.method === "HEAD" ? undefined : await readText(req, maxBody);
@@ -839,7 +871,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         try {
           const headers: [string, string][] = [...req.headers].filter(([k]) => k !== CLIENT_IP_HEADER);
           headers.push([CLIENT_IP_HEADER, clientIp(req, srv)]);
-          const r = await runtime.auth({ method: req.method, url: req.url, headers, body }, root && telemetry!.parent(root));
+          const r = await runtime.auth({ method: req.method, url: wellKnown ? new URL(authPath + url.search, url).href : req.url, headers, body }, root && telemetry!.parent(root));
           if (root) telemetry!.end(root, { status: r.status, telemetry: r.telemetry });
           return cors(req, withId(new Response(r.body, { status: r.status, headers: r.headers })));
         } catch (e) {

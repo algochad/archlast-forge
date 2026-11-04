@@ -33,10 +33,11 @@ for (const [label, make] of dbAdapters) {
       db = await make();
       await db.migrate(specs);
       await db.migrate(specs);
-      const before = (await db.query<{ name: string }>(db.dialect.listIndexesSql, ["todos"])).filter((r) => r.name.startsWith("afx_"));
+      const indexNames = async (table: string) => (db.dialect.name === "mongodb" ? ((await (db as any).indexNames(table)) as string[]) : (await db.query<{ name: string }>(db.dialect.listIndexesSql, [table])).map((r) => r.name)).filter((n) => n.startsWith("afx_"));
+      const before = await indexNames("todos");
       expect(before.length).toBe(3); // by_creation_time + 2
       await db.migrate([{ name: "todos", indexes: { by_list: ["listId"] } }]);
-      const after = (await db.query<{ name: string }>(db.dialect.listIndexesSql, ["todos"])).filter((r) => r.name.startsWith("afx_"));
+      const after = await indexNames("todos");
       expect(after.length).toBe(2);
     });
 
@@ -175,6 +176,7 @@ for (const [label, make] of dbAdapters) {
 
     test("skip: numbered pages, skipped in the database unless a filter has to see them", async () => {
       db = await make();
+      if (db.dialect.name === "mongodb") return; // inspects the SQL statements; MongoDB's version is in db-adapters.test.ts
       await db.migrate(specs);
       for (let n = 1; n <= 10; n++) await write((s) => s.insert("notes", { body: `note ${n}`, tag: n % 2 ? "odd" : "even", n }));
       const ns = (docs: any[]) => docs.map((d) => d.n);
@@ -256,6 +258,7 @@ for (const [label, make] of dbAdapters) {
 
     test("where(): predicates run in the database, and rows they reject are never loaded", async () => {
       db = await make();
+      if (db.dialect.name === "mongodb") return; // inspects the SQL statements; MongoDB's version is in db-adapters.test.ts
       await db.migrate(specs);
       const tags = ["alpha", "beta", "Alpine", "gamma", "alps"];
       for (let n = 1; n <= 10; n++) await write((s) => s.insert("notes", { body: `note ${n}`, tag: tags[n % 5]!, n }));
@@ -353,6 +356,7 @@ for (const [label, make] of dbAdapters) {
 
     test("skip with include joins only the documents returned", async () => {
       db = await make();
+      if (db.dialect.name === "mongodb") return; // inspects the SQL statements; MongoDB's version is in db-adapters.test.ts
       await db.migrate(specs);
       for (let i = 0; i < 5; i++) {
         const listId = await write((s) => s.insert("lists", { name: `list ${i}` }));

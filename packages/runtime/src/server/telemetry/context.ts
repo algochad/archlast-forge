@@ -200,15 +200,59 @@ export function tracedTx(tx: DbTx, system: string): DbTx {
       push(ctx, span);
     }
   };
+  // MongoDB has no statements: an operation on a collection is the span.
+  const runOp = async <T>(op: string, table: string, go: () => Promise<T>): Promise<T> => {
+    const ctx = logContext.getStore();
+    if (!ctx?.trace) return go();
+    const start = now();
+    const attrs: Attrs = { "db.system.name": system, "db.operation.name": op, "db.collection.name": table };
+    const span: Span = { traceId: ctx.trace.traceId, spanId: spanId(), parentId: ctx.spanId, name: `${op} ${table}`, type: "db", kind: 3, start, duration: 0, attrs };
+    try {
+      const out = await go();
+      if (Array.isArray(out)) span.rows = out.length;
+      span.status = 1;
+      return out;
+    } catch (e) {
+      span.status = 2;
+      span.error = (e as Error)?.message ?? String(e);
+      throw e;
+    } finally {
+      span.duration = now() - start;
+      push(ctx, span);
+    }
+  };
+  const mongo = tx.mongo && (Object.fromEntries(Object.entries(tx.mongo).map(([op, f]) => [op, (table: string, ...rest: unknown[]) => runOp(op, table, () => (f as (...a: unknown[]) => Promise<unknown>)(table, ...rest))])) as unknown as DbTx["mongo"]);
   return {
     query: (sql, params) => run(sql, () => tx.query(sql, params), (rows) => rows.length),
     execute: (sql, params) => run(sql, () => tx.execute(sql, params), () => undefined),
+    ...(mongo && { mongo }),
   };
 }
 
 // ---- outbound HTTP ----
 
 let fetchPatched = false;
+
+/**
+ * An outbound call that is not a `fetch` (Forge RPC's WebSocket) made from inside a traced call: an `http` client span, and the
+ * `traceparent` for the service to continue the trace with. Undefined when the call isn't traced, which is nearly always.
+ */
+export function outboundSpan(name: string, attrs: Attrs): { traceparent: string; end(error?: string): void } | undefined {
+  const ctx = logContext.getStore();
+  if (!ctx?.trace) return undefined;
+  const id = spanId();
+  const start = now();
+  const span: Span = { traceId: ctx.trace.traceId, spanId: id, parentId: ctx.spanId, name, type: "http", kind: 3, start, duration: 0, attrs };
+  return {
+    traceparent: traceparent(ctx.trace.traceId, id),
+    end(error) {
+      span.duration = now() - start;
+      span.status = error ? 2 : 1;
+      if (error) span.error = error;
+      push(ctx, span);
+    },
+  };
+}
 
 /**
  * Outbound fetches from inside a call become `http` client spans, and carry a `traceparent` header (unless they set one), so a service
