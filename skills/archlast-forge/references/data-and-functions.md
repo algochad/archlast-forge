@@ -253,6 +253,7 @@ export const send = action({
 
 - At most once, no retries, by the server or the client. Record intent with a mutation first, do the I/O, record the outcome with a second mutation. Make external calls idempotent (send an idempotency key).
 - Every `ctx.runMutation` is its own transaction: if the second fails, the first stays committed. Need atomic? Do both writes in one mutation.
+- Mutations are serializable on every database (SQLite, Postgres, MongoDB): "look for a row, insert if none" inside one mutation cannot race with another, and a read-modify-write loses no update. A conflict is retried (ten attempts), so a mutation's handler may run more than once; a mutation under extreme contention on one document can still come back with the conflict error. Actions, files in object storage and the notification to other servers are not part of any transaction.
 - Schedule work from a mutation with `ctx.scheduler.runAfter(ms, internal.mod.fn, args)`: the job exists only if the mutation commits. Only mutations and actions can be scheduled. Details: the scheduling reference.
 - Annotate the handler's return type (`Promise<...>`) whenever it references `api.<its own module>` or `internal.<its own module>`, or two modules call each other. A `returns` validator alone does not break the cycle.
 

@@ -22,6 +22,8 @@ export const DESCRIPTIONS: Record<Slug, string> = {
     "Tables, fields, validators (`v`), indexes, search indexes, relations. Read when modeling data.",
   functions:
     "Queries, mutations, actions and internal functions: arguments, return validators, ctx, auth checks, limits, what each kind may do.",
+  transactions:
+    "What a transaction is for a query, mutation, action and auth flow; atomicity, consistency, isolation and durability on SQLite, Postgres and MongoDB; what is not covered and how it is tested.",
   queries:
     "Everything on ctx.db: reads, indexes and ranges, filters, pagination, search, counts, joins, writes, performance notes.",
   reactivity:
@@ -68,6 +70,8 @@ export const DESCRIPTIONS: Record<Slug, string> = {
     "Built-in tracing, issues, logs, SLOs and alerts; custom spans and metrics; OpenTelemetry ingest and export; one dashboard for a monorepo.",
   limits:
     "Every limit the engine enforces and what a caller sees at each, plus the security model and checklist.",
+  convex:
+    "How archlast-forge compares with Convex's self-hosted backend on one machine: cached and uncached reads, writes and live updates, with the setup and what it does not show.",
   reference:
     "Exact signatures of every public export of every package, the wire protocol and the HTTP surface.",
   troubleshooting:
@@ -97,6 +101,7 @@ export const TASKS: [task: string, pages: Slug[]][] = [
     ["deployment", "configuration", "backups", "dashboard", "observability"],
   ],
   ["Fix a failure", ["troubleshooting", "errors", "limits"]],
+  ["See how it compares with Convex", ["convex"]],
   ["Look up an exact signature", ["reference"]],
 ];
 

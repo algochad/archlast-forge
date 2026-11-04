@@ -1,0 +1,49 @@
+# Compared with Convex
+
+We ran archlast-forge against [Convex](https://www.convex.dev/)'s self-hosted backend, the closest system to it, on one machine with the same workload. This page is the short version: what we measured, the numbers, and what they do and don't tell you. The full report, with every table and the raw data, is [`benchmarks/load/convex-vs-forge.md`](https://github.com/algochad/archlast-forge/blob/staging/benchmarks/load/convex-vs-forge.md) in the repository.
+
+## What we ran
+
+- **Convex:** the local backend binary Convex publishes for self-hosting (not its cloud service), on SQLite and on Postgres, with its defaults and again with the settings from its own docker-compose file and source turned up (more concurrent functions allowed, quieter logging).
+- **archlast-forge:** on SQLite, Postgres and MongoDB, with its defaults and again with `RUNTIME_WORKERS=2`.
+- **The machine:** one Linux box. Each server was pinned to the same four cores, the load generator to a core of its own, and a control run (a bare `Bun.serve` answering a fixed body) ran before and after to show the machine's own noise.
+- **The workload:** a todo app. 64 lists of 20 todos, 64 connections hitting it in a closed loop for at least 15 seconds per case after a warm-up, and an open loop at a fixed rate for tail latency. Every case ran three times; the tables below are medians with the range of the three runs. A run with errors or a failed check of the stored data was thrown away.
+
+| Case | What it does |
+|---|---|
+| A | Read one list over and over (the answer is cached). |
+| B | Read 64 different lists (a different argument each time). |
+| C | Insert a todo. |
+| D | Read a todo and change it. |
+| E | 1,000 WebSocket subscribers on one live query while 10 todos a second are added. |
+
+## Results
+
+Closed loop, 64 connections, requests per second.
+
+| Case | archlast-forge | Convex |
+|---|---|---|
+| **A**, cached read | 70,500–75,500 on every database | 14,000 (Postgres) to 22,600 (SQLite, tuned) |
+| **B**, 64 different reads, Convex's result cache left on | 21,500 on SQLite, 15,700 on Postgres | 20,100–22,500 on SQLite, 14,000–15,800 on Postgres |
+| **B**, same, Convex's result cache bypassed | 15,700 (Postgres) to 38,300 (SQLite, two workers) | 600–830 |
+| **C** and **D**, writes over SQLite | thousands to tens of thousands | hundreds |
+| **C** and **D**, writes over Postgres | not separable: the ranges overlap | not separable |
+
+- **Cached reads:** archlast-forge served about 3 to 5 times as many requests while using a half to a third of the CPU. The load generator was at 81–86% of its core, so archlast-forge's own ceiling is probably higher than shown.
+- **Uncached reads:** a tie as long as Convex's result cache can answer. Convex's cache cannot be turned off, so we also ran it with a throwaway argument on every call; then each call really runs a function, and Convex served 600–830 requests a second against 15,700 and up.
+- **Writes:** over SQLite archlast-forge was many times faster. Over Postgres neither is clearly ahead: the ranges overlap and the disk-bound cases varied a lot between runs.
+- **Live updates (E):** archlast-forge delivered every update to every subscriber, one at a time, with a 99th percentile of 104–126 ms. Under that load Convex merged updates (about 28,000 of 150,000 possible messages arrived; every client still ended up current), and the 99th percentile counted per write was about 3.8 seconds, with up to 1.9 seconds to settle after the last write. For a UI that only needs the latest state that is a fair design; for one that wants every change it matters.
+- **Open loop at 2,000 requests a second** for cached and uncached reads: every configuration stays under about 1.5 ms at the 99th percentile, except archlast-forge on MongoDB for uncached reads (10–15 ms). No difference between the two systems otherwise.
+
+## What this does and doesn't show
+
+- It is **one machine and one synthetic workload**, a small app with small documents. A different shape (large documents, heavy queries, many tables) can move every number.
+- Convex was measured as a **local backend**, the way you would self-host it, not its hosted service, which has more servers and different tuning.
+- The two systems are built differently. With Convex's result cache bypassed we measured about 3.7 ms of CPU per call with its cores busy and the database mostly idle, so the cost sits in running the function, not in the database. We did not measure what Convex gets in return for that (its isolation of functions, for one).
+- The SQLite write numbers were measured before archlast-forge's SQLite waited for the disk on every write, which is its default now. With that wait they are lower and depend on how fast the disk syncs (section 7 of the full report has them). We did not verify what Convex's SQLite or Postgres setups wait for, so read the SQLite write comparison as an order of magnitude, not a ratio.
+- Where ranges overlap we did not call a winner, and any difference under about 25% between runs is marked noisy in the report.
+- We did not measure Convex's cloud, its other features, or how either system behaves over days.
+
+## Run it yourself
+
+The harness, the Convex project it deploys and every raw result are in `benchmarks/load/convex/` in the repository; the report's last section has the commands. Reproducing the whole matrix takes a few hours.
