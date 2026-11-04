@@ -168,3 +168,79 @@ jobs:
           bun scripts/release-notes-section.ts "$VERSION" ${SINCE:+--since "$SINCE"} --sha "$SHA" > notes.md
           KIND=--latest; [ "$PRERELEASE" = "true" ] && KIND=--prerelease
           gh release view "$TAG" >/dev/null 2>&1 || gh release create "$TAG" --title "$VERSION" --notes-file notes.md --verify-tag "$KIND"
+
+  # After the release, the docs say what was released, on master (which the docs site is built from) and on staging (where changes land): the
+  # notes under "## Unreleased" move under "## X.Y.Z", the samples' version strings move, and the docs site is redeployed. Nobody edits the
+  # release notes by hand. master and staging take no pushes, except from the release bot's deploy key (RELEASE_BOT_KEY in the `release`
+  # environment, which only master's runs can read, and a bypass for deploy keys in both rulesets): docs/releasing.md#the-release-bot.
+  # Its commits end with [skip release] and change only docs, so the CI they start releases nothing.
+  docs:
+    needs: [plan, tag]
+    if: needs.plan.outputs.prerelease != 'true'
+    runs-on: ubuntu-latest
+    environment: release
+    permissions:
+      contents: read
+    steps:
+      - name: Is the release bot set up
+        id: bot
+        env:
+          KEY: ${{ secrets.RELEASE_BOT_KEY }}
+        run: |
+          if [ -n "$KEY" ]; then echo "ready=true" >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "::warning::RELEASE_BOT_KEY is not set in the release environment, so the release notes stay under Unreleased. See docs/releasing.md#the-release-bot."
+      - uses: actions/checkout@v4
+        if: steps.bot.outputs.ready == 'true'
+        with:
+          ref: master
+          fetch-depth: 0
+          ssh-key: ${{ secrets.RELEASE_BOT_KEY }}
+      - uses: oven-sh/setup-bun@v2
+        if: steps.bot.outputs.ready == 'true'
+        with:
+          bun-version: 1.4.4
+      - name: The release notes and the samples' versions, on master and on staging
+        if: steps.bot.outputs.ready == 'true'
+        env:
+          VERSION: ${{ needs.plan.outputs.version }}
+          SINCE: ${{ needs.plan.outputs.since }}
+          SHA: ${{ needs.plan.outputs.sha }}
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # The page as it was released: only its "Unreleased" notes move, also on a staging that has newer ones.
+          git show "$SHA:apps/docs/content/release-notes.mdx" > "$RUNNER_TEMP/released.mdx"
+          MSG="Docs for $VERSION: release notes and the samples' versions [skip release]"
+          stamp() { bun scripts/release-stamp.ts "$VERSION" ${SINCE:+--since "$SINCE"} --released "$RUNNER_TEMP/released.mdx"; }
+          # A push loses to a merge that landed meanwhile: fetch and do it again.
+          for attempt in 1 2 3; do
+            git fetch -q origin master
+            git checkout -q -B master origin/master
+            stamp
+            git diff --quiet && { echo "master already says $VERSION"; break; }
+            git commit -qam "$MSG"
+            git push origin master && break
+            [ "$attempt" = 3 ] && { echo "::error::Could not push the release notes to master"; exit 1; }
+          done
+          # staging gets master's commit as a merge whose files are staging's, stamped the same way: master only ever has staging's changes and
+          # these commits, so nothing of master's is lost, and the next merge of staging into master has nothing to conflict on.
+          for attempt in 1 2 3; do
+            git fetch -q origin master staging
+            git checkout -q -B staging origin/staging
+            git merge -q -s ours --no-commit origin/master 2>/dev/null || true
+            stamp
+            git add -A
+            if ! git rev-parse -q --verify MERGE_HEAD >/dev/null && git diff --cached --quiet; then echo "staging already says $VERSION"; break; fi
+            git commit -qm "$MSG"
+            git push origin staging && break
+            [ "$attempt" = 3 ] && { echo "::error::Could not push the release notes to staging"; exit 1; }
+          done
+      - name: Redeploy the docs site
+        env:
+          HOOK: ${{ secrets.DOCS_DEPLOY_WEBHOOK }}
+          TOKEN: ${{ secrets.DOCS_DEPLOY_TOKEN }}
+        run: |
+          # Coolify's deploy webhook (the resource's Webhooks tab) with an API token; any URL that starts a build of master works.
+          if [ -z "$HOOK" ]; then echo "::notice::DOCS_DEPLOY_WEBHOOK is not set in the release environment: redeploy the docs site yourself. See docs/releasing.md#the-release-bot."; exit 0; fi
+          curl -fsS --retry 3 -o /dev/null ${TOKEN:+-H "Authorization: Bearer $TOKEN"} "$HOOK"
+          echo "The docs site is redeploying."

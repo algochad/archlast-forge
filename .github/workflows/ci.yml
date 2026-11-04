@@ -52,7 +52,7 @@ jobs:
       - name: Agent skill (front matter, links, imports of every code sample)
         run: bun run skill:check
       - name: Release rules (which merges release, and which version)
-        run: bun test scripts/release-bump.test.ts
+        run: bun test scripts/release-bump.test.ts scripts/release-notes.test.ts
       - name: Typecheck and build
         run: bunx turbo build typecheck
       - name: Test (SQLite, Postgres, Redis, S3, two servers)
