@@ -22,6 +22,11 @@ export interface MongoDoc {
 /** What DocStore asks of MongoDB. Rows come back as `{ _id, _creationTime, doc }`, as the SQL adapters return them. */
 export interface MongoOps {
   find(table: string, q: { filter: MongoFilter; sort?: Record<string, 1 | -1>; limit?: number; skip?: number }): Promise<Row[]>;
+  /**
+   * Documents whose `field` (the words of a search index, one entry for each occurrence) has every one of `terms`, the last as a prefix, and that
+   * match `filter`; best match first (BM25 on the words, the average length taken over the matches), then oldest.
+   */
+  search(table: string, q: { field: string; terms: string[]; filter: MongoFilter; limit: number }): Promise<Row[]>;
   count(table: string, filter: MongoFilter): Promise<number>;
   stats(table: string, filter: MongoFilter, field: string): Promise<NumberStats | undefined>;
   /** At most `take` children of each parent, in `sort` order, in one aggregation; rows come back parent by parent. */

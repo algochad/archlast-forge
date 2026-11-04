@@ -266,6 +266,26 @@ for (const [label, make] of dbAdapters) {
         expect((await search("zulu")).length).toBe(0);
       });
 
+      test("search ranks: a long text that mentions the word once comes last; where the ranking counts occurrences, the word said most comes first", async () => {
+        await setup();
+        const bodies = [
+          "a long note about many other things that happens to mention milk once near the very end of all the text here",
+          "milk",
+          "oat milk milk milk",
+          "unrelated words only",
+        ];
+        for (const [n, body] of bodies.entries()) await write((s) => s.insert("notes", { body, tag: "t", n }));
+        const found = await read((s) => s.query("notes").withSearchIndex("search_body", (q: any) => q.search("body", "milk")).take(10));
+        expect(found).toHaveLength(3);
+        expect(found.at(-1)!.n).toBe(0);
+        // BM25 (SQLite, MongoDB) weighs a word's count; Postgres's ts_rank barely does, so it only agrees on the part above
+        if (!label.startsWith("postgres")) {
+          expect(found.map((d: any) => d.n)).toEqual([2, 1, 0]);
+          // a word as a prefix is ranked the same way
+          expect((await read((s) => s.query("notes").withSearchIndex("search_body", (q: any) => q.search("body", "mil")).take(2))).map((d: any) => d.n)).toEqual([2, 1]);
+        }
+      });
+
       test("a filter that looks through more than one batch finds the same documents as a loop", async () => {
         await setup();
         const listId = await write((s) => s.insert("lists", { name: "l" }));

@@ -5,7 +5,7 @@
 import { MongoClient, type AnyBulkWriteOperation, type ClientSession, type Document } from "mongodb";
 import { pointReads } from "./coalesce";
 import { hashName, PREFIX } from "./migrate";
-import { searchField, searchWords } from "./mongodb-search";
+import { escapeRegex, searchField, searchWords } from "./mongodb-search";
 import { runSql, SYSTEM_TABLES } from "./mongodb-sql";
 import { scopedTx, type Db, type DbTx, type Dialect, type MongoFilter, type MongoOps, type NumberStats, type Row } from "./types";
 
@@ -75,6 +75,43 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
           return row ? [row] : [];
         }
         return (await col(table).find(q.filter, { ...s, ...hide(table), sort: q.sort as never, limit: q.limit, skip: q.skip, allowDiskUse: true }).toArray()) as Row[];
+      }),
+      search: guard(async (table, q) => {
+        const words = `$${q.field}`;
+        const last = q.terms.length - 1;
+        // Every term must be there (an equality on the multikey index; the last term a range on it), and the filter fields.
+        const match = { $and: [...q.terms.map((t, i) => ({ [q.field]: i === last ? { $regex: "^" + escapeRegex(t) } : t })), q.filter] };
+        const tf = q.terms.map((t, i) => ({
+          $size: { $filter: { input: words, as: "w", cond: i === last ? { $regexMatch: { input: "$$w", regex: "^" + escapeRegex(t) } } : { $eq: ["$$w", t] } } },
+        }));
+        const K1 = 1.2;
+        const B = 0.75;
+        return (await col(table)
+          .aggregate(
+            [
+              { $match: match },
+              { $addFields: { _len: { $size: words }, _tf: tf } },
+              { $setWindowFields: { output: { _avg: { $avg: "$_len", window: { documents: ["unbounded", "unbounded"] } } } } },
+              {
+                $addFields: {
+                  _score: {
+                    $sum: {
+                      $map: {
+                        input: "$_tf",
+                        as: "f",
+                        in: { $divide: [{ $multiply: ["$$f", K1 + 1] }, { $add: ["$$f", { $multiply: [K1, { $add: [1 - B, { $multiply: [B, { $divide: ["$_len", "$_avg"] }] }] }] }] }] },
+                      },
+                    },
+                  },
+                },
+              },
+              { $sort: { _score: -1, _creationTime: 1, _id: 1 } },
+              { $limit: q.limit },
+              { $project: { _score: 0, _len: 0, _tf: 0, _avg: 0, ...hide(table).projection } },
+            ],
+            { ...s, allowDiskUse: true },
+          )
+          .toArray()) as Row[];
       }),
       count: guard((table, filter) => col(table).countDocuments(filter, s)),
       stats: guard(async (table, filter, field): Promise<NumberStats | undefined> => {
@@ -223,7 +260,7 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
         const wanted = new Map<string, { key: Record<string, 1>; search?: { index: string; field: string } }>();
         for (const [index, fields] of [["by_creation_time", [] as readonly string[]] as const, ...Object.entries(t.indexes)])
           wanted.set(hashName(t.name, index, fields.join(",")), { key: { ...Object.fromEntries(fields.map((f) => [`doc.${f}`, 1 as const])), _creationTime: 1, _id: 1 } });
-        for (const [index, c] of Object.entries(t.searchIndexes ?? {})) wanted.set(hashName(t.name, "search", index, c.searchField), { key: { [searchField(index)]: 1 }, search: { index, field: c.searchField } });
+        for (const [index, c] of Object.entries(t.searchIndexes ?? {})) wanted.set(hashName(t.name, "search", index, c.searchField, "occurrences"), { key: { [searchField(index)]: 1 }, search: { index, field: c.searchField } });
         const existing = new Set<string>();
         if (have.has(t.name)) for (const i of await col.listIndexes().toArray()) if (i.name?.startsWith(PREFIX)) existing.add(i.name);
         // Servers starting together run this at once: an index another one dropped or built first is fine.

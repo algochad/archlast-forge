@@ -4,7 +4,7 @@ import { SnapshotMoved, type ReadCache } from "./read-cache";
 import { tableOf, validateFields, ValidationError, type Validator } from "../values";
 import type { DbTx, Dialect, MongoFilter, MongoOps } from "./db/types";
 import { ftsTable } from "./db/migrate";
-import { searchField as mongoSearchField, searchWords } from "./db/mongodb-search";
+import { escapeRegex, searchField as mongoSearchField, searchWords } from "./db/mongodb-search";
 
 export type TablesSpec = Record<
   string,
@@ -50,7 +50,6 @@ type Predicate = { [PREDICATE]: true; sql: string; params: unknown[]; mongo: Mon
 const mpath = (f: string) => (f === "_id" || f === "_creationTime" ? f : `doc.${f}`);
 /** A filter nothing matches. */
 const NOTHING: MongoFilter = { _id: { $in: [] } };
-const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const isPredicate = (p: unknown): p is Predicate => typeof p === "object" && p !== null && PREDICATE in p;
 /** Field names go into SQL text (a JSON path), so only plain identifiers are accepted. */
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
@@ -681,9 +680,13 @@ export class DocStore {
       const terms = searchTerms(text!);
       if (!terms.length) return [];
       if (this.mongo) {
-        // Every word, the last one as a prefix (the index holds each document's words); no ranking, so the oldest first.
-        const filter = { $and: [...terms.map((t, i) => ({ [mongoSearchField(name)]: i === terms.length - 1 ? { $regex: "^" + escapeRegex(t) } : t })), ...eqs.map(([f, value]) => ({ [mpath(f)]: value === undefined ? null : value }))] };
-        const rows = await this.mongo.find(table, { filter, sort: { _creationTime: 1, _id: 1 }, limit: Math.min(limit, MAX_SEARCH) });
+        // Every word, the last one as a prefix (the index holds each document's words), best match first.
+        const rows = await this.mongo.search(table, {
+          field: mongoSearchField(name),
+          terms,
+          filter: eqs.length ? { $and: eqs.map(([f, value]) => ({ [mpath(f)]: value === undefined ? null : value })) } : {},
+          limit: Math.min(limit, MAX_SEARCH),
+        });
         const docs = rows.map((r) => this.toDoc(r));
         return joins ? this.join(table, docs, joins) : docs;
       }

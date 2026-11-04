@@ -60,7 +60,7 @@ export const postgresDialect: Dialect = {
     const vector = `to_tsvector('simple', coalesce("doc"->>'${fieldName}', ''))`;
     const query = terms.map((t, i) => (i === terms.length - 1 ? `${t}:*` : t)).join(" & ");
     return {
-      sql: `SELECT "_id", "_creationTime", "doc" FROM "${table}" WHERE ${vector} @@ to_tsquery('simple', ?)${filters.map((f) => ` AND ${f.sql}`).join("")} ORDER BY ts_rank(${vector}, to_tsquery('simple', ?)) DESC, "_creationTime" LIMIT ${limit}`,
+      sql: `SELECT "_id", "_creationTime", "doc" FROM "${table}" WHERE ${vector} @@ to_tsquery('simple', ?)${filters.map((f) => ` AND ${f.sql}`).join("")} ORDER BY ts_rank(${vector}, to_tsquery('simple', ?), 1) DESC, "_creationTime" LIMIT ${limit}`,
       params: [query, ...filters.flatMap((f) => f.params), query],
     };
   },
