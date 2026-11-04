@@ -266,9 +266,10 @@ test("in process mode large answers from a busy runtime reach the server as they
     // As they are produced: the median answer comes back within the time it took to make them, not after everything has been made and then sent.
     const at = answers.map((a) => a.at).sort((x, y) => x - y);
     const [first, median, last] = [at[0]!, at[Math.floor(calls / 2)]!, at.at(-1)!];
-    // (Released 0.7.0: the first at about 0.85 of the last and the median at 0.95, all in a clump; now about 0.3 and 0.6.)
+    // (Released 0.7.0: the first at about 0.85 of the last and the median at 0.95, all in a clump; now about 0.3 and 0.6, and up to 0.87 for
+    // the median on a slow CI runner, so its bound only rules out the clump. The first answer is what tells the two apart.)
     expect(first).toBeLessThan(last * 0.6);
-    expect(median).toBeLessThan(last * 0.85);
+    expect(median).toBeLessThan(last * 0.92);
   } finally {
     await s.stop({ graceful: false });
   }
