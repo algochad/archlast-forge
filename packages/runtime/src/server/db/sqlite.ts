@@ -23,6 +23,25 @@ export const sqliteDialect: Dialect = {
     return { sql: `${field(name)} = ?`, params: [encode(value)] };
   },
   listIndexesSql: `SELECT name FROM sqlite_master WHERE type = 'index' AND tbl_name = ?`,
+  // The first statement reads the value alone, so an index on the field answers it without reading a document. It can't tell JSON `true`
+  // from 1 (both read as 1), so when a value is 0 or 1 a second statement asks those documents, and only those, for their types.
+  async numberStats(run, table, name, where, params) {
+    if (!/^[A-Za-z_][A-Za-z0-9_]*$/.test(name)) return undefined;
+    const path = `'$.${name}'`;
+    const v = `json_extract("doc", ${path})`;
+    const [row] = await run(
+      `SELECT COUNT(*) AS "rows", COUNT(${v}) AS "n", SUM(typeof(${v}) NOT IN ('integer', 'null')) AS "nonint", SUM(typeof(${v}) NOT IN ('integer', 'real', 'null')) AS "bad", SUM(${v} IN (0, 1)) AS "amb", TOTAL(${v}) AS "sum", MIN(${v}) AS "min", MAX(${v}) AS "max" FROM "${table}" ${where}`,
+      params,
+    );
+    if (!row) return undefined;
+    let bad = Number(row.bad ?? 0);
+    if (!bad && Number(row.amb ?? 0) > 0) {
+      const [odd] = await run(`SELECT SUM(json_type("doc", ${path}) NOT IN ('integer', 'real', 'null')) AS "bad" FROM "${table}" ${where ? `${where} AND` : "WHERE"} ${v} IN (0, 1)`, params);
+      bad = Number(odd?.bad ?? 0);
+    }
+    const num = (x: unknown) => (x === null || x === undefined ? null : Number(x));
+    return { rows: Number(row.rows), n: Number(row.n ?? 0), bad, nonint: Number(row.nonint ?? 0), sum: Number(row.sum ?? 0), min: num(row.min), max: num(row.max) };
+  },
   searchWrite(table, index, id, text) {
     const fts = ftsTable(table, index);
     const del = { sql: `DELETE FROM "${fts}" WHERE doc_id = ?`, params: [id] };

@@ -34,6 +34,8 @@ const MAX_PAGE = 8192;
 const MAX_SEARCH = 1024;
 /** Documents fetched per round trip when a filter has to look through a range, and the most one query will look through. */
 const SCAN_BATCH = 256;
+/** A batch of a filter's scan: a database a round trip away takes more at a time (a scan of 2,000 documents was 8 round trips). */
+const scanBatchOf = (dialect: Dialect) => (dialect.name === "sqlite" ? SCAN_BATCH : SCAN_BATCH * 4);
 const MAX_SCAN = 100_000;
 /** Ids per `IN (…)` and parents per `OR` chain, to keep statements a sane size. */
 const IN_CHUNK = 500;
@@ -395,6 +397,7 @@ export class DocStore {
     const finish = async (docs: Doc[]) => project(await apply(docs, steps.slice(lastFilter() + 1)));
 
     /** Up to `want` documents after `after` that pass the filters, past the first `skip` of them, scanning the range in batches. */
+    const batchSize = scanBatchOf(this.dialect);
     const matches = async (want: number, after?: unknown[], skip = offset) => {
       const out: Doc[] = [];
       let keyFields: string[] = [];
@@ -404,7 +407,7 @@ export class DocStore {
       }
       let seen = 0;
       for (let cursor = after; ;) {
-        const batch = await run(SCAN_BATCH, cursor);
+        const batch = await run(batchSize, cursor);
         keyFields = batch.keyFields;
         for (const d of await scanned(batch.docs)) {
           if (skip > 0) {
@@ -415,7 +418,7 @@ export class DocStore {
           if (out.length >= want) return { docs: out, keyFields };
         }
         seen += batch.docs.length;
-        if (batch.docs.length < SCAN_BATCH) return { docs: out, keyFields };
+        if (batch.docs.length < batchSize) return { docs: out, keyFields };
         if (seen >= MAX_SCAN) throw new ValidationError(`filter() scanned ${MAX_SCAN} documents of "${table}" without finishing; narrow the range with withIndex()`);
         cursor = keyOf(keyFields, batch.docs.at(-1)!);
       }
@@ -426,13 +429,13 @@ export class DocStore {
       let cursor: unknown[] | undefined;
       let seen = 0;
       for (;;) {
-        const batch = await run(SCAN_BATCH * 4, cursor);
+        const batch = await run(batchSize * 4, cursor);
         for (const d of await scanned(batch.docs)) {
           if (skip > 0) skip--;
           else visit(d);
         }
         seen += batch.docs.length;
-        if (batch.docs.length < SCAN_BATCH * 4) return;
+        if (batch.docs.length < batchSize * 4) return;
         if (seen >= MAX_SCAN) throw new ValidationError(`Aggregates scan at most ${MAX_SCAN} documents of "${table}"; narrow the range with withIndex()`);
         cursor = keyOf(batch.keyFields, batch.docs.at(-1)!);
       }
@@ -450,9 +453,31 @@ export class DocStore {
       return Number(row?.n ?? 0);
     };
 
-    const numbers = async (name: string, field: string) => {
+    const checkNumeric = (name: string, field: string) => {
       const v = t.fields[field];
       if (field !== "_creationTime" && t.strict && v?.kind !== "number") throw new ValidationError(`${name}() needs a number field; "${table}.${field}" isn't one`);
+    };
+
+    /**
+     * How many values a number field has in the range, their sum, and their smallest and largest, worked out by the database instead of a pass
+     * over the documents. Only when the answer is exactly the one the pass would give; otherwise undefined and the caller reads the documents
+     * (which also words the error for a field that holds something else):
+     * - a database that can do it (`numberStats`), no filter() or skip() (those need the documents), a field of the document;
+     * - every value a number: a stored string, array or boolean sends the caller to the pass, which throws;
+     * - for the sum, integers small enough that adding them in any order is exact (a database adds reals differently from a loop);
+     * - fewer documents than the scan limit (past it the pass throws).
+     */
+    const databaseStats = async (field: string) => {
+      if (!this.dialect.numberStats || hasFilter() || offset > 0 || !IDENT.test(field) || field === "_creationTime" || field === "_id") return undefined;
+      const p = plan();
+      const stats = await this.dialect.numberStats(async (sql, params) => this.select(table, sql, params, [p.read]), table, field, p.where, p.params);
+      if (!stats || stats.rows >= MAX_SCAN || stats.bad > 0) return undefined;
+      const exact = stats.nonint === 0 && (stats.n === 0 || stats.n * Math.max(Math.abs(stats.min!), Math.abs(stats.max!)) <= Number.MAX_SAFE_INTEGER);
+      return { n: stats.n, sum: exact ? stats.sum : undefined, min: stats.min, max: stats.max };
+    };
+
+    const numbers = async (name: string, field: string) => {
+      checkNumeric(name, field);
       const values: number[] = [];
       await each((d) => {
         const x = d[field];
@@ -523,16 +548,30 @@ export class DocStore {
         return finish((await matches(n)).docs);
       },
       count: async () => Math.max(0, (await total()) - offset),
-      sum: async (field: string) => (await numbers("sum", field)).reduce((a, b) => a + b, 0),
+      sum: async (field: string) => {
+        checkNumeric("sum", field);
+        const s = await databaseStats(field);
+        if (s?.sum !== undefined) return s.sum;
+        return (await numbers("sum", field)).reduce((a, b) => a + b, 0);
+      },
       avg: async (field: string) => {
+        checkNumeric("avg", field);
+        const s = await databaseStats(field);
+        if (s?.sum !== undefined) return s.n ? s.sum / s.n : null;
         const xs = await numbers("avg", field);
         return xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null;
       },
       min: async (field: string) => {
+        checkNumeric("min", field);
+        const s = await databaseStats(field);
+        if (s) return s.min;
         const xs = await numbers("min", field);
         return xs.length ? xs.reduce((a, b) => Math.min(a, b)) : null;
       },
       max: async (field: string) => {
+        checkNumeric("max", field);
+        const s = await databaseStats(field);
+        if (s) return s.max;
         const xs = await numbers("max", field);
         return xs.length ? xs.reduce((a, b) => Math.max(a, b)) : null;
       },
@@ -725,12 +764,18 @@ export class DocStore {
       // field would have to read every child row to evaluate it (2x slower at a few hundred children each).
       for (let i = 0; i < missing.length; i += OR_CHUNK) {
         const chunk = missing.slice(i, i + OR_CHUNK);
-        const conds = chunk.map((id) => this.dialect.fieldEquals(field, id));
         this.toDb();
-        const rows = await this.tx.query(
-          chunk.map((_, k) => `SELECT ${k} AS "k", (SELECT COUNT(*) FROM "${rule.table}" WHERE ${conds[k]!.sql}) AS "n"`).join(" UNION ALL "),
-          conds.flatMap((c) => c.params),
-        );
+        let rows: Row[];
+        if (this.dialect.countChildren) {
+          const q = this.dialect.countChildren(rule.table, field, chunk);
+          rows = await this.tx.query(q.sql, q.params);
+        } else {
+          const conds = chunk.map((id) => this.dialect.fieldEquals(field, id));
+          rows = await this.tx.query(
+            chunk.map((_, k) => `SELECT ${k} AS "k", (SELECT COUNT(*) FROM "${rule.table}" WHERE ${conds[k]!.sql}) AS "n"`).join(" UNION ALL "),
+            conds.flatMap((c) => c.params),
+          );
+        }
         for (const r of rows) {
           const id = chunk[Number(r.k)]!;
           const n = Number(r.n);
@@ -741,7 +786,10 @@ export class DocStore {
       for (const d of docs) d[key] = counts.get(d._id) ?? 0;
       return;
     }
-    if (rule.take !== undefined) {
+    // The index's order after the equality, then _creationTime and _id; descending flips all of it.
+    const rest = [...(child.indexes[rule.index] ?? []).slice(1).filter((f) => f !== "_creationTime"), "_creationTime", "_id"].map((f) => this.col(f));
+    const orderBy = rest.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", ");
+    if (rule.take !== undefined && !(this.dialect.childrenOf && rule.take > 0)) {
       // A limit per parent needs a query per parent.
       for (const d of docs) {
         const q = perParent(d._id);
@@ -750,22 +798,22 @@ export class DocStore {
       }
       return;
     }
-    // Everything at once: one query for a chunk of parents, grouped afterwards.
-    const rest = [...(child.indexes[rule.index] ?? []).slice(1).filter((f) => f !== "_creationTime"), "_creationTime", "_id"].map((f) => this.col(f));
+    // Everything at once: one query for a chunk of parents, grouped afterwards. With a limit per parent, a database that can answers that
+    // in one statement as well (the others were a statement each).
     const groups = new Map<string, Doc[]>(docs.map((d) => [d._id, []]));
     const ids = [...groups.keys()];
     for (let i = 0; i < ids.length; i += OR_CHUNK) {
       const chunk = ids.slice(i, i + OR_CHUNK);
       const topics = chunk.map((id) => topic(rule.table, rule.index, [id]));
       for (const t of topics) this.reads.add(t);
-      const conds = chunk.map((id) => this.dialect.fieldEquals(field, id));
-      const orderBy = rest.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", ");
-      const rows = await this.select(
-        rule.table,
-        `${SELECT} "${rule.table}" WHERE (${conds.map((c) => c.sql).join(" OR ")}) ORDER BY ${orderBy}`,
-        conds.flatMap((c) => c.params),
-        topics,
-      );
+      let rows: Row[];
+      if (rule.take !== undefined) {
+        const q = this.dialect.childrenOf!(rule.table, field, chunk, orderBy, rule.take);
+        rows = await this.select(rule.table, q.sql, q.params, topics);
+      } else {
+        const conds = chunk.map((id) => this.dialect.fieldEquals(field, id));
+        rows = await this.select(rule.table, `${SELECT} "${rule.table}" WHERE (${conds.map((c) => c.sql).join(" OR ")}) ORDER BY ${orderBy}`, conds.flatMap((c) => c.params), topics);
+      }
       for (const row of rows) {
         const doc = this.toDoc(row);
         groups.get(doc[field])?.push(doc);

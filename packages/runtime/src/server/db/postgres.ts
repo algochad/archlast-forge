@@ -3,6 +3,8 @@ import { indexPlan, PREFIX, tableDDL } from "./migrate";
 import { scopedTx, type Db, type DbTx, type Dialect } from "./types";
 
 const field = (name: string) => `"doc"->'${name}'`;
+/** A field to compare with an id: `_id` is a column, anything else a document field. */
+const postgresField = (name: string) => (name === "_id" || name === "_creationTime" ? `"${name}"` : field(name));
 
 export const postgresDialect: Dialect = {
   name: "postgres",
@@ -25,6 +27,28 @@ export const postgresDialect: Dialect = {
     sql: `INSERT INTO "${table}" ("_id", "_creationTime", "doc") SELECT r->>'i', (r->>'t')::float8, r->'d' FROM jsonb_array_elements(?::text::jsonb) AS r`,
     params: ["[" + rows.map((r) => `{"i":${JSON.stringify(r.id)},"t":${r.time},"d":${r.json}}`).join(",") + "]"],
   }),
+  // One LATERAL join instead of a statement per parent (100 parents, 2 children each: 14.6 ms in 100 statements, 1.2 ms in one).
+  childrenOf: (table, field, parents, orderBy, take) => ({
+    sql: `SELECT c."_id", c."_creationTime", c."doc" FROM jsonb_array_elements(?::text::jsonb) WITH ORDINALITY AS p(v, ord) CROSS JOIN LATERAL (SELECT "_id", "_creationTime", "doc" FROM "${table}" WHERE ${postgresField(field)} = p.v ORDER BY ${orderBy} LIMIT ${take}) c ORDER BY p.ord, ${orderBy}`,
+    params: [JSON.stringify(parents)],
+  }),
+  countChildren: (table, field, parents) => ({
+    sql: `SELECT (p.ord - 1) AS k, c.n FROM jsonb_array_elements(?::text::jsonb) WITH ORDINALITY AS p(v, ord) CROSS JOIN LATERAL (SELECT count(*) AS n FROM "${table}" WHERE ${postgresField(field)} = p.v) c`,
+    params: [JSON.stringify(parents)],
+  }),
+  async numberStats(run, table, name, where, params) {
+    // The field is read once per document (OFFSET 0 keeps the planner from folding the inner query back in and reading it for each use: that
+    // was twice as slow), as jsonb; numbers become numeric, which adds integers exactly.
+    const [row] = await run(
+      `SELECT count(*) AS "rows", count(*) FILTER (WHERE "t" = 'number') AS "n", count(*) FILTER (WHERE "t" NOT IN ('number', 'null')) AS "bad",
+         count(*) FILTER (WHERE "t" = 'number' AND "v" <> trunc("v")) AS "nonint", sum("v") AS "sum", min("v") AS "min", max("v") AS "max"
+       FROM (SELECT jsonb_typeof("x") AS "t", CASE WHEN jsonb_typeof("x") = 'number' THEN "x"::numeric END AS "v" FROM (SELECT "doc"->'${name}' AS "x" FROM "${table}" ${where} OFFSET 0) AS "f") AS "s"`,
+      params,
+    );
+    if (!row) return undefined;
+    const num = (x: unknown) => (x === null || x === undefined ? null : Number(x));
+    return { rows: Number(row.rows), n: Number(row.n), bad: Number(row.bad), nonint: Number(row.nonint), sum: Number(row.sum ?? 0), min: num(row.min), max: num(row.max) };
+  },
   searchWrite: () => [], // the GIN expression index stays in sync by itself
   searchSql(table, _index, fieldName, terms, filters, limit) {
     const vector = `to_tsvector('simple', coalesce("doc"->>'${fieldName}', ''))`;

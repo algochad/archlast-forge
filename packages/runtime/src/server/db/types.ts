@@ -28,6 +28,18 @@ export interface Dialect {
    * has a cheaper way than a long list of `?`. `json` is each document's JSON text. Absent: DocStore writes a multi-row VALUES.
    */
   bulkInsert?(table: string, rows: { id: string; time: number; json: string }[]): { sql: string; params: unknown[] };
+  /**
+   * Rows (`_id`, `_creationTime`, `doc`) of the children of several parents, at most `take` of each in the order `orderBy` says, in one
+   * statement, for a database where a statement per parent costs a round trip. Absent: DocStore runs one statement per parent.
+   */
+  childrenOf?(table: string, field: string, parents: string[], orderBy: string, take: number): { sql: string; params: unknown[] };
+  /** Rows `{ k, n }`: how many children each parent has, `k` being its position in `parents`. Absent: DocStore unions one subselect per parent. */
+  countChildren?(table: string, field: string, parents: string[]): { sql: string; params: unknown[] };
+  /**
+   * What `sum`, `avg`, `min` and `max` of a number field need to know about the documents in a range, worked out by the database. `where` is a
+   * WHERE clause or empty. `run` runs a statement. Undefined when this database can't tell (DocStore then reads the documents).
+   */
+  numberStats?(run: (sql: string, params: unknown[]) => Promise<Row[]>, table: string, field: string, where: string, params: unknown[]): Promise<NumberStats | undefined>;
   /** Statements keeping a search index in sync when a document is written; `text` undefined removes it. */
   searchWrite(table: string, index: string, id: string, text: string | undefined): { sql: string; params: unknown[] }[];
   /** Matching ids by relevance; `terms` are lowercase words, the last matched as a prefix. */
@@ -41,6 +53,21 @@ export interface TableSpec {
   name: string;
   indexes: Record<string, readonly string[]>;
   searchIndexes?: Record<string, { searchField: string; filterFields: readonly string[] }>;
+}
+
+/**
+ * Counts and extremes of a number field over a range of documents. `bad` counts values that aren't numbers (a string, a boolean, an
+ * array: the pass over the documents throws on those), `nonint` the numbers that aren't integers, and `sum` is only meaningful when
+ * every number is an integer.
+ */
+export interface NumberStats {
+  rows: number;
+  n: number;
+  nonint: number;
+  bad: number;
+  sum: number;
+  min: number | null;
+  max: number | null;
 }
 
 export interface TransactionOptions {
