@@ -4,11 +4,40 @@ export interface DbTx {
   /** `?` placeholders in both dialects; adapters rewrite them as needed. */
   query<T = Row>(sql: string, params?: unknown[]): Promise<T[]>;
   execute(sql: string, params?: unknown[]): Promise<void>;
+  /** On MongoDB, which has no SQL: what DocStore does with documents, as operations. The SQL adapters leave it out. */
+  mongo?: MongoOps;
+}
+
+/** A MongoDB filter, as the driver takes it. */
+export type MongoFilter = Record<string, unknown>;
+
+/** A document as MongoDB keeps it: `doc` holds the fields, and each search index adds an array of the words of its field. */
+export interface MongoDoc {
+  _id: string;
+  _creationTime: number;
+  doc: Record<string, unknown>;
+  [searchField: string]: unknown;
+}
+
+/** What DocStore asks of MongoDB. Rows come back as `{ _id, _creationTime, doc }`, as the SQL adapters return them. */
+export interface MongoOps {
+  find(table: string, q: { filter: MongoFilter; sort?: Record<string, 1 | -1>; limit?: number; skip?: number }): Promise<Row[]>;
+  count(table: string, filter: MongoFilter): Promise<number>;
+  stats(table: string, filter: MongoFilter, field: string): Promise<NumberStats | undefined>;
+  /** At most `take` children of each parent, in `sort` order, in one aggregation; rows come back parent by parent. */
+  childrenOf(table: string, field: string, parents: string[], sort: Record<string, 1 | -1>, take: number): Promise<Row[]>;
+  /** How many children each parent has (parents with none are missing). */
+  countChildren(table: string, field: string, parents: string[]): Promise<Map<string, number>>;
+  insert(table: string, docs: MongoDoc[]): Promise<void>;
+  /** Replaces `doc` (and the search words) of existing documents; `_creationTime` stays. */
+  replace(table: string, docs: { _id: string; doc: Record<string, unknown>; search?: Record<string, string[]> }[]): Promise<void>;
+  delete(table: string, id: string): Promise<void>;
+  clear(table: string): Promise<void>;
 }
 
 /** Dialect-specific SQL fragments, so callers keep their own SQL portable. */
 export interface Dialect {
-  name: "sqlite" | "postgres";
+  name: "sqlite" | "postgres" | "mongodb";
   realType: string;
   jsonType: string;
   /** Placeholder for a JSON document parameter (the value passed is a JSON string). */
@@ -90,8 +119,10 @@ export interface Db extends DbTx {
 }
 
 export function isRetryableConflict(e: unknown): boolean {
-  const err = e as { errno?: unknown; code?: unknown };
-  return ["40001", "40P01"].includes(String(err?.errno)) || ["40001", "40P01"].includes(String(err?.code));
+  const err = e as { errno?: unknown; code?: unknown; errorLabels?: unknown };
+  if (["40001", "40P01"].includes(String(err?.errno)) || ["40001", "40P01"].includes(String(err?.code))) return true;
+  // MongoDB: a write conflict between transactions (112) or anything the server labels as safe to run again.
+  return err?.code === 112 || (Array.isArray(err?.errorLabels) && err.errorLabels.includes("TransientTransactionError"));
 }
 
 /** A transaction handle that refuses calls after its transaction ends, e.g. from a handler still running after a timeout. */
@@ -100,9 +131,11 @@ export function scopedTx(tx: DbTx): DbTx & { end(): void } {
   const check = () => {
     if (!open) throw new Error("Transaction already finished: the function kept using the database after it returned or timed out");
   };
+  const mongo = tx.mongo && (Object.fromEntries(Object.entries(tx.mongo).map(([name, op]) => [name, (...args: unknown[]) => (check(), (op as (...a: unknown[]) => unknown)(...args))])) as unknown as MongoOps);
   return {
     query: (sql, params) => (check(), tx.query(sql, params)),
     execute: (sql, params) => (check(), tx.execute(sql, params)),
+    ...(mongo && { mongo }),
     end: () => (open = false),
   };
 }

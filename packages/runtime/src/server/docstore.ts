@@ -2,8 +2,9 @@ import { referenceOf } from "../relations";
 import type { Row } from "./db/types";
 import { SnapshotMoved, type ReadCache } from "./read-cache";
 import { tableOf, validateFields, ValidationError, type Validator } from "../values";
-import type { DbTx, Dialect } from "./db/types";
+import type { DbTx, Dialect, MongoFilter, MongoOps } from "./db/types";
 import { ftsTable } from "./db/migrate";
+import { searchField as mongoSearchField, searchWords } from "./db/mongodb-search";
 
 export type TablesSpec = Record<
   string,
@@ -44,7 +45,12 @@ const OR_CHUNK = 100;
 type Bound = { op: ">" | ">=" | "<" | "<="; value: unknown };
 /** A where() predicate, compiled: SQL with `?` placeholders and their values. Only the builder makes these (the brand), so no SQL text comes from elsewhere. */
 const PREDICATE = Symbol("predicate");
-type Predicate = { [PREDICATE]: true; sql: string; params: unknown[] };
+type Predicate = { [PREDICATE]: true; sql: string; params: unknown[]; mongo: MongoFilter };
+/** Where MongoDB keeps a field: `_id` and `_creationTime` beside `doc`, the document's own fields inside it. */
+const mpath = (f: string) => (f === "_id" || f === "_creationTime" ? f : `doc.${f}`);
+/** A filter nothing matches. */
+const NOTHING: MongoFilter = { _id: { $in: [] } };
+const escapeRegex = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const isPredicate = (p: unknown): p is Predicate => typeof p === "object" && p !== null && PREDICATE in p;
 /** Field names go into SQL text (a JSON path), so only plain identifiers are accepted. */
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
@@ -90,7 +96,11 @@ export class DocStore {
     private warn?: (message: string) => void,
   ) {
     this.stamp = cache?.now() ?? 0;
+    this.mongo = tx.mongo;
   }
+
+  /** Set on MongoDB: documents are read and written as operations (db/types.ts MongoOps) where the others run SQL. */
+  private readonly mongo?: MongoOps;
 
   /** This transaction's snapshot on the read cache's counter; whether it used cached rows or the database yet; whether it has written. */
   private stamp: number;
@@ -195,11 +205,11 @@ export class DocStore {
 
   /** The predicates where() builds: comparisons on the document's fields, compiled to SQL that an index on those fields can serve, and and/or/not. */
   private predicates(table: string) {
-    const pred = (sql: string, params: unknown[]): Predicate => ({ [PREDICATE]: true, sql, params });
+    const pred = (sql: string, params: unknown[], mongo: MongoFilter = {}): Predicate => ({ [PREDICATE]: true, sql, params, mongo });
     const col = (f: unknown, method: string) => this.col(this.fieldName(table, f, method));
-    const cmp = (op: string, method: string) => (f: string, value: unknown) => {
+    const cmp = (op: string, mop: string, method: string) => (f: string, value: unknown) => {
       const c = col(f, method);
-      return pred(`${c.expr} ${op} ${c.param}`, [c.encode(value)]);
+      return pred(`${c.expr} ${op} ${c.param}`, [c.encode(value)], { [mpath(f)]: { [mop]: value } });
     };
     const all = (ps: unknown[], method: string) => {
       for (const p of ps) if (!isPredicate(p)) throw new ValidationError(`${method}() takes predicates from the where() builder`);
@@ -207,65 +217,69 @@ export class DocStore {
     };
     const join = (method: string, glue: "AND" | "OR", empty: string) => (...ps: unknown[]) => {
       const list = all(ps, method);
-      return list.length ? pred(`(${list.map((p) => p.sql).join(` ${glue} `)})`, list.flatMap((p) => p.params)) : pred(empty, []);
+      const mongo: MongoFilter = list.length ? { [glue === "AND" ? "$and" : "$or"]: list.map((p) => p.mongo) } : glue === "AND" ? {} : NOTHING;
+      return list.length ? pred(`(${list.map((p) => p.sql).join(` ${glue} `)})`, list.flatMap((p) => p.params), mongo) : pred(empty, [], mongo);
     };
     return {
       eq: (f: string, value: unknown) => {
         const name = this.fieldName(table, f, "eq");
-        if (value === undefined || value === null) return pred(`${this.col(name).expr} IS NULL`, []);
-        if (name === "_id" || name === "_creationTime") return pred(`"${name}" = ?`, [value]);
+        if (value === undefined || value === null) return pred(`${this.col(name).expr} IS NULL`, [], { [mpath(name)]: null });
+        if (name === "_id" || name === "_creationTime") return pred(`"${name}" = ?`, [value], { [name]: value });
         const c = this.dialect.fieldEquals(name, value);
-        return pred(c.sql, c.params);
+        return pred(c.sql, c.params, { [mpath(name)]: value });
       },
       /** Not equal, which a document without the field is. */
       neq: (f: string, value: unknown) => {
         const c = col(f, "neq");
-        if (value === undefined || value === null) return pred(`${c.expr} IS NOT NULL`, []);
-        return pred(`(${c.expr} IS NULL OR ${c.expr} <> ${c.param})`, [c.encode(value)]);
+        if (value === undefined || value === null) return pred(`${c.expr} IS NOT NULL`, [], { [mpath(f)]: { $ne: null } });
+        return pred(`(${c.expr} IS NULL OR ${c.expr} <> ${c.param})`, [c.encode(value)], { [mpath(f)]: { $ne: value } });
       },
-      gt: cmp(">", "gt"),
-      gte: cmp(">=", "gte"),
-      lt: cmp("<", "lt"),
-      lte: cmp("<=", "lte"),
+      gt: cmp(">", "$gt", "gt"),
+      gte: cmp(">=", "$gte", "gte"),
+      lt: cmp("<", "$lt", "lt"),
+      lte: cmp("<=", "$lte", "lte"),
       between: (f: string, low: unknown, high: unknown) => {
         const c = col(f, "between");
-        return pred(`(${c.expr} >= ${c.param} AND ${c.expr} <= ${c.param})`, [c.encode(low), c.encode(high)]);
+        return pred(`(${c.expr} >= ${c.param} AND ${c.expr} <= ${c.param})`, [c.encode(low), c.encode(high)], { [mpath(f)]: { $gte: low, $lte: high } });
       },
       in: (f: string, values: unknown) => {
         const c = col(f, "in");
         if (!Array.isArray(values)) throw new ValidationError("in() expects an array of values");
-        if (!values.length) return pred("1 = 0", []);
-        return pred(`${c.expr} IN (${values.map(() => c.param).join(", ")})`, values.map((v) => c.encode(v)));
+        if (!values.length) return pred("1 = 0", [], NOTHING);
+        return pred(`${c.expr} IN (${values.map(() => c.param).join(", ")})`, values.map((v) => c.encode(v)), { [mpath(f)]: { $in: values } });
       },
       prefix: (f: string, prefix: unknown) => {
         const name = this.fieldName(table, f, "prefix");
         if (typeof prefix !== "string") throw new ValidationError("prefix() expects a string");
         if (name === "_creationTime") throw new ValidationError("prefix() is for string fields");
-        if (name === "_id") return pred(`("_id" >= ? AND "_id" < ?)`, [prefix, prefix + "\u{10FFFF}"]);
+        const mongo = { [mpath(name)]: { $regex: "^" + escapeRegex(prefix) } };
+        if (name === "_id") return pred(`("_id" >= ? AND "_id" < ?)`, [prefix, prefix + "\u{10FFFF}"], mongo);
         const s = this.dialect.startsWith(name, prefix);
-        return pred(s.sql, s.params);
+        return pred(s.sql, s.params, mongo);
       },
       and: join("and", "AND", "1 = 1"),
       or: join("or", "OR", "1 = 0"),
       /** True where the predicate isn't, a missing field included (CASE rather than NOT, so a NULL comparison counts as false). */
       not: (p: unknown) => {
         const [inner] = all([p], "not");
-        return pred(`(CASE WHEN ${inner!.sql} THEN 1 ELSE 0 END) = 0`, inner!.params);
+        return pred(`(CASE WHEN ${inner!.sql} THEN 1 ELSE 0 END) = 0`, inner!.params, { $nor: [inner!.mongo] });
       },
     };
   }
 
   /** Rows after `after` in the order of `key`: one row-value comparison when every key goes the same way (an index serves it), else (a > ?) OR (a = ? AND b < ?) …. */
-  private keyset(key: { expr: string; param: string; encode: (x: unknown) => unknown; desc: boolean }[], after: unknown[]) {
+  private keyset(key: { expr: string; param: string; encode: (x: unknown) => unknown; desc: boolean; f: string }[], after: unknown[]) {
+    // MongoDB has no row-value comparison: (a, b) > (x, y) is a > x, or a = x and b > y, which is also how mixed directions are written.
+    const mongo: MongoFilter = { $or: key.map((k, i) => ({ ...Object.fromEntries(key.slice(0, i).map((p, j) => [mpath(p.f), after[j]])), [mpath(k.f)]: { [k.desc ? "$lt" : "$gt"]: after[i] } })) };
     if (key.every((k) => k.desc === key[0]!.desc))
-      return { sql: `(${key.map((k) => k.expr).join(", ")}) ${key[0]!.desc ? "<" : ">"} (${key.map((k) => k.param).join(", ")})`, params: key.map((k, i) => k.encode(after[i])) };
+      return { mongo, sql: `(${key.map((k) => k.expr).join(", ")}) ${key[0]!.desc ? "<" : ">"} (${key.map((k) => k.param).join(", ")})`, params: key.map((k, i) => k.encode(after[i])) };
     const parts: string[] = [];
     const params: unknown[] = [];
     key.forEach((k, i) => {
       parts.push(`(${[...key.slice(0, i).map((p) => `${p.expr} = ${p.param}`), `${k.expr} ${k.desc ? "<" : ">"} ${k.param}`].join(" AND ")})`);
       params.push(...key.slice(0, i).map((p, j) => p.encode(after[j])), k.encode(after[i]));
     });
-    return { sql: `(${parts.join(" OR ")})`, params };
+    return { mongo, sql: `(${parts.join(" OR ")})`, params };
   }
 
   /**
@@ -291,7 +305,7 @@ export class DocStore {
     const table = this.parseId(id);
     const read = topic(table, "by_id", [id]);
     this.reads.add(read);
-    const [row] = await this.select(table, `${SELECT} "${table}" WHERE "_id" = ?`, [id], [read]);
+    const [row] = this.mongo ? await this.mongo.find(table, { filter: { _id: id }, limit: 1 }) : await this.select(table, `${SELECT} "${table}" WHERE "_id" = ?`, [id], [read]);
     return row ? this.toDoc(row) : null;
   }
 
@@ -328,17 +342,20 @@ export class DocStore {
       });
       if (boundField !== undefined && fields[eqs.length] !== boundField)
         throw new ValidationError(`Index "${table}.${index}": a range must be on "${fields[eqs.length]}", the field after the equalities`);
-      const conds: { sql: string; params: unknown[] }[] = eqs.map(([f, value]) =>
-        f === "_creationTime" ? { sql: `"_creationTime" = ?`, params: [value] } : this.dialect.fieldEquals(f, value),
-      );
-      for (const b of bounds) {
+      const conds: { sql: string; params: unknown[]; mongo: MongoFilter }[] = eqs.map(([f, value]) => ({
+        ...(f === "_creationTime" ? { sql: `"_creationTime" = ?`, params: [value] } : this.dialect.fieldEquals(f, value)),
+        mongo: { [mpath(f)]: value === undefined ? null : value },
+      }));
+      if (bounds.length) {
         const c = this.col(boundField!);
-        conds.push({ sql: `${c.expr} ${b.op} ${c.param}`, params: [c.encode(b.value)] });
+        const operators = { ">": "$gt", ">=": "$gte", "<": "$lt", "<=": "$lte" } as const;
+        for (const b of bounds) conds.push({ sql: `${c.expr} ${b.op} ${c.param}`, params: [c.encode(b.value)], mongo: {} });
+        conds.at(-bounds.length)!.mongo = { [mpath(boundField!)]: Object.fromEntries(bounds.map((b) => [operators[b.op], b.value])) };
       }
       conds.push(...wheres);
       const keys = orderKey();
       const keyFields = keys.map((k) => k.f);
-      const key = keys.map((k) => ({ ...this.col(k.f), desc: k.desc }));
+      const key = keys.map((k) => ({ ...this.col(k.f), desc: k.desc, f: k.f }));
       if (after) conds.push(this.keyset(key, after));
       // Reads of a range or page are tracked at the equality prefix: coarser, never missed.
       const read =
@@ -350,12 +367,16 @@ export class DocStore {
             )
           : table;
       this.reads.add(read);
+      const filters = conds.map((c) => c.mongo).filter((m) => Object.keys(m).length);
       return {
         read,
         where: conds.length ? `WHERE ${conds.map((c) => c.sql).join(" AND ")}` : "",
         params: conds.flatMap((c) => c.params),
         orderBy: key.map((k) => `${k.expr}${k.desc ? " DESC" : ""}`).join(", "),
         keyFields,
+        /** The same range as a MongoDB filter and sort. */
+        filter: (filters.length > 1 ? { $and: filters } : (filters[0] ?? {})) as MongoFilter,
+        sort: Object.fromEntries(keys.map((k) => [mpath(k.f), k.desc ? -1 : 1])) as Record<string, 1 | -1>,
       };
     };
 
@@ -376,6 +397,11 @@ export class DocStore {
       // SQLite needs a LIMIT before an OFFSET; Postgres takes any bigint.
       const page = skip ? ` LIMIT ${limit ?? Number.MAX_SAFE_INTEGER} OFFSET ${skip}` : limit === undefined ? "" : ` LIMIT ${limit}`;
       const sql = `${SELECT} "${table}" ${p.where} ORDER BY ${p.orderBy}${page}`;
+      if (this.mongo) {
+        if (limit === 0) return { docs: [], keyFields: p.keyFields }; // for MongoDB a limit of 0 is no limit
+        const rows = await this.mongo.find(table, { filter: p.filter, sort: p.sort, limit, skip: skip || undefined });
+        return { docs: rows.map((r) => this.toDoc(r)), keyFields: p.keyFields };
+      }
       if (wheres.length || orderKeys) await this.explain(table, sql, p.params, wheres.length > 0, Boolean(orderKeys));
       const rows = await this.select(table, sql, p.params, [p.read]);
       return { docs: rows.map((r) => this.toDoc(r)), keyFields: p.keyFields };
@@ -449,6 +475,7 @@ export class DocStore {
         return n;
       }
       const p = plan();
+      if (this.mongo) return this.mongo.count(table, p.filter);
       const [row] = await this.select(table, `SELECT COUNT(*) AS "n" FROM "${table}" ${p.where}`, p.params, [p.read]);
       return Number(row?.n ?? 0);
     };
@@ -468,9 +495,11 @@ export class DocStore {
      * - fewer documents than the scan limit (past it the pass throws).
      */
     const databaseStats = async (field: string) => {
-      if (!this.dialect.numberStats || hasFilter() || offset > 0 || !IDENT.test(field) || field === "_creationTime" || field === "_id") return undefined;
+      if (!(this.dialect.numberStats || this.mongo) || hasFilter() || offset > 0 || !IDENT.test(field) || field === "_creationTime" || field === "_id") return undefined;
       const p = plan();
-      const stats = await this.dialect.numberStats(async (sql, params) => this.select(table, sql, params, [p.read]), table, field, p.where, p.params);
+      const stats = this.mongo
+        ? await this.mongo.stats(table, p.filter, field)
+        : await this.dialect.numberStats!(async (sql, params) => this.select(table, sql, params, [p.read]), table, field, p.where, p.params);
       if (!stats || stats.rows >= MAX_SCAN || stats.bad > 0) return undefined;
       const exact = stats.nonint === 0 && (stats.n === 0 || stats.n * Math.max(Math.abs(stats.min!), Math.abs(stats.max!)) <= Number.MAX_SAFE_INTEGER);
       return { n: stats.n, sum: exact ? stats.sum : undefined, min: stats.min, max: stats.max };
@@ -651,6 +680,13 @@ export class DocStore {
       this.reads.add(table); // any write to the table may change ranking
       const terms = searchTerms(text!);
       if (!terms.length) return [];
+      if (this.mongo) {
+        // Every word, the last one as a prefix (the index holds each document's words); no ranking, so the oldest first.
+        const filter = { $and: [...terms.map((t, i) => ({ [mongoSearchField(name)]: i === terms.length - 1 ? { $regex: "^" + escapeRegex(t) } : t })), ...eqs.map(([f, value]) => ({ [mpath(f)]: value === undefined ? null : value }))] };
+        const rows = await this.mongo.find(table, { filter, sort: { _creationTime: 1, _id: 1 }, limit: Math.min(limit, MAX_SEARCH) });
+        const docs = rows.map((r) => this.toDoc(r));
+        return joins ? this.join(table, docs, joins) : docs;
+      }
       const filters = eqs.map(([f, value]) => this.dialect.fieldEquals(f, value));
       const { sql, params } = this.dialect.searchSql(table, name, config.searchField, terms, filters, Math.min(limit, MAX_SEARCH));
       const docs = (await this.tx.query(sql, params)).map((r) => this.toDoc(r));
@@ -689,7 +725,8 @@ export class DocStore {
       for (let i = 0; i < unique.length; i += IN_CHUNK) {
         const chunk = unique.slice(i, i + IN_CHUNK);
         const topics = chunk.map((id) => topic(table, "by_id", [id]));
-        for (const row of await this.select(table, `${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk, topics)) found.set(row._id, this.toDoc(row));
+        const rows = this.mongo ? await this.mongo.find(table, { filter: { _id: { $in: chunk } } }) : await this.select(table, `${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk, topics);
+        for (const row of rows) found.set(row._id, this.toDoc(row));
       }
     }
     return ids.map((id) => found.get(id) ?? null);
@@ -766,7 +803,10 @@ export class DocStore {
         const chunk = missing.slice(i, i + OR_CHUNK);
         this.toDb();
         let rows: Row[];
-        if (this.dialect.countChildren) {
+        if (this.mongo) {
+          const counted = await this.mongo.countChildren(rule.table, field, chunk);
+          rows = chunk.map((id, k) => ({ k, n: counted.get(id) ?? 0 }));
+        } else if (this.dialect.countChildren) {
           const q = this.dialect.countChildren(rule.table, field, chunk);
           rows = await this.tx.query(q.sql, q.params);
         } else {
@@ -787,9 +827,10 @@ export class DocStore {
       return;
     }
     // The index's order after the equality, then _creationTime and _id; descending flips all of it.
-    const rest = [...(child.indexes[rule.index] ?? []).slice(1).filter((f) => f !== "_creationTime"), "_creationTime", "_id"].map((f) => this.col(f));
+    const restFields = [...(child.indexes[rule.index] ?? []).slice(1).filter((f) => f !== "_creationTime"), "_creationTime", "_id"];
+    const rest = restFields.map((f) => this.col(f));
     const orderBy = rest.map((k) => `${k.expr}${order === "desc" ? " DESC" : ""}`).join(", ");
-    if (rule.take !== undefined && !(this.dialect.childrenOf && rule.take > 0)) {
+    if (rule.take !== undefined && !((this.dialect.childrenOf || this.mongo) && rule.take > 0)) {
       // A limit per parent needs a query per parent.
       for (const d of docs) {
         const q = perParent(d._id);
@@ -807,7 +848,10 @@ export class DocStore {
       const topics = chunk.map((id) => topic(rule.table, rule.index, [id]));
       for (const t of topics) this.reads.add(t);
       let rows: Row[];
-      if (rule.take !== undefined) {
+      if (this.mongo) {
+        const sort = Object.fromEntries(restFields.map((f) => [mpath(f), order === "desc" ? -1 : 1])) as Record<string, 1 | -1>;
+        rows = rule.take !== undefined ? await this.mongo.childrenOf(rule.table, field, chunk, sort, rule.take) : await this.mongo.find(rule.table, { filter: { [mpath(field)]: { $in: chunk } }, sort });
+      } else if (rule.take !== undefined) {
         const q = this.dialect.childrenOf!(rule.table, field, chunk, orderBy, rule.take);
         rows = await this.select(rule.table, q.sql, q.params, topics);
       } else {
@@ -850,7 +894,15 @@ export class DocStore {
     }
   }
 
+  /** On MongoDB, the words of each search index of a document, to be stored with it (SQLite and Postgres keep theirs in a table and an index). */
+  private searchWordsOf(table: string, fields: Record<string, unknown>) {
+    const out: Record<string, string[]> = {};
+    for (const [name, { searchField }] of Object.entries(this.table(table).searchIndexes ?? {})) out[mongoSearchField(name)] = typeof fields[searchField] === "string" ? searchWords(fields[searchField] as string) : [];
+    return out;
+  }
+
   private async syncSearch(table: string, id: string, doc: Record<string, unknown> | undefined) {
+    if (this.mongo) return; // stored with the document
     for (const [name, { searchField }] of Object.entries(this.table(table).searchIndexes ?? {})) {
       const text = typeof doc?.[searchField] === "string" ? (doc[searchField] as string) : undefined;
       for (const s of this.dialect.searchWrite(table, name, id, text)) await this.tx.execute(s.sql, s.params);
@@ -878,10 +930,11 @@ export class DocStore {
   private async insertChecked(table: string, rows: { fields: Record<string, unknown>; json: string }[]) {
     const docs = rows.map((r) => ({ ...r, _id: `${table}:${crypto.randomUUID().replaceAll("-", "")}`, _creationTime: creationTime() }));
     const bulk = this.dialect.bulkInsert;
-    const size = bulk ? 2000 : 200;
+    const size = bulk || this.mongo ? 2000 : 200;
     for (let i = 0; i < docs.length; i += size) {
       const part = docs.slice(i, i + size);
-      if (bulk) {
+      if (this.mongo) await this.mongo.insert(table, part.map((d) => ({ _id: d._id, _creationTime: d._creationTime, doc: d.fields, ...this.searchWordsOf(table, d.fields) })));
+      else if (bulk) {
         const q = bulk(table, part.map((d) => ({ id: d._id, time: d._creationTime, json: d.json })));
         await this.tx.execute(q.sql, q.params);
       } else
@@ -932,9 +985,11 @@ export class DocStore {
     const stored = new Map<string, string>();
     for (let i = 0; i < ids.length; i += IN_CHUNK) {
       const chunk = ids.slice(i, i + IN_CHUNK);
-      for (const row of await this.tx.query(`${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk)) {
+      const found = this.mongo ? await this.mongo.find(table, { filter: { _id: { $in: chunk } } }) : await this.tx.query(`${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk);
+      for (const row of found) {
         current.set(row._id, this.toDoc(row));
         if (typeof row.doc === "string") stored.set(row._id, row.doc);
+        else if (this.mongo) stored.set(row._id, JSON.stringify(row.doc)); // to leave out an update that changes nothing
       }
     }
     const writes: { id: string; old: Doc; fields: Record<string, unknown>; json: string }[] = [];
@@ -957,7 +1012,11 @@ export class DocStore {
       }
     });
     if (mode === "all" && errors.length) throw new ValidationError(`updateMany() on "${table}": ${errors.length} of ${updates.length} updates are invalid, so none was applied. Update ${errors[0]!.index}: ${errors[0]!.message}`);
-    if (this.dialect.bulkUpdate && writes.length > 1) {
+    if (this.mongo) {
+      const last = new Map(writes.map((w) => [w.id, w]));
+      const rows = [...last.values()].map((w) => ({ _id: w.id, doc: w.fields, search: this.searchWordsOf(table, w.fields) }));
+      for (let i = 0; i < rows.length; i += 2000) await this.mongo.replace(table, rows.slice(i, i + 2000));
+    } else if (this.dialect.bulkUpdate && writes.length > 1) {
       // One statement for all of them. A document updated twice in this call is written once, as the last update left it.
       const last = new Map(writes.map((w) => [w.id, w.json]));
       const rows = [...last].map(([id, json]) => ({ id, json }));
@@ -967,7 +1026,7 @@ export class DocStore {
       }
     }
     for (const w of writes) {
-      if (!(this.dialect.bulkUpdate && writes.length > 1)) await this.tx.execute(`UPDATE "${table}" SET "doc" = ${this.dialect.jsonParam} WHERE "_id" = ?`, [w.json, w.id]);
+      if (!this.mongo && !(this.dialect.bulkUpdate && writes.length > 1)) await this.tx.execute(`UPDATE "${table}" SET "doc" = ${this.dialect.jsonParam} WHERE "_id" = ?`, [w.json, w.id]);
       await this.syncSearch(table, w.id, w.fields);
       this.written(table, { ...w.fields, _id: w.id }, w.old);
     }
@@ -976,12 +1035,13 @@ export class DocStore {
 
   private async update(id: string, next: (old: Doc) => Record<string, unknown>) {
     const table = this.parseId(id);
-    const [row] = await this.tx.query(`${SELECT} "${table}" WHERE "_id" = ?`, [id]);
+    const [row] = this.mongo ? await this.mongo.find(table, { filter: { _id: id }, limit: 1 }) : await this.tx.query(`${SELECT} "${table}" WHERE "_id" = ?`, [id]);
     if (!row) throw new ValidationError(`Document ${id} not found`);
     const old = this.toDoc(row);
     const { fields, json } = this.checked(table, next(old));
-    if (row.doc === json) return; // stored as it is already (SQLite keeps the text): nothing to write, nothing for subscribers to re-run
-    await this.tx.execute(`UPDATE "${table}" SET "doc" = ${this.dialect.jsonParam} WHERE "_id" = ?`, [json, id]);
+    if (row.doc === json || (this.mongo && JSON.stringify(row.doc) === json)) return; // stored as it is already: nothing to write, nothing for subscribers to re-run
+    if (this.mongo) await this.mongo.replace(table, [{ _id: id, doc: fields, search: this.searchWordsOf(table, fields) }]);
+    else await this.tx.execute(`UPDATE "${table}" SET "doc" = ${this.dialect.jsonParam} WHERE "_id" = ?`, [json, id]);
     await this.syncSearch(table, id, fields);
     this.written(table, { ...fields, _id: id }, old);
   }
@@ -997,9 +1057,10 @@ export class DocStore {
   async delete(id: string) {
     const table = this.parseId(id);
     if (!this.writes) throw new Error("Database is read-only in queries");
-    const [row] = await this.tx.query(`${SELECT} "${table}" WHERE "_id" = ?`, [id]);
+    const [row] = this.mongo ? await this.mongo.find(table, { filter: { _id: id }, limit: 1 }) : await this.tx.query(`${SELECT} "${table}" WHERE "_id" = ?`, [id]);
     if (!row) return;
-    await this.tx.execute(`DELETE FROM "${table}" WHERE "_id" = ?`, [id]);
+    if (this.mongo) await this.mongo.delete(table, id);
+    else await this.tx.execute(`DELETE FROM "${table}" WHERE "_id" = ?`, [id]);
     await this.syncSearch(table, id, undefined);
     this.written(table, this.toDoc(row));
   }
@@ -1008,6 +1069,11 @@ export class DocStore {
   async truncate(table: string) {
     if (!this.writes) throw new Error("Database is read-only in queries");
     const t = this.table(table);
+    if (this.mongo) {
+      await this.mongo.clear(table);
+      this.written(table, { _id: "" });
+      return;
+    }
     await this.tx.execute(`DELETE FROM "${table}"`);
     // Postgres searches a GIN index over the table itself; SQLite keeps an FTS table next to it.
     if (this.dialect.name === "sqlite") for (const index of Object.keys(t.searchIndexes ?? {})) await this.tx.execute(`DELETE FROM "${ftsTable(table, index)}"`);
@@ -1018,7 +1084,8 @@ export class DocStore {
   async restore(table: string, _id: string, _creationTime: number, value: Record<string, unknown>) {
     if (tableOf(_id) !== table) throw new ValidationError(`Id ${_id} doesn't belong to table "${table}"`);
     const { fields, json } = this.checked(table, value);
-    await this.tx.execute(`INSERT INTO "${table}" ("_id", "_creationTime", "doc") VALUES (?, ?, ${this.dialect.jsonParam})`, [_id, _creationTime, json]);
+    if (this.mongo) await this.mongo.insert(table, [{ _id, _creationTime, doc: fields, ...this.searchWordsOf(table, fields) }]);
+    else await this.tx.execute(`INSERT INTO "${table}" ("_id", "_creationTime", "doc") VALUES (?, ?, ${this.dialect.jsonParam})`, [_id, _creationTime, json]);
     await this.syncSearch(table, _id, fields);
     this.written(table, { ...fields, _id });
   }

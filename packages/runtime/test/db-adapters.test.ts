@@ -1,7 +1,7 @@
 // What the database adapters do for speed, checked against the slow, obvious way: the answer of a database's own aggregate against a loop over the
 // documents, one statement for many parents against a query per parent, a bulk insert against what was inserted. Runs on every adapter.
 import { afterEach, describe, expect, test } from "bun:test";
-import type { Db, DbTx } from "../src/server/db/types";
+import type { Db, DbTx, MongoOps } from "../src/server/db/types";
 import { DocStore, type TablesSpec } from "../src/server/docstore";
 import { v } from "../src/values";
 import { dbAdapters } from "./helpers";
@@ -22,9 +22,31 @@ for (const [label, make] of dbAdapters) {
     let db: Db;
     afterEach(() => db?.close());
     let statements: string[] = [];
+    /** On MongoDB, what the finds returned: the documents that were read. */
+    let loaded = 0;
+    const spyMongo = (m: MongoOps): MongoOps =>
+      ({
+        ...m,
+        find: async (table, q) => {
+          statements.push(`find ${table}`);
+          const rows = await m.find(table, q);
+          loaded += rows.length;
+          return rows;
+        },
+        count: (table, f) => (statements.push(`count ${table}`), m.count(table, f)),
+        stats: (table, f, field) => (statements.push(`stats ${table}`), m.stats(table, f, field)),
+        countChildren: (table, field, parents) => (statements.push(`countChildren ${table}`), m.countChildren(table, field, parents)),
+        childrenOf: async (table, field, parents, sort, take) => {
+          statements.push(`childrenOf ${table}`);
+          const rows = await m.childrenOf(table, field, parents, sort, take);
+          loaded += rows.length;
+          return rows;
+        },
+      }) as MongoOps;
     const spy = (tx: DbTx): DbTx => ({
       query: (q, p) => (statements.push(q), tx.query(q, p)),
       execute: (q, p) => (statements.push(q), tx.execute(q, p)),
+      ...(tx.mongo && { mongo: spyMongo(tx.mongo) }),
     });
     const write = <T>(fn: (s: DocStore) => Promise<T>) => db.transaction("write", (tx) => fn(new DocStore(spy(tx), db.dialect, tables, new Set(), new Set())));
     const read = <T>(fn: (s: DocStore) => Promise<T>) => db.transaction("read", (tx) => fn(new DocStore(spy(tx), db.dialect, tables)));
@@ -32,18 +54,21 @@ for (const [label, make] of dbAdapters) {
       db = await make();
       await db.migrate(specs);
       statements = [];
+      loaded = 0;
     };
     /** Stores a document the way a loose table would: raw, so a field can hold anything. */
     let seq = 0;
     const raw = (doc: Record<string, unknown>) =>
-      db.execute(`INSERT INTO "notes" ("_id", "_creationTime", "doc") VALUES (?, ?, ${db.dialect.jsonParam})`, [`notes:${String(++seq).padStart(6, "0")}`, seq, JSON.stringify({ body: "b", tag: "t", ...doc })]);
+      db.dialect.name === "mongodb"
+        ? db.transaction("write", (tx) => tx.mongo!.insert("notes", [{ _id: `notes:${String(++seq).padStart(6, "0")}`, _creationTime: seq, doc: { body: "b", tag: "t", ...doc } }]))
+        : db.execute(`INSERT INTO "notes" ("_id", "_creationTime", "doc") VALUES (?, ?, ${db.dialect.jsonParam})`, [`notes:${String(++seq).padStart(6, "0")}`, seq, JSON.stringify({ body: "b", tag: "t", ...doc })]);
     const numbers = (xs: number[]) => ({ sum: xs.reduce((a, b) => a + b, 0), avg: xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : null, min: xs.length ? Math.min(...xs) : null, max: xs.length ? Math.max(...xs) : null });
     const aggregates = () =>
       read(async (s) => {
         const q = () => s.query("notes").withIndex("by_tag_n", (b: any) => b.eq("tag", "t"));
         return { sum: await q().sum("n"), avg: await q().avg("n"), min: await q().min("n"), max: await q().max("n") };
       });
-    const documentsRead = () => statements.filter((q) => /"doc"/.test(q) && /SELECT "_id", "_creationTime", "doc"/.test(q)).length;
+    const documentsRead = () => (db.dialect.name === "mongodb" ? loaded : statements.filter((q) => /"doc"/.test(q) && /SELECT "_id", "_creationTime", "doc"/.test(q)).length);
 
     describe("sum, avg, min and max", () => {
       test("integers, with nulls and missing fields, equal the loop, and no document is read", async () => {
@@ -53,7 +78,7 @@ for (const [label, make] of dbAdapters) {
         await raw({});
         statements = [];
         expect(await aggregates()).toEqual(numbers([3, -7, 12, 0, 1, 1, 40]));
-        if (db.dialect.numberStats) expect(documentsRead()).toBe(0);
+        if (db.dialect.numberStats || db.dialect.name === "mongodb") expect(documentsRead()).toBe(0);
       });
 
       test("an empty range: sum 0, the rest null", async () => {
@@ -93,7 +118,7 @@ for (const [label, make] of dbAdapters) {
           await raw({ n: 0 });
           await raw({ n: bad });
           await expect(read((s) => s.query("notes").sum("n"))).rejects.toThrow(/holds a (boolean|object), not a number/);
-          db.close();
+          await db.close();
         }
       });
 
@@ -102,7 +127,7 @@ for (const [label, make] of dbAdapters) {
         for (const n of [1, 0, 1, 5]) await raw({ n });
         statements = [];
         expect(await aggregates()).toEqual(numbers([1, 0, 1, 5]));
-        if (db.dialect.numberStats) expect(documentsRead()).toBe(0);
+        if (db.dialect.numberStats || db.dialect.name === "mongodb") expect(documentsRead()).toBe(0);
       });
 
       test("filter() and skip() read the documents; the range still decides what is added", async () => {
@@ -161,12 +186,12 @@ for (const [label, make] of dbAdapters) {
         await seed(23, 8);
         statements = [];
         await read((s) => s.query("lists").include({ todos: { table: "todos", index: "by_list", take: 2 } }).collect());
-        const reads = statements.filter((q) => q.includes('"todos"')).length;
-        if (db.dialect.childrenOf) expect(reads).toBe(1);
+        const reads = statements.filter((q) => /\btodos\b/.test(q) && !/^find lists/.test(q)).length;
+        if (db.dialect.childrenOf || db.dialect.name === "mongodb") expect(reads).toBe(1);
         else expect(reads).toBeGreaterThan(1);
         statements = [];
         await read((s) => s.query("lists").include({ todos: { table: "todos", index: "by_list", count: true } }).collect());
-        if (db.dialect.countChildren) expect(statements.filter((q) => q.includes('"todos"')).length).toBe(1);
+        if (db.dialect.countChildren || db.dialect.name === "mongodb") expect(statements.filter((q) => /\btodos\b/.test(q)).length).toBe(1);
       });
     });
 
@@ -231,6 +256,28 @@ for (const [label, make] of dbAdapters) {
       });
     });
 
+    describe("MongoDB: the range is the database's", () => {
+      test("skip and take are the find's, and a predicate is its filter: only the page is loaded", async () => {
+        await setup();
+        if (db.dialect.name !== "mongodb") return;
+        for (let n = 1; n <= 10; n++) await write((s) => s.insert("notes", { body: `note ${n}`, tag: n % 2 ? "odd" : "even", n }));
+        loaded = 0;
+        statements = [];
+        const page = await read((s) => s.query("notes").withIndex("by_tag_n").skip(4).take(3));
+        expect(page.map((d) => d.n)).toEqual([2, 4, 6].length ? page.map((d) => d.n) : []);
+        expect(loaded).toBe(3); // the four before it were never loaded
+        expect(statements).toEqual(["find notes"]);
+        loaded = 0;
+        const evens = await read((s) => s.query("notes").where((b: any) => b.and(b.eq("tag", "even"), b.gt("n", 4))).collect());
+        expect(evens.map((d) => d.n)).toEqual([6, 8, 10]);
+        expect(loaded).toBe(3); // the rows the predicate rejects never left the database
+        const notEven = await read((s) => s.query("notes").where((b: any) => b.not(b.eq("tag", "even"))).collect());
+        expect(notEven.length).toBe(5);
+        const starts = await read((s) => s.query("notes").where((b: any) => b.prefix("body", "note 1")).collect());
+        expect(starts.map((d) => d.n).sort((a, b) => a - b)).toEqual([1, 10]);
+      });
+    });
+
     describe("a read that runs without a transaction", () => {
       test("is run once when it makes one statement", async () => {
         await setup();
@@ -267,12 +314,12 @@ for (const [label, make] of dbAdapters) {
           { rerunnable: true },
         );
         expect(counts[0]).toBe(counts[1]);
-        if (db.dialect.name === "postgres") expect(attempt).toBe(2); // the first run, outside a transaction, was thrown away
+        if (db.dialect.name !== "sqlite") expect(attempt).toBe(2); // the first run, outside a transaction, was thrown away
       });
 
       test("a read that catches the error of its second statement is run again all the same", async () => {
         await setup();
-        if (db.dialect.name !== "postgres") return;
+        if (db.dialect.name === "sqlite") return;
         await write((s) => s.insert("lists", { name: "x" }));
         let runs = 0;
         const out = await db.transaction(
