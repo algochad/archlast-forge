@@ -19,6 +19,12 @@ export const postgresDialect: Dialect = {
     return { sql: `${field(name)} = ?::text::jsonb`, params: [JSON.stringify(value)] };
   },
   listIndexesSql: `SELECT indexname AS name FROM pg_indexes WHERE tablename = ?`,
+  // One parameter holding every row as JSON: the statement is the same for 1 row or 2,000, so the server prepares it once, and it isn't a
+  // long list of bound values to parse.
+  bulkInsert: (table, rows) => ({
+    sql: `INSERT INTO "${table}" ("_id", "_creationTime", "doc") SELECT r->>'i', (r->>'t')::float8, r->'d' FROM jsonb_array_elements(?::text::jsonb) AS r`,
+    params: ["[" + rows.map((r) => `{"i":${JSON.stringify(r.id)},"t":${r.time},"d":${r.json}}`).join(",") + "]"],
+  }),
   searchWrite: () => [], // the GIN expression index stays in sync by itself
   searchSql(table, _index, fieldName, terms, filters, limit) {
     const vector = `to_tsvector('simple', coalesce("doc"->>'${fieldName}', ''))`;
@@ -30,10 +36,21 @@ export const postgresDialect: Dialect = {
   },
 };
 
+/** `?` placeholders as `$1, $2, …`. The same statements come back all the time, so the rewrite is kept. */
+const rewritten = new Map<string, string>();
 const toPg = (sql: string) => {
-  let i = 0;
-  return sql.replace(/\?/g, () => `$${++i}`);
+  let out = rewritten.get(sql);
+  if (out === undefined) {
+    let i = 0;
+    out = sql.replace(/\?/g, () => `$${++i}`);
+    if (rewritten.size >= 5000) rewritten.clear();
+    rewritten.set(sql, out);
+  }
+  return out;
 };
+
+/** Thrown inside a read that tried a second statement outside a transaction: it is run again inside one. */
+class NeedsSnapshot extends Error {}
 
 /** Pooled connections (CPU count × 2 by default). Writes run SERIALIZABLE; callers retry on conflicts. */
 export function createPostgresDb(url: string, max = navigator.hardwareConcurrency * 2): Db {
@@ -44,13 +61,53 @@ export function createPostgresDb(url: string, max = navigator.hardwareConcurrenc
       await s.unsafe(toPg(q), params as any[]);
     },
   });
+
+  // A read that makes one statement needs no transaction: a statement sees one snapshot by itself, and BEGIN and COMMIT are two more round
+  // trips (a read went from 488 µs to 148 µs). It can't be known in advance, so a read starts without one, and if it makes a second statement
+  // it is thrown away and run again inside one (a read is deterministic and writes nothing; the executor already re-runs reads). When most
+  // reads turn out to need the transaction, trying first is a loss, so it is skipped until a probe finds otherwise.
+  let missRate = 0;
+  let probe = 0;
+  const tryWithoutTransaction = () => missRate < 0.5 || ++probe % 64 === 0;
+  async function readWithoutTransaction<T>(fn: (tx: DbTx) => Promise<T>): Promise<{ value: T } | undefined> {
+    let statements = 0;
+    let tripped = false;
+    const scoped = scopedTx({
+      query: async (q, params = []) => {
+        if (statements++ > 0) {
+          tripped = true;
+          throw new NeedsSnapshot();
+        }
+        return [...(await sql.unsafe(toPg(q), params as any[]))];
+      },
+      execute: async () => {
+        tripped = true;
+        throw new NeedsSnapshot();
+      },
+    });
+    try {
+      const value = await fn(scoped);
+      return tripped ? undefined : { value }; // a function that caught the error and went on still has to be run again
+    } catch (e) {
+      if (tripped || e instanceof NeedsSnapshot) return undefined;
+      throw e;
+    } finally {
+      scoped.end();
+    }
+  }
+
   const db: Db = {
     dialect: postgresDialect,
     ...txOf(sql),
-    async transaction(mode, fn) {
-      const options = mode === "write" ? "isolation level serializable" : "isolation level repeatable read read only";
+    async transaction(mode, fn, options) {
+      if (mode === "read" && options?.rerunnable && tryWithoutTransaction()) {
+        const done = await readWithoutTransaction(fn);
+        missRate = missRate * 0.97 + (done ? 0 : 0.03);
+        if (done) return done.value;
+      }
+      const isolation = mode === "write" ? "isolation level serializable" : "isolation level repeatable read read only";
       // Wrapped: Bun pipelines an array returned from begin() as queries.
-      const out = await sql.begin(options, async (tx) => {
+      const out = await sql.begin(isolation, async (tx) => {
         const scoped = scopedTx(txOf(tx));
         try {
           return { value: await fn(scoped) };

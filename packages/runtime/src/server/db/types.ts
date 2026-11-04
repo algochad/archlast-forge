@@ -23,6 +23,11 @@ export interface Dialect {
   /** Placeholder for a value compared with `field()`, and how to encode that value. */
   valueParam: string;
   encode(value: unknown): unknown;
+  /**
+   * Inserts many documents in one statement whose text doesn't change with their number (so the server prepares it once), when the database
+   * has a cheaper way than a long list of `?`. `json` is each document's JSON text. Absent: DocStore writes a multi-row VALUES.
+   */
+  bulkInsert?(table: string, rows: { id: string; time: number; json: string }[]): { sql: string; params: unknown[] };
   /** Statements keeping a search index in sync when a document is written; `text` undefined removes it. */
   searchWrite(table: string, index: string, id: string, text: string | undefined): { sql: string; params: unknown[] }[];
   /** Matching ids by relevance; `terms` are lowercase words, the last matched as a prefix. */
@@ -38,10 +43,18 @@ export interface TableSpec {
   searchIndexes?: Record<string, { searchField: string; filterFields: readonly string[] }>;
 }
 
+export interface TransactionOptions {
+  /**
+   * The function may be run more than once: it is deterministic and does nothing outside the database (a query is). A read may then start
+   * without a transaction and be run again inside one if it needs a snapshot; the default is exactly one run.
+   */
+  rerunnable?: boolean;
+}
+
 export interface Db extends DbTx {
   readonly dialect: Dialect;
   /** Read transactions see one consistent snapshot; write transactions are serializable and may be retried. */
-  transaction<T>(mode: "read" | "write", fn: (tx: DbTx) => Promise<T>): Promise<T>;
+  transaction<T>(mode: "read" | "write", fn: (tx: DbTx) => Promise<T>, options?: TransactionOptions): Promise<T>;
   /** Creates document tables and syncs their indexes. Documents are JSON, so fields need no migration. */
   migrate(tables: TableSpec[]): Promise<void>;
   close(): Promise<void>;

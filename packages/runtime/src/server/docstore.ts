@@ -829,12 +829,18 @@ export class DocStore {
   /** Writes documents already validated: one INSERT per 200 rows, each with a fresh id and a creation time after the last. */
   private async insertChecked(table: string, rows: { fields: Record<string, unknown>; json: string }[]) {
     const docs = rows.map((r) => ({ ...r, _id: `${table}:${crypto.randomUUID().replaceAll("-", "")}`, _creationTime: creationTime() }));
-    for (let i = 0; i < docs.length; i += 200) {
-      const part = docs.slice(i, i + 200);
-      await this.tx.execute(
-        `INSERT INTO "${table}" ("_id", "_creationTime", "doc") VALUES ${part.map(() => `(?, ?, ${this.dialect.jsonParam})`).join(", ")}`,
-        part.flatMap((d) => [d._id, d._creationTime, d.json]),
-      );
+    const bulk = this.dialect.bulkInsert;
+    const size = bulk ? 2000 : 200;
+    for (let i = 0; i < docs.length; i += size) {
+      const part = docs.slice(i, i + size);
+      if (bulk) {
+        const q = bulk(table, part.map((d) => ({ id: d._id, time: d._creationTime, json: d.json })));
+        await this.tx.execute(q.sql, q.params);
+      } else
+        await this.tx.execute(
+          `INSERT INTO "${table}" ("_id", "_creationTime", "doc") VALUES ${part.map(() => `(?, ?, ${this.dialect.jsonParam})`).join(", ")}`,
+          part.flatMap((d) => [d._id, d._creationTime, d.json]),
+        );
     }
     for (const d of docs) {
       await this.syncSearch(table, d._id, d.fields);
