@@ -388,3 +388,32 @@ All on the same disk with its changing sync time, so the pairs are the point, no
 - It shows that durable commits do not have to stop the runtime: reads and fan-out are unchanged, and on a fast-syncing disk inserts match the non-durable ones.
 - It does not show a stable number for durable inserts on this machine: the same code did 12,939 and 3,535 inserts/s depending on the disk's sync time. On a server whose disk syncs in 0.1–0.5 ms I expect less loss than shown here, but **I did not measure any other disk**.
 - One run per configuration for the read and fan-out cases; three runs, interleaved, for the writes; one machine, one filesystem (btrfs on an encrypted volume).
+
+## 8. Addendum: performance after the ACID changes
+
+A later change made MongoDB mutations serializable (a mutation that scans, or reads a document it does not write, also writes one shared guard document), made Better Auth's multi-step flows and `import` single transactions, and added a retry queue. It had to leave the speed above as it was, so I ran the write cases with and without the change, taking turns and swapping who goes first, since this disk's sync time drifts (section 7). Raw data: [`results-acid/`](convex/results-acid/). One disk, one machine; no run was discarded.
+
+**MongoDB**, insert (C) and toggle (D), closed loop with 64 connections, req/s, per run, three runs each, in two orders (the first run of a pair is usually the fast one whichever code goes first, which is the drift):
+
+| Case | Config | Old code first: old / new | New code first: new / old |
+| --- | --- | --- | --- |
+| C | default | 8,422 / 2,658 / 2,841 and 2,585 / 2,663 / 2,182 | 8,645 / 2,954 / 2,988 and 2,524 / 2,901 / 2,408 |
+| D | default | 1,762 / 655 / 736 and 744 / 827 / 789 | 2,038 / 741 / 679 and 687 / 764 / 741 |
+| C | `RUNTIME_WORKERS=2` | 7,117 / 2,504 / 2,770 and 2,442 / 2,077 / 1,990 | 2,688 / 2,536 / 2,972 and 2,418 / 2,746 / 2,609 |
+| D | `RUNTIME_WORKERS=2` | 1,698 / 1,270 / 1,256 and 1,177 / 1,468 / 811 | 1,909 / 1,467 / 1,331 and 1,235 / 1,281 / 1,097 |
+
+(Each cell reads "old code's three runs, then new code's three runs" in the first order, and "new, then old" in the second.) The medians of the two codes are within the spread of either. This is expected: a test (`acid.test.ts`) checks that blind inserts and read-modify-write never write the guard, so these two cases never take the new path. A mutation that does scan pays for it by conflicting with other scanning mutations; that cost was not benchmarked, because the harness has no such case.
+
+**Postgres**, toggle (D) and insert (C), `forge-postgres-default`, old code, new, new, old and so on. This is where the first version of the change was caught: it queued every retried mutation (needed on MongoDB), and on Postgres the toggle's 99th percentile went from about 0.3 s to about 1.5 s at the same throughput, because retried transactions stopped sharing commits. Restricting the queue to MongoDB restored it:
+
+| | D req/s, p99 ms (new / old) | C req/s, p99 ms (new / old) |
+| --- | --- | --- |
+| queue on every database | 523, 1,429 and 506, 1,545 / 549, 310 and 538, 364 | 530, 170 and 299, 4,429 / 517, 238 and 559, 160 |
+| queue from the third attempt | 518, 1,607 and 534, 1,811 / 544, 322 and 544, 354 | 462, 274 and 528, 277 / 534, 245 and 569, 228 |
+| **as shipped** (MongoDB only) | 520, 350 and 465, 418 / 509, 352 and 477, 373 | 551, 170 and 454, 371 / 515, 189 and 531, 236 |
+
+The price of not queueing on Postgres is that under extreme contention (200 concurrent increments of one document) some mutations run out of their ten attempts and are answered with the conflict, as before; the tests assert that none is lost among those that were answered.
+
+**SQLite and the rest, one run with all the changes** (the disk synced in about 5.4 ms): cached reads 72,637 req/s, uncached 21,937, inserts 11,680, toggles 19,850, fan-out p99 124 ms; against 74,970, 22,837, 12,939, 21,472 and 119 in section 7.2 (a disk that synced in about 1.2 ms). Postgres in the same run: cached 73,988, uncached 16,191, inserts 574, toggles 580, the disk-bound cases the same as the old code in the same state above. Neither engine's hot path changed.
+
+**One failing test, not from this change.** `the engine on Postgres > the telemetry store…` in `telemetry.test.ts` fails here: the engine's default pools (reads 32 and writes 64 on 16 cores, plus telemetry) are about 99 connections against Postgres's `max_connections = 100`, and "too many clients already" follows. It fails the same way on pristine `origin/staging` in this environment and passes with `DATABASE_POOL_SIZE=8`. I did not change it.

@@ -42,6 +42,8 @@ const DATA = process.env.DATA_ROOT ?? join(CACHE, "data");
 const CONVEX_OPT = { APPLICATION_MAX_CONCURRENT_QUERIES: "64", APPLICATION_MAX_CONCURRENT_MUTATIONS: "64", RUST_LOG: "warn" };
 const PG_TUNED = { shared_buffers: "'1GB'", effective_cache_size: "'4GB'", random_page_cost: "1.1", jit: "off", wal_compression: "on", max_connections: "200" };
 
+/** The port archlast-forge (and the control) listen on; BENCH_PORT when something else of yours already uses 3100. */
+const BENCH_PORT = Number(process.env.BENCH_PORT ?? 3100);
 const CONFIGS = [
   { id: "forge-sqlite-default", sys: "forge", db: "sqlite", env: {} },
   { id: "forge-sqlite-normal", sys: "forge", db: "sqlite", env: { SQLITE_SYNCHRONOUS: "NORMAL" } },
@@ -113,7 +115,7 @@ class System {
     this.cfg = cfg;
     this.phaseEnv = phaseEnv;
     this.tag = `${cfg.id}.${runTag}`;
-    this.port = cfg.sys === "forge" ? 3100 : cfg.sys === "convex" ? 3210 : 3100;
+    this.port = cfg.sys === "forge" ? BENCH_PORT : cfg.sys === "convex" ? 3210 : BENCH_PORT;
     this.base = `http://127.0.0.1:${this.port}`;
     this.logFile = join(LOGS, `${this.tag}.log`);
     this.dir = join(DATA, cfg.id);
@@ -184,6 +186,7 @@ class System {
   async query(path, a) {
     if (this.cfg.sys === "forge") {
       const r = await (await fetch(`${this.base}/rpc/${path}?args=${encodeURIComponent(JSON.stringify(a))}`)).json();
+      if (!("result" in r)) throw new Error(`${path} failed: ${JSON.stringify(r)}`);
       return r.result;
     }
     const r = await (await fetch(`${this.base}/api/query`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ path, args: a, format: "json" }) })).json();
@@ -344,10 +347,10 @@ async function main() {
 
 async function controlRun(run) {
   // control.ts: Bun.serve with a fixed 20-document body, on the server cores; the same load generator and rates
-  const p = spawn("taskset", ["-c", CORES.server, "bun", join(LOAD, "control.ts")], { env: { ...process.env, PORT: "3100" }, stdio: ["ignore", "pipe", "inherit"] });
+  const p = spawn("taskset", ["-c", CORES.server, "bun", join(LOAD, "control.ts")], { env: { ...process.env, PORT: String(BENCH_PORT) }, stdio: ["ignore", "pipe", "inherit"] });
   await new Promise((r) => p.stdout.on("data", (d) => String(d).includes("READY") && r()));
-  const sys = { port: 3100, lists: [], todos: [], cfg: { sys: "forge" } };
-  const mk = (extra) => ({ ...process.env, PORTS: "3100", CONNS: "64", SECONDS: String(SECONDS), REQ_PATH: "/", OK_BODY: '"result"', ...extra });
+  const sys = { port: BENCH_PORT, lists: [], todos: [], cfg: { sys: "forge" } };
+  const mk = (extra) => ({ ...process.env, PORTS: String(BENCH_PORT), CONNS: "64", SECONDS: String(SECONDS), REQ_PATH: "/", OK_BODY: '"result"', ...extra });
   for (const [name, extra] of [["closed", { RATE: "" }], ["open2000", { RATE: "2000" }]]) {
     await new Promise((resolve) => { const l = spawn("taskset", ["-c", CORES.load, "node", join(LOAD, "load.mjs")], { env: mk(extra) }); l.stdout.on("data", () => {}); l.on("close", resolve); });
     const c0 = cpu();
