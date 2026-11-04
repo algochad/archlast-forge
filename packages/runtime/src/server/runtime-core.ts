@@ -207,6 +207,17 @@ export async function startCore(opts: {
   const db = config.databaseUrl
     ? createPostgresDb(config.databaseUrl, config.databasePoolSize, config.databaseWritePoolSize)
     : createSqliteDb(sqlitePath(config), undefined, serverMemory() / config.runtimeWorkers);
+  if (config.databaseUrl && worker === 0)
+    // Pools open their connections as load needs them, but a busy server can reach the maximum: say if that is more than Postgres allows.
+    void db.query<{ max_connections: string }>("SHOW max_connections").then(
+      ([row]) => {
+        const allowed = Number(row?.max_connections);
+        const most = config.runtimeWorkers * (config.databasePoolSize + config.databaseWritePoolSize) + 3;
+        if (allowed && most > allowed)
+          console.warn(`Postgres allows ${allowed} connections and this server may open up to ${most} (RUNTIME_WORKERS ${config.runtimeWorkers} x (DATABASE_POOL_SIZE ${config.databasePoolSize} + DATABASE_WRITE_POOL_SIZE ${config.databaseWritePoolSize}) + 3), without counting other servers: lower the pools or raise max_connections.`);
+      },
+      () => {},
+    );
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);
