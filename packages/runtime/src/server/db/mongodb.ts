@@ -3,6 +3,7 @@
 // the fields so a range, an order and a keyset page are served by one index. There is no SQL: DocStore builds filters and sorts (see MongoOps) where it
 // builds statements for the others. Transactions need a replica set (a single node is one: `--replSet rs0` and `rs.initiate()`).
 import { MongoClient, type AnyBulkWriteOperation, type ClientSession, type Document } from "mongodb";
+import { pointReads } from "./coalesce";
 import { hashName, PREFIX } from "./migrate";
 import { searchField, searchWords } from "./mongodb-search";
 import { scopedTx, type Db, type DbTx, type Dialect, type MongoFilter, type MongoOps, type NumberStats, type Row } from "./types";
@@ -27,7 +28,7 @@ export const mongoDialect: Dialect = {
 class NeedsSnapshot extends Error {}
 
 export function createMongoDb(url: string, options: { database?: string; maxPoolSize?: number } = {}): Db {
-  const client = new MongoClient(url, { ignoreUndefined: true, maxPoolSize: options.maxPoolSize ?? Math.max(10, navigator.hardwareConcurrency * 4), retryWrites: true });
+  const client = new MongoClient(url, { ignoreUndefined: true, enableUtf8Validation: false, maxPoolSize: options.maxPoolSize ?? Math.max(10, navigator.hardwareConcurrency * 4), retryWrites: true });
   const connected = client.connect();
   const dbName = options.database ?? (new URL(url.replace(/^mongodb(\+srv)?:/, "http:")).pathname.slice(1) || "forge");
   const database = client.db(dbName);
@@ -37,6 +38,13 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
     const fields = searchIndexes.get(table);
     return fields?.length ? { projection: Object.fromEntries(fields.map((f) => [f, 0])) } : {};
   };
+
+  // get(id) outside a transaction: those that arrive while every connection is busy go out together as one find with $in.
+  const point = pointReads<Row>(
+    options.maxPoolSize ?? Math.max(10, navigator.hardwareConcurrency * 4),
+    async (table, id) => (await database.collection<any>(table).find({ _id: id }, { ...hide(table), limit: 1 }).toArray())[0] as Row | undefined,
+    async (table, ids) => new Map((await database.collection<any>(table).find({ _id: { $in: ids } }, hide(table)).toArray()).map((r) => [r._id as string, r as Row])),
+  );
 
   /** The operations of one transaction (its session), or, without a session, of a read made outside one. */
   const opsOf = (session: ClientSession | undefined, before?: () => void): MongoOps => {
@@ -55,7 +63,14 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
         return run;
       };
     return {
-      find: guard(async (table, q) => (await col(table).find(q.filter, { ...s, ...hide(table), sort: q.sort as never, limit: q.limit, skip: q.skip, allowDiskUse: true }).toArray()) as Row[]),
+      find: guard(async (table, q) => {
+        const keys = Object.keys(q.filter);
+        if (!session && q.limit === 1 && !q.sort && !q.skip && keys.length === 1 && keys[0] === "_id" && typeof q.filter._id === "string") {
+          const row = await point(table, q.filter._id);
+          return row ? [row] : [];
+        }
+        return (await col(table).find(q.filter, { ...s, ...hide(table), sort: q.sort as never, limit: q.limit, skip: q.skip, allowDiskUse: true }).toArray()) as Row[];
+      }),
       count: guard((table, filter) => col(table).countDocuments(filter, s)),
       stats: guard(async (table, filter, field): Promise<NumberStats | undefined> => {
         const v = `$doc.${field}`;

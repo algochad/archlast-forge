@@ -26,7 +26,7 @@ async function open(): Promise<Db> {
   if (kind === "postgres") return createPostgresDb(process.env.DATABASE_URL ?? "postgres://forge:forge@localhost:55432/forge", Number(process.env.POOL) || undefined);
   if (kind === "mongodb") {
     const { createMongoDb } = await import("../../packages/runtime/src/server/db/mongodb");
-    return createMongoDb(process.env.DATABASE_URL ?? "mongodb://localhost:57017/?replicaSet=rs0", { database: "bench" + Date.now() });
+    return createMongoDb(process.env.DATABASE_URL ?? "mongodb://localhost:57017/?replicaSet=rs0&directConnection=true", { database: "bench" + Date.now() });
   }
   throw new Error(`DB=${kind}?`);
 }

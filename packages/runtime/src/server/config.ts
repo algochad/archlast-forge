@@ -74,6 +74,8 @@ export interface Config {
   databaseUrl?: string;
   /** Postgres connections each function-runtime process may open (DATABASE_POOL_SIZE); twice the CPU cores by default. */
   databasePoolSize: number;
+  /** Postgres connections for write transactions (DATABASE_WRITE_POOL_SIZE); twice DATABASE_POOL_SIZE by default. */
+  databaseWritePoolSize: number;
   redisUrl?: string;
   /**
    * What the engine's Redis keys and channels start with (REDIS_PREFIX, else from the service name: see redisPrefixOf). Servers of one service
@@ -225,6 +227,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     dataDir: env.DATA_DIR ?? "./data",
     databaseUrl,
     databasePoolSize: int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1),
+    databaseWritePoolSize: int("DATABASE_WRITE_POOL_SIZE", int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1) * 2, 1),
     redisUrl: env.REDIS_URL || undefined,
     redisPrefix: redisPrefixOf(env),
     s3: s3Of(env, "S3_"),

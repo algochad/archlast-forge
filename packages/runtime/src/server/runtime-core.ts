@@ -205,7 +205,7 @@ export async function startCore(opts: {
   if (!config.databaseUrl) mkdirSync(config.dataDir, { recursive: true });
   // Every function runtime process holds its own connections, so they share the RAM SQLite is given.
   const db = config.databaseUrl
-    ? createPostgresDb(config.databaseUrl, config.databasePoolSize)
+    ? createPostgresDb(config.databaseUrl, config.databasePoolSize, config.databaseWritePoolSize)
     : createSqliteDb(sqlitePath(config), undefined, serverMemory() / config.runtimeWorkers);
   await migrateSystem(db);
   await loadEnv(db);

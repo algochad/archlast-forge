@@ -1,6 +1,7 @@
 import { SQL } from "bun";
+import { pointReads } from "./coalesce";
 import { indexPlan, PREFIX, tableDDL } from "./migrate";
-import { scopedTx, type Db, type DbTx, type Dialect } from "./types";
+import { scopedTx, type Db, type DbTx, type Dialect, type Row } from "./types";
 
 const field = (name: string) => `"doc"->'${name}'`;
 /** A field to compare with an id: `_id` is a column, anything else a document field. */
@@ -81,9 +82,15 @@ const toPg = (sql: string) => {
 /** Thrown inside a read that tried a second statement outside a transaction: it is run again inside one. */
 class NeedsSnapshot extends Error {}
 
-/** Pooled connections (CPU count × 2 by default). Writes run SERIALIZABLE; callers retry on conflicts. */
-export function createPostgresDb(url: string, max = navigator.hardwareConcurrency * 2): Db {
+/**
+ * Pooled connections: `max` for reads (CPU count × 2 by default) and `writeMax` for write transactions (twice that). Writes run SERIALIZABLE;
+ * callers retry on conflicts. A write waits for its commit and for the round trips of its statements, which more connections hide (6,100 patches a
+ * second on 32 connections against 4,200 on 8), where a read is quick and a crowd of connections only competes for the CPU (47,000 reads a second
+ * on 8 connections against 33,000 on 32). So they are separate pools. Connections open when they are needed, so a large maximum costs nothing idle.
+ */
+export function createPostgresDb(url: string, max = navigator.hardwareConcurrency * 2, writeMax = max * 2): Db {
   const sql = new SQL(url, { max });
+  const writer = writeMax === max ? sql : new SQL(url, { max: writeMax });
   const txOf = (s: SQL): DbTx => ({
     query: async (q, params = []) => [...(await s.unsafe(toPg(q), params as any[]))],
     execute: async (q, params = []) => {
@@ -95,6 +102,13 @@ export function createPostgresDb(url: string, max = navigator.hardwareConcurrenc
   // trips (a read went from 488 µs to 148 µs). It can't be known in advance, so a read starts without one, and if it makes a second statement
   // it is thrown away and run again inside one (a read is deterministic and writes nothing; the executor already re-runs reads). When most
   // reads turn out to need the transaction, trying first is a loss, so it is skipped until a probe finds otherwise.
+  // And get(id) is the read there is most of: those that arrive while every connection is busy go out together as one statement.
+  const GET = /^SELECT "_id", "_creationTime", "doc" FROM "([^"]+)" WHERE "_id" = \?$/;
+  const point = pointReads<Row>(
+    max,
+    async (table, id) => (await sql.unsafe(toPg(`SELECT "_id", "_creationTime", "doc" FROM "${table}" WHERE "_id" = ?`), [id]))[0],
+    async (table, ids) => new Map((await sql.unsafe(`SELECT "_id", "_creationTime", "doc" FROM "${table}" WHERE "_id" = ANY (SELECT jsonb_array_elements_text($1::text::jsonb))`, [JSON.stringify(ids)])).map((r: Row) => [r._id as string, r])),
+  );
   let missRate = 0;
   let probe = 0;
   const tryWithoutTransaction = () => missRate < 0.5 || ++probe % 64 === 0;
@@ -106,6 +120,11 @@ export function createPostgresDb(url: string, max = navigator.hardwareConcurrenc
         if (statements++ > 0) {
           tripped = true;
           throw new NeedsSnapshot();
+        }
+        const get = GET.exec(q);
+        if (get && typeof params[0] === "string" && params.length === 1) {
+          const row = await point(get[1]!, params[0]);
+          return row ? [row] : [];
         }
         return [...(await sql.unsafe(toPg(q), params as any[]))];
       },
@@ -136,7 +155,7 @@ export function createPostgresDb(url: string, max = navigator.hardwareConcurrenc
       }
       const isolation = mode === "write" ? "isolation level serializable" : "isolation level repeatable read read only";
       // Wrapped: Bun pipelines an array returned from begin() as queries.
-      const out = await sql.begin(isolation, async (tx) => {
+      const out = await (mode === "write" ? writer : sql).begin(isolation, async (tx) => {
         const scoped = scopedTx(txOf(tx));
         try {
           return { value: await fn(scoped) };
@@ -173,7 +192,9 @@ export function createPostgresDb(url: string, max = navigator.hardwareConcurrenc
         conn.release();
       }
     },
-    close: () => sql.close(),
+    close: async () => {
+      await Promise.all([sql.close(), writer === sql ? undefined : writer.close()]);
+    },
   };
   return db;
 }
