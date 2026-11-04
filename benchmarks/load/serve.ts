@@ -26,12 +26,14 @@ if (!process.env.NO_SEED) {
     ((await (await fetch(`${srv.url}/rpc/${name}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args) })).json()) as any).result;
   // SEED_LISTS lists of 20 todos; LIST_FILE gets their ids, one a line (the first is the one every case uses).
   const lists: string[] = [];
+  const todos: string[] = [];
   for (let l = 0; l < Number(process.env.SEED_LISTS ?? 1); l++) {
     const list = await call("todos:createList", { name: `bench ${l}` });
-    for (let i = 0; i < 20; i++) await call("todos:add", { listId: list, title: `todo ${i}` });
+    for (let i = 0; i < 20; i++) todos.push(await call("todos:add", { listId: list, title: `todo ${i}` }));
     lists.push(list);
   }
   await Bun.write(process.env.LIST_FILE!, lists.join("\n"));
+  await Bun.write(process.env.LIST_FILE! + ".todos", todos.join("\n")); // for the patch case
 }
 const loop = monitorEventLoopDelay({ resolution: 1 });
 loop.enable();

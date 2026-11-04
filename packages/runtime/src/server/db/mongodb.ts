@@ -7,7 +7,7 @@ import { pointReads } from "./coalesce";
 import { hashName, PREFIX } from "./migrate";
 import { escapeRegex, searchField, searchWords } from "./mongodb-search";
 import { runSql, SYSTEM_TABLES } from "./mongodb-sql";
-import { scopedTx, type Db, type DbTx, type Dialect, type MongoFilter, type MongoOps, type NumberStats, type Row } from "./types";
+import { scopedTx, type Db, type DbTx, type Dialect, type MongoFilter, type MongoOps, type NumberStats, type Row, type TransactionOptions } from "./types";
 
 /** Not SQL: only the parts DocStore asks of a dialect while it is building statements that this adapter never runs. */
 export const mongoDialect: Dialect = {
@@ -57,34 +57,106 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
   );
 
   /**
-   * MongoDB runs one operation at a time in a transaction and refuses a second that overlaps it. Functions do overlap them (a Promise.all of
-   * gets is ordinary), so a transaction's operations are queued here, in the order they were asked for.
+   * What one transaction holds. A write transaction starts without a session, and a transaction costs MongoDB several commands (a start, a
+   * commit, a journal wait) where one document's write costs one, so it goes on without one for as long as it can stay correct:
+   *  - a blind insert of one document is only held;
+   *  - the first document read by id is read on its own (nothing else has been asked of the database, so one document is a consistent
+   *    snapshot), and kept: a second read of it costs nothing;
+   *  - a write of that document is held as a conditional one (the document must still be as it was read);
+   * and the transaction ends with at most one held write, which goes out as a single-document write (no transaction: one document is atomic by
+   * itself). Anything else (a second document read, a query, a second write, a read after a held write) needs the transaction: with nothing read
+   * yet it starts, writes what was held and goes on; with a document already read the function is run again inside one (`Optimistic` is
+   * thrown, and Executor.mutate runs the function again, as it does after a write conflict). A held write whose document changed meanwhile is a
+   * write conflict, which is retried like one inside a transaction. `tail` is the last operation queued.
    */
-  const serial = (session: ClientSession | undefined, before?: () => void) => {
-    let queue: Promise<unknown> = Promise.resolve();
-    return <A extends unknown[], R>(f: (...a: A) => Promise<R>) =>
+  type Held =
+    | { kind: "insert"; table: string; doc: Document }
+    | { kind: "replace"; table: string; id: string; old: unknown; doc: Record<string, unknown>; search?: Record<string, string[]> }
+    | { kind: "delete"; table: string; id: string; old: unknown };
+  interface Live {
+    session?: ClientSession;
+    /** Starts the transaction (a write transaction only). */
+    open?: () => Promise<void>;
+    /** Still going on without a transaction. */
+    optimistic: boolean;
+    held: Held[];
+    /** The documents read on their own, by table and id. */
+    observed: Map<string, Row | undefined>;
+    /** The documents read inside the transaction, so the second read of one is not a command. */
+    rows: Map<string, Row | undefined>;
+    /** The function was told it needs the transaction. */
+    tripped: boolean;
+    tail: Promise<unknown>;
+  }
+  const rowKey = (table: string, id: string) => `${table}\0${id}`;
+  /** The function has to be run again inside a transaction. */
+  class NeedsTransaction extends Error {}
+  const conflict = () => Object.assign(new Error("Write conflict: the document changed since it was read"), { code: 112, errorLabels: ["TransientTransactionError"] });
+  /** A document MongoDB can match by its stored value: no operator-looking key at its top. */
+  const matchable = (doc: unknown) => typeof doc === "object" && doc !== null && !Object.keys(doc).some((k) => k.startsWith("$"));
+
+  /** Something is asked of the database that a transaction is needed for. */
+  const need = async (live: Live) => {
+    if (live.session || !live.open) return;
+    if (live.optimistic && live.observed.size) {
+      live.tripped = true;
+      throw new NeedsTransaction();
+    }
+    await live.open();
+  };
+
+  /**
+   * MongoDB runs one operation at a time in a transaction and refuses a second that overlaps it. Functions do overlap them (a Promise.all of
+   * gets is ordinary), so a transaction's operations are queued here, in the order they were asked for. `lazy` ones run without starting the
+   * transaction.
+   */
+  const serial = (live: Live, before?: () => void) => {
+    return <A extends unknown[], R>(f: (...a: A) => Promise<R>, lazy = false) =>
       (...a: A): Promise<R> => {
         before?.();
-        if (!session) return f(...a);
-        const run = queue.then(() => f(...a));
-        queue = run.catch(() => {});
+        if (!live.session && !live.open) return f(...a);
+        const run = live.tail.then(async () => {
+          if (!lazy) await need(live);
+          return f(...a);
+        });
+        live.tail = run.catch(() => {});
         return run;
       };
   };
 
   /** The operations of one transaction (its session), or, without a session, of a read made outside one. */
-  const opsOf = (session: ClientSession | undefined, guard: ReturnType<typeof serial>): MongoOps => {
+  const opsOf = (live: Live, guard: ReturnType<typeof serial>): MongoOps => {
     const col = (table: string) => database.collection<any>(table);
-    const s = session ? { session } : {};
+    // read when an operation runs: the session of a write transaction exists only from its first operation
+    const s = {
+      get session() {
+        return live.session;
+      },
+    };
     return {
       find: guard(async (table, q) => {
         const keys = Object.keys(q.filter);
-        if (!session && q.limit === 1 && !q.sort && !q.skip && keys.length === 1 && keys[0] === "_id" && typeof q.filter._id === "string") {
-          const row = await point(table, q.filter._id);
+        const id = q.limit === 1 && !q.sort && !q.skip && keys.length === 1 && keys[0] === "_id" && typeof q.filter._id === "string" ? (q.filter._id as string) : undefined;
+        if (id !== undefined && !live.open) {
+          const row = await point(table, id);
           return row ? [row] : [];
         }
-        return (await col(table).find(q.filter, { ...s, ...hide(table), sort: q.sort as never, limit: q.limit, skip: q.skip, allowDiskUse: true }).toArray()) as Row[];
-      }),
+        if (id !== undefined && live.optimistic && !live.session && !live.held.length) {
+          const key = rowKey(table, id);
+          if (live.observed.has(key)) return live.observed.get(key) ? [live.observed.get(key)!] : [];
+          if (!live.observed.size) {
+            const row = await point(table, id);
+            live.observed.set(key, row);
+            return row ? [row] : [];
+          }
+        }
+        await need(live);
+        const key = id !== undefined ? rowKey(table, id) : undefined;
+        if (key !== undefined && live.rows.has(key)) return live.rows.get(key) ? [live.rows.get(key)!] : [];
+        const found = (await col(table).find(q.filter, { ...s, ...hide(table), sort: q.sort as never, limit: q.limit, skip: q.skip, allowDiskUse: true }).toArray()) as Row[];
+        if (key !== undefined) live.rows.set(key, found[0]);
+        return found;
+      }, true),
       search: guard(async (table, q) => {
         const words = `$${q.field}`;
         const last = q.terms.length - 1;
@@ -173,18 +245,35 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
         return new Map(rows.map((r) => [r._id as string, r.n as number]));
       }),
       insert: guard(async (table, docs) => {
+        if (live.open && !live.session && docs.length === 1 && !live.held.length) return void live.held.push({ kind: "insert", table, doc: docs[0] as Document });
+        await need(live);
+        for (const d of docs) live.rows.delete(rowKey(table, d._id));
         await col(table).insertMany(docs as Document[], { ...s, ordered: true });
-      }),
+      }, true),
       replace: guard(async (table, docs) => {
+        const d = docs[0];
+        if (live.optimistic && !live.session && docs.length === 1 && !live.held.length && d) {
+          const seen = live.observed.get(rowKey(table, d._id));
+          if (seen && matchable(seen.doc)) return void live.held.push({ kind: "replace", table, id: d._id, old: seen.doc, doc: d.doc, search: d.search });
+        }
+        await need(live);
+        for (const x of docs) live.rows.delete(rowKey(table, x._id));
         await col(table).bulkWrite(
-          docs.map((d) => ({ updateOne: { filter: { _id: d._id }, update: { $set: { doc: d.doc, ...d.search } } } })),
+          docs.map((x) => ({ updateOne: { filter: { _id: x._id }, update: { $set: { doc: x.doc, ...x.search } } } })),
           { ...s, ordered: true },
         );
-      }),
+      }, true),
       delete: guard(async (table, id) => {
+        if (live.optimistic && !live.session && !live.held.length) {
+          const seen = live.observed.get(rowKey(table, id));
+          if (seen && matchable(seen.doc)) return void live.held.push({ kind: "delete", table, id, old: seen.doc });
+        }
+        await need(live);
+        live.rows.delete(rowKey(table, id));
         await col(table).deleteOne({ _id: id } as Document, s);
-      }),
+      }, true),
       clear: guard(async (table) => {
+        live.rows.clear();
         await col(table).deleteMany({}, s);
       }),
     };
@@ -192,15 +281,17 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
 
   // The engine's own tables are written as SQL; mongodb-sql.ts runs those statements (in the transaction, so a scheduled job commits with the
   // mutation that scheduled it).
-  const txOf = (session: ClientSession | undefined, before?: () => void): DbTx => {
-    const guard = serial(session, before);
-    const sql = guard((text: string, params?: unknown[]) => runSql({ database, session }, text, params));
+  const txOf = (live: Live, before?: () => void): DbTx => {
+    const guard = serial(live, before);
+    const run = { database, get session() { return live.session; } };
+    const sql = guard((text: string, params?: unknown[]) => runSql(run, text, params));
     return {
       query: sql as DbTx["query"],
       execute: async (text, params) => void (await sql(text, params)),
-      mongo: opsOf(session, guard),
+      mongo: opsOf(live, guard),
     };
   };
+  const liveOf = (session?: ClientSession): Live => ({ session, optimistic: false, held: [], observed: new Map(), rows: new Map(), tripped: false, tail: Promise.resolve() });
 
   // A read of one operation needs no transaction (a transaction is 2.3 ms against 0.45 for a find through the driver): it starts without one, and
   // if it makes a second operation it is thrown away and run again inside a snapshot transaction. See the same in postgres.ts.
@@ -211,7 +302,7 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
     let operations = 0;
     let tripped = false;
     const scoped = scopedTx(
-      txOf(undefined, () => {
+      txOf(liveOf(), () => {
         if (operations++ > 0) {
           tripped = true;
           throw new NeedsSnapshot();
@@ -229,10 +320,113 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
     }
   }
 
+  // Insert-only writes. MongoDB's cost for a transaction is mostly its commands (a start with the first operation, a commit) and, for the commit,
+  // waiting for the journal. A mutation whose only write is one insert needs neither: one document is atomic by itself. Those inserts, from
+  // however many mutations are running, go out together as an unordered insertMany (one command and one journal wait for all of them) while
+  // the one before is in flight; a lone one goes out at once. Each mutation hears about its own document (a duplicate `_id` fails only its own).
+  const INSERT_PIPELINE = 4;
+  const INSERT_BATCH = 1000;
+  const inserting = new Map<string, { inFlight: number; waiting: { doc: Document; done: (e?: unknown) => void }[] }>();
+  function batched(table: string, doc: Document): Promise<void> {
+    let q = inserting.get(table);
+    if (!q) inserting.set(table, (q = { inFlight: 0, waiting: [] }));
+    const queue = q;
+    const sent = new Promise<void>((resolve, reject) => queue.waiting.push({ doc, done: (e) => (e === undefined ? resolve() : reject(e)) }));
+    const pump = () => {
+      while (queue.inFlight < INSERT_PIPELINE && queue.waiting.length) {
+        const batch = queue.waiting.splice(0, INSERT_BATCH);
+        queue.inFlight++;
+        void (async () => {
+          const col = database.collection<any>(table);
+          try {
+            if (batch.length === 1) await col.insertOne(batch[0]!.doc);
+            else await col.insertMany(batch.map((b) => b.doc), { ordered: false });
+            for (const b of batch) b.done();
+          } catch (e) {
+            // Unordered: what failed is named by position, and the rest went in.
+            const errors = (e as { writeErrors?: unknown }).writeErrors;
+            const failed = new Map<number, unknown>();
+            for (const w of (Array.isArray(errors) ? errors : errors ? [errors] : []) as { index: number; err?: unknown; errmsg?: string; code?: number }[]) failed.set(w.index, Object.assign(new Error(w.errmsg ?? "insert failed"), { code: w.code }));
+            batch.forEach((b, i) => b.done(batch.length === 1 ? e : failed.size ? failed.get(i) : e));
+          } finally {
+            queue.inFlight--;
+            pump();
+          }
+        })();
+      }
+    };
+    pump();
+    return sent;
+  }
+
+  /** One attempt at a write transaction. `optimistic`: go on without a session for as long as that stays correct (see Live). */
+  async function attempt<T>(fn: (tx: DbTx) => Promise<T>, optimistic: boolean): Promise<T> {
+    const live = liveOf();
+    live.optimistic = optimistic;
+    let session: ClientSession | undefined;
+    live.open = async () => {
+      if (live.session) return;
+      // Writes are snapshot isolation (MongoDB has no serializable): a write conflict is a TransientTransactionError the executor retries.
+      session = client.startSession();
+      session.startTransaction({ readConcern: { level: "snapshot" } });
+      live.session = session;
+      for (const h of live.held.splice(0)) if (h.kind === "insert") await database.collection<any>(h.table).insertOne(h.doc, { session });
+    };
+    const scoped = scopedTx(txOf(live));
+    try {
+      let value: T;
+      try {
+        value = await fn(scoped);
+      } catch (e) {
+        // The function may have caught the error and gone on, or let it out: either way it is run again.
+        if (live.tripped || e instanceof NeedsTransaction) throw new NeedsTransaction();
+        throw e;
+      }
+      await live.tail; // operations the function didn't wait for
+      if (live.tripped) throw new NeedsTransaction();
+      if (!live.session && live.held.length === 1) {
+        const h = live.held[0]!;
+        if (h.kind === "insert") await batched(h.table, h.doc);
+        else if (h.kind === "replace") {
+          const r = await database.collection<any>(h.table).updateOne({ _id: h.id, doc: h.old }, { $set: { doc: h.doc, ...h.search } });
+          if (!r.matchedCount) throw conflict();
+        } else if (!(await database.collection<any>(h.table).deleteOne({ _id: h.id, doc: h.old })).deletedCount) throw conflict();
+      } else {
+        if (live.held.length) await live.open!();
+        await session?.commitTransaction();
+      }
+      return value;
+    } catch (e) {
+      await session?.abortTransaction().catch(() => {});
+      throw e;
+    } finally {
+      scoped.end();
+      await session?.endSession();
+    }
+  }
+
+  // Most mutations that read a document by id and write it fit the single-document way; those that don't (a second document, a query) find
+  // out after one read, so when most don't, they start in a transaction.
+  let optimisticMiss = 0;
+  let optimisticProbe = 0;
+  const tryOptimistic = () => optimisticMiss < 0.5 || ++optimisticProbe % 32 === 0;
+  async function writeTransaction<T>(fn: (tx: DbTx) => Promise<T>, opts?: TransactionOptions): Promise<T> {
+    if (!opts?.rerunnable || !tryOptimistic()) return attempt(fn, false);
+    try {
+      const value = await attempt(fn, true);
+      optimisticMiss *= 0.97;
+      return value;
+    } catch (e) {
+      if (!(e instanceof NeedsTransaction)) throw e;
+      optimisticMiss = optimisticMiss * 0.97 + 0.03;
+      return attempt(fn, false);
+    }
+  }
+
   let closed = false;
   const db: Db = {
     dialect: mongoDialect,
-    ...txOf(undefined),
+    ...txOf(liveOf()),
     async transaction(mode, fn, opts) {
       await connected;
       if (mode === "read" && opts?.rerunnable && tryWithoutTransaction()) {
@@ -240,11 +434,11 @@ export function createMongoDb(url: string, options: { database?: string; maxPool
         missRate = missRate * 0.97 + (done ? 0 : 0.03);
         if (done) return done.value;
       }
+      if (mode === "write") return writeTransaction(fn, opts);
       const session = client.startSession();
       try {
-        // Writes are snapshot isolation (MongoDB has no serializable): a write conflict is a TransientTransactionError the executor retries.
-        session.startTransaction({ readConcern: { level: "snapshot" }, ...(mode === "write" && { writeConcern: { w: "majority" } }) });
-        const scoped = scopedTx(txOf(session));
+        session.startTransaction({ readConcern: { level: "snapshot" } });
+        const scoped = scopedTx(txOf(liveOf(session)));
         try {
           const value = await fn(scoped);
           await session.commitTransaction();

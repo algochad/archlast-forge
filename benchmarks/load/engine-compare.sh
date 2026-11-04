@@ -25,6 +25,7 @@ all_cases() { # config-name cores env...
   case_ "$name | cached query"             "$cores" get     "$@"
   case_ "$name | uncached query, 64 lists" "$cores" getmany "$@" CACHE_TTL_MS=0 SEED_LISTS=64
   case_ "$name | mutation"                 "$cores" post    "$@"
+  case_ "$name | read-modify-write"        "$cores" patch   "$@" SEED_LISTS=64
   CLIENTS=${CLIENTS:-1000} RATE=${RATE:-10} case_ "$name | fan-out, ${CLIENTS:-1000} subscribers, ${RATE:-10} writes/s" "$cores" fanout "$@" CACHE_TTL_MS=0
 }
 if [ "$WHICH" = both ] || [ "$WHICH" = sqlite ]; then

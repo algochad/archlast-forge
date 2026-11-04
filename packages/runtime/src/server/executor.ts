@@ -207,7 +207,16 @@ export class Executor {
         let store: DocStore | undefined;
         let value: T;
         try {
-          value = await this.o.db.transaction("write", (tx) => fn((store = this.store(tx, writes)), tx, after));
+          // The function may be run again by the database (see TransactionOptions.rerunnable), so each run starts from nothing.
+          value = await this.o.db.transaction(
+            "write",
+            (tx) => {
+              writes.clear();
+              after.length = 0;
+              return fn((store = this.store(tx, writes)), tx, after);
+            },
+            { rerunnable: true },
+          );
         } finally {
           // Committed or rolled back: the tables it wrote can be read and cached again.
           for (const t of store?.writing ?? []) this.o.readCache?.settled(t, writes);

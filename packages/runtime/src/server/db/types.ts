@@ -111,7 +111,8 @@ export interface NumberStats {
 export interface TransactionOptions {
   /**
    * The function may be run more than once: it is deterministic and does nothing outside the database (a query is). A read may then start
-   * without a transaction and be run again inside one if it needs a snapshot; the default is exactly one run.
+   * without a transaction and be run again inside one if it needs a snapshot; MongoDB does the same for a write that fits one document (see
+   * mongodb.ts). The default is exactly one run.
    */
   rerunnable?: boolean;
 }
