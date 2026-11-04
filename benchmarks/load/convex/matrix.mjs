@@ -44,6 +44,7 @@ const PG_TUNED = { shared_buffers: "'1GB'", effective_cache_size: "'4GB'", rando
 
 const CONFIGS = [
   { id: "forge-sqlite-default", sys: "forge", db: "sqlite", env: {} },
+  { id: "forge-sqlite-normal", sys: "forge", db: "sqlite", env: { SQLITE_SYNCHRONOUS: "NORMAL" } },
   { id: "forge-sqlite-w2", sys: "forge", db: "sqlite", env: { RUNTIME_WORKERS: "2" } },
   { id: "forge-postgres-default", sys: "forge", db: "postgres", env: { DATABASE_URL: PGURL } },
   { id: "forge-postgres-w2-tuned", sys: "forge", db: "postgres", pgTuned: true, env: { DATABASE_URL: PGURL, RUNTIME_WORKERS: "2" } },

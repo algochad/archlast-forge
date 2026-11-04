@@ -2,7 +2,7 @@
 
 Every number below comes from a run in [`convex/results/results.jsonl`](convex/results/results.jsonl) (raw JSON, one line per case and run; the closing control is in `results-control-end.jsonl`), made by [`convex/matrix.mjs`](convex/matrix.mjs). Server logs of every run are in [`convex/results/logs/`](convex/results/logs/) (a Convex backend logs every request at its default level, up to 938,000 lines a phase, so those logs keep the first and last 150 lines and say how many were left out). The tables are produced by [`convex/tables.mjs`](convex/tables.mjs) from those files. Nothing here was measured that is not in them; what was not run is marked **not measured**. No engine code of archlast-forge was changed.
 
-Short answer, with the caveats in section 4: on this workload archlast-forge is several times faster on cached reads, many times faster on Convex-uncached reads and on mutations over SQLite, and delivers live-query updates one by one where Convex merges them under load. With Convex's own result cache doing the work, uncached-style reads are a tie. Mutations over Postgres are not separable (the ranges overlap).
+Short answer, with the caveats in section 4: on this workload archlast-forge is several times faster on cached reads, many times faster on Convex-uncached reads and on mutations over SQLite (measured with the engine's `synchronous = NORMAL`; section 7 reruns it with durable commits, where the result depends on how fast the disk syncs: equal inserts at a 1.2 ms sync, about 3,500/s at 6 ms, at least 5× Convex's either way), and delivers live-query updates one by one where Convex merges them under load. With Convex's own result cache doing the work, uncached-style reads are a tie. Mutations over Postgres are not separable (the ranges overlap).
 
 ## 1. Environment
 
@@ -253,7 +253,7 @@ Each cell is the median of the kept runs with the min–max in brackets; "CPU" i
 
 - **A, cached query (closed loop):** archlast-forge 70,500–75,500 req/s on every database, Convex 14,000 (Postgres) to 22,600 (SQLite optimized). Roughly 3.3–5× in throughput at a half to a third of the CPU. Caveat: the forge figure is probably not the server's limit: in these runs the load generator sat at 81–86% of its core (the control tops out near 110,000 req/s) and the server used about one core, so the forge ceiling may be higher than shown.
 - **B′, Convex with its result cache bypassed:** Convex 597–825 req/s (p50 75–106 ms), against 15,716–38,284 req/s for forge uncached on the same database. Convex uses about 3.7 ms of CPU per query here with all its cores busy and the database mostly idle (23% on Postgres), so the cost is in the function execution, not the database. On Postgres, where forge has no read cache below it, the comparison is 15,716 vs 597 req/s (about 26×). At an open loop of 2,000 req/s Convex served only 589–813 req/s and requests queued for 4.5–5.3 s (p50).
-- **C and D on SQLite:** forge 12,452–13,728 (inserts) and 23,634–28,549 (toggles) req/s; Convex 309–628 (inserts, **noisy**) and 572–682 (toggles). The durability note below applies.
+- **C and D on SQLite:** forge 12,452–13,728 (inserts) and 23,634–28,549 (toggles) req/s; Convex 309–628 (inserts, **noisy**) and 572–682 (toggles). The durability note below applies, and section 7 has the `FULL` numbers.
 - **E, fan-out delivery shape:** see the E tables. Convex merges updates when its clients can't keep up: about 28,000 of 150,000 possible messages arrived. Every client did see every write (clients seeing every write: 1,000 of 1,000 in every Convex run), but the settle time after the last write was 1.0–1.9 s, the p99 of "newest row seen" 580–1,020 ms, and per write (counting merged writes from the moment they were written) p50 about 470 ms and p99 about 3.8–3.9 s. archlast-forge's p99 is 104–126 ms and its updates arrive one per write, except where its 50 ms debounce merges two writes that land within 50 ms of each other.
 
 **Ties and no winner**
@@ -265,7 +265,7 @@ Each cell is the median of the kept runs with the min–max in brackets; "CPU" i
 
 **Things that limit what you can conclude**
 
-- **Durability is not the same.** archlast-forge's SQLite runs `synchronous = NORMAL` in WAL mode, which keeps data through a process crash but can lose the last commits on power loss. I did **not** check what Convex's SQLite or its Postgres path syncs. Part of the SQLite mutation gap (12,000+ vs 300–700 req/s) may be this, not engine speed. Over Postgres and MongoDB (majority-acknowledged, journaled) forge has to wait for the disk too, and the gap closes to the noisy 1–3× above. `w=1 journal=false` on MongoDB is the less durable variant; against the durable MongoDB config with the same two workers it was 2.5× faster on inserts (14,465 vs 5,823 req/s) and 1.6× on toggles (3,123 vs 1,980) — a durability/speed trade, reported separately.
+- **Durability is not the same.** All the tables above were measured with archlast-forge's SQLite on `synchronous = NORMAL` (the engine's setting when the benchmark was run) in WAL mode, which keeps data through a process crash but can lose the last commits on power loss. Section 7 repeats the forge SQLite runs with durable commits: the plain `synchronous = FULL` halves insert and toggle throughput (7.1), and the shipped design (7.2) matches the non-durable inserts when the disk syncs in about 1.2 ms and falls to about 3,500 inserts/s when it takes about 6 ms, still several times Convex's. I did **not** check what Convex's SQLite or its Postgres path syncs. Part of the SQLite mutation gap (12,000+ vs 300–700 req/s) may be this, not engine speed. Over Postgres and MongoDB (majority-acknowledged, journaled) forge has to wait for the disk too, and the gap closes to the noisy 1–3× above. `w=1 journal=false` on MongoDB is the less durable variant; against the durable MongoDB config with the same two workers it was 2.5× faster on inserts (14,465 vs 5,823 req/s) and 1.6× on toggles (3,123 vs 1,980) — a durability/speed trade, reported separately.
 - **Convex's result cache** makes repeated reads cheap; whether a workload looks like B (repeats) or B′ (distinct arguments) decides which Convex figure applies. The nonce method for B′ is my own way to bypass a cache that can't be turned off.
 - **forge's SQLite "uncached" path is not cache-free below the engine**: the engine's per-statement read cache (`read-cache.ts`) is on when the process is the only writer. The Postgres and MongoDB numbers have no such cache.
 - **Architecture:** Convex runs each function as JavaScript in a V8 isolate and offers serializable transactions with optimistic concurrency and retained history; archlast-forge runs functions in-process in Bun. Some of the gap is that design, and neither list of features was measured.
@@ -297,4 +297,94 @@ cd benchmarks/load/convex && npm install          # convex client/CLI
 node tables.mjs results/results.jsonl results/results-control-end.jsonl   # -> results/tables.md
 ```
 
+The section 7 addendum: `node matrix.mjs --runs 1 --configs control,forge-sqlite-default,forge-sqlite-normal --out results-sync/results.jsonl` (section 7.1) and the sequence in `results-sync/final/go.sh` (7.2); both need the `SQLITE_SYNCHRONOUS` change (commit `92d284e`); on an engine without it both rows run `NORMAL`.
+
 Raw per-run records: `convex/results/results.jsonl`; one run's tables above were generated from them with `tables.mjs` (a run flagged `discard` is left out; the reasons are in the last list of section 3).
+
+## 7. Addendum: archlast-forge's SQLite with durable commits
+
+**Why.** Section 4 says part of the SQLite mutation gap may be a durability difference. archlast-forge's SQLite ran `PRAGMA synchronous = NORMAL`: in WAL mode that never syncs at commit, so an acknowledged write survives a crash of the engine but can be lost to a power cut or an operating-system crash. The change in commit `92d284e` (branch `claude/sqlite-synchronous`, merged below this report's commit) adds `SQLITE_SYNCHRONOUS=FULL|NORMAL`, default `FULL`. Everything in sections 3–6 was measured with `NORMAL`, which is what the engine did then; `NORMAL` is still available and is the "before" column here. The only harness change is one added config, `forge-sqlite-normal` (`SQLITE_SYNCHRONOUS=NORMAL`), in [`convex/matrix.mjs`](convex/matrix.mjs). Nothing in this section involves Convex, Postgres or MongoDB. Raw records, logs and the small probe scripts are in [`convex/results-sync/`](convex/results-sync/).
+
+**The one thing to know first: the disk.** With durable commits a write waits for the disk, and this disk's sync time changed a lot while I measured. A bare probe (append 4 KiB and `fsync`, 400 times, [`probes/fs.ts`](convex/results-sync/probes/fs.ts)) gave a median of:
+
+| When | fsync p50 |
+| --- | --- |
+| three probes before the final sequence below | 1.12, 1.16, 1.25 ms |
+| after its read and fan-out cases, before its write cases | 2.26 ms |
+| three probes after its write cases | 5.60, 5.88, 6.42 ms |
+| earlier probes the same day | 1.00, 1.05, 1.01 ms; later 2.26, 5.77, 6.16 ms |
+
+I did not find out why a sync went from about 1 ms to about 6 ms within some 15 minutes of heavy writing (an SSD that slows as its write cache fills would do it, but I did not test that). When I looked, no other process was writing much (the largest was 33 KiB/s over 8 s), but I cannot rule out a background cause; the IO-pressure averages in `/proc/pressure/io` are dominated by my own runs and say nothing either way. The same effect shows without HTTP: the engine's database layer alone, 64 writers, did 50,879 writes/s when a sync took about 1.1 ms and 9,766 when it took about 5 ms ([`probes/dbsync.ts`](convex/results-sync/probes/dbsync.ts), run with the earlier worker-based syncer of 7.3). **Every number below carries the disk state it was measured in.** The earlier Convex and archlast-forge runs in sections 3–6 were made on this disk at times I did not probe.
+
+### 7.1 `synchronous = FULL` the plain way (one run)
+
+**How.** The same matrix, same cores (server 2–5, load generator on its own core, the VM pinned away), same cases and settings, but **one run** per configuration, not three, and only archlast-forge on SQLite, no Convex, no Postgres or MongoDB: `node matrix.mjs --runs 1 --configs control,forge-sqlite-default,forge-sqlite-normal`. The `control` ran first: 106,173 req/s closed loop, p99 1.27 ms, in line with section 3. Raw records and logs: [`convex/results-sync/`](convex/results-sync/results.jsonl). With one run there is no range and no way to call a difference noise from this table alone, so I compare against the three-run ranges above where I can. Every case had 0 errors, and C and D passed the data checks (E follows the rule in section 5).
+
+| Case | `FULL` (new default) | `NORMAL` (as in sections 3–4) | Change |
+| --- | --- | --- | --- |
+| A. cached query, closed loop, req/s (p99 ms) | 72,491 (1.72) | 73,415 (1.72) | none |
+| B. uncached query, closed loop, req/s (p99 ms) | 21,892 (5.21) | 21,848 (5.32) | none |
+| C. insert, closed loop, req/s (p50 / p99 ms) | **6,472** (10.73 / 17.31) | 12,673 (4.76 / 20.87) | −49% |
+| D. toggle, closed loop, req/s (p50 / p99 ms) | **13,186** (5.21 / 8.51) | 24,373 (2.66 / 6.66) | −46% |
+| C. insert, open loop at 500 req/s, p90 / p99 ms | 2.46 / 5.88 | 0.46 / 3.44 | one lone sync is about 2 ms |
+| D. toggle, open loop at 500 req/s, p90 / p99 ms | 2.46 / 4.25 | 0.44 / 4.35 | same |
+| E. fan-out p50 / p99 ms (every client saw every write in both) | 67 / 109 | 65 / 111 | none |
+
+- **What moved.** Only writes, by about half in the closed loop, and by about 2 ms of added latency for a write that arrives alone (open loop, where nothing shares the sync). Reads (A, B, and the open-loop reads), and the fan-out (E) are unchanged. The one visible oddity: the open-loop A run with `FULL` has a p99 of 4.59 ms against 0.92 ms with `NORMAL`, although reads do not write; I have one run of each and don't know whether that is noise, so I don't read anything into it.
+- **The `NORMAL` row agrees with the three-run data.** Its inserts (12,673) and toggles (24,373) fall inside the ranges in section 3 (12,452–13,728 and 23,634–28,549), so this run did not drift.
+- **Against Convex.** With `FULL`, archlast-forge's SQLite did 6,472 inserts/s and 13,186 toggles/s (one run), against Convex's 309–628 and 572–682 in section 3: still about 10–20× and 19–23× ahead. The caveat in section 4 stands on the other side: I did not check what Convex syncs, so this narrows the unknown but does not remove it. Whether the Convex numbers are for the same durability as `FULL` is still **not measured**.
+- **Why writes lose half is not measured.** A standalone SQLite script with the same group-commit shape (not the engine; 8 s, one run each) gave 82,031 inserts/s on `NORMAL` against 17,853 on `FULL` with 64 clients, 44,617 against 832 for one client, and an fsync of about 3.5 ms on this disk. My guess was that the sync blocks the event loop of the process that owns the writer. Section 7.2 changes that and measures it.
+- **Limits.** One run per configuration; one disk (btrfs on an encrypted volume, where fsync cost is higher and noisier than on many servers); SQLite only. Postgres and MongoDB were not rerun: their commit settings did not change.
+
+### 7.2 FULL without stopping the runtime: the shipped design
+
+`PRAGMA synchronous = FULL` fsyncs inside `COMMIT`, on the thread that runs the functions, and that is what cost half the write throughput in 7.1. The shipped design keeps the writer's connection on `NORMAL` and fsyncs the `-wal` file through the asynchronous `fs.fsync` (`WalSyncer` in `packages/runtime/src/server/db/sqlite.ts`; a 1 ms timer kept ticking through 300 such fsyncs, largest gap 1.1 ms, [`probes/afs.ts`](convex/results-sync/probes/afs.ts)). A write is answered when an fsync that began after its commit has finished, and the commits that arrive during a sync share the next one. Raw data: [`results-sync/final/`](convex/results-sync/final/).
+
+**How.** Same cores and cases. One sequence: `control`, then the read and fan-out cases once, then the write cases (C, D and their open loops) three times with `forge-sqlite-default` (FULL) and `forge-sqlite-normal` taking turns inside each run, so both see the same disk. Every case had 0 errors and passed the data checks.
+
+*Closed loop, 64 connections, per run (req/s; p50 / p99 ms). The disk's sync time rose across the three runs (the probes above).*
+
+| Case | Run | FULL | NORMAL |
+| --- | --- | --- | --- |
+| C, inserts | 1 | **12,939** (4.61 / 11.7) | 13,039 (4.64 / 20.1) |
+| C, inserts | 2 | 3,645 (16.98 / 34.8) | 13,379 (4.59 / 21.6) |
+| C, inserts | 3 | 3,535 (15.94 / 109.2) | 12,719 (4.72 / 21.0) |
+| D, toggles | 1 | 21,472 (2.76 / 5.8) | 24,166 (2.64 / 7.3) |
+| D, toggles | 2 | 21,307 (2.78 / 6.1) | 25,222 (2.62 / 7.7) |
+| D, toggles | 3 | 4,385 (13.02 / 42.1) | 25,281 (2.65 / 6.4) |
+
+Medians (min–max): C FULL 3,645 (3,535–12,939, **noisy**), C NORMAL 13,039 (12,719–13,379); D FULL 21,307 (4,385–21,472, **noisy**), D NORMAL 25,222 (24,166–25,281).
+
+*Open loop at 500 req/s, so most writes arrive alone (p50 / p90 / p99 ms; the negative p50 of the `NORMAL` rows is the timer artifact described in section 5):*
+
+| Case | Run | FULL | NORMAL |
+| --- | --- | --- | --- |
+| C | 1 | 1.21 / 2.34 / 6.8 | −0.21 / 0.54 / 7.8 |
+| C | 2 | 11.29 / 16.72 / 82.4 | −0.19 / 0.57 / 5.2 |
+| C | 3 | 11.76 / 27.78 / 144.3 | −0.19 / 0.58 / 5.5 |
+| D | 1 | 1.14 / 2.15 / 3.6 | −0.26 / 0.50 / 3.6 |
+| D | 2 | 1.17 / 2.27 / 4.1 | −0.22 / 0.65 / 160.9 |
+| D | 3 | 9.68 / 15.85 / 589.7 | −0.22 / 0.59 / 55.7 |
+
+*Reads and fan-out (one run, FULL; `NORMAL` from 7.1 in brackets): A cached 74,970 req/s, p99 1.66 ms (73,415, 1.72); B uncached 22,837, p99 4.38 (21,848, 5.32); E fan-out p50 65, p99 119 ms with 139,000 of 146,000 updates (the strict count flagged it, as in section 5; the run on the Convex-port client had no client missing a write: p50 76, p99 127, 140,000 of 148,000) against 65 / 111 (148,000 of 148,000). The control ran first: 109,845 req/s, p99 1.24 ms.*
+
+- **When the disk syncs in about 1.2 ms (run 1), durable inserts equal non-durable ones**: 12,939 against 13,039 req/s, one pair. Toggles are 11% lower (21,472 against 24,166). The plain `FULL` of 7.1 measured 6,472 and 13,186 on a fast disk, so the design roughly doubles inserts and adds about 60% to toggles. These compare different single runs an hour or more apart, both at times when a lone write took about 1.2–1.4 ms (which suggests a similar disk state; the disk was not probed during 7.1), not an interleaved pair.
+- **When the disk syncs in about 6 ms (runs 2–3 for inserts, run 3 for toggles), durable writes fall to about 3,500 inserts and 4,400 toggles a second, and open-loop tails reach hundreds of ms**, while `NORMAL` does not move. This is the price of acknowledging a write only after the disk has it: 64 closed-loop clients can do no more than about 64 divided by the time a write waits (the first sync it misses plus its own). Nothing in the engine can shorten a sync; a faster disk shortens it.
+- **Reads and fan-out are the same as with `NORMAL`**: A 74,970 against 73,415, B 22,837 against 21,848, E's p99 119 against 111 ms (single runs, ranges not known to differ).
+- **A write that arrives alone waits for its own sync**: open loop p90 2.3 ms against 0.5 ms at a 1.2 ms sync.
+- **Against Convex** (section 3: 309–628 inserts/s and 572–682 toggles/s on SQLite): the durable archlast-forge numbers here are 3,535–12,939 inserts/s and 4,385–21,472 toggles/s, at least 5× and 6× higher in the worst runs. As before, I did not check what Convex's SQLite syncs, and I did not probe the disk during the Convex runs, so this is an order-of-magnitude statement, not a ratio.
+- **Kill test.** `packages/runtime/test/group-commit.test.ts` kills a writing process with SIGKILL after 3,000 answered writes and checks that none is missing. It covers a crash of the engine, which `NORMAL` also survives. A test cannot cut the power, so **power-loss durability is argued from how the design works (the answer waits for an fsync that began after the commit), not measured**.
+
+### 7.3 What I tried and did not keep
+
+All on the same disk with its changing sync time, so the pairs are the point, not the absolute numbers. Raw: [`results-sync/experiments/`](convex/results-sync/experiments/) and [`results-sync/pipelined-worker/`](convex/results-sync/pipelined-worker/).
+
+- **A Worker thread doing the fsync** (the first version of the design above; same idea, different mechanism). On a fast disk, one run: 12,203 inserts and 20,220 toggles/s. In a fuller sequence: 8,589 inserts; then three runs of 9,248 / 3,604 / 3,330 inserts and 21,382 / 21,336 / 17,528 toggles. Against the plain `FULL` of 7.1 in a slow-disk state, three interleaved pairs: inserts 2,780 / 3,038 / 3,411 against 2,085 / 2,861 / 2,889; toggles 4,279 / 4,418 / 4,063 against 3,898 / 4,434 / 4,201. Dropped: it hung one test intermittently (the thread answered and the main thread never saw the reply; I did not find out why) and needed more code than `fs.fsync`. One run with it was discarded for 137,130 non-2xx responses of 157,934 and per-list row counts 4–12 below what the harness's bookkeeping expected on five lists; I did not find the cause, the bookkeeping assumes an even spread of successes over lists so the shortfall does not prove lost writes, and the version that produced it no longer exists. The shipped version has had no error or data-check failure in the final sequence (one read and fan-out run, three write runs) or in the kill test.
+- **Two syncs in flight at once**: 1,982 and 2,271 inserts/s, against 2,887 and 2,646 with one (a first pair was lost to a mistake in my script). The kernel serializes the syncs, and the second thread only added waiting.
+- **`fdatasync` instead of `fsync`**: 3,205 and 3,406 inserts/s; **a checkpoint threshold of 512 MiB instead of 32**: 3,187 and 2,559; both against 6,682 and 2,825 for the unchanged code in the same session. No effect I could see over the disk's own swings.
+
+### 7.4 What this section does and doesn't show
+
+- It shows that durable commits do not have to stop the runtime: reads and fan-out are unchanged, and on a fast-syncing disk inserts match the non-durable ones.
+- It does not show a stable number for durable inserts on this machine: the same code did 12,939 and 3,535 inserts/s depending on the disk's sync time. On a server whose disk syncs in 0.1–0.5 ms I expect less loss than shown here, but **I did not measure any other disk**.
+- One run per configuration for the read and fan-out cases; three runs, interleaved, for the writes; one machine, one filesystem (btrfs on an encrypted volume).
