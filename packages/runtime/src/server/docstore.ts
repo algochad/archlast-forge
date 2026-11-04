@@ -48,6 +48,8 @@ const isPredicate = (p: unknown): p is Predicate => typeof p === "object" && p !
 const IDENT = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
 /** SQL statements already explained in this process, so a query that scans is reported once, not on every run. */
 const explained = new Set<string>();
+/** Whether two field values are the same as far as the stored document is concerned (arrays and objects compare by their JSON). */
+const sameValue = (a: unknown, b: unknown) => Object.is(a, b) || (typeof a === "object" && a !== null && JSON.stringify(a) === JSON.stringify(b));
 /** Creation times strictly increase within a process, so documents inserted together keep their order. */
 let lastCreation = 0;
 const creationTime = () => (lastCreation = Math.max(performance.timeOrigin + performance.now(), lastCreation + 0.001));
@@ -774,7 +776,12 @@ export class DocStore {
     for (const d of docs) d[key] = groups.get(d._id)!.map((c) => joined.get(c._id)!);
   }
 
-  private written(table: string, doc: Record<string, unknown>) {
+  /**
+   * A write to `doc` (a document of `table` with its `_id`) has happened: the table and its topics are written. When `before` is the
+   * document it replaced, its topics are added too, but only for the index prefixes whose values the change touched: a prefix both
+   * versions share is one topic, built once.
+   */
+  private written(table: string, doc: Record<string, unknown>, before?: Record<string, unknown>) {
     const w = this.writes!;
     // From here this transaction reads its own uncommitted writes, so only from the database; and nobody may use the table until it settles.
     this.dirty = true;
@@ -784,15 +791,15 @@ export class DocStore {
     }
     w.add(table);
     w.add(topic(table, "by_id", [doc._id]));
-    for (const [name, fields] of Object.entries(this.table(table).indexes))
-      for (let k = 1; k <= fields.length; k++)
-        w.add(
-          topic(
-            table,
-            name,
-            fields.slice(0, k).map((f) => doc[f]),
-          ),
-        );
+    for (const [name, fields] of Object.entries(this.table(table).indexes)) {
+      let shared = before !== undefined;
+      for (let k = 1; k <= fields.length; k++) {
+        const f = fields[k - 1]!;
+        if (shared && !sameValue(doc[f], before![f])) shared = false;
+        w.add(topic(table, name, fields.slice(0, k).map((x) => doc[x])));
+        if (before && !shared) w.add(topic(table, name, fields.slice(0, k).map((x) => before[x])));
+      }
+    }
   }
 
   private async syncSearch(table: string, id: string, doc: Record<string, unknown> | undefined) {
@@ -867,9 +874,14 @@ export class DocStore {
     this.table(table);
     const ids = [...new Set(updates.map((u) => u?.id).filter((id): id is string => typeof id === "string" && id.startsWith(`${table}:`)))];
     const current = new Map<string, Doc>();
+    /** The text each document is stored as (SQLite), to leave out an update that changes nothing. */
+    const stored = new Map<string, string>();
     for (let i = 0; i < ids.length; i += IN_CHUNK) {
       const chunk = ids.slice(i, i + IN_CHUNK);
-      for (const row of await this.tx.query(`${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk)) current.set(row._id, this.toDoc(row));
+      for (const row of await this.tx.query(`${SELECT} "${table}" WHERE "_id" IN (${chunk.map(() => "?").join(", ")})`, chunk)) {
+        current.set(row._id, this.toDoc(row));
+        if (typeof row.doc === "string") stored.set(row._id, row.doc);
+      }
     }
     const writes: { id: string; old: Doc; fields: Record<string, unknown>; json: string }[] = [];
     const errors: { index: number; message: string }[] = [];
@@ -881,8 +893,10 @@ export class DocStore {
         if (!old) throw new ValidationError(`Document ${u.id} not found`);
         const { _id, _creationTime, ...rest } = old;
         const { fields, json } = this.checked(table, { ...rest, ...u.patch });
-        writes.push({ id: u.id, old, fields, json });
         current.set(u.id, { _id, _creationTime, ...fields }); // a later update of the same document applies on top of this one
+        if (stored.get(u.id) === json) return; // nothing changed: no statement, no topics
+        stored.set(u.id, json);
+        writes.push({ id: u.id, old, fields, json });
       } catch (e) {
         if (!(e instanceof ValidationError)) throw e;
         errors.push({ index, message: e.message });
@@ -892,8 +906,7 @@ export class DocStore {
     for (const w of writes) {
       await this.tx.execute(`UPDATE "${table}" SET "doc" = ${this.dialect.jsonParam} WHERE "_id" = ?`, [w.json, w.id]);
       await this.syncSearch(table, w.id, w.fields);
-      this.written(table, w.old);
-      this.written(table, { ...w.fields, _id: w.id });
+      this.written(table, { ...w.fields, _id: w.id }, w.old);
     }
     return mode === "all" ? null : { errors };
   }
@@ -904,10 +917,10 @@ export class DocStore {
     if (!row) throw new ValidationError(`Document ${id} not found`);
     const old = this.toDoc(row);
     const { fields, json } = this.checked(table, next(old));
+    if (row.doc === json) return; // stored as it is already (SQLite keeps the text): nothing to write, nothing for subscribers to re-run
     await this.tx.execute(`UPDATE "${table}" SET "doc" = ${this.dialect.jsonParam} WHERE "_id" = ?`, [json, id]);
     await this.syncSearch(table, id, fields);
-    this.written(table, old);
-    this.written(table, { ...fields, _id: id });
+    this.written(table, { ...fields, _id: id }, old);
   }
 
   patch(id: string, value: Record<string, unknown>) {
