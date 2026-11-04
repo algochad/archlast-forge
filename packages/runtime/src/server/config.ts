@@ -166,8 +166,11 @@ export class ConfigError extends Error {
   override name = "ConfigError";
 }
 
-/** Paths the engine answers itself, which the API docs can't take. */
-const RESERVED = ["/rpc", "/http", "/api/auth", "/_dashboard", "/_admin", "/_cli", "/_storage", "/_app", "/health", "/ready", "/metrics", "/otlp"];
+/** Paths the engine answers itself, which the API docs and root-mounted HTTP routes can't take. */
+export const RESERVED = ["/rpc", "/http", "/api/auth", "/_dashboard", "/_admin", "/_cli", "/_storage", "/_app", "/_telemetry", "/health", "/ready", "/metrics", "/otlp"];
+
+/** The engine path a path lies in (itself or below it), if any. */
+export const reservedPathOf = (path: string) => RESERVED.find((r) => path === r || path.startsWith(`${r}/`));
 const bool = (v: string | undefined, fallback: boolean) => (v === undefined || v === "" ? fallback : ["1", "true", "on", "yes"].includes(v.toLowerCase()));
 
 /** Fails fast on missing or contradictory settings. */
@@ -205,7 +208,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (!dev && !env.BETTER_AUTH_SECRET) fail("BETTER_AUTH_SECRET is required outside dev");
   const apiDocsPath = (env.API_DOCS_PATH || "/_api").replace(/\/+$/, "");
   if (!/^\/[A-Za-z0-9._~\/-]+$/.test(apiDocsPath)) fail(`API_DOCS_PATH must be a path like "/_api", got "${env.API_DOCS_PATH}"`);
-  if (RESERVED.some((r) => apiDocsPath === r || apiDocsPath.startsWith(`${r}/`))) fail(`API_DOCS_PATH can't be under ${RESERVED.find((r) => apiDocsPath === r || apiDocsPath.startsWith(`${r}/`))}, which the engine serves`);
+  if (reservedPathOf(apiDocsPath)) fail(`API_DOCS_PATH can't be under ${reservedPathOf(apiDocsPath)}, which the engine serves`);
   const authUrl = env.BETTER_AUTH_URL ?? `http://localhost:${port}`;
   // Over http, Better Auth's cookies aren't marked Secure; behind a TLS proxy that silently weakens sessions.
   if (!dev && !authUrl.startsWith("https://") && !bool(env.ALLOW_INSECURE_HTTP, false))

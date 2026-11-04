@@ -507,11 +507,26 @@ export interface HttpRoute {
   tags?: string[];
 }
 
-/** `forge/http.ts` default-exports one of these. Routes are served under `/http`: `path: "/hello"` answers at `/http/hello`. */
-export function httpRouter() {
+export interface HttpRouterOptions {
+  /**
+   * Also serve the routes at the root of the server, without `/http`: `path: "/api/v1/tasks"` answers at `/api/v1/tasks` (and still at
+   * `/http/api/v1/tasks`). The engine's own paths (`/rpc`, `/api/auth`, `/_admin`, `/_dashboard`, `/_storage`, `/_app`, `/health`, ...)
+   * win, and a route inside one of them is refused. In a full-stack app the pages get every path no route matches, so give routes a
+   * prefix of their own (`nest(http, { prefix: "/api/" })`): a prefix of "/" stays under `/http` there.
+   */
+  root?: boolean;
+}
+
+/**
+ * `forge/http.ts` default-exports one of these. Routes are served under `/http`: `path: "/hello"` answers at `/http/hello`. With
+ * `httpRouter({ root: true })` they also answer at the root (`/hello`).
+ */
+export function httpRouter(options: HttpRouterOptions = {}) {
   const routes: HttpRoute[] = [];
   return {
     routes,
+    /** Whether the routes are also served at the root, without `/http`. */
+    root: options.root === true,
     route(spec: HttpRoute) {
       const { method, path, pathPrefix, handler } = spec;
       if (!HTTP_METHODS.includes(method)) throw new Error(`HTTP route method must be one of ${HTTP_METHODS.join(", ")}, got "${method}"`);

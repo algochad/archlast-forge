@@ -38,6 +38,7 @@ export {
   type FunctionReturn,
   type HttpAction,
   type HttpMethod,
+  type HttpRouterOptions,
   type HttpRoute,
   type MigrationResult,
   type ModuleRefs,

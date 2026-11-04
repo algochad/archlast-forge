@@ -42,6 +42,39 @@ export function upgradeFiles(forgeDir: string, version: string): UpgradeChange[]
   for (const path of new Set([join(root, "package.json"), join(forgeDir, "package.json")]))
     edit(path, DEPENDENCY, ([, name, sep, prefix, from]) => ({ name: name!, from: prefix! + from, to: prefix! + version, replacement: `"${name}"${sep}"${prefix}${version}"` }));
   for (const file of ["Dockerfile", "compose.yaml"]) edit(join(root, file), IMAGE, ([, image, from]) => ({ name: "engine image", from: from!, to: version, replacement: image + version }));
+  changes.push(...rootBunTypes(root, forgeDir));
+  return changes;
+}
+
+/** `"types": []`, as older full-stack scaffolds wrote it in the root tsconfig.json. */
+const NO_TYPES = /("types"\s*:\s*)\[\s*\]/;
+
+/**
+ * A full-stack app's root type-check reads the forge/ files its pages reach through `forge/_generated/api`, and those use `process.env`,
+ * `Bun` and `node:` modules. Older scaffolds gave the root no types (`"types": []`), so the check failed with "Cannot find name 'process'":
+ * the root gets Bun's types, as forge/ has them.
+ */
+function rootBunTypes(root: string, forgeDir: string): UpgradeChange[] {
+  const tsconfig = join(root, "tsconfig.json");
+  const manifest = join(root, "package.json");
+  if (root === forgeDir || !existsSync(tsconfig) || !existsSync(manifest)) return [];
+  const text = readFileSync(tsconfig, "utf8");
+  if (!NO_TYPES.test(text)) return [];
+  const changes: UpgradeChange[] = [{ file: "tsconfig.json", name: "compilerOptions.types", from: "[]", to: '["bun"]' }];
+  writeFileSync(tsconfig, text.replace(NO_TYPES, '$1["bun"]'));
+  const raw = readFileSync(manifest, "utf8");
+  const pkg = JSON.parse(raw) as { dependencies?: Record<string, string>; devDependencies?: Record<string, string> };
+  if (!pkg.devDependencies?.["@types/bun"] && !pkg.dependencies?.["@types/bun"]) {
+    let forgeTypes: string | undefined;
+    try {
+      forgeTypes = JSON.parse(readFileSync(join(forgeDir, "package.json"), "utf8")).devDependencies?.["@types/bun"];
+    } catch {}
+    const to = forgeTypes ?? "1.4.4";
+    pkg.devDependencies = Object.fromEntries(Object.entries({ ...pkg.devDependencies, "@types/bun": to }).sort(([a], [b]) => a.localeCompare(b)));
+    const indent = /^\{\n([ \t]+)"/.exec(raw)?.[1] ?? 2;
+    writeFileSync(manifest, JSON.stringify(pkg, null, indent) + "\n");
+    changes.push({ file: "package.json", name: "@types/bun", from: "none", to });
+  }
   return changes;
 }
 

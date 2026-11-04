@@ -155,6 +155,8 @@ const { results, total, pageCount, hasNextPage, isLoading } = useNumberedPage(
 
 Both accept `"skip"` in place of args; new args reset the window; the previous results stay on screen while the next load. `total`/`pageCount` are `undefined` until the first result.
 
+Call these hooks directly where the list is rendered. Do not wrap them in your own hooks or a data layer (`usePaginatedTasks`, `tasksApi.list`), keep your own `items`/`cursor`/`hasMore` state, or fetch pages in `useEffect`: the hook holds the window, keeps it live and resets it when the args change.
+
 - **Mutations and optimistic updates.** `useMutation(ref)` returns an async function (rejects like `client.mutation`). `.withOptimisticUpdate(update)` returns a function you call the same way; `update(store, args)` changes the local copy of live results at once, restores it if the mutation fails, and the server's live result replaces your guess either way. `store.getQuery(ref, args)` returns `undefined` for a query that is not loaded: guard. Use the same function and args as the `useQuery` you want to change. Not offered for paginated hooks; not for creates that need the server's id.
 
 ```tsx

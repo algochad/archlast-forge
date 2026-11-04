@@ -56,7 +56,35 @@ export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [beare
 `better-auth` is installed next to the runtime, so `better-auth/plugins` resolves from `forge/` without adding anything.
 
 - **Plugins that only add fields** to `users` or `sessions` work as is. The admin plugin adds `role` and `banned`; they land on the user document.
-- **Plugins that add tables** (two-factor, organization, passkey, and others) need the table in your `schema.ts`, with **every field the plugin writes**. A missing table fails with `Unknown table "twoFactors"`, and a missing field with `twoFactors.verified is not in the validator`, because tables you declare are validated strictly. For Better Auth's two-factor plugin, declaring `secret`, `backupCodes`, `userId`, `verified` and `failedVerificationCount` (the last two optional) made `/api/auth/two-factor/enable` work. Declare the fields for the version you pin, and expect to iterate.
+- **Plugins that add tables** (organization, OAuth provider, JWT, two-factor, passkey, and others) need those tables in your `schema.ts`, with **every field the plugin writes**. A missing table fails with `Unknown table "members"` and a missing field with `members.role is not in the validator`, because tables you declare are validated strictly. Generate the declarations from the plugins themselves instead of copying them by hand (below).
+- **A plugin from its own package** (`@better-auth/oauth-provider`, `@better-auth/passkey`, …) must match the Better Auth version the engine pins, or it brings a second copy of Better Auth: `bun add @better-auth/oauth-provider@1.7.12` in `forge/` for this release (`grep '"version"' forge/node_modules/better-auth/package.json` shows the pinned one).
+
+### Declaring a plugin's tables
+
+Save this as `forge/_auth-tables.ts` (the leading `_` keeps it out of your API), run `bun _auth-tables.ts` from `forge/`, and paste what it prints into `defineSchema({ … })`:
+
+```ts
+// Prints defineTable() lines for the tables Better Auth's plugins add, from the plugins' own schema, for the version installed.
+import auth from "./auth";
+const plural = (m: string) => `${m}s`; // the engine's adapter adds an s to every model name (jwks -> jwkss)
+const builtIn = new Set(["user", "session", "account", "verification"]);
+const type = (t: unknown): string =>
+  Array.isArray(t) || t === "string[]" ? "v.array(v.string())" : t === "number[]" ? "v.array(v.number())"
+  : t === "string" ? "v.string()" : t === "number" || t === "date" ? "v.number()" : t === "boolean" ? "v.boolean()" : "v.any()";
+for (const plugin of (auth as { plugins?: { id: string; schema?: Record<string, { modelName?: string; fields: Record<string, any> }> }[] }).plugins ?? [])
+  for (const [model, def] of Object.entries(plugin.schema ?? {})) {
+    if (builtIn.has(model)) {
+      console.log(`// ${plugin.id} adds to ${model}s: ${Object.keys(def.fields).join(", ")} (a built-in table: nothing to declare)`);
+      continue;
+    }
+    // Better Auth writes null for an optional field it leaves empty, so optional fields also accept null.
+    const fields = Object.entries(def.fields).map(([f, a]) => `${f}: ${a.required === false ? `v.optional(v.union(${type(a.type)}, v.null()))` : type(a.type)}`);
+    const indexes = Object.entries(def.fields).filter(([, a]) => a.unique || a.index || a.references).map(([f]) => `.index("by_${f}", ["${f}"])`);
+    console.log(`  ${plural(def.modelName ?? model)}: defineTable({ ${fields.join(", ")} })${indexes.join("")}, // ${plugin.id}`);
+  }
+```
+
+Three things it gets right that hand-written tables get wrong: names are the model name plus `s` (the JWT plugin's `jwks` is the table `jwkss`), dates are numbers, and an empty optional field arrives as `null` (`oauthClients.clientDiscoveryId must be a string, got null` otherwise). JSON fields become `v.any()`. Run it again after upgrading.
 
 Table names `users`, `sessions`, `accounts` and `verifications` are reserved; `defineSchema` rejects them. Keep your own per-user data in a separate table keyed by `userId` (see [Roles and ownership](#roles-and-ownership)).
 
@@ -306,6 +334,292 @@ curl -X POST localhost:3000/rpc/me:whoami -H 'content-type: application/json' -H
 ```
 
 Adding any plugin turns the fast cookie path off (see above); the cookie still works, through Better Auth. The JavaScript client cannot attach this header to its HTTP calls, so for a Node script use plain `fetch` (see [clients](clients.html#using-the-client-outside-the-browser)).
+
+## Being an OAuth 2.1 and OpenID Connect provider
+
+Other apps can let people sign in with your app ("Sign in with Acme") and call your API on their behalf, with Better Auth's [OAuth Provider plugin](https://better-auth.com/docs/plugins/oauth-provider). Your app becomes an authorization server: the authorization-code flow with PKCE, consent, ID tokens, refresh-token rotation, client registration, discovery and JWKS. Use the plugin; do not build an OAuth server yourself.
+
+```bash
+cd forge && bun add @better-auth/oauth-provider@1.7.12   # the Better Auth version the engine pins
+```
+
+```ts
+// forge/auth.ts
+import { defineAuth } from "@archlast/forge-runtime";
+import { oauthProvider } from "@better-auth/oauth-provider";
+import { jwt } from "better-auth/plugins";
+
+/** Your own API as an OAuth resource: access tokens for it are JWTs with this audience. */
+export const API_RESOURCE = `${process.env.BETTER_AUTH_URL ?? "http://localhost:3000"}/http`; // the engine serves /http/* routes
+
+/** Who may register and manage OAuth clients: staff, by user id (OAUTH_ADMIN_USER_IDS, comma-separated), read on each call. */
+const isStaff = (user?: { id: string }) =>
+  !!user && (process.env.OAUTH_ADMIN_USER_IDS ?? "").split(",").map((id) => id.trim()).includes(user.id);
+
+export default defineAuth({
+  emailAndPassword: { enabled: true },
+  disabledPaths: ["/token"], // the JWT plugin's session-token endpoint: clients get tokens from /oauth2/token instead
+  plugins: [
+    jwt(),
+    oauthProvider({
+      loginPage: "/sign-in",
+      consentPage: "/consent",
+      scopes: ["openid", "profile", "email", "offline_access", "tasks:read"],
+      resources: [API_RESOURCE],
+      clientRegistrationDefaultResources: [API_RESOURCE], // a client may ask for tokens to your API only if it is linked to it
+      clientPrivileges: ({ user }) => isStaff(user), // who may register and manage clients (your rule)
+    }),
+  ],
+});
+```
+
+**Decide who may register clients.** Without `clientPrivileges`, any signed-in user can create, change and delete OAuth clients, which in an app with open sign-up means every user. It receives `{ action, user, session, headers, clientId? }`; return `true` to allow. Leave it out only when you want users to register their own apps.
+
+Then declare the plugins' tables ([above](#declaring-a-plugins-tables): `jwkss`, `oauthClients`, `oauthAccessTokens`, `oauthRefreshTokens`, `oauthConsents`, `oauthResources`, `oauthClientResources`, `oauthClientAssertions`), and add the consent page.
+
+Everything is served under `/api/auth`, so the issuer is `BETTER_AUTH_URL/api/auth`:
+
+| Address | What it is |
+|---|---|
+| `/api/auth/.well-known/openid-configuration` | Discovery: give clients this (or just the issuer) |
+| `/api/auth/oauth2/authorize`, `/api/auth/oauth2/token` | The flow: `response_type=code` with PKCE (S256), then the code (and `refresh_token`) exchanges |
+| `/api/auth/oauth2/userinfo` | The user, for a bearer access token |
+| `/api/auth/jwks` | The keys ID tokens and access tokens are signed with |
+| `/api/auth/oauth2/introspect`, `/revoke`, `/end-session` | RFC 7662, RFC 7009, RP-initiated logout |
+| `/api/auth/oauth2/create-client`, `get-clients`, `update-client`, `delete-client`, `public-client` | Client management for a signed-in user (`create-client` returns the secret once) |
+
+Clients that start from the issuer find the metadata either way: OpenID Connect at `/api/auth/.well-known/openid-configuration`, and RFC 8414 (which some OAuth and MCP clients follow) at `/.well-known/oauth-authorization-server/api/auth`, which the engine routes to the same document (as it does `/.well-known/openid-configuration/api/auth`).
+
+**Clients.** A signed-in user (one `clientPrivileges` allows) registers one with `POST /api/auth/oauth2/create-client` and `{ redirect_uris, client_name, token_endpoint_auth_method }`; the answer has `client_id` and, once, `client_secret`. Web clients need `https://` redirect URIs, `localhost` included. During development a client app on this machine is registered as `application_type: "native"`, which allows a plain-HTTP loopback redirect such as `http://localhost:3001/api/auth/callback/acme`. PKCE is always required for public clients and with `offline_access`.
+
+**Machine clients** (another server calling your API as itself, with no user) use the `client_credentials` grant. Register one with `grant_types: ["client_credentials"]` and no `redirect_uris` at all (an empty list is refused). Better Auth then refuses its token requests ("client has no authorized client_credentials scopes") until the client is given the scopes it may ask for, which its server-only admin API does and functions cannot reach. Do the same write in a staff-only mutation:
+
+```ts
+// a service behind a staff check (see clientPrivileges above)
+async allowClientCredentials(clientId: string, scopes: string[]) {
+  const client = await this.ctx.db.query("oauthClients").withIndex("by_clientId", (q) => q.eq("clientId", clientId)).unique();
+  if (!client) throw new ForgeError("No such client");
+  await this.ctx.db.patch(client._id, { clientCredentialsScopes: scopes });
+}
+```
+
+**Sign-in and consent.** A visitor who is not signed in is sent to `loginPage` with a signed query; one who is, to `consentPage`. Both pages must send that query back as `oauth_query`, which Better Auth's `oauthProviderClient` plugin does for every request they make. Add it to the app's client plugins (`app/root.tsx`'s `authPlugins` in a full-stack app, [`authPlugins`](clients.html) in a separate frontend), with `@better-auth/oauth-provider` in the root `package.json` too:
+
+```tsx
+// app/root.tsx
+import { oauthProviderClient } from "@better-auth/oauth-provider/client";
+export const authPlugins = [oauthProviderClient()];
+```
+
+```tsx
+// app/routes/consent.tsx
+import { redirect, useLoaderData, type LoaderArgs } from "@archlast/forge-framework";
+import { useAuth } from "@archlast/forge-react";
+import { useEffect, useState } from "react";
+import type { authPlugins } from "../root";
+
+export const loader = async ({ ctx, request }: LoaderArgs) => {
+  const url = new URL(request.url);
+  if (!(await ctx.viewer())) throw redirect(`/sign-in${url.search}`); // keep the signed query
+  return { clientId: url.searchParams.get("client_id") ?? "", scopes: (url.searchParams.get("scope") ?? "").split(" ").filter(Boolean) };
+};
+
+export default function Consent() {
+  const { clientId, scopes } = useLoaderData<typeof loader>();
+  const auth = useAuth<typeof authPlugins>();
+  const [name, setName] = useState<string>();
+  useEffect(() => {
+    fetch(`/api/auth/oauth2/public-client?client_id=${encodeURIComponent(clientId)}`).then((r) => r.json()).then((c) => setName(c.client_name));
+  }, [clientId]);
+  async function answer(accept: boolean) {
+    const res = await auth.oauth2.consent({ accept }); // the plugin adds this page's signed query
+    if (res.data?.url) window.location.href = res.data.url; // back to the app that asked, with a code or access_denied
+  }
+  return (
+    <main>
+      <h1>{name ?? "An application"} wants to access your account</h1>
+      <ul>{scopes.map((s) => <li key={s}>{s}</li>)}</ul>
+      <button onClick={() => answer(true)}>Allow</button>
+      <button onClick={() => answer(false)}>Deny</button>
+    </main>
+  );
+}
+```
+
+With the plugin, the sign-in page needs nothing new: `signIn.email(…)` carries the signed query too, and when it is there the answer has a `url` (`/consent?…`) to go to instead of your usual redirect. Without the plugin, both pages put `oauth_query: window.location.search.slice(1)` in their `POST` bodies themselves.
+
+**Protecting your API with the tokens.** Requests from other apps carry `Authorization: Bearer <access token>`, not a session, so `ctx.auth.getUserIdentity()` is `null` for them. Verify the token in a guard and pass its subject to **internal** functions:
+
+```ts
+// forge/_modules/oauth/oauth.guard.ts
+import { applyDecorators, createParamDecorator, ForbiddenException, Injectable, SetMetadata, UnauthorizedException, UseGuards, type CanActivate, type ExecutionContext, type NestRequest } from "@archlast/forge-runtime/nest";
+import { isInsufficientScopeError, requestToResourceInput, verifyAccessTokenRequest } from "better-auth/oauth2";
+import { API_RESOURCE } from "../../auth";
+
+const SCOPES = "oauth:scopes";
+const TOKEN = Symbol("oauth:token");
+const BASE = API_RESOURCE.replace(/\/http$/, "");
+export type OAuthClaims = { sub: string; scope?: string; azp?: string; [claim: string]: unknown };
+
+@Injectable()
+export class OAuthGuard implements CanActivate {
+  async canActivate(context: ExecutionContext) {
+    const requiredScopes = (Reflect.getMetadata(SCOPES, context.getHandler()) ?? Reflect.getMetadata(SCOPES, context.getClass()) ?? []) as string[];
+    const req = context.switchToHttp().getRequest<NestRequest & { [TOKEN]?: OAuthClaims }>();
+    try {
+      req[TOKEN] = (await verifyAccessTokenRequest(requestToResourceInput(req.raw), {
+        jwksUrl: `${BASE}/api/auth/jwks`,
+        verifyOptions: { issuer: `${BASE}/api/auth`, audience: API_RESOURCE },
+        requiredScopes,
+      })) as OAuthClaims;
+      return true;
+    } catch (e) {
+      if (isInsufficientScopeError(e)) throw new ForbiddenException(`This needs the scopes: ${requiredScopes.join(" ")}`);
+      throw new UnauthorizedException("A valid access token is required");
+    }
+  }
+}
+
+export const RequireScopes = (...scopes: string[]) => applyDecorators(SetMetadata(SCOPES, scopes), UseGuards(OAuthGuard));
+export const OAuthToken = createParamDecorator((_: unknown, host: ExecutionContext): OAuthClaims => host.switchToHttp().getRequest()[TOKEN]);
+```
+
+```ts
+// forge/_modules/partner/partner.controller.ts: answers at /http/partner
+@Controller("partner")
+@RequireScopes("tasks:read")
+export class PartnerController {
+  @Get("me")
+  me(@Ctx() ctx: ActionCtx, @OAuthToken() token: OAuthClaims) {
+    return ctx.runQuery(internal.partner.profile, { userId: token.sub, client: token.azp ?? null });
+  }
+}
+```
+
+Clients ask for such a token by sending `resource=<API_RESOURCE>` in the authorize and token requests; they get a signed JWT (`typ: at+jwt`) whose audience is your API. List `OAuthGuard` in the module's `providers`. A token without the route's scopes gets `403`, a missing or invalid one `401`.
+
+A machine client's token (`client_credentials`) has no user: its `sub` is the client's id, the same as `azp`. Routes that act for a user must refuse it (`if (token.sub === token.azp) throw new ForbiddenException("This needs a user's token")`); routes for machines read `azp`.
+
+## Signing in with another forge app, and calling it
+
+The other side of [being an OAuth provider](#being-an-oauth-21-and-openid-connect-provider): your app (here "Partner") lets people sign in with another archlast-forge app that is a provider ("Acme"), then calls Acme's API for them, or as itself. Better Auth's `genericOAuth` plugin does the client half; nothing else is needed. (Between backends of one system, such as the services of a monorepo, use [Forge RPC](forge-rpc.html) instead: OAuth is for apps with separate owners or users who grant access.)
+
+**At Acme**, register Partner as a client ([above](#being-an-oauth-21-and-openid-connect-provider)) with the redirect URI `<Partner's BETTER_AUTH_URL>/api/auth/callback/acme` (the last part is Partner's `providerId`). For a machine client, register a second one with `grant_types: ["client_credentials"]` and give it its scopes.
+
+**At Partner**:
+
+```ts
+// forge/auth.ts
+import { defineAuth } from "@archlast/forge-runtime";
+import { genericOAuth } from "better-auth/plugins";
+
+export const ACME_URL = process.env.ACME_URL ?? "http://localhost:3000";
+export const ACME_API = `${ACME_URL}/http`; // the resource Partner's tokens are for
+
+export default defineAuth({
+  emailAndPassword: { enabled: true },
+  plugins: [
+    genericOAuth({
+      config: [
+        {
+          providerId: "acme",
+          discoveryUrl: `${ACME_URL}/api/auth/.well-known/openid-configuration`,
+          clientId: process.env.ACME_CLIENT_ID ?? "",
+          clientSecret: process.env.ACME_CLIENT_SECRET,
+          scopes: ["openid", "profile", "email", "offline_access", "tasks:read"],
+          pkce: true,
+          authorizationUrlParams: { resource: ACME_API },
+          tokenUrlParams: { resource: ACME_API },
+          refreshTokenParams: { resource: ACME_API },
+        },
+      ],
+    }),
+  ],
+});
+```
+
+- **Sign in** with the core social sign-in, with no client plugin: `useAuth().signIn.social({ provider: "acme", callbackURL: "/acme" })`. In Better Auth 1.7 `genericOAuth` registers each provider as a social provider, with the callback `/api/auth/callback/<providerId>`. The first sign-in creates the user at Partner and an `accounts` row (`providerId: "acme"`) holding Acme's access token, refresh token and their expiry.
+- **Call Acme as the user** from an action, through a service that reads that row (internal query), refreshes the token a minute before it expires (store the new one on the same row, the only write you make to `accounts`), and sends it as `Authorization: Bearer`:
+
+```ts
+// forge/_modules/acme/acme.service.ts (shortened)
+@Injectable()
+export class AcmeApi extends ForgeService<ActionCtx> {
+  // Return types written out: this class calls internal.acme.*, whose types come from forge/acme.ts, which imports this class.
+  private async token(): Promise<string> {
+    const me = await this.ctx.auth.getUserIdentity();
+    if (!me) throw new ForgeError("Sign in first");
+    const tokens = await this.ctx.runQuery(internal.acme.tokens, { userId: me.userId });
+    if (!tokens) throw new ForgeError({ code: "NOT_CONNECTED", message: "Sign in with Acme first" });
+    if (tokens.accessTokenExpiresAt === undefined || tokens.accessTokenExpiresAt > Date.now() + 60_000) return tokens.accessToken;
+    const res = await fetch(`${ACME_URL}/api/auth/oauth2/token`, {
+      method: "POST",
+      headers: { "content-type": "application/x-www-form-urlencoded" },
+      body: new URLSearchParams({ grant_type: "refresh_token", refresh_token: tokens.refreshToken ?? "", client_id: process.env.ACME_CLIENT_ID ?? "", client_secret: process.env.ACME_CLIENT_SECRET ?? "", resource: ACME_API }),
+    });
+    if (!res.ok) throw new ForgeError({ code: "NOT_CONNECTED", message: "Sign in with Acme again" });
+    const fresh = (await res.json()) as { access_token: string; refresh_token?: string; expires_in?: number };
+    await this.ctx.runMutation(internal.acme.saveTokens, { accountId: tokens.accountId, accessToken: fresh.access_token, refreshToken: fresh.refresh_token, expiresIn: fresh.expires_in });
+    return fresh.access_token;
+  }
+
+  async get(path: string): Promise<unknown> {
+    const res = await fetch(`${ACME_API}${path}`, { headers: { authorization: `Bearer ${await this.token()}` } });
+    if (!res.ok) throw new ForgeError({ code: "ACME_ERROR", message: `Acme answered ${res.status}` });
+    return res.json();
+  }
+}
+```
+
+- **Call Acme as Partner itself** (a cron, a job): a singleton that asks Acme's token endpoint for `grant_type=client_credentials` with the machine client's id and secret, `scope` and `resource`, and keeps the token until a minute before it expires. Acme sees a token whose `sub` is that client.
+- **Never return the tokens** from a public function; the `accounts` reads and the token writes are internal functions.
+- **Two apps on one machine in development:** `archlast-forge dev` serves each app as `http://localhost:<port>`. Register Partner at Acme as a native client with that loopback callback (above). Cookies belong to a host, not a port, so the two apps' session cookies collide in one browser: give one of them its own prefix, `advanced: { cookiePrefix: "partner" }` in `forge/auth.ts`.
+
+## Organizations and multi-tenant apps
+
+For a SaaS where customers are organizations with members and roles, use Better Auth's [organization plugin](https://better-auth.com/docs/plugins/organization): organizations, members with roles (`owner`, `admin`, `member`), invitations, and an **active organization** on each session. Do not build tenants, memberships or invitations yourself.
+
+```ts
+// forge/auth.ts
+import { organization } from "better-auth/plugins";
+export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [organization()] });
+```
+
+Declare its tables with the [generator](#declaring-a-plugins-tables) (`organizations`, `members`, `invitations`; it also adds `activeOrganizationId` to sessions, a built-in table). Users manage organizations through `/api/auth/organization/*`: `create`, `set-active`, `invite-member`, `accept-invitation`, `update-member-role`, `remove-member`, `list`. A separate frontend gets them as `client.auth.organization.*` with Better Auth's `organizationClient()` in [`authPlugins`](clients.html); a full-stack page calls those addresses with `fetch`.
+
+The tenant of a call is the organization active in the caller's session, checked against their membership, in one service every tenant-scoped feature injects:
+
+```ts
+// forge/_modules/tenancy/tenant.service.ts (exported by a TenancyModule that tenant-scoped modules import)
+@Injectable()
+export class TenantContext extends ForgeService<QueryCtx> {
+  async current() {
+    const me = await this.ctx.auth.getUserIdentity();
+    if (!me) throw new ForgeError("Sign in first");
+    const session = await this.ctx.db.get(me.sessionId as Id<"sessions">);
+    const organizationId = (session as { activeOrganizationId?: string | null } | null)?.activeOrganizationId;
+    if (!organizationId) throw new ForgeError({ code: "NO_ORGANIZATION", message: "Choose an organization first" });
+    const member = (await this.ctx.db.query("members").withIndex("by_userId", (q) => q.eq("userId", me.userId)).collect()).find((m) => m.organizationId === organizationId);
+    if (!member) throw new ForgeError({ code: "NOT_A_MEMBER", message: "You are not a member of this organization" });
+    return { userId: me.userId, organizationId, role: member.role as "owner" | "admin" | "member" };
+  }
+
+  async require(...roles: ("owner" | "admin" | "member")[]) {
+    const tenant = await this.current();
+    if (!roles.includes(tenant.role)) throw new ForgeError({ code: "FORBIDDEN", message: `This needs the role ${roles.join(" or ")}` });
+    return tenant;
+  }
+}
+```
+
+- **Every tenant table has an `organizationId` and an index on it**, and every read goes through that index with the tenant's id: `withIndex("by_organizationId", (q) => q.eq("organizationId", organizationId))`.
+- **The organization id never comes from the client.** It comes from `TenantContext`. A function that takes an `organizationId` argument lets anyone read any tenant.
+- **Rows read by id are checked**: `if (!row || row.organizationId !== organizationId) throw new ForgeError("No such project")`, so another tenant's row looks like a missing one.
+- **Roles are checked in the service** with `require("owner", "admin")` before writes that need them.
+- The session and the member row are read inside the query, so a live list follows the user when they switch organization or their role changes.
+- Webhooks per tenant: pass the organization as `tenant` to [`webhooks.dispatch()`](webhooks.html) and to the endpoint methods.
+
+With any plugin, the engine resolves sessions through Better Auth instead of its own fast path ([above](#how-the-caller-is-resolved)), about a millisecond more per call.
 
 ## Cookies, origins and CORS
 

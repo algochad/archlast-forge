@@ -242,7 +242,24 @@ export default function Patients() {
 }
 ```
 
-Both paginated hooks need a query that takes `paginationOpts` and returns `.paginate(paginationOpts)`.
+Both paginated hooks need a query that takes `paginationOpts` and returns `.paginate(paginationOpts)`. Call them directly in the component, as above: no `usePaginatedTasks` wrapper, no local `items`/`hasMore`/`page` state, no `useEffect` that fetches the next page. `results`, `status`, `loadMore`, `total`, `pageCount` and `hasNextPage` are everything a list needs.
+
+## Better Auth client plugins (`authPlugins`)
+
+A plugin's browser half (`organizationClient()`, `oauthProviderClient()`, `twoFactorClient()`, …) is exported from `app/root.tsx`; the framework gives it to the auth client on the server render and in the browser. Name it for typed methods:
+
+```tsx
+// app/root.tsx
+import { organizationClient } from "better-auth/client/plugins";
+export const authPlugins = [organizationClient()];
+
+// a page
+import { useAuth } from "@archlast/forge-react";
+import type { authPlugins } from "../root";
+const auth = useAuth<typeof authPlugins>(); // auth.organization.create(...), auth.organization.setActive(...)
+```
+
+Their packages go in the root `package.json` (browser code) at the engine's Better Auth version. Call these methods directly; do not wrap them or write `fetch` calls to `/api/auth/...` by hand. Details: [auth-plugins.md](auth-plugins.md).
 
 ## Mutations, forms, uploads
 
@@ -354,7 +371,7 @@ Detect with `components.json` (shadcn) and `app/components/ui/`.
 
 - `package.json` scripts: `dev`, `build`, `start`, `codegen`, `typecheck` (`archlast-forge codegen && tsc --noEmit`), `up`, `down`, `format`. New projects are formatted with Prettier at 4 spaces; run `bun run format` after edits.
 - Dependencies: packages used by `app/` go in the **root** `package.json` `dependencies`; packages used by functions go in `forge/package.json`. In the production image only the root `dependencies` are installed (no `devDependencies`), and `react`, `react-dom` (19.3.x) and `@archlast/forge-*` come from the engine image: do not add other copies.
-- `tsconfig.json`: `include: ["app"]`, `jsx: "react-jsx"`, `strict`, `noEmit`, `types: []`, `experimentalDecorators` (needed because the page's type-check follows the generated API into `forge/`, which may use Nest decorators). **`verbatimModuleSyntax` is on: type-only imports must be `import type` or `import { type X }`.** shadcn adds `paths: { "@/*": ["./app/*"] }`. TypeScript 7 rejects `baseUrl`.
+- `tsconfig.json`: `include: ["app"]`, `jsx: "react-jsx"`, `strict`, `noEmit`, `types: ["bun"]` with `@types/bun` in `devDependencies`, `experimentalDecorators` (both needed because the page's type-check follows the generated API into `forge/`, whose files use `process.env`, `node:` modules and Nest decorators; `archlast-forge upgrade` adds them to older apps that had `types: []`). The types don't make `process.env` or `Bun` safe in pages: code in `app/` still runs in the browser. **`verbatimModuleSyntax` is on: type-only imports must be `import type` or `import { type X }`.** shadcn adds `paths: { "@/*": ["./app/*"] }`. TypeScript 7 rejects `baseUrl`.
 - `.forge/gen/` holds `routes.client.ts`, `routes.server.ts` and `entry.client.tsx`, generated from `app/` on every build; `.forge/build/<version>/` is the output. Never edit either.
 - After changing anything in `forge/` outside `dev`, run `bun run codegen` so `forge/_generated` (and the types your pages use) are current. `bun run typecheck` does codegen and `tsc`.
 

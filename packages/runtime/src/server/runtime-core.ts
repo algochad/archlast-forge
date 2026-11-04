@@ -368,7 +368,7 @@ export async function startCore(opts: {
     try {
       title = JSON.parse(readFileSync(join(projectRootOf(forgeDir), "package.json"), "utf8")).name || title;
     } catch {}
-    return buildOpenApi({ title, version: release, functions: manifest.functions, http: project.http, nest: (await nestRoutes?.().catch(() => [])) ?? [] });
+    return buildOpenApi({ title, version: release, functions: manifest.functions, http: project.http, httpRoot: project.httpRoot, nest: (await nestRoutes?.().catch(() => [])) ?? [] });
   };
 
   const manifest: Manifest = {
@@ -384,6 +384,8 @@ export async function startCore(opts: {
     crons: project.crons,
     storage: Boolean(storage),
     release,
+    // What the server matches at the root before handing a path to the pages: just the patterns, for a router with root: true.
+    ...(project.httpRoot && { rootRoutes: project.http.map((r) => ({ method: r.method, ...(r.path !== undefined ? { path: r.path } : { pathPrefix: r.pathPrefix }) })) }),
   };
   function event(msg: HostEvent) {
     // Another process writing would make cached rows stale: a fresh cache only once this one is the only writer again.

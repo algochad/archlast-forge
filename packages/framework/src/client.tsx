@@ -39,7 +39,7 @@ function loaderContext(client: ArchlastForgeClient, queryClient: QueryClient, vi
 export async function startClient(manifest: ManifestNode) {
   const state = window.__FORGE__;
   if (!state) throw new Error("This page wasn't rendered by archlast-forge: window.__FORGE__ is missing.");
-  const client = new ArchlastForgeClient();
+  const client = new ArchlastForgeClient({ authPlugins: manifest.module?.authPlugins }); // app/root.tsx's, if it exports them
   const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
   hydrate(queryClient, state.queries);
   const viewer = createViewerStore(state.viewer);

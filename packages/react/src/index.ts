@@ -11,12 +11,14 @@ import {
   type PublicAction,
   type PublicMutation,
   type PublicQuery,
+  type AuthClient,
+  type BetterAuthClientPlugin,
 } from "@archlast/forge-client";
 import { getFunctionName, type FunctionArgs, type FunctionReference, type FunctionReturn, type Id, type OptionalArgs } from "@archlast/forge-runtime";
 import { QueryClient, QueryClientProvider, skipToken, useQueryClient, useQuery as useTanstackQuery } from "@tanstack/react-query";
 import { createContext, createElement, useCallback, useContext, useEffect, useMemo, useState, useSyncExternalStore, type ReactNode } from "react";
 
-export { ArchlastForgeClient, ForgeError, pageArgs, windowArgs, type ClientOptions, type QueryUpdate } from "@archlast/forge-client";
+export { ArchlastForgeClient, ForgeError, pageArgs, windowArgs, type AuthClient, type ClientOptions, type QueryUpdate } from "@archlast/forge-client";
 
 const ClientContext = createContext<ArchlastForgeClient | null>(null);
 
@@ -171,7 +173,11 @@ export function useUploadFile<R extends FunctionReference<"mutation", { contentT
 }
 
 /** The Better Auth client: signIn, signUp, signOut, … */
-export const useAuth = () => useArchlastForge().auth;
+/**
+ * The Better Auth client of the provider's client. With client plugins (`authPlugins`), name them for their methods' types:
+ * `useAuth<typeof authPlugins>().organization.create(...)`.
+ */
+export const useAuth = <Plugins extends BetterAuthClientPlugin[] = []>() => useArchlastForge().auth as unknown as AuthClient<Plugins>;
 
 /** What the session is on the server and during hydration: still loading. Sign-in state arrives in the browser. */
 const PENDING_SESSION = { data: null, error: null, isPending: true, isRefetching: false, refetch: async () => {} };

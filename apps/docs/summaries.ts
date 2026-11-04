@@ -39,6 +39,8 @@ export const DESCRIPTIONS: Record<Slug, string> = {
     "File uploads and downloads: S3-compatible or built-in local storage, presigned URLs, the upload flow from the client.",
   scheduling:
     "Scheduled functions and crons: `ctx.scheduler`, `forge/crons.ts`, exactly-once mutations versus at-most-once actions, cancelling and retrying.",
+  webhooks:
+    "Sending and receiving webhooks in one module on your own database: the outbox, Standard Webhooks signatures, retries and the attempt log, endpoints per tenant, verified inbound webhooks applied once.",
   http: "Plain HTTP endpoints in forge/http.ts: webhooks, public JSON APIs, downloads, validators, CORS, rate limits, streaming.",
   nest: "NestJS inside the engine: services with `ForgeService` and `inject()`, modules, controllers, gateways, GraphQL, microservice transports, folder layout.",
   "forge-rpc":

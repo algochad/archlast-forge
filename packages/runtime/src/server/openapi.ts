@@ -18,6 +18,8 @@ export interface OpenApiInput {
   version: string;
   functions: { name: string; kind: FunctionKind; visibility: "public" | "internal"; args: Record<string, unknown>; returns?: unknown }[];
   http: HttpRoute[];
+  /** The routes are served at the root (`httpRouter({ root: true })`), so they are described there instead of under /http. */
+  httpRoot?: boolean;
   nest: NestRoute[];
 }
 
@@ -40,6 +42,8 @@ export function toJsonSchema(v: Validator): JsonSchema {
       return fieldsSchema(v.fields ?? {});
     case "union":
       return { anyOf: v.members!.map(toJsonSchema) };
+    case "any":
+      return {};
   }
 }
 
@@ -97,7 +101,8 @@ export function buildOpenApi(input: OpenApiInput) {
   for (const r of input.http) {
     if ((r.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT]) continue; // Nest's mount point: its controllers are listed one by one below
     const exact = r.path !== undefined;
-    const path = exact ? `/http${r.path}` : `/http${r.pathPrefix}{rest}`;
+    const base = input.httpRoot ? "" : "/http";
+    const path = exact ? `${base}${r.path}` : `${base}${r.pathPrefix}{rest}`;
     const name = `http ${r.method} ${r.path ?? `${r.pathPrefix}*`}`;
     add(path, r.method, {
       operationId: `http_${r.method}_${(r.path ?? r.pathPrefix!).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`,

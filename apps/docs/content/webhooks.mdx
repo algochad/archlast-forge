@@ -1,0 +1,171 @@
+# Webhooks
+
+`@archlast/forge-runtime/nest/webhooks` sends webhooks to other services and receives them from others, in one module. It follows the design and defaults of [`@nestjs/webhooks`](https://docs.nestjs.com/http/webhooks) (Standard Webhooks signatures, an outbox, retries with backoff, an attempt log, endpoints that pause and disable themselves), but keeps everything in your app's own database, in the engine's transactions and scheduler. It works the same on SQLite, Postgres and MongoDB, with nothing else to install.
+
+- **Sending** is an outbox. `webhooks.dispatch()` inside a mutation writes the message and one delivery per subscribed endpoint in that mutation's transaction. A webhook exists only if the change it describes committed, and the scheduler delivers it after the commit.
+- **Receiving** is a guard and an inbox. `@VerifyWebhook("payments")` checks the signature on the raw body and the timestamp before your handler runs. `webhookInbox.once()`, in the mutation that applies the webhook, records its id in the same transaction. A redelivery changes nothing, and a webhook whose mutation failed is applied when the sender retries.
+
+## Set it up
+
+Three pieces, in the usual places ([folder layout](nest.html#folder-layout)):
+
+```ts
+// forge/schema.ts: the tables are documents in your database
+import { defineSchema, defineTable, v } from "@archlast/forge-runtime";
+import { webhookTables } from "@archlast/forge-runtime/nest/webhooks";
+
+export default defineSchema({
+  ...webhookTables,
+  orders: defineTable({ tenant: v.string(), item: v.string(), status: v.string() }).index("by_tenant", ["tenant"]),
+});
+```
+
+```ts
+// forge/webhooks.ts: the functions the scheduler runs (all internal), plus your own endpoint management
+import { webhookFunctions } from "@archlast/forge-runtime/nest/webhooks";
+
+export const { deliver, claim, settle } = webhookFunctions();
+```
+
+```ts
+// forge/_modules/orders/orders.module.ts: import the module once; it is global
+import { Module } from "@archlast/forge-runtime/nest";
+import { WebhooksModule } from "@archlast/forge-runtime/nest/webhooks";
+import { PaymentsWebhookController } from "./payments.webhook.controller";
+import { OrdersWriter } from "./orders.service";
+
+@Module({
+  imports: [
+    WebhooksModule.forRoot({
+      eventTypes: ["order.shipped", "order.cancelled"],
+      receivers: { payments: { secret: () => process.env.PAYMENTS_WEBHOOK_SECRET } },
+    }),
+  ],
+  controllers: [PaymentsWebhookController],
+  providers: [OrdersWriter],
+})
+export class OrdersModule {}
+```
+
+`webhookFunctions()` must be exported from `forge/webhooks.ts` (or the module named by the `functions` option): the scheduler calls `webhooks:deliver`, `webhooks:claim` and `webhooks:settle` by name.
+
+## Send
+
+Inject `Webhooks` into a service that writes, and dispatch in the same mutation as the change:
+
+```ts
+// forge/_modules/orders/orders.service.ts
+import { ForgeError } from "@archlast/forge-runtime";
+import { ForgeService, Injectable, type MutationCtx } from "@archlast/forge-runtime/nest";
+import { Webhooks } from "@archlast/forge-runtime/nest/webhooks";
+import type { Id } from "../../_generated/dataModel";
+
+@Injectable()
+export class OrdersWriter extends ForgeService<MutationCtx> {
+  constructor(private readonly webhooks: Webhooks) {
+    super();
+  }
+
+  async ship(id: Id<"orders">) {
+    const order = await this.ctx.db.get(id);
+    if (!order) throw new ForgeError("No such order");
+    await this.ctx.db.patch(id, { status: "shipped" });
+    await this.webhooks.dispatch({ type: "order.shipped", tenant: order.tenant, data: { orderId: id, item: order.item } });
+  }
+}
+```
+
+- **`dispatch({ type, data, tenant?, id? })`** returns `{ messageId, msgId, deliveries }`. The message goes to every enabled endpoint of that `tenant` (or, with no tenant, to the endpoints that have none) that subscribes to `type` or to `"*"`. Pass an `id` to make it idempotent: dispatching the same id again sends nothing new.
+- **If the mutation throws after dispatching**, the message and its deliveries roll back with it, and nothing is sent.
+- **The request** is a `POST` of `{ "type", "timestamp", "data" }` with the [Standard Webhooks](https://www.standardwebhooks.com) headers `webhook-id` (the message id, the same on every retry, so receivers deduplicate on it), `webhook-timestamp` and `webhook-signature` (`v1,<base64 HMAC-SHA256 of "id.timestamp.body">`, one per active secret).
+
+### Endpoints
+
+`WebhookEndpoints` (writes) and `WebhookLog` (reads) are what your own screens and REST routes call. Scope them to the caller's tenant, which you get from the caller, never from the request:
+
+| Method | Does |
+|---|---|
+| `endpoints.create({ url, eventTypes, tenant?, description?, metadata? })` | Checks the URL (HTTPS, no credentials) and the types, and returns `{ id, secret }`. The secret (`whsec_…`) is shown this once. |
+| `endpoints.update(id, { url?, eventTypes?, description?, disabled? }, tenant?)` | `disabled: false` re-enables an endpoint and clears its failure state. |
+| `endpoints.rotateSecret(id, { overlapMs?, tenant? })` | A new secret signs from now on. The old one keeps signing beside it for `overlapMs` (default 24 h), so receivers can switch without downtime. |
+| `endpoints.remove(id, tenant?)` | Deletes it. Deliveries still due fail as `disabled`. |
+| `endpoints.retry(deliveryId, tenant?)` | Sends a failed delivery again from its first attempt. |
+| `log.endpoints(tenant?)`, `log.endpoint(id, tenant?)` | Endpoints without their secrets (`secretCount` instead). |
+| `log.deliveries(endpointId, paginationOpts, tenant?)` | A page of deliveries, newest first, from `.paginate()`, for `usePaginatedQuery` or a REST cursor. |
+| `log.attempts(deliveryId, tenant?)` | Every attempt: status code, error, duration, the first 4 KB of the response. |
+
+### Delivery, retries and failures
+
+| Outcome | What happens |
+|---|---|
+| `2xx` | `delivered`. The endpoint's failure clock resets. |
+| Any other status, a timeout (15 s) or no answer | Retried with exponential backoff and equal jitter: about 5 s, 20 s, 80 s, …, capped at 1 day, 10 attempts in all, then `failed` (`exhausted`). `Retry-After` is honored, within the cap. |
+| `429`, `502`, `503`, `504` | Retried as above, and the endpoint pauses: its other deliveries wait until the retry time. |
+| `410 Gone` | `failed` (`rejected`), and the endpoint is disabled (`gone`). |
+| Failing for 5 days without a success | The endpoint is disabled (`failing`). |
+| A blocked destination | `failed` (`blocked`), not retried. |
+
+Each attempt is claimed in a mutation, sent from an action, and settled in another mutation. If the process stops mid-send, a fallback job takes the delivery up again once its lease (the timeout plus a minute) is over, and it counts as an attempt.
+
+**Destinations.** Only `https://` URLs, unless `allowHttp`. The host is resolved on every attempt. Loopback, private and shared addresses are refused unless `allowPrivateNetworks` (or `allowedAddresses` lists them). Link-local addresses and the cloud metadata service are always refused, and redirects are never followed. The connection is not pinned to the address that was checked, so a DNS answer that changes between the check and the request is not caught: block metadata and internal ranges at the network too if senders can choose URLs.
+
+## Receive
+
+```ts
+// forge/_modules/orders/payments.webhook.controller.ts
+import { Controller, Ctx, HttpCode, Post, type ActionCtx } from "@archlast/forge-runtime/nest";
+import { IncomingWebhook, VerifyWebhook, type IncomingWebhookData } from "@archlast/forge-runtime/nest/webhooks";
+import { internal } from "../../_generated/api";
+
+@Controller("webhooks")
+export class PaymentsWebhookController {
+  @Post("payments")
+  @HttpCode(200)
+  @VerifyWebhook("payments") // 401 before the handler unless the signature and timestamp check out
+  payments(@Ctx() ctx: ActionCtx, @IncomingWebhook() webhook: IncomingWebhookData<{ orderId: string; amount: number }>) {
+    return ctx.runMutation(internal.orders.applyPayment, { webhookId: webhook.id, orderId: webhook.payload.orderId, amount: webhook.payload.amount });
+  }
+}
+```
+
+```ts
+// in OrdersWriter (its constructor also takes `private readonly inbox: WebhookInbox`): apply it once, in the same transaction as the change
+async applyPayment(webhookId: string, orderId: string, amount: number) {
+  if (!(await this.inbox.once("payments", webhookId))) return { applied: false }; // a redelivery
+  await this.ctx.db.insert("payments", { orderId, amount });
+  return { applied: true };
+}
+```
+
+- **`receivers`** names each sender: `{ secret, scheme?, toleranceMs? }`. `secret` is one secret, several (each is tried, for rotations), or a function read on every request (`() => process.env.X`). Secrets are `whsec_…` (base64) or plain text.
+- **Schemes.** `"standard"` (the default) is Standard Webhooks: the signed id, a timestamp within `toleranceMs` (default 5 minutes either way), and a `v1` signature, compared in constant time. `hmacScheme({ header, prefix?, algorithm?, encoding? })` is for senders that sign only the body, such as GitHub (`hmacScheme({ header: "x-hub-signature-256", prefix: "sha256=" })`); with no signed id, the id is a hash of the body, so a redelivery is caught by what was signed, not by an unsigned delivery header. A custom scheme is an object with `verify({ headers, rawBody }, secrets)` returning `{ id, timestamp? }` or `null`.
+- **`@IncomingWebhook()`** gives `{ receiver, id, timestamp, payload, rawBody }`. `payload` is the body parsed as JSON when it is JSON.
+- **Apply it in a mutation** and call `inbox.once(receiver, id)` first. A controller has no database (`ActionCtx`), so the mutation is where the webhook's effect and its id commit together. Answer quickly; for slow work, schedule it from that mutation.
+- `inbox.prune(olderThanMs)` forgets old ids. Keep them longer than senders retry, which is days.
+
+## Options
+
+| Option | Default | Meaning |
+|---|---|---|
+| `eventTypes` | any | The types that may be dispatched and subscribed to. |
+| `retry` | `{ attempts: 10, delayMs: 5000, factor: 4, maxDelayMs: 86400000 }` | The backoff. |
+| `timeoutMs` | `15000` | Per attempt. |
+| `disableEndpointAfterMs` | 5 days | `false` never disables. |
+| `secretRotationOverlapMs` | 24 hours | How long a rotated-out secret keeps signing. |
+| `allowHttp`, `allowPrivateNetworks`, `allowedAddresses` | `false`, `false`, `[]` | Destination rules. |
+| `maxResponseBytes` | `4096` | How much of a response the attempt log keeps. |
+| `functions` | `"webhooks"` | The function module that exports `webhookFunctions()`. |
+| `receivers` | `{}` | Inbound senders for `@VerifyWebhook(name)`. |
+
+## Compared with @nestjs/webhooks
+
+The behavior and defaults above are `@nestjs/webhooks`'. The differences come from living inside the engine:
+
+- **Storage is your database.** No Drizzle, no separate SQL store, no `@nestjs/outbox`: the tables are documents beside your own, so it works on SQLite and MongoDB as well as Postgres, and the outbox is the mutation's own transaction.
+- **The relay and the worker are the scheduler.** There is no worker process to run or lease to tune; scheduled jobs survive restarts.
+- **Applying a received webhook happens in a mutation** (`inbox.once()`), where `@nestjs/webhooks` uses `processInTransaction(tx, …)` with its own transaction.
+- **Not here yet:** encryption of stored secrets at rest (they are stored as generated; protect the database and its backups), and pinning the connection to the checked address.
+
+## Testing
+
+`createTestBackend` runs the whole path. Dispatch in a mutation, then `t.finishScheduledFunctions()` runs every delivery and retry at once. Point the endpoint at a `Bun.serve` on localhost, with `allowHttp` and `allowPrivateNetworks` in the test's configuration. To call your receiving controller, sign the request with `signWebhook({ id, timestamp, body, secrets })`. The engine's own tests (`packages/runtime/test/webhooks.test.ts`) do both.

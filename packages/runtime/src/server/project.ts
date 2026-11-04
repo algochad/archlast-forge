@@ -4,6 +4,7 @@ import { join, relative } from "node:path";
 import type { AuthOptions, CronJob, FunctionKind, HttpRoute, RegisteredFunction } from "../functions";
 import type { SchemaDefinition } from "../schema";
 import type { TablesSpec } from "./docstore";
+import { reservedPathOf } from "./config";
 
 const SPECIAL = new Set(["schema", "auth", "crons", "http"]);
 
@@ -85,6 +86,8 @@ export interface Project {
   authOptions: AuthOptions;
   crons: CronJob[];
   http: HttpRoute[];
+  /** forge/http.ts's router serves its routes at the root as well as under /http (`httpRouter({ root: true })`). */
+  httpRoot?: boolean;
 }
 
 export async function loadProject(forgeDir: string): Promise<Project> {
@@ -116,7 +119,14 @@ export async function loadProject(forgeDir: string): Promise<Project> {
   }
   const router = await optional("http");
   if (router && !Array.isArray(router.routes)) throw new Error("forge/http.ts must default-export httpRouter()");
-  return { tables, functions, authOptions, crons, http: router?.routes ?? [] };
+  const httpRoot = router?.root === true;
+  if (httpRoot)
+    for (const r of router.routes as HttpRoute[]) {
+      const at = r.path ?? r.pathPrefix!;
+      const taken = at === "/" ? undefined : reservedPathOf(at.replace(/\/$/, ""));
+      if (taken) throw new Error(`forge/http.ts: ${r.method} ${at} can't be served at the root, where ${taken} is the engine's. Give it another path, or leave it under /http (httpRouter() without root).`);
+    }
+  return { tables, functions, authOptions, crons, http: (router?.routes ?? []) as HttpRoute[], httpRoot };
 }
 
 export const tableSpecs = (tables: TablesSpec) =>
@@ -129,6 +139,8 @@ export interface Manifest {
   storage: boolean;
   /** What is deployed: a version the environment names, or a hash of the forge/ code. Telemetry compares traffic either side of a change. */
   release?: string;
+  /** forge/http.ts's routes (method and path only) when its router serves them at the root too (`httpRouter({ root: true })`). */
+  rootRoutes?: Pick<HttpRoute, "method" | "path" | "pathPrefix">[];
 }
 
 /** Variables deploy platforms and CI set to the commit being deployed, in the order they are trusted. */

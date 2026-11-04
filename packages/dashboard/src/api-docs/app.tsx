@@ -98,7 +98,7 @@ function App() {
                     {list.map((o) => (
                       <a key={o.op.operationId} href={`#op/${o.op.operationId}`} className={current?.op === o.op ? "on" : ""} title={`${o.method.toUpperCase()} ${o.path}`}>
                         <span className={`method ${o.method}`}>{o.method.toUpperCase()}</span>
-                        <span>{o.path.slice(5) /* without "/rpc/" or "/http" */}</span>
+                        <span>{o.path.replace(/^\/(rpc\/|http(?=\/))/, "") /* without "/rpc/" or "/http"; routes served at the root keep their path */}</span>
                       </a>
                     ))}
                   </Fragment>

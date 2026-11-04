@@ -4,7 +4,7 @@ declare const phantom: unique symbol;
 
 export type Id<TableName extends string> = string & { readonly __tableName: TableName };
 
-export type ValidatorKind = "string" | "number" | "boolean" | "null" | "id" | "array" | "object" | "union";
+export type ValidatorKind = "string" | "number" | "boolean" | "null" | "id" | "array" | "object" | "union" | "any";
 
 /** Plain data so schemas can cross process boundaries (dashboard, function runtime); compiled to Zod for validation. */
 export interface Validator<T = unknown, IsOptional extends boolean = boolean> {
@@ -45,6 +45,11 @@ export const v = {
     make<Infer<M[number]>>("union", { members }),
   optional: <I extends Validator<any, false>>(inner: I) =>
     ({ ...inner, optional: true }) as Validator<Infer<I> | undefined, true>,
+  /**
+   * Any JSON value, unchecked. For data whose shape is not yours to fix, such as the JSON fields Better Auth's plugins write (`metadata`,
+   * `customClaims`); anything you define yourself is better described.
+   */
+  any: () => make<any>("any"),
 };
 
 export class ValidationError extends Error {
@@ -90,6 +95,9 @@ export function toZod(validator: Validator): z.ZodType {
       break;
     case "object":
       schema = objectSchema(validator.fields!);
+      break;
+    case "any":
+      schema = z.any();
       break;
     case "union":
       schema = z.union(validator.members!.map(toZod) as [z.ZodType, ...z.ZodType[]], {
