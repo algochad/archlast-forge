@@ -85,6 +85,14 @@ export const SETTINGS: SettingDef[] = [
   { name: "DATABASE_URL", group: "Database", type: "string", secret: true, default: "SQLite in DATA_DIR", doc: "A Postgres database instead of the SQLite file.", envOnly: BOOT },
   { name: "DATABASE_POOL_SIZE", group: "Database", type: "int", min: 1, default: "twice the CPU cores", doc: "Postgres connections each function-runtime process may open for reads." },
   { name: "DATABASE_WRITE_POOL_SIZE", group: "Database", type: "int", min: 1, default: "twice DATABASE_POOL_SIZE", doc: "Postgres connections each function-runtime process may open for write transactions. More connections hide the latency of a commit; keep the total of all processes under Postgres's max_connections (100 by default)." },
+  {
+    name: "SQLITE_SYNCHRONOUS",
+    group: "Database",
+    type: "enum",
+    options: ["FULL", "NORMAL"],
+    default: "FULL",
+    doc: "How hard SQLite pushes a commit to the disk. FULL: an answered write survives a power cut. NORMAL: faster for a lone writer, but a power cut or operating-system crash can lose the last few writes (a crash of the engine alone can't).",
+  },
   { name: "SCHEMA_CHECK", group: "Database", type: "bool", default: "on outside dev", doc: "At startup, refuse to serve when stored documents don't match the schema." },
   {
     name: "REDIS_URL",

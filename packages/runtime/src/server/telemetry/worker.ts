@@ -65,7 +65,7 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const msg = event.data;
   if (msg.t === "init") {
     try {
-      db = msg.databaseUrl ? createPostgresDb(msg.databaseUrl, 3) : createSqliteDb(msg.path!, 2);
+      db = msg.databaseUrl ? createPostgresDb(msg.databaseUrl, 3) : createSqliteDb(msg.path!, 2, undefined, "NORMAL");
       await migrateTelemetry(db);
       store = new TelemetryStore(db);
       queries = buildQueries(db);
