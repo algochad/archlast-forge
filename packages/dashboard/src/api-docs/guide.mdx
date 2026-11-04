@@ -17,7 +17,7 @@ The answer is `{ "result": … }`, or `{ "error": { "message", "code", "requestI
 
 ## HTTP routes and controllers
 
-Routes from `forge/http.ts` and NestJS controllers are served under `/http`. A route that declares its `query` or `body` (or a controller method with `@Contract`) answers `400` with the reason when a request doesn't match, before its handler runs.
+Routes from `forge/http.ts` and NestJS controllers are served under `/http`, or at their own path when the app serves them at the root; each operation shows where it answers. A route that declares its `query` or `body` (or a controller method with `@Contract`) answers `400` with the reason when a request doesn't match, before its handler runs.
 
 ## Signing in
 

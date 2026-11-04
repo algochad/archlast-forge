@@ -31,7 +31,7 @@ bun test -t "ownership"               # tests whose name contains this
 | Call                                                                    | Does                                                                                                                                                                                                        |
 | ----------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `t.query(ref, args?)`, `t.mutation(ref, args?)`, `t.action(ref, args?)` | call as an anonymous visitor (`ctx.auth.getUserIdentity()` is `null`). **Internal functions can be called too** (`internal.x.y`), which clients cannot                                                      |
-| `await t.withIdentity({ email, name?, userId? })`                       | inserts a `users` document (unless `userId` is given) and returns a caller with the same three methods, signed in as that user (`{ userId, sessionId: "test", email, name }`; `name` defaults to the email) |
+| `await t.withIdentity({ email, name?, userId?, session? })`             | inserts a `users` document (unless `userId` is given) and a real `sessions` document, and returns a caller with the same three methods, signed in as that user (`{ userId, sessionId, email, name }`; `name` defaults to the email). `session` adds fields a plugin keeps there: `{ activeOrganizationId }` for a tenant-scoped test |
 | `await t.run(async (ctx) => ...)`                                       | runs code in a write transaction with `ctx.db` only (no `auth`, `scheduler`, `storage`): seed data, inspect what functions did. A throw rolls it back                                                       |
 | `await t.finishScheduledFunctions(maxRounds = 100)`                     | runs every pending scheduled job, whatever its due time, including jobs they schedule                                                                                                                       |
 | `await t.close()`                                                       | closes the database                                                                                                                                                                                         |
@@ -151,6 +151,16 @@ test("internal functions are callable", async () => {
 
 ## 5. Auth in tests
 
+- **Test through functions** (`t.query`/`t.mutation` with `api`/`internal`), not by importing service classes into the test. A service class imported by a test is compiled by Bun from the test's side without decorator metadata, and the engine reuses that copy: its constructor dependencies inject as `undefined` (`undefined is not an object (evaluating 'this.tenants.current')`). If a test really must import one, set `"emitDecoratorMetadata": true` next to `experimentalDecorators` in the root `tsconfig.json`.
+- **Multi-tenant code:** create the organization and the membership with `t.run`, then sign in with the organization active:
+  ```ts
+  const now = Date.now();
+  const userId = await t.run((ctx) => ctx.db.insert("users", { name: "Ada", email: "ada@example.com", emailVerified: true, createdAt: now, updatedAt: now }));
+  const organizationId = await t.run((ctx) => ctx.db.insert("organizations", { name: "Acme", slug: "acme", createdAt: now }));
+  await t.run((ctx) => ctx.db.insert("members", { organizationId, userId, role: "owner", createdAt: now }));
+  const owner = await t.withIdentity({ email: "ada@example.com", userId, session: { activeOrganizationId: organizationId } });
+  await owner.mutation(api.projects.create, { name: "Rocket" }); // TenantContext finds the organization in the session
+  ```
 - `withIdentity` makes a user. Two calls with the same email make two users. To act as the same user again, pass `userId`:
   ```ts
   const user = await t.run((ctx) =>

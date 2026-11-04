@@ -27,6 +27,8 @@ interface Loaded {
   build: BuildResult;
   handler: ReturnType<typeof createStaticHandler>;
   clientDir: string;
+  /** app/root.tsx's `authPlugins`, for the client each render makes. */
+  authPlugins?: unknown[];
 }
 
 const HTML_HEADERS = {
@@ -115,7 +117,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
 
   async function load(build: BuildResult) {
     const mod = (await import(join(build.dir, build.manifest.server))) as { manifest: Parameters<typeof toRouteObjects>[0] };
-    loaded = { build, handler: createStaticHandler(toRouteObjects(mod.manifest)), clientDir: join(build.dir, "client") };
+    loaded = { build, handler: createStaticHandler(toRouteObjects(mod.manifest)), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
   }
 
   async function rebuild(): Promise<boolean> {
@@ -165,7 +167,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     const wait = await env.rateLimited();
     if (wait !== null) return new Response("Too many requests", { status: 429, headers: { "retry-after": String(wait), "content-type": "text/plain; charset=utf-8" } });
 
-    const { handler, build } = loaded;
+    const { handler, build, authPlugins } = loaded;
     // One instant and one zone for the whole render, and the same two in the page: the browser's hydrating render uses them too.
     const time: TimeState = { now: Date.now(), timeZone: zoneFromCookie(req.headers.get("cookie")) ?? DEFAULT_ZONE };
     const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
@@ -214,7 +216,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     };
     const router = createStaticRouter(handler.dataRoutes, context);
     const preload = [...new Set(context.matches.flatMap((m) => build.manifest.routes[m.route.id] ?? []))].filter((f) => f !== build.manifest.entry);
-    const client = new ArchlastForgeClient({ url: url.origin });
+    const client = new ArchlastForgeClient({ url: url.origin, authPlugins });
     const status = context.statusCode;
 
     try {

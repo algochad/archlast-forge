@@ -1,10 +1,11 @@
 import type { HttpRoute } from "../functions";
 import { validate, validateFields, ValidationError, type Validator } from "../values";
 
-export type RouteMatch = { route: HttpRoute } | { status: 404 } | { status: 405; allow: string[] };
+type RoutePattern = Pick<HttpRoute, "method" | "path" | "pathPrefix">;
+export type RouteMatch<R extends RoutePattern = HttpRoute> = { route: R } | { status: 404 } | { status: 405; allow: string[] };
 
 /** Exact paths win over prefixes, and the longest prefix wins. A path that exists under other methods answers 405. */
-export function matchRoute(routes: HttpRoute[], method: string, path: string): RouteMatch {
+export function matchRoute<R extends RoutePattern>(routes: R[], method: string, path: string): RouteMatch<R> {
   const here = routes.filter((r) => (r.path !== undefined ? r.path === path : path.startsWith(r.pathPrefix!)));
   if (!here.length) return { status: 404 };
   const ofMethod = here.filter((r) => r.method === method);

@@ -143,6 +143,25 @@ export function ErrorBoundary() {
 - `ErrorBoundary` replaces the default export (inside `Layout`) when the error has no nearer boundary. Without one, `DefaultErrorBoundary` shows the status, a title (`Page not found` for 404, `Not allowed` for 401 and 403, `Something went wrong` otherwise) and a link home. In development it adds the stack trace.
 - Do not put a `<title>` in `root.tsx` if your pages set their own: React renders both, and the document would have two (see [The page's head](#the-pages-head)).
 - A root `loader` works like any other. It runs on every navigation unless you add `shouldRevalidate`.
+- `authPlugins` is the list of Better Auth **client** plugins for the app's auth client (the one `useAuth()` returns), on the server render and in the browser. Name them for their methods' types with `useAuth<typeof authPlugins>()`:
+
+```tsx
+// app/root.tsx
+import { oauthProviderClient } from "@better-auth/oauth-provider/client";
+import { organizationClient } from "better-auth/client/plugins";
+
+export const authPlugins = [organizationClient(), oauthProviderClient()];
+```
+
+```tsx
+// app/routes/orgs.tsx
+import { useAuth } from "@archlast/forge-react";
+import type { authPlugins } from "../root";
+
+const auth = useAuth<typeof authPlugins>(); // auth.organization.create(…), auth.organization.setActive(…), auth.oauth2.consent(…)
+```
+
+  Client plugins run in the browser, so their packages belong in the root `package.json` (`better-auth` and any `@better-auth/*` at the version the engine pins), beside their server halves in `forge/package.json`. See [Authentication](auth.html#plugins).
 
 ## Loaders
 
@@ -508,7 +527,7 @@ The `forge/` half of a full-stack app can use NestJS the same way a backend does
   ```
 
   I ran this in a project made with `bun create archlast-forge@0.4.0`. After a `POST /http/notes` to the controller from [Backends](backend.html#nestjs), `GET /notes` answered with `<ul><li>written through Nest</li></ul>` in the server-rendered HTML.
-- **Controllers are for other callers.** REST clients, webhooks, a mobile app or another server call `/http/...`. A page can `fetch("/http/notes")` too. It is on the same origin, so the session cookie goes along and `@Ctx()` sees the signed-in user. But that result isn't preloaded or live, so for data a page shows, prefer a query.
+- **Controllers are for other callers.** REST clients, webhooks, a mobile app or another server call `/http/...`, or a path at the root such as `/api/v1/...` with `httpRouter({ root: true })` and `nest(http, { prefix: "/api/v1/" })` ([Serving routes at the root](http.html#serving-routes-at-the-root): a route is matched before the pages, and a route for every path stays under `/http`). A page can `fetch("/http/notes")` too. It is on the same origin, so the session cookie goes along and `@Ctx()` sees the signed-in user. But that result isn't preloaded or live, so for data a page shows, prefer a query.
 - **Sockets from a page.** Open them in an effect, because components also render on the server:
   - A plain gateway: `new WebSocket(location.origin.replace(/^http/, "ws") + "/http/chat")`.
   - Socket.IO: add `socket.io-client` to the root `package.json` and connect with `io({ path: "/http/socket.io" })`.
@@ -812,7 +831,7 @@ In Docker, `archlast-forge up` builds an image from the project's `Dockerfile`: 
 
 ## Reserved paths
 
-These belong to the engine and are not available to routes: `/rpc`, `/api/auth`, `/http`, `/_app`, `/_admin`, `/_dashboard`, `/_storage` (with the built-in storage), `/_cli` (POST), `/health`, `/ready`, `/metrics`, and `API_DOCS_PATH` (`/_api`) when the [API docs](api-docs.html) are on. A route file named `health.tsx` would never be reached. Your `forge/http.ts` routes, and NestJS if you mount it, live under `/http` (see [HTTP endpoints](http.html) and [NestJS](#nestjs)).
+These belong to the engine and are not available to routes: `/rpc`, `/api/auth`, `/.well-known/oauth-authorization-server/api/auth` and `/.well-known/openid-configuration/api/auth` (Better Auth's metadata, see [Authentication](auth.html#being-an-oauth-21-and-openid-connect-provider)), `/http`, `/_app`, `/_admin`, `/_dashboard`, `/_storage` (with the built-in storage), `/_cli` (POST), `/health`, `/ready`, `/metrics`, and `API_DOCS_PATH` (`/_api`) when the [API docs](api-docs.html) are on. A route file named `health.tsx` would never be reached. Your `forge/http.ts` routes, and NestJS if you mount it, live under `/http` (see [HTTP endpoints](http.html) and [NestJS](#nestjs)). With `httpRouter({ root: true })` they also take their own paths at the root, matched before the pages: a page and a route on the same path is the route's ([Serving routes at the root](http.html#serving-routes-at-the-root)).
 
 `/_dashboard` and `/_admin` exist only when the dashboard is on (development, or `DASHBOARD=on`). Otherwise `/_admin/*` answers a plain 404 and `/_dashboard` falls through to your app, which renders its own 404 page.
 

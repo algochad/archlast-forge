@@ -10,7 +10,7 @@ import {
   type PaginationResult,
 } from "@archlast/forge-runtime";
 import type { QueryClient } from "@tanstack/query-core";
-import { createAuthClient } from "better-auth/client";
+import { createAuthClient, type BetterAuthClientPlugin } from "better-auth/client";
 
 export { ForgeError };
 
@@ -36,6 +36,13 @@ export interface ClientOptions {
   /** Better Auth client plugins for `client.auth`, e.g. `expoClient` from @better-auth/expo on React Native. */
   authPlugins?: unknown[];
 }
+
+/**
+ * `client.auth` typed with Better Auth client plugins: `AuthClient<[ReturnType<typeof organizationClient>]>` has `organization.*`.
+ * Pass the same plugins as `authPlugins` (or, in a full-stack app, export them as `authPlugins` from `app/root.tsx`).
+ */
+export type { BetterAuthClientPlugin };
+export type AuthClient<Plugins extends BetterAuthClientPlugin[] = []> = ReturnType<typeof createAuthClient<{ plugins: Plugins }>>;
 
 interface Watch {
   listeners: Set<(u: QueryUpdate) => void>;

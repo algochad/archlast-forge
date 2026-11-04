@@ -196,3 +196,7 @@ describe("the engine around it", () => {
     expect(trace.spans.some((s: any) => s.name === "messages:list")).toBe(true);
   });
 });
+
+test("app/root.tsx's authPlugins reach useAuth() on the server render", async () => {
+  expect(await html("/plugin")).toContain("hello, server and browser");
+});

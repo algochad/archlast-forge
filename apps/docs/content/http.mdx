@@ -24,9 +24,24 @@ That route answers at `https://your-app.example/http/lists`. Like `crons.ts` and
 
 ## Where routes are served
 
-Every route lives under the fixed prefix `/http`. A route registered as `path: "/lists"` answers at `/http/lists`, and the handler sees `/lists` (without the prefix) in `request.url`. The prefix keeps your routes from shadowing `/rpc`, `/api/auth`, `/_admin`, `/_dashboard` and the other paths the engine owns. It's the same origin as everything else, so there is no separate domain to configure.
+By default every route lives under the prefix `/http`. A route registered as `path: "/lists"` answers at `/http/lists`, and the handler sees `/lists` (without the prefix) in `request.url`. The prefix keeps your routes from shadowing `/rpc`, `/api/auth`, `/_admin`, `/_dashboard` and the other paths the engine owns. It's the same origin as everything else, so there is no separate domain to configure.
 
-If you need a path without `/http` (for example `/.well-known/…` or a bare `/webhook`), put a reverse proxy in front and rewrite it. The engine does not offer a way to register routes at the root.
+### Serving routes at the root
+
+For a public API at `/api/v1/…` or a webhook at a bare `/webhooks/stripe`, create the router with `root: true`:
+
+```ts
+// forge/http.ts
+const http = httpRouter({ root: true });
+
+http.route({ method: "GET", path: "/api/v1/lists", handler: listLists }); // GET /api/v1/lists (and /http/api/v1/lists)
+nest(http, { prefix: "/api/v2/", imports: appModules }); // @Controller("tasks") answers at /api/v2/tasks
+```
+
+- **Each route answers at its own path** and still under `/http`, so existing callers keep working. The handler sees the same path either way, and the OpenAPI document lists the root paths.
+- **The engine's paths win.** A request for `/rpc`, `/api/auth`, `/_admin`, `/_dashboard`, `/_storage`, `/_app`, `/_telemetry`, `/health`, `/ready`, `/metrics`, `/otlp` or `API_DOCS_PATH` never reaches a route, and a route inside one of them (`path: "/rpc/mine"`) fails when the code loads. Pick a path of your own: `/api/v1`, not `/api/auth/v1`.
+- **In a full-stack app the pages take every other path.** A route is matched first, then the page routes in `app/routes`. A route for every path (`pathPrefix: "/"`, or Nest's default prefix) would leave no path for the pages, so it stays under `/http` and the engine logs a warning: give Nest a prefix (`prefix: "/api/"`).
+- In a backend, a `pathPrefix: "/"` route (or Nest with its default prefix) answers every path the engine doesn't own.
 
 ## Declaring routes
 
@@ -143,7 +158,7 @@ The engine reads the `cookie` and `authorization` headers of the request and res
 
 - **Browsers on your own origin** send the Better Auth session cookie automatically, so a route that checks `ctx.auth` works for signed-in users of your app.
 - **A bare `Authorization: Bearer …` header does nothing by default.** Better Auth only reads it when you add its `bearer()` plugin in `forge/auth.ts` (see [authentication](auth.html#bearer-tokens-for-non-browser-callers)).
-- **Webhooks and other server-to-server callers** send neither, so they are anonymous. Authenticate them yourself: a signature over the body, or a shared secret in a header (see the example below).
+- **Webhooks and other server-to-server callers** send neither, so they are anonymous. Authenticate them yourself: a signature over the body, or a shared secret in a header (see the example below). For webhooks specifically, [Webhooks](webhooks.html) verifies Standard Webhooks and HMAC signatures, applies each one once, and sends your own, with retries.
 
 ```ts
 http.route({

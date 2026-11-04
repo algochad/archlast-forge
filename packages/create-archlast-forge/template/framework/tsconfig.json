@@ -9,7 +9,7 @@
     "noEmit": true,
     "skipLibCheck": true,
     "verbatimModuleSyntax": true,
-    "types": [],
+    "types": ["bun"],
     "experimentalDecorators": true
   },
   "include": ["app"]

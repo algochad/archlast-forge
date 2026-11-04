@@ -86,8 +86,9 @@ Every value that enters or leaves the backend can be checked by a validator: fun
 | `v.object({ ... })` | the object type | An object with exactly the declared keys. |
 | `v.union(a, b, ...)` | `A \| B \| ...` | A value that passes at least one member. |
 | `v.optional(inner)` | `T \| undefined`, and the key may be absent | A missing key, `undefined`, or a value that passes `inner`. |
+| `v.any()` | `any` | Any JSON value, unchecked. Only for data whose shape is not yours to fix: the JSON fields Better Auth's plugins write, a webhook's payload. |
 
-Things that are deliberately not there: there are no literal, `any`, bytes, record, bigint or date validators. Store a date as a `number` (milliseconds), an enum as a `v.union` of `v.string()` values checked in your handler, and files in [file storage](storage.html) (a `v.id("_storage")` field). Documents travel as JSON, so a value has to survive `JSON.stringify` anyway.
+Things that are deliberately not there: there are no literal, bytes, record, bigint or date validators, and `v.any()` is not a way around describing your own data. Store a date as a `number` (milliseconds), an enum as a `v.union` of `v.string()` values checked in your handler, and files in [file storage](storage.html) (a `v.id("_storage")` field). Documents travel as JSON, so a value has to survive `JSON.stringify` anyway.
 
 ### Details that matter
 

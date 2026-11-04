@@ -42,7 +42,7 @@ app/
   styles.css           plain stylesheet (or Tailwind + shadcn theme variables with shadcn)
   env.d.ts             module declarations for css/svg/png imports
 public/                static files (favicon.svg), served as-is
-tsconfig.json          jsx react-jsx, strict, verbatimModuleSyntax, experimentalDecorators, paths "@/*" -> app/* (shadcn only), include ["app"]
+tsconfig.json          jsx react-jsx, strict, verbatimModuleSyntax, types ["bun"] (+ @types/bun), experimentalDecorators, paths "@/*" -> app/* (shadcn only), include ["app"]
 package.json           + @archlast/forge-framework, @archlast/forge-react, react, react-dom (+ shadcn/Tailwind packages with shadcn)
 ```
 
@@ -106,7 +106,8 @@ apps/desktop/  package.json  README.md  .gitignore  src-tauri/ (Cargo.toml build
 
 ## What to do with it as an agent
 
-- New feature → edit `forge/` and `app/` (or the client app); do not touch `compose.yaml` or the Dockerfile unless the feature needs a new service or variable.
+- New feature → follow [feature-blueprint.md](feature-blueprint.md) in `forge/` (a `_modules/<feature>/` folder with module, services and controller; a thin `forge/<feature>.ts`) and `app/` (or the client app); do not touch `compose.yaml` or the Dockerfile unless the feature needs a new service or variable.
+- **The starter files are demos, not the pattern.** `forge/messages.ts` keeps its logic inside the handlers and the backend's `forge/http.ts` has a plain demo route; they are there to show a working app. Do not copy their shape for new features. A full-stack scaffold has no `forge/http.ts` and no `forge/_modules/`: the first feature creates both (the blueprint shows the files). When you work on the messages feature itself, offer to move it into `_modules/messages/`.
 - New environment variable → read it in code through `process.env`, add it to `.env.example`, to `compose.yaml` `app.environment`, and tell the user to set it in `.env` and the production host. Engine settings have a fixed list: see [operations.md](operations.md).
 - New server-only dependency → `forge/package.json`. New browser dependency → root `package.json`. Then `bun install` (the engine reinstalls `forge/` dependencies for Linux itself).
 - New stack service → `archlast-forge stack add <service>`.
@@ -114,6 +115,7 @@ apps/desktop/  package.json  README.md  .gitignore  src-tauri/ (Cargo.toml build
 
 ## Common mistakes
 
+- Taking the starter `forge/messages.ts` (logic in the handlers) as the project's convention for new features.
 - Putting server-only dependencies in the root `package.json`, or browser dependencies in `forge/package.json`.
 - Editing `forge/_generated`, `.env` secrets, `_services.ts`, `packages/api` or `packages/contracts` by hand.
 - Creating `src/` in a full-stack app (frontend code is `app/`).

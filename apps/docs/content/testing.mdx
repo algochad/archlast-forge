@@ -24,7 +24,7 @@ Make one backend per test. It is a fresh in-memory SQLite database with your tab
 | | |
 |---|---|
 | `t.query(ref, args?)`, `t.mutation(ref, args?)`, `t.action(ref, args?)` | call a function as an anonymous visitor. **Internal functions can be called too**, which clients can't |
-| `await t.withIdentity({ email, name?, userId? })` | creates a user and returns a caller with the same three methods, signed in as them |
+| `await t.withIdentity({ email, name?, userId?, session? })` | creates a user and a session and returns a caller with the same three methods, signed in as them |
 | `t.run(async (ctx) => …)` | runs code with `ctx.db` in a write transaction: seed data, or look at what the functions did |
 | `await t.finishScheduledFunctions(maxRounds = 100)` | runs every scheduled job, as if time had passed |
 | `await t.close()` | closes the database |
@@ -140,7 +140,7 @@ The test backend doesn't hide or reshape errors; it throws what your code threw.
 
 ## Auth
 
-`withIdentity({ email, name })` inserts a document into `users` and returns a caller whose `ctx.auth.getUserIdentity()` is `{ userId, sessionId: "test", email, name }` (`name` defaults to the email). Calling it twice with the same email makes two users; pass `userId` to be the same user again:
+`withIdentity({ email, name })` inserts a document into `users` and one into `sessions`, and returns a caller whose `ctx.auth.getUserIdentity()` is `{ userId, sessionId, email, name }` (`name` defaults to the email). The session is a real document, so code that reads it by `sessionId` works, and `session: { activeOrganizationId }` puts a plugin's fields on it (organizations: [Organizations and multi-tenant apps](auth.html#organizations-and-multi-tenant-apps)).. Calling it twice with the same email makes two users; pass `userId` to be the same user again:
 
 ```ts
 const ada = await t.withIdentity({ email: "ada@example.com" });

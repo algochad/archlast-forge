@@ -31,12 +31,19 @@ export async function createTestBackend(forgeDir = "forge") {
 
   return {
     ...caller(null),
-    /** Calls as a signed-in user. Creates a `users` document unless `userId` is given. */
-    async withIdentity(user: { email: string; name?: string; userId?: string }) {
+    /**
+     * Calls as a signed-in user. Creates a `users` document unless `userId` is given, and a real `sessions` document, so code that
+     * reads the session by `identity.sessionId` works; `session` adds fields to it, such as a plugin's `activeOrganizationId`.
+     */
+    async withIdentity(user: { email: string; name?: string; userId?: string; session?: Record<string, unknown> }) {
       const userId =
         user.userId ??
         (await exec.mutate((s) => s.insert("users", { email: user.email, name: user.name ?? user.email, emailVerified: false, createdAt: Date.now(), updatedAt: Date.now() })));
-      return caller({ userId: userId as UserIdentity["userId"], sessionId: "test", email: user.email, name: user.name ?? user.email });
+      const now = Date.now();
+      const sessionId = await exec.mutate((s) =>
+        s.insert("sessions", { userId, token: crypto.randomUUID(), expiresAt: now + 7 * 86_400_000, createdAt: now, updatedAt: now, ...user.session }),
+      );
+      return caller({ userId: userId as UserIdentity["userId"], sessionId, email: user.email, name: user.name ?? user.email });
     },
     /** Direct database access, e.g. to seed data or inspect it. */
     run<T>(fn: (ctx: Pick<MutationCtx, "db">) => Promise<T>) {
