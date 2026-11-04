@@ -296,12 +296,27 @@ export function createSqliteDb(path: string, readers = 4, ram?: number, synchron
     }
   }
 
+  /**
+   * Runs a statement and returns its rows. An EXPLAIN goes through a statement of its own that is finalized: bun:sqlite's cached statement
+   * (`query()`) for an EXPLAIN is not reset by `.all()`, and while it stays active the connection keeps its read snapshot after COMMIT, so
+   * every later read on that connection sees the database as it was (the dev-only query-plan check did this to `where()` queries).
+   */
+  const all = (c: Database, sql: string, params: unknown[] = []) => {
+    if (!/^\s*EXPLAIN\b/i.test(sql)) return c.query(sql).all(...(params as any[])) as any[];
+    const statement = c.prepare(sql);
+    try {
+      return statement.all(...(params as any[])) as any[];
+    } finally {
+      statement.finalize();
+    }
+  };
+
   const acquire = () => new Promise<Database>((resolve) => (pool.length ? resolve(pool.pop()!) : waiting.push(resolve)));
   const release = (c: Database) => (waiting.length ? waiting.shift()!(c) : pool.push(c));
 
   const txOf = (c: Database): DbTx => ({
     async query(sql, params = []) {
-      return c.query(sql).all(...(params as any[])) as any[];
+      return all(c, sql, params);
     },
     async execute(sql, params = []) {
       c.query(sql).run(...(params as any[]));
@@ -324,7 +339,7 @@ export function createSqliteDb(path: string, readers = 4, ram?: number, synchron
     const tx = scopedTx({
       async query(sql, params = []) {
         start();
-        return c.query(sql).all(...(params as any[])) as any[];
+        return all(c, sql, params);
       },
       async execute(sql, params = []) {
         start();
