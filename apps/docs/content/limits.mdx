@@ -152,6 +152,49 @@ The main risks the engine does not remove are the ones only your code can: who i
 
 **Install scripts.** Dependencies in `forge/package.json` are installed with `--ignore-scripts` unless the manifest has `trustedDependencies`, and then only those may run scripts.
 
+### Web application firewall (opt-in)
+
+Set `WAF=on` and the engine inspects every request with the [OWASP Core Rule Set](https://coreruleset.org/) before anything handles it, using [Coraza](https://coraza.io/) compiled to WebAssembly: SQL injection, cross-site scripting, path traversal, command injection, scanners and protocol abuse. It is off by default. Nothing is installed or loaded unless you turn it on, and a request that the rules flag never reaches your functions.
+
+| Variable | Default | What it does |
+|---|---|---|
+| `WAF` | off | Turns the firewall on. |
+| `WAF_MODE` | `block` | `block` answers a flagged request with `403`. `detect` only logs and counts it, so you can watch a rollout before it blocks anything. |
+| `WAF_PARANOIA` | `1` | How strict the rules are, 1 to 4. Level 1 has the fewest false positives; each level above catches more and flags more legitimate requests. |
+| `WAF_WORKERS` | `1` | WAF threads. Each holds its own copy of the rules (over 100 MB of memory) and handles about a thousand requests a second. |
+| `WAF_MAX_BODY_KB` | `512` | The largest request body that is inspected. A larger body isn't (its URL and headers still are). |
+| `WAF_IGNORE_PATHS` | none | Path prefixes that aren't inspected, like `/http/stripe,/uploads`. |
+| `WAF_DISABLED_RULES` | none | CRS rule ids to switch off, like `942100,941100`. |
+
+A blocked request gets `403` and the engine's usual error body, with `code: "FORBIDDEN"` and the request id; the rule isn't revealed to the client. The server log says which rules matched, under that request id (the query string stays out of the log, since it may hold a token), and `/metrics` counts `forge_waf_requests_total{result="inspected" | "blocked" | "detected" | "errors"}` and `forge_waf_rule_matches_total{rule="942100"}` for the hundred rules that matched most.
+
+#### The Firewall page
+
+The dashboard's **Firewall** page (Admin) is where the firewall is watched and run. It works whether `WAF` was set or not: an app that started without it can switch it on from there.
+
+- **Watch it.** Counters for what was inspected, blocked, flagged in detect mode and couldn't be inspected; charts per minute; the latest 300 events (time, client, method and path, the rules that matched and their score); the rules, paths and clients that matched most; and each thread's state, backlog and restarts.
+- **Run it.** Switch between Off, Detect and Block, set the paranoia level, threads and body limit, and edit the ignored paths and switched-off rules, then Apply. Owners only, since it decides what reaches your app. A change takes effect at once without a restart: new threads load the rules while the old ones answer what they were given, and if the rules can't load nothing changes. The values are saved as the `WAF_*` settings (the Settings page shows them, and a saved one doesn't wait for a restart). One that the environment sets is shown locked, because the environment wins.
+- **Tune it.** Open an event to switch off the rule behind it, or to ignore its path, in one click. **Try a request** describes a request (method, path, headers, body) and shows what the live rules make of it, with the score and every rule that matched, below the threshold too, without counting it. Admins can use it.
+
+The numbers are the server's own and start at zero with it, so the log and `/metrics` are what outlives a restart. They are not shared between servers: with several servers behind one address, the dashboard shows the one that answered, and a change applies to it at once and to the others when they restart. A microservice's firewall is its own: pick it in the top bar.
+
+What it looks at, and what it doesn't:
+
+- **Inspected:** function calls (`/rpc`), sign-in and the rest of `/api/auth`, your HTTP routes, the pages of a full-stack app, and WebSocket handshakes. The URL, the headers and the body: JSON, form, multipart and XML bodies are parsed, so a field of a JSON argument is checked on its own.
+- **Not inspected:** the dashboard and its API, built-in storage (`/_storage`, which takes file uploads), the app's built files (`/_app`, and static files such as images and scripts), the API docs, and the engine's own routes (`/health`, `/ready`, `/metrics`, `/_cli`, OTLP ingest).
+- **Request bodies only up to `WAF_MAX_BODY_KB`.** A client can pad a body past the limit to skip its inspection, so the limit is not a defence on its own against a determined attacker; it keeps the cost of the firewall bounded. `MAX_REQUEST_BYTES` still applies to every body.
+- **Responses aren't inspected**, only requests.
+
+Expect to tune it. The Core Rule Set is general-purpose and some legitimate requests look like attacks to it:
+
+- Start with `WAF_MODE=detect`, look at what the log says would have been blocked over a few days of real traffic, then switch to `block`.
+- A rule that stops something legitimate is switched off with `WAF_DISABLED_RULES` (the log lists the ids that matched). A route that is a poor fit as a whole goes in `WAF_IGNORE_PATHS`.
+- **Bodies that aren't a form, multipart, XML or JSON are refused by rule 920420**, and a plain-text body with a line break by rule 921150, so a route that takes binary or text bodies (a webhook from a provider that sends `text/plain`) belongs in `WAF_IGNORE_PATHS`. Passwords, free text and code can trip the SQL and script rules too: if sign-in blocks a strong password, add `/api/auth` to `WAF_IGNORE_PATHS` or switch off the rule the log names.
+
+It costs CPU and memory. A plain request takes about a millisecond on a WAF thread, a request with a JSON body about three, and every thread is over 100 MB. The threads are separate from the one that serves requests, so the cost is latency and memory, not a slower event loop. One thread handles about a thousand plain requests a second; when it can't keep up, requests are refused with `503` and the log says `WAF overloaded`, and that is when to raise `WAF_WORKERS`. A thread that stops answering (a request that makes a rule run for ever, say) is ended after three seconds and replaced. Requests waiting on it get `503` rather than going through unchecked, and the log says so. If the firewall can't start (a rule that doesn't parse), the engine doesn't start either.
+
+Behind a proxy, set `TRUST_PROXY=1` so the rules see the client's address, as with rate limiting. The firewall is one layer: it doesn't replace authorizing every function, and it doesn't see attacks that are valid requests (a user reading another user's rows).
+
 ### What you must do
 
 - **Authorize in every function.** Anything that reaches a public function is callable by anyone, signed in or not. Check `ctx.auth.getUserIdentity()`, and compare the owner of the row you touch with the caller. Never accept a user id as an argument and trust it. [Recipes](recipes.html#per-user-data-row-ownership) shows the pattern.
