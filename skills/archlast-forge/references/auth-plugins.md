@@ -178,6 +178,7 @@ Calls from other apps carry `Authorization: Bearer <access token>` and no sessio
 ```ts
 // forge/_modules/oauth/oauth.guard.ts
 import {
+  ApiSecurity,
   applyDecorators,
   createParamDecorator,
   ForbiddenException,
@@ -218,8 +219,9 @@ export class OAuthGuard implements CanActivate {
   }
 }
 
-/** On a controller or a route: an access token with these scopes is required. */
-export const RequireScopes = (...scopes: string[]) => applyDecorators(SetMetadata(SCOPES, scopes), UseGuards(OAuthGuard));
+/** On a controller or a route: an access token with these scopes is required (and the API docs say so). */
+export const RequireScopes = (...scopes: string[]) =>
+  applyDecorators(SetMetadata(SCOPES, scopes), UseGuards(OAuthGuard), ApiSecurity("oauth", scopes));
 /** The verified token's claims. */
 export const OAuthToken = createParamDecorator(
   (_: unknown, host: ExecutionContext): OAuthClaims => host.switchToHttp().getRequest()[TOKEN],
@@ -244,6 +246,8 @@ export class PartnerController {
 
 `forge/partner.ts` declares `profile` as an `internalQuery` that injects a `PartnerReader`; `partner.module.ts` lists `PartnerController`, `PartnerReader` and `OAuthGuard`. Answers: `200` with a valid token, `401` without or with a bad one, `403` without the scope.
 
+**Documenting it for partners:** declare the scheme once, `http.docs({ production: true, securitySchemes: { oauth: { type: "oauth2", flows: { clientCredentials: { tokenUrl: "/api/auth/oauth2/token", scopes: { "tasks:read": "Read tasks" } } } } } })` in `forge/http.ts` (the name must be the one `ApiSecurity` uses). The docs page then lists the scopes per route and its Authorize panel fetches a client-credentials token to try them ([server-features.md](server-features.md) "API docs and OpenAPI").
+
 **Machine tokens** (`client_credentials`) have no user: `sub` is the client's id, the same as `azp`. A route that acts for a user refuses them (`if (token.sub === token.azp) throw new ForbiddenException("This needs a user's token")`); a route for machines reads `token.azp`.
 
 ### 2.5 Checklist
@@ -254,7 +258,7 @@ export class PartnerController {
 - [ ] Tables generated (`jwkss` …), codegen and typecheck pass.
 - [ ] `oauthProviderClient()` in the client plugins (`app/root.tsx`'s `authPlugins`), and a `/consent` page.
 - [ ] Machine clients, if any, given their `clientCredentialsScopes` by a staff-only mutation.
-- [ ] API routes for partners behind `RequireScopes(...)`, calling internal functions with `token.sub`.
+- [ ] API routes for partners behind `RequireScopes(...)`, calling internal functions with `token.sub`; the `oauth` scheme and its scopes in `http.docs({ securitySchemes })`.
 - [ ] Told the user: issuer and discovery URL, how clients register, which scopes exist.
 
 ## 3. Organizations: multi-tenant SaaS

@@ -391,15 +391,15 @@ Detect with `components.json` (shadcn) and `app/components/ui/`.
 5. `ctx.query(...)` and `useQuery(...)` with different arguments (or a loader that fetches but the component calls another function): no first-render data. Pagination seeds must be `windowArgs`/`pageArgs` or the exact `paginationOpts` the hook uses.
 6. Secrets, `process.env.X`, database drivers or other server-only code in a loader or component: it is bundled for the browser. Put it in a function in `forge/`.
 7. An inline `<script>` (a theme snippet, an analytics bootstrap) without `nonce={useNonce()}`: the engine's Content-Security-Policy blocks it (pages get a fresh nonce each request). A `<script src="https://...">` needs no nonce. Third-party sources the policy doesn't cover (a frame host, an image CDN over http) go in `http.helmet({ app: ... })` in `forge/http.ts`, not in a `<meta>` tag.
-7. Protecting data only with a layout redirect: the child loader still runs and anyone can call `/rpc/...`. Check `ctx.auth.getUserIdentity()` in the function.
-8. `useSession()` for server-rendered identity (it is `isPending` on the server) or `viewer.id` (the field is `userId`). Use `useViewer()`.
-9. Forgetting the `undefined` first state of `useQuery`, or mutating `results` (`.reverse()`, `.sort()`) in place.
-10. Two `<title>`s (root plus page) or none; `className="container"`/`btn` in a shadcn app, Tailwind classes in a plain one.
-11. Route file pitfalls: `_layout.tsx` directly in `routes/` (ignored), `[id].tsx` next to `[slug].tsx` (conflict), a page file or folder starting with `_` (not a route), `post-[id].tsx` (rejected), a first segment the engine owns (`/health`, `/http`, `/rpc`, ...).
-12. A wrong `../` depth in the `api` import; `import { LoaderArgs }` without `type` (breaks under `verbatimModuleSyntax`).
-13. Editing `.forge/gen`, `forge/_generated` or `archlast-forge.json`'s mode; putting app packages in `forge/package.json` or the reverse; adding `react` to `dependencies` at another version.
-14. Optimistic updates on a paginated list, or calling a mutation from a loader.
-15. Expecting hot reload or a watching `start`: dev reloads the page on save; `start` serves the build it read at startup.
+8. Protecting data only with a layout redirect: the child loader still runs and anyone can call `/rpc/...`. Check `ctx.auth.getUserIdentity()` in the function.
+9. `useSession()` for server-rendered identity (it is `isPending` on the server) or `viewer.id` (the field is `userId`). Use `useViewer()`.
+10. Forgetting the `undefined` first state of `useQuery`, or mutating `results` (`.reverse()`, `.sort()`) in place.
+11. Two `<title>`s (root plus page) or none; `className="container"`/`btn` in a shadcn app, Tailwind classes in a plain one.
+12. Route file pitfalls: `_layout.tsx` directly in `routes/` (ignored), `[id].tsx` next to `[slug].tsx` (conflict), a page file or folder starting with `_` (not a route), `post-[id].tsx` (rejected), a first segment the engine owns (`/health`, `/http`, `/rpc`, ...).
+13. A wrong `../` depth in the `api` import; `import { LoaderArgs }` without `type` (breaks under `verbatimModuleSyntax`).
+14. Editing `.forge/gen`, `forge/_generated` or `archlast-forge.json`'s mode; putting app packages in `forge/package.json` or the reverse; adding `react` to `dependencies` at another version.
+15. Optimistic updates on a paginated list, or calling a mutation from a loader.
+16. Expecting hot reload or a watching `start`: dev reloads the page on save; `start` serves the build it read at startup.
 
 ## Full documentation
 
