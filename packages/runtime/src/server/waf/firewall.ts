@@ -49,10 +49,13 @@ export class Firewall {
   /** Changes run one after another: each starts its threads before the one before it has to be undone. */
   private queue: Promise<unknown> = Promise.resolve();
 
-  /** `worker` is the module the WAF threads run (the server names it, as it does the telemetry worker's). */
+  /**
+   * `worker` is the module the WAF threads run (the server names it, as it does the telemetry worker's); `docsOwn` says which paths the API
+   * docs serve, which the WAF leaves alone like the engine's other pages.
+   */
   constructor(
     private worker: URL,
-    private apiDocsPath?: string,
+    private docsOwn?: (path: string) => boolean,
   ) {}
 
   get enabled() {
@@ -83,7 +86,7 @@ export class Firewall {
       return;
     }
     if (old && same(old.config, config)) return;
-    const next = await WafGate.start(this.worker, config, this.apiDocsPath);
+    const next = await WafGate.start(this.worker, config, this.docsOwn);
     this.gate = next;
     old?.retire();
     log("info", `web application firewall ${old ? "changed" : "on"}: ${config.mode}, paranoia ${config.paranoia}, ${config.workers} thread${config.workers === 1 ? "" : "s"}`);

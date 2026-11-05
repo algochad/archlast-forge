@@ -77,8 +77,30 @@ http.route({
 ```
 
 - **`query` and `body` are checked before the handler runs.** A request that doesn't match gets `400` with `{ "error": { "code": "BAD_REQUEST", "message": "body.qty must be a finite number, got \"two\"" } }`, and the handler never sees it. A body that isn't JSON gets `The body must be JSON`. The handler still receives the request as it came: read the body as usual.
-- Query values arrive as text: a `v.number()` or `v.boolean()` parameter is converted first (`limit=5`, `dryRun=true`), and a `v.array(...)` one takes every value given (`?tag=a&tag=b`).
+- Query values arrive as text: a `v.number()` or `v.boolean()` parameter is converted first (`limit=5`, `dryRun=true`), a literal or an enum takes the value the text spells (`?status=1` for `v.literal(1)`), and a `v.array(...)` one takes every value given (`?tag=a&tag=b`). Constraints (`v.number({ min: 1, max: 100 })`, `v.string({ format: "email" })`) are checked like the kind: see [Constraints and documentation](schema.html#constraints-and-documentation).
 - `returns`, `summary`, `description` and `tags` are for the [OpenAPI document](api-docs.html) and the API docs page, as are `query` and `body`. A route without any of them is still listed, with its method and path.
+
+A route can also say what the validators can't, for the document only: how it is called, the errors it answers, the headers it reads and sends, and the app's own code samples. The names it uses (a security scheme, a reusable parameter) are declared once in [`http.docs()`](api-docs.html#configuring-the-docs-in-code), and a name it doesn't have fails at load:
+
+```ts
+http.route({
+  method: "POST",
+  path: "/api/v1/refunds",
+  summary: "Refund a payment",
+  tags: ["Refunds"],
+  body: v.object({ payment: v.string(), amount: v.optional(v.number({ int: true, min: 1 })) }),
+  returns: Refund, // a validator with { name: "Refund" }
+  status: 201,
+  security: [{ oauth: ["refunds:write"] }], // [] for a route that needs nothing
+  errors: { 404: "payment_not_found", 409: { code: "partial_refund_not_allowed", description: "This payment method refunds in full only." } },
+  parameters: ["idempotencyKey"], // from http.docs({ parameters })
+  responseHeaders: { "Idempotent-Replayed": { description: "true when this answer is a replay." } },
+  codeSamples: [{ lang: "node", label: "Node SDK", source: "await midas.refunds.create({ payment })" }],
+  handler: httpAction(async (ctx, request) => { /* ... */ }),
+});
+```
+
+`hidden: true` leaves a route out of the docs (an inbound webhook from a provider, say); it is still served, and development's complete document lists it, marked internal. `deprecated`, `operationId`, `headers` (request headers by name) and `responseDescription` are there too.
 
 ### No path parameters
 

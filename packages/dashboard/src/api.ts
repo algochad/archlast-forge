@@ -1,6 +1,19 @@
 export type Kind = "query" | "mutation" | "action";
 export type Role = "owner" | "admin" | "viewer";
-export type Validator = { kind: string; optional: boolean; table?: string; element?: Validator; fields?: Record<string, Validator>; members?: Validator[] };
+export type Validator = {
+  kind: string;
+  optional: boolean;
+  table?: string;
+  element?: Validator;
+  fields?: Record<string, Validator>;
+  members?: Validator[];
+  /** A literal's value. */
+  value?: string | number | boolean;
+  meta?: { description?: string; example?: unknown; default?: unknown; deprecated?: boolean; name?: string; title?: string };
+  checks?: { min?: number; max?: number; int?: boolean; minLength?: number; maxLength?: number; pattern?: string; format?: string; minItems?: number; maxItems?: number };
+};
+/** The values of a union of literals (an enum), or null when it is something else. */
+export const enumValues = (v: Validator) => (v.kind === "union" && v.members!.every((m) => m.kind === "literal") ? v.members!.map((m) => m.value!) : null);
 export type FunctionInfo = { name: string; kind: Kind; visibility: "public" | "internal"; args: Record<string, Validator>; returns?: Validator };
 export type TableInfo = {
   fields: Record<string, Validator>;
@@ -156,7 +169,11 @@ export const typeOf = (v: Validator): string =>
         ? `{ ${fieldsOf(v.fields!)} }`
         : v.kind === "union"
           ? v.members!.map(typeOf).join(" | ")
-          : v.kind;
+          : v.kind === "literal"
+            ? JSON.stringify(v.value)
+            : v.kind === "number" && v.checks?.int
+              ? "integer"
+              : v.kind;
 
 export const fieldsOf = (fields: Record<string, Validator>) =>
   Object.entries(fields)

@@ -1,3 +1,4 @@
+import { checkRouteDocs, docsRouting, type ApiDocsConfig, type ApiDocsRouting } from "../api-docs";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -88,6 +89,8 @@ export interface Project {
   http: HttpRoute[];
   /** forge/http.ts's router serves its routes at the root as well as under /http (`httpRouter({ root: true })`). */
   httpRoot?: boolean;
+  /** What forge/http.ts's `http.docs()` said. */
+  docs?: ApiDocsConfig;
 }
 
 export async function loadProject(forgeDir: string): Promise<Project> {
@@ -126,7 +129,16 @@ export async function loadProject(forgeDir: string): Promise<Project> {
       const taken = at === "/" ? undefined : reservedPathOf(at.replace(/\/$/, ""));
       if (taken) throw new Error(`forge/http.ts: ${r.method} ${at} can't be served at the root, where ${taken} is the engine's. Give it another path, or leave it under /http (httpRouter() without root).`);
     }
-  return { tables, functions, authOptions, crons, http: (router?.routes ?? []) as HttpRoute[], httpRoot };
+  const docs = router?.docsConfig as ApiDocsConfig | undefined;
+  for (const r of (router?.routes ?? []) as HttpRoute[]) checkRouteDocs(`forge/http.ts: ${r.method} ${r.path ?? r.pathPrefix}`, r, docs);
+  if (docs) {
+    const at = docsRouting(docs);
+    for (const [key, p] of [["path", at.path], ["openapi", at.openapi], ["explorer", at.explorer]] as const) {
+      const taken = p && reservedPathOf(p);
+      if (taken) throw new Error(`forge/http.ts: http.docs({ ${key}: "${p}" }) is under ${taken}, which the engine serves`);
+    }
+  }
+  return { tables, functions, authOptions, crons, http: (router?.routes ?? []) as HttpRoute[], httpRoot, docs };
 }
 
 export const tableSpecs = (tables: TablesSpec) =>
@@ -141,6 +153,8 @@ export interface Manifest {
   release?: string;
   /** forge/http.ts's routes (method and path only) when its router serves them at the root too (`httpRouter({ root: true })`). */
   rootRoutes?: Pick<HttpRoute, "method" | "path" | "pathPrefix">[];
+  /** Where the API docs are, from `http.docs()` (or the defaults). */
+  docs?: ApiDocsRouting;
 }
 
 /** Variables deploy platforms and CI set to the commit being deployed, in the order they are trusted. */

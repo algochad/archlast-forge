@@ -46,7 +46,7 @@ export const DESCRIPTIONS: Record<Slug, string> = {
   "forge-rpc":
     "Typed calls between forge backends: `@Router` classes, generated types, the client service class, errors, tokens, moving from TCP.",
   "api-docs":
-    "The generated OpenAPI 3.1 document and API docs page with a request explorer; writing your own docs pages.",
+    "The generated OpenAPI 3.1 document and the API docs page with Try it on every operation: configured in code, for one audience, with your auth, errors and webhooks.",
   clients:
     "The client library and the React, Vue and Svelte bindings: queries, mutations, uploads, auth, headers, calling the engine without the client.",
   mobile:

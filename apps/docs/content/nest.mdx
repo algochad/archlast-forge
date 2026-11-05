@@ -164,7 +164,22 @@ export class OrdersController {
 }
 ```
 
-It is an interceptor (`UseInterceptors`) plus metadata, so it runs after guards and with your pipes. A mismatch answers like Nest's own `BadRequestException`: `{ "message": "body.qty must be a finite number, got \"two\"", "error": "Bad Request", "statusCode": 400 }`. Params and query values arrive as text and are converted for `v.number()` and `v.boolean()`, as for [HTTP routes](http.html#validators-and-the-openapi-document). Methods without `@Contract` are still in the document, with their method and path.
+It is an interceptor (`UseInterceptors`) plus metadata, so it runs after guards and with your pipes. A mismatch answers like Nest's own `BadRequestException`: `{ "message": "body.qty must be a finite number, got \"two\"", "error": "Bad Request", "statusCode": 400 }`. Params and query values arrive as text and are converted for `v.number()`, `v.boolean()` and literals, as for [HTTP routes](http.html#validators-and-the-openapi-document). Methods without `@Contract` are still in the document, with their method and path.
+
+`@Contract` takes the same documentation as `http.route()`: `security`, `errors`, `parameters`, `headers`, `responseHeaders`, `status`, `codeSamples`, `hidden`, `deprecated`, `operationId` (see [Validators and the OpenAPI document](http.html#validators-and-the-openapi-document)). Errors are described in the app's error shape from `http.docs({ errors })`, since a Nest route's errors go through your exception filters.
+
+Two decorators document a controller or a handler without a contract:
+
+- **`@ApiSecurity(scheme, scopes)`** says how it is called. A guard that checks scopes can document itself with it, so a route's scopes are written once:
+
+  ```ts
+  import { ApiSecurity, applyDecorators, SetMetadata, UseGuards } from "@archlast/forge-runtime/nest";
+
+  export const Scopes = (...scopes: string[]) => applyDecorators(SetMetadata(SCOPES, scopes), UseGuards(ScopesGuard), ApiSecurity("oauth", scopes));
+  ```
+
+  A handler's own wins over its controller's, and `@Contract({ security })` over both. Several are alternatives.
+- **`@ApiHidden()`** leaves a controller or a handler out of the docs (inbound webhooks, say). It is still served.
 
 ## Mount it in forge/http.ts
 

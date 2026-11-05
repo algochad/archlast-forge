@@ -1,4 +1,4 @@
-import { httpAction, httpRouter } from "../../src/index";
+import { httpAction, httpRouter, v } from "../../src/index";
 import { nest } from "../../src/nest";
 import { ForgeGraphQLDriver, GraphQLModule, type ForgeGraphQLOptions } from "../../src/nest-graphql";
 import { Transport, type MicroserviceOptions } from "../../src/nest-microservices";
@@ -18,6 +18,10 @@ if (process.env.NEST_TCP_PORT) microservices.push({ transport: Transport.TCP, op
 if (process.env.NEST_RPC_PORT) microservices.push({ strategy: new ForgeRpcServer({ port: Number(process.env.NEST_RPC_PORT), host: "127.0.0.1" }) });
 
 const http = httpRouter();
+http.docs({
+  securitySchemes: { oauth: { type: "oauth2", flows: { clientCredentials: { tokenUrl: "/api/auth/oauth2/token", scopes: { "orders:read": "Read orders" } } } } },
+  errors: { schema: v.object({ statusCode: v.number(), message: v.string() }, { name: "NestError" }) },
+});
 http.route({ method: "GET", path: "/plain", handler: httpAction(async () => new Response("from httpRouter")) });
 nest(http, {
   imports: [

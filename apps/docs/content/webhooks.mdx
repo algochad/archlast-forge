@@ -109,6 +109,24 @@ Each attempt is claimed in a mutation, sent from an action, and settled in anoth
 
 **Destinations.** Only `https://` URLs, unless `allowHttp`. The host is resolved on every attempt. Loopback, private and shared addresses are refused unless `allowPrivateNetworks` (or `allowedAddresses` lists them). Link-local addresses and the cloud metadata service are always refused, and redirects are never followed. The connection is not pinned to the address that was checked, so a DNS answer that changes between the check and the request is not caught: block metadata and internal ranges at the network too if senders can choose URLs.
 
+### Documenting the events you send
+
+The events your app sends are part of its API, so they belong in the [API docs](api-docs.html). List them in `http.docs({ webhooks })` with their `data` validators, and the OpenAPI document gets a `webhooks` section (the envelope `{ type, timestamp, data }`, the `webhook-id`, `webhook-timestamp` and `webhook-signature` headers, a sample per event) and the docs page a Webhooks section that explains how to verify a signature and when deliveries are retried:
+
+```ts
+http.docs({
+  webhooks: {
+    events: {
+      "payment.succeeded": { summary: "A payment went through.", data: Payment },
+      "refund.created": { summary: "A refund was made.", data: Refund, example: { id: "re_123", amount: 500 } },
+    },
+    retry: { attempts: 10 }, // what you gave WebhooksModule.forRoot, if not its defaults
+  },
+});
+```
+
+`eventTypes` in `WebhooksModule.forRoot` and `events` here are separate lists: one decides what may be dispatched, the other what is documented.
+
 ## Receive
 
 ```ts

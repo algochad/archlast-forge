@@ -1,0 +1,1047 @@
+{
+  "openapi": "3.1.0",
+  "info": {
+    "title": "Midas Payments API",
+    "version": "v1",
+    "summary": "Take payments, refund them and hear about it.",
+    "description": "Midas is a payment gateway. This is the **REST API** for server-side integrations.\n\n## Conventions\n\n- Amounts are integers in the currency's smallest unit (cents).\n- Every list is paginated with `limit` and `cursor`.\n- Send `Idempotency-Key` on every `POST`.\n\nSee [the guides](#/g/getting-started) first.",
+    "termsOfService": "https://midas.test/terms",
+    "contact": {
+      "name": "Midas support",
+      "url": "https://midas.test/support",
+      "email": "support@midas.test"
+    },
+    "license": {
+      "name": "Proprietary",
+      "url": "https://midas.test/license"
+    }
+  },
+  "servers": [
+    {
+      "url": "https://api.midas.test/api/v1",
+      "description": "Production"
+    },
+    {
+      "url": "https://sandbox.midas.test/api/v1",
+      "description": "Sandbox, with test cards"
+    }
+  ],
+  "tags": [
+    {
+      "name": "Payments",
+      "description": "A **payment** moves money from a customer to you.\n\nCreate one, then watch it with [webhooks](#/webhooks)."
+    },
+    {
+      "name": "Refunds",
+      "description": "Give money back, in full or in part."
+    },
+    {
+      "name": "Customers",
+      "description": "The people who pay you."
+    }
+  ],
+  "x-tagGroups": [
+    {
+      "name": "Core resources",
+      "tags": [
+        "Payments",
+        "Refunds"
+      ]
+    },
+    {
+      "name": "People",
+      "tags": [
+        "Customers"
+      ]
+    }
+  ],
+  "security": [
+    {
+      "oauth": []
+    }
+  ],
+  "paths": {
+    "/payments": {
+      "get": {
+        "operationId": "listPayments",
+        "tags": [
+          "Payments"
+        ],
+        "summary": "List payments",
+        "description": "Returns your payments, newest first.",
+        "security": [
+          {
+            "oauth": [
+              "payments:read"
+            ]
+          }
+        ],
+        "x-scopes": [
+          "payments:read"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          },
+          {
+            "name": "status",
+            "in": "query",
+            "description": "Only payments in this status.",
+            "schema": {
+              "type": "string",
+              "enum": [
+                "pending",
+                "succeeded",
+                "failed"
+              ]
+            }
+          },
+          {
+            "name": "created_after",
+            "in": "query",
+            "description": "Only payments created after this moment.",
+            "schema": {
+              "type": "string",
+              "format": "date-time"
+            },
+            "example": "2026-01-01T00:00:00Z"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of payments.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PaymentPage"
+                }
+              }
+            }
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "429": {
+            "$ref": "#/components/responses/RateLimited"
+          }
+        },
+        "x-error-codes": [
+          {
+            "status": "401",
+            "code": "invalid_token",
+            "description": "The access token is missing, expired or malformed."
+          },
+          {
+            "status": "429",
+            "code": "rate_limited",
+            "description": "Slow down: see `Retry-After`."
+          }
+        ]
+      },
+      "post": {
+        "operationId": "createPayment",
+        "tags": [
+          "Payments"
+        ],
+        "summary": "Create a payment",
+        "description": "Creates a payment and, unless `capture` is `false`, takes the money at once.",
+        "security": [
+          {
+            "oauth": [
+              "payments:write"
+            ]
+          }
+        ],
+        "x-scopes": [
+          "payments:write"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "required": true,
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/CreatePayment"
+              },
+              "example": {
+                "type": "one_time",
+                "amount": 2500,
+                "currency": "EUR",
+                "customer_id": "cus_8f2a1c",
+                "description": "Order 1042"
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The payment.",
+            "headers": {
+              "Idempotent-Replayed": {
+                "description": "`true` when this is the answer to an earlier request with the same key.",
+                "schema": {
+                  "type": "boolean"
+                }
+              },
+              "Midas-API-Version": {
+                "description": "The API version that answered.",
+                "schema": {
+                  "type": "string"
+                },
+                "example": "v1"
+              }
+            },
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
+          },
+          "400": {
+            "$ref": "#/components/responses/ValidationFailed"
+          },
+          "402": {
+            "description": "The card was declined.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "A request with this idempotency key is still running.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          {
+            "status": "400",
+            "code": "validation_failed",
+            "description": "A field doesn't match its rules; see `errors`."
+          },
+          {
+            "status": "402",
+            "code": "card_declined",
+            "description": "The issuer declined the card."
+          },
+          {
+            "status": "409",
+            "code": "idempotency_in_progress",
+            "description": "Retry after a moment."
+          }
+        ],
+        "x-codeSamples": [
+          {
+            "lang": "javascript",
+            "label": "Midas SDK",
+            "source": "import { Midas } from \"@midas/sdk\";\n\nconst midas = new Midas({ clientId, clientSecret });\nconst payment = await midas.payments.create({ type: \"one_time\", amount: 2500, currency: \"EUR\" });"
+          }
+        ]
+      }
+    },
+    "/payments/{paymentId}": {
+      "parameters": [
+        {
+          "name": "paymentId",
+          "in": "path",
+          "required": true,
+          "description": "The payment's id.",
+          "schema": {
+            "type": "string"
+          },
+          "example": "pay_01hx9k"
+        }
+      ],
+      "get": {
+        "operationId": "getPayment",
+        "tags": [
+          "Payments"
+        ],
+        "summary": "Retrieve a payment",
+        "security": [
+          {
+            "oauth": [
+              "payments:read"
+            ]
+          }
+        ],
+        "x-scopes": [
+          "payments:read"
+        ],
+        "responses": {
+          "200": {
+            "description": "The payment.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Payment"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "No such payment.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          {
+            "status": "404",
+            "code": "payment_not_found",
+            "description": "The id doesn't belong to one of your payments."
+          }
+        ]
+      }
+    },
+    "/payments/{paymentId}/refunds": {
+      "post": {
+        "operationId": "refundPayment",
+        "tags": [
+          "Refunds"
+        ],
+        "summary": "Refund a payment",
+        "description": "Refunds all of a payment or part of it. A payment can be refunded more than once, up to its amount.",
+        "security": [
+          {
+            "oauth": [
+              "refunds:write"
+            ]
+          }
+        ],
+        "x-scopes": [
+          "refunds:write"
+        ],
+        "parameters": [
+          {
+            "name": "paymentId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            },
+            "description": "The payment to refund.",
+            "example": "pay_01hx9k"
+          },
+          {
+            "$ref": "#/components/parameters/IdempotencyKey"
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "type": "object",
+                "properties": {
+                  "amount": {
+                    "type": "integer",
+                    "minimum": 1,
+                    "description": "How much to refund. All of what is left when left out."
+                  },
+                  "reason": {
+                    "type": "string",
+                    "enum": [
+                      "duplicate",
+                      "fraudulent",
+                      "requested_by_customer"
+                    ],
+                    "description": "Why."
+                  }
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "201": {
+            "description": "The refund.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Refund"
+                }
+              }
+            }
+          },
+          "409": {
+            "description": "Refund not allowed.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          },
+          "422": {
+            "description": "Refund too large.",
+            "content": {
+              "application/problem+json": {
+                "schema": {
+                  "$ref": "#/components/schemas/Problem"
+                }
+              }
+            }
+          }
+        },
+        "x-error-codes": [
+          {
+            "status": "409",
+            "code": "partial_refund_not_allowed",
+            "description": "This payment method only refunds in full."
+          },
+          {
+            "status": "422",
+            "code": "refund_exceeds_payment",
+            "description": "More than the payment's remaining amount."
+          }
+        ]
+      }
+    },
+    "/customers": {
+      "get": {
+        "operationId": "listCustomers",
+        "tags": [
+          "Customers"
+        ],
+        "summary": "List customers",
+        "security": [
+          {
+            "oauth": [
+              "customers:read"
+            ]
+          },
+          {
+            "bearer": []
+          }
+        ],
+        "x-scopes": [
+          "customers:read"
+        ],
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/Limit"
+          },
+          {
+            "$ref": "#/components/parameters/Cursor"
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "A page of customers.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "required": [
+                    "data",
+                    "page"
+                  ],
+                  "properties": {
+                    "data": {
+                      "type": "array",
+                      "items": {
+                        "$ref": "#/components/schemas/Customer"
+                      }
+                    },
+                    "page": {
+                      "$ref": "#/components/schemas/Page"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        },
+        "description": "Returns your customers.\n\nMarkup in a description is text: <img src=x onerror=\"window.__pwned=1\"> and [a bad link](javascript:window.__pwned=1) stay inert, while **bold** and `code` work."
+      }
+    },
+    "/customers/{customerId}": {
+      "delete": {
+        "operationId": "deleteCustomer",
+        "tags": [
+          "Customers"
+        ],
+        "summary": "Delete a customer",
+        "deprecated": true,
+        "description": "Use `POST /customers/{customerId}/archive` instead.",
+        "security": [
+          {
+            "oauth": [
+              "customers:write"
+            ]
+          }
+        ],
+        "x-scopes": [
+          "customers:write"
+        ],
+        "parameters": [
+          {
+            "name": "customerId",
+            "in": "path",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Deleted."
+          }
+        }
+      }
+    },
+    "/status": {
+      "get": {
+        "operationId": "getStatus",
+        "tags": [
+          "Customers"
+        ],
+        "summary": "API status",
+        "description": "Needs no authentication.",
+        "security": [],
+        "responses": {
+          "200": {
+            "description": "All good.",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "type": "object",
+                  "properties": {
+                    "ok": {
+                      "type": "boolean"
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  },
+  "webhooks": {
+    "payment.succeeded": {
+      "post": {
+        "operationId": "webhookPaymentSucceeded",
+        "summary": "A payment went through.",
+        "description": "Sent once the money is taken. `data` is the [Payment](#/models/payment).",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/PaymentSucceededEvent"
+              },
+              "example": {
+                "type": "payment.succeeded",
+                "timestamp": "2026-02-03T09:12:44Z",
+                "data": {
+                  "id": "pay_01hx9k",
+                  "type": "one_time",
+                  "status": "succeeded",
+                  "amount": 2500,
+                  "currency": "EUR",
+                  "customer_id": "cus_8f2a1c",
+                  "created_at": "2026-02-03T09:12:43Z"
+                }
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Acknowledged."
+          }
+        }
+      }
+    },
+    "refund.created": {
+      "post": {
+        "operationId": "webhookRefundCreated",
+        "summary": "A refund was made.",
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/RefundCreatedEvent"
+              }
+            }
+          }
+        },
+        "responses": {
+          "200": {
+            "description": "Acknowledged."
+          }
+        }
+      }
+    }
+  },
+  "x-webhooks-signing": {
+    "scheme": "standard",
+    "envelope": {
+      "type": "The event's name, such as `payment.succeeded`.",
+      "timestamp": "When the event happened, an ISO 8601 date.",
+      "data": "The object the event is about."
+    },
+    "retry": {
+      "attempts": 6,
+      "delayMs": 5000,
+      "factor": 4,
+      "maxDelayMs": 86400000,
+      "timeoutMs": 15000
+    },
+    "toleranceMs": 300000
+  },
+  "components": {
+    "securitySchemes": {
+      "oauth": {
+        "type": "oauth2",
+        "description": "OAuth 2.1 client credentials. Create a client in the dashboard, then trade its id and secret for a short-lived token.",
+        "flows": {
+          "clientCredentials": {
+            "tokenUrl": "/api/auth/oauth2/token",
+            "scopes": {
+              "payments:read": "Read payments.",
+              "payments:write": "Create payments.",
+              "refunds:write": "Refund payments.",
+              "customers:read": "Read customers.",
+              "customers:write": "Change customers."
+            }
+          }
+        }
+      },
+      "apiKey": {
+        "type": "apiKey",
+        "in": "header",
+        "name": "X-Midas-Key",
+        "description": "A legacy key for the sandbox."
+      },
+      "bearer": {
+        "type": "http",
+        "scheme": "bearer",
+        "bearerFormat": "JWT",
+        "description": "A signed-in user's session token, for the dashboard's own calls."
+      }
+    },
+    "parameters": {
+      "Limit": {
+        "name": "limit",
+        "in": "query",
+        "description": "How many to return.",
+        "schema": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100,
+          "default": 20
+        }
+      },
+      "Cursor": {
+        "name": "cursor",
+        "in": "query",
+        "description": "Where the last page ended: the `next_cursor` it answered.",
+        "schema": {
+          "type": "string"
+        }
+      },
+      "IdempotencyKey": {
+        "name": "Idempotency-Key",
+        "in": "header",
+        "description": "Makes the request safe to repeat: the same key answers the same result for 24 hours.",
+        "schema": {
+          "type": "string",
+          "maxLength": 255
+        },
+        "example": "3f1c9a7e-5b2d-4e8a-9c41-0d6f2b7a1e55"
+      }
+    },
+    "responses": {
+      "Unauthorized": {
+        "description": "No valid token.",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "RateLimited": {
+        "description": "Too many requests.",
+        "headers": {
+          "Retry-After": {
+            "description": "Seconds to wait.",
+            "schema": {
+              "type": "integer"
+            },
+            "example": 30
+          }
+        },
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      },
+      "ValidationFailed": {
+        "description": "The request doesn't match the rules.",
+        "content": {
+          "application/problem+json": {
+            "schema": {
+              "$ref": "#/components/schemas/Problem"
+            }
+          }
+        }
+      }
+    },
+    "schemas": {
+      "Payment": {
+        "type": "object",
+        "description": "Money moving from a customer to you.",
+        "required": [
+          "id",
+          "type",
+          "status",
+          "amount",
+          "currency",
+          "created_at"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "description": "Unique id.",
+            "example": "pay_01hx9k"
+          },
+          "type": {
+            "type": "string",
+            "enum": [
+              "one_time",
+              "subscription"
+            ],
+            "x-enumDescriptions": [
+              "Paid once.",
+              "Paid on a schedule."
+            ],
+            "description": "How it is paid."
+          },
+          "status": {
+            "type": "string",
+            "enum": [
+              "pending",
+              "succeeded",
+              "failed"
+            ],
+            "description": "Where the payment is."
+          },
+          "amount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 99999999,
+            "description": "In the currency's smallest unit."
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$",
+            "description": "ISO 4217 code.",
+            "example": "EUR"
+          },
+          "customer_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "description": "The customer, when there is one."
+          },
+          "description": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "maxLength": 500
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            },
+            "description": "Your own key-value pairs."
+          },
+          "created_at": {
+            "type": "string",
+            "format": "date-time",
+            "readOnly": true
+          },
+          "refunds": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Refund"
+            },
+            "maxItems": 50,
+            "description": "Refunds made so far."
+          }
+        }
+      },
+      "CreatePayment": {
+        "type": "object",
+        "required": [
+          "type",
+          "amount",
+          "currency"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "enum": [
+              "one_time",
+              "subscription"
+            ],
+            "x-enumDescriptions": [
+              "Paid once.",
+              "Paid on a schedule."
+            ],
+            "description": "How it is paid."
+          },
+          "amount": {
+            "type": "integer",
+            "minimum": 1,
+            "maximum": 99999999,
+            "description": "In the currency's smallest unit."
+          },
+          "currency": {
+            "type": "string",
+            "pattern": "^[A-Z]{3}$",
+            "minLength": 3,
+            "maxLength": 3,
+            "description": "ISO 4217 code."
+          },
+          "customer_id": {
+            "type": "string",
+            "description": "Charge this customer's saved method."
+          },
+          "description": {
+            "type": "string",
+            "maxLength": 500,
+            "description": "Shown to customers at checkout."
+          },
+          "capture": {
+            "type": "boolean",
+            "default": true,
+            "description": "Take the money now."
+          },
+          "metadata": {
+            "type": "object",
+            "additionalProperties": {
+              "type": "string"
+            }
+          }
+        }
+      },
+      "Refund": {
+        "type": "object",
+        "required": [
+          "id",
+          "payment_id",
+          "amount"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "ref_77aa"
+          },
+          "payment_id": {
+            "type": "string"
+          },
+          "amount": {
+            "type": "integer",
+            "minimum": 1
+          },
+          "reason": {
+            "type": "string",
+            "enum": [
+              "duplicate",
+              "fraudulent",
+              "requested_by_customer"
+            ]
+          }
+        }
+      },
+      "Customer": {
+        "type": "object",
+        "required": [
+          "id",
+          "email"
+        ],
+        "properties": {
+          "id": {
+            "type": "string",
+            "example": "cus_8f2a1c"
+          },
+          "email": {
+            "type": "string",
+            "format": "email"
+          },
+          "name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        }
+      },
+      "Page": {
+        "type": "object",
+        "required": [
+          "has_more"
+        ],
+        "properties": {
+          "has_more": {
+            "type": "boolean",
+            "description": "Whether there is another page."
+          },
+          "next_cursor": {
+            "type": [
+              "string",
+              "null"
+            ],
+            "description": "Pass it as `cursor` for the next page."
+          }
+        }
+      },
+      "PaymentPage": {
+        "type": "object",
+        "required": [
+          "data",
+          "page"
+        ],
+        "properties": {
+          "data": {
+            "type": "array",
+            "items": {
+              "$ref": "#/components/schemas/Payment"
+            }
+          },
+          "page": {
+            "$ref": "#/components/schemas/Page"
+          }
+        }
+      },
+      "Problem": {
+        "type": "object",
+        "description": "An error, as RFC 9457 describes it.",
+        "required": [
+          "type",
+          "title",
+          "status",
+          "code"
+        ],
+        "properties": {
+          "type": {
+            "type": "string",
+            "format": "uri",
+            "example": "https://midas.test/problems/payment_not_found"
+          },
+          "title": {
+            "type": "string"
+          },
+          "status": {
+            "type": "integer",
+            "minimum": 400,
+            "maximum": 599
+          },
+          "detail": {
+            "type": "string"
+          },
+          "code": {
+            "type": "string",
+            "description": "A stable code to branch on.",
+            "example": "payment_not_found"
+          },
+          "errors": {
+            "type": "array",
+            "description": "Per-field problems, for `validation_failed`.",
+            "items": {
+              "type": "object",
+              "properties": {
+                "field": {
+                  "type": "string"
+                },
+                "message": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      },
+      "PaymentSucceededEvent": {
+        "type": "object",
+        "required": [
+          "type",
+          "timestamp",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "payment.succeeded",
+            "description": "The event's name."
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Payment"
+          }
+        }
+      },
+      "RefundCreatedEvent": {
+        "type": "object",
+        "required": [
+          "type",
+          "timestamp",
+          "data"
+        ],
+        "properties": {
+          "type": {
+            "const": "refund.created"
+          },
+          "timestamp": {
+            "type": "string",
+            "format": "date-time"
+          },
+          "data": {
+            "$ref": "#/components/schemas/Refund"
+          }
+        }
+      }
+    }
+  }
+}

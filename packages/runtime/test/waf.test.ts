@@ -173,6 +173,13 @@ describe("in the server", () => {
     expect(await fetch(`${srv.url}/http/hello?x=${encodeURIComponent(ATTACK)}`).then((r) => r.status)).toBe(403); // anything else is still inspected
   });
 
+  test("the API docs' own paths are left alone; the rest of their path is the app's and is inspected", async () => {
+    const srv = await serve({ API_DOCS: "1" });
+    const q = `?x=${encodeURIComponent(ATTACK)}`;
+    expect((await fetch(`${srv.url}/_api/openapi.json${q}`)).status).toBe(200);
+    expect((await fetch(`${srv.url}/_api/somewhere${q}`)).status).toBe(403);
+  });
+
   test("a body over WAF_MAX_BODY_KB is not inspected, while its URL and headers still are", async () => {
     const srv = await serve({ WAF_MAX_BODY_KB: "1" });
     const post = (body: string, query = "") => fetch(`${srv.url}/http/echo${query}`, { method: "POST", headers: { "content-type": "application/json" }, body }).then((r) => r.status);

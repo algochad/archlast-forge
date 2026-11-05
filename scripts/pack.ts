@@ -150,9 +150,11 @@ async function smoke(mode: "framework" | "backend") {
     const doc = (await (await fetch(`${base}/_api/openapi.json`)).json()) as { openapi?: string; paths?: Record<string, unknown> };
     if (doc.openapi !== "3.1.0" || !doc.paths?.["/rpc/messages:list"]) throw new Error("the OpenAPI document doesn't list messages:list");
     const apiPage = await (await fetch(`${base}/_api`)).text();
-    const apiScript = /src="(\/_api\/assets\/[^"]+\.js)"/.exec(apiPage)?.[1];
+    const apiScript = /src="(\/_api\/_docs\/assets\/[^"]+\.js)"/.exec(apiPage)?.[1];
     if (!apiScript || !(await fetch(`${base}${apiScript}`)).ok) throw new Error("the API docs page isn't served");
-    if ((await (await fetch(`${base}/_api/scalar.js`)).arrayBuffer()).byteLength < 1_000_000) throw new Error("the API explorer (vendored Scalar) isn't served");
+    // The request builder (the engine's fork of Scalar), loaded by "Try it": the script and the stylesheet beside it.
+    if ((await (await fetch(`${base}/_api/_docs/explorer.js`)).arrayBuffer()).byteLength < 1_000_000) throw new Error("the request builder (vendored Scalar fork) isn't served");
+    if (!(await fetch(`${base}/_api/_docs/explorer.css`)).ok) throw new Error("the request builder's stylesheet isn't served");
     const dashboard = await fetch(`${base}/_dashboard`);
     if (!dashboard.ok || !(await dashboard.text()).includes('<div id="root">')) throw new Error("the dashboard isn't served");
     console.log(`✓ smoke test (${mode}): scaffolded, installed from tarballs, typechecked${mode === "framework" ? ", built" : ""}, served ${app}, and read its telemetry back`);

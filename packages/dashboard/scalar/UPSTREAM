@@ -1,0 +1,5 @@
+# The upstream the fork in this folder is pinned to (README.md says how to move it). `bun scripts/update-scalar.ts` reads these lines.
+# `commit` is what `tag` must point at: the build stops if the tag was moved.
+repo=https://github.com/scalar/scalar
+tag=release-2026-10-30-66ba1d7
+commit=66ba1d7671c2f230af9be4ed7a94ee057683b8df

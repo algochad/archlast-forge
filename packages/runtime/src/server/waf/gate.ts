@@ -23,6 +23,7 @@ export class WafGate {
     private pool: WafPool,
     readonly config: WafConfig,
     private skipPrefixes: string[],
+    private docsOwn?: (path: string) => boolean,
   ) {}
 
   /** When this gate's threads were up. */
@@ -31,19 +32,20 @@ export class WafGate {
   /**
    * Starts the WAF threads, whose code is the module at `worker` (the server names it, as it does the telemetry worker's: a bundle puts this
    * file somewhere else than the worker). Rejects when they can't start, so a bad configuration stops the engine at boot instead of leaving it
-   * unguarded.
+   * unguarded. `docsOwn` says which paths the API docs serve (the server knows, from the loaded code): they are the engine's own too.
    */
-  static async start(worker: URL, config: WafConfig, apiDocsPath?: string): Promise<WafGate> {
+  static async start(worker: URL, config: WafConfig, docsOwn?: (path: string) => boolean): Promise<WafGate> {
     const rules = buildRules({ paranoia: config.paranoia, disabledRules: config.disabledRules });
     const pool = await WafPool.start(worker, { rules, mode: config.mode, size: config.workers });
-    const prefixes = [...ENGINE_PATHS, ...(apiDocsPath ? [apiDocsPath] : []), ...config.ignorePaths].map((p) => p.replace(/\/+$/, ""));
-    return new WafGate(pool, config, prefixes);
+    const prefixes = [...ENGINE_PATHS, ...config.ignorePaths].map((p) => p.replace(/\/+$/, ""));
+    return new WafGate(pool, config, prefixes, docsOwn);
   }
 
   /** Why this request isn't for the WAF to look at, or undefined when it is. */
   skipReason(method: string, path: string): string | undefined {
     const prefix = this.skipPrefixes.find((p) => path === p || path.startsWith(`${p}/`));
     if (prefix) return ENGINE_PATHS.includes(prefix) ? `${prefix} is the engine's own` : `${prefix} is in the ignored paths`;
+    if (this.docsOwn?.(path)) return "the API docs are the engine's own";
     if ((method === "GET" || method === "HEAD") && STATIC.test(path)) return "static files aren't inspected";
     return undefined;
   }
