@@ -4,6 +4,10 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+### Changed
+
+- **Fixed: on a many-core machine, the engine used up a default Postgres's connections by itself** ("sorry, too many clients already", #17). A pool holds all its connections from its first query, so the old defaults (twice and four times the CPU cores) were 99 of 100 connections on 16 cores. Unless `DATABASE_POOL_SIZE` and `DATABASE_WRITE_POOL_SIZE` are set, the pools now take 60% of what Postgres allows (`max_connections`), shared by `REPLICAS` and `RUNTIME_WORKERS` and never more than before: 57 connections for one server on a default Postgres, and 4 + 8 in development. The telemetry store holds 3 connections instead of 9. The server logs its numbers at start and warns when it is close to the limit, and a refused connection logs which settings to change, once a minute, instead of the bare error every second.
+
 ## 0.18.0
 
 Webhooks in and out, HTTP routes at the root, Better Auth client plugins in full-stack apps, MongoDB as a database for the whole engine, and SQLite that syncs every commit by default.
