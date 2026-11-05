@@ -30,7 +30,7 @@ opened.promise.catch(() => {});
 /** Writes one after another, so a burst of batches doesn't open a transaction each at once. */
 let writing: Promise<unknown> = opened.promise;
 const write = (batch: TelemetryBatch) => {
-  writing = writing.then(() => store.write(batch)).catch((e) => console.error("[telemetry] write failed:", (e as Error).message));
+  writing = writing.then(() => store.write(batch)).catch((e) => failed("write", e));
   return writing;
 };
 
@@ -59,13 +59,27 @@ async function call(op: string, args: Record<string, unknown>, actor = "system")
   return ACTOR_OPS.has(op) ? fn(args, actor) : fn(args);
 }
 
+/**
+ * The store's background work failing (a write each second, alert checks each minute): one line a minute for each kind, with how many were
+ * left out, so a database that refuses connections doesn't fill the log with the same message.
+ */
+const failures = new Map<string, { at: number; skipped: number }>();
+function failed(what: string, e: unknown) {
+  const now = Date.now();
+  const last = failures.get(what);
+  if (last && now - last.at < 60_000) return void last.skipped++;
+  const more = last?.skipped ? ` (and ${last.skipped} more in the last minute)` : "";
+  failures.set(what, { at: now, skipped: 0 });
+  console.error(`[telemetry] ${what} failed: ${(e as Error).message}${more}`);
+}
+
 const reply = (msg: WorkerReply) => self.postMessage(msg);
 
 self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
   const msg = event.data;
   if (msg.t === "init") {
     try {
-      db = msg.databaseUrl ? createPostgresDb(msg.databaseUrl, 3) : createSqliteDb(msg.path!, 2, undefined, "NORMAL");
+      db = msg.databaseUrl ? createPostgresDb(msg.databaseUrl, 2, 1) /* TELEMETRY_CONNECTIONS: Bun opens a pool's connections at once, and the default write pool would be twice the reads */ : createSqliteDb(msg.path!, 2, undefined, "NORMAL");
       await migrateTelemetry(db);
       store = new TelemetryStore(db);
       queries = buildQueries(db);
@@ -73,14 +87,14 @@ self.onmessage = async (event: MessageEvent<WorkerRequest>) => {
       const retention = msg.retentionDays;
       // Hourly upkeep, the first a minute after start so a restart loop can't spend its life compacting.
       setTimeout(function upkeep() {
-        store.compact(retention).catch((e) => console.error("[telemetry] compaction failed:", (e as Error).message));
+        store.compact(retention).catch((e) => failed("compaction", e));
         setTimeout(upkeep, 3600_000);
       }, 60_000);
       setInterval(() => {
         const batch = ingest.drain();
         if (Object.keys(batch).length) void write(batch);
       }, 5000);
-      if (msg.alerts) setInterval(() => void settings.evaluate().catch((e) => console.error("[telemetry] alert evaluation failed:", (e as Error).message)), 60_000);
+      if (msg.alerts) setInterval(() => void settings.evaluate().catch((e) => failed("alert evaluation", e)), 60_000);
       opened.resolve();
       reply({ t: "ready" });
     } catch (e) {

@@ -90,12 +90,12 @@ export interface Config {
   databaseUrl?: string;
   /** Which database `databaseUrl` is: SQLite when there is none. */
   databaseKind: "sqlite" | "postgres" | "mongodb";
-  /** Postgres connections each function-runtime process may open (DATABASE_POOL_SIZE); twice the CPU cores by default. */
-  databasePoolSize: number;
+  /** Postgres connections each function-runtime process opens for reads (DATABASE_POOL_SIZE); unset: sized from the database (`db/pool-size.ts`). */
+  databasePoolSize?: number;
   /** SQLite's `synchronous` for the app database (SQLITE_SYNCHRONOUS): `FULL` syncs every commit, `NORMAL` only at checkpoints. */
   sqliteSynchronous: "FULL" | "NORMAL";
-  /** Postgres connections for write transactions (DATABASE_WRITE_POOL_SIZE); twice DATABASE_POOL_SIZE by default. */
-  databaseWritePoolSize: number;
+  /** Postgres connections for write transactions (DATABASE_WRITE_POOL_SIZE); unset: twice DATABASE_POOL_SIZE when that is set, else sized from the database. */
+  databaseWritePoolSize?: number;
   redisUrl?: string;
   /**
    * What the engine's Redis keys and channels start with (REDIS_PREFIX, else from the service name: see redisPrefixOf). Servers of one service
@@ -258,8 +258,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     databaseUrl,
     databaseKind,
     sqliteSynchronous,
-    databasePoolSize: int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1),
-    databaseWritePoolSize: int("DATABASE_WRITE_POOL_SIZE", int("DATABASE_POOL_SIZE", navigator.hardwareConcurrency * 2, 1) * 2, 1),
+    databasePoolSize: env.DATABASE_POOL_SIZE ? int("DATABASE_POOL_SIZE", 0, 1) : undefined,
+    databaseWritePoolSize: env.DATABASE_WRITE_POOL_SIZE ? int("DATABASE_WRITE_POOL_SIZE", 0, 1) : undefined,
     redisUrl: env.REDIS_URL || undefined,
     redisPrefix: redisPrefixOf(env),
     s3: s3Of(env, "S3_"),
