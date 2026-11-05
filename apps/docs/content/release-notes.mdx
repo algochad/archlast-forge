@@ -4,6 +4,8 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+## 0.19.0
+
 ### Changed
 
 - **The API docs work as an app's public REST reference** (#18). Configure them in code with `http.docs({...})` in `forge/http.ts`: where they are (`path`, `openapi`, `explorer`, `basePath` for a proxy, `production: true` to serve them in production), who they are for (`include`/`exclude` prefixes, `functions: false` to leave `/rpc` out, `hidden` on a route or `@ApiHidden()`), and what the document says beyond the validators: `info`, `servers`, your `securitySchemes` and `security` (the engine's own describe `/rpc` only), your error shape (`errors: { schema, contentType, common }`), reusable `parameters`, response `headers`, `tags` and `tagGroups`, and the `webhooks` your app sends. Routes add `security`, `errors`, `parameters`, `headers`, `responseHeaders`, `status` and `codeSamples` on `http.route()` and `@Contract()`; `@ApiSecurity(scheme, scopes)` lets a scope guard document itself. `API_DOCS` and `API_DOCS_PATH` still win. See [API docs](api-docs.html).
