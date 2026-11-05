@@ -66,6 +66,22 @@ export interface Limits {
   maxPendingCalls: number;
 }
 
+/** The web application firewall (WAF=on). */
+export interface WafConfig {
+  /** `block` stops what the rules flag; `detect` only logs it, to see what a rollout would stop. */
+  mode: "block" | "detect";
+  /** CRS paranoia level, 1 (fewest false positives) to 4. */
+  paranoia: number;
+  /** Threads, each with its own copy of the rules in memory (a good 100 MB each). */
+  workers: number;
+  /** The most of a request body that is inspected; a body over it isn't (its URL and headers still are). */
+  maxBodyBytes: number;
+  /** Path prefixes whose requests aren't inspected, besides the engine's own (the dashboard and its API, storage, the app's built files). */
+  ignorePaths: string[];
+  /** CRS rule ids switched off, for a rule that stops something legitimate in this app. */
+  disabledRules: number[];
+}
+
 export interface Config {
   dev: boolean;
   port: number;
@@ -116,6 +132,8 @@ export interface Config {
   /** `process`: functions run in child processes, restarted alone on code changes or a hang. `inline`: in the server process, fastest. */
   runtimeMode: "process" | "inline";
   limits: Limits;
+  /** The WAF's settings when WAF is on, else undefined. */
+  waf?: WafConfig;
   /** Use X-Forwarded-For for client IPs (rate limiting); only behind a trusted proxy. */
   trustProxy: boolean;
   logFormat: "pretty" | "json";
@@ -231,6 +249,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (sqliteSynchronous !== "FULL" && sqliteSynchronous !== "NORMAL") fail(`SQLITE_SYNCHRONOUS must be "FULL" or "NORMAL", got "${env.SQLITE_SYNCHRONOUS}"`);
   const logFormat = (env.LOG_FORMAT ?? (dev ? "pretty" : "json")) as Config["logFormat"];
   if (logFormat !== "pretty" && logFormat !== "json") fail(`LOG_FORMAT must be "pretty" or "json"`);
+  const waf = bool(env.WAF, false) ? wafConfigOf(env, int, fail) : undefined;
   return {
     dev,
     port,
@@ -274,6 +293,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       maxSubscriptionsPerConnection: int("MAX_SUBSCRIPTIONS_PER_CONNECTION", 200, 1),
       maxPendingCalls: int("MAX_PENDING_CALLS", 1000, 1),
     },
+    waf,
     trustProxy: bool(env.TRUST_PROXY, false),
     logFormat,
     logRetentionDays: int("LOG_RETENTION_DAYS", 7, 1),
@@ -286,6 +306,23 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     dashboardToken,
     microservices,
   };
+}
+
+/** WAF_* settings, read only when WAF is on. */
+function wafConfigOf(env: Record<string, string | undefined>, int: (name: string, fallback: number, min?: number) => number, fail: (msg: string) => never): WafConfig {
+  const mode = (env.WAF_MODE || "block") as WafConfig["mode"];
+  if (mode !== "block" && mode !== "detect") fail(`WAF_MODE must be "block" or "detect", got "${env.WAF_MODE}"`);
+  const paranoia = int("WAF_PARANOIA", 1, 1);
+  if (paranoia > 4) fail(`WAF_PARANOIA must be 1 to 4, got ${paranoia}`);
+  const list = (name: string) =>
+    (env[name] ?? "")
+      .split(",")
+      .map((s) => s.trim())
+      .filter(Boolean);
+  const ignorePaths = list("WAF_IGNORE_PATHS");
+  for (const p of ignorePaths) if (!p.startsWith("/")) fail(`WAF_IGNORE_PATHS is a list of path prefixes like /webhooks, got "${p}"`);
+  const disabledRules = list("WAF_DISABLED_RULES").map((id) => (/^\d{3,7}$/.test(id) ? Number(id) : fail(`WAF_DISABLED_RULES is a list of CRS rule ids like 942100, got "${id}"`)));
+  return { mode, paranoia, workers: int("WAF_WORKERS", 1, 1), maxBodyBytes: int("WAF_MAX_BODY_KB", 512, 1) * 1024, ignorePaths, disabledRules };
 }
 
 const validCron = (expression: string) => {
