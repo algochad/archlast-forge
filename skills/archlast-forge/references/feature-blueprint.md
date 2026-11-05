@@ -84,8 +84,8 @@ export class TasksWriter extends ForgeService<MutationCtx> {
   }
 
   async create(title: string) {
-    const clean = title.trim();
-    if (!clean || clean.length > 200) throw new ForgeError("A title is 1 to 200 characters");
+    const clean = title.trim(); // the length is the validator's (v.string({ maxLength })); what it can't say is checked here
+    if (!clean) throw new ForgeError("A title can't be blank");
     return this.ctx.db.insert("tasks", {
       ownerId: await this.tasks.me(),
       title: clean,
@@ -125,7 +125,7 @@ export const get = query({
 });
 
 export const create = mutation({
-  args: { title: v.string() },
+  args: { title: v.string({ minLength: 1, maxLength: 200, description: "What to do", example: "Buy milk" }) },
   handler: async (ctx, { title }) => (await inject(ctx, TasksWriter)).create(title),
 });
 
@@ -165,19 +165,19 @@ import type { Id } from "../../_generated/dataModel";
 export class TasksController {
   @Get()
   @Contract({
-    query: { cursor: v.optional(v.string()), limit: v.optional(v.number()) }, // params and query: a record of validators
+    query: { cursor: v.optional(v.string()), limit: v.optional(v.number({ int: true, min: 1, max: 100 })) }, // a record of validators
     summary: "My tasks, newest first, a page at a time",
   })
   list(@Ctx() ctx: ActionCtx, @Query() q: { cursor?: string; limit?: number }) {
     // The same paginated query the app uses: pass `continueCursor` back as `cursor` for the next page.
     return ctx.runQuery(api.tasks.list, {
-      paginationOpts: { numItems: Math.min(q.limit ?? 20, 100), cursor: q.cursor ?? null },
+      paginationOpts: { numItems: q.limit ?? 20, cursor: q.cursor ?? null },
     });
   }
 
   @Post()
   @Contract({
-    body: v.object({ title: v.string() }),
+    body: v.object({ title: v.string({ minLength: 1, maxLength: 200 }) }),
     returns: v.object({ id: v.id("tasks") }),
     summary: "Add a task",
   })
@@ -203,7 +203,7 @@ export class TasksController {
 }
 ```
 
-`@Contract` shapes, which TypeScript does not catch: **`params` and `query` are a record of validators** (`{ id: v.id("tasks") }`); **`body` and `returns` are one validator** (`v.object({ … })`). A `v.object` given to `params` or `query` makes every request to that route fail with a 500. Paginate over REST by passing the query's `continueCursor` back as `cursor`; do not invent `page`/`offset` parameters.
+Bounds and allowed values go in the validators (`maxLength`, `int`/`min`/`max`, `v.enum("low", "high")`): they are enforced before the handler runs and appear in the API docs, so a service checks only what a validator can't say (a blank title after trimming, ownership). `@Contract` shapes, which TypeScript does not catch: **`params` and `query` are a record of validators** (`{ id: v.id("tasks") }`); **`body` and `returns` are one validator** (`v.object({ … })`). A `v.object` given to `params` or `query` makes every request to that route fail with a 500. Paginate over REST by passing the query's `continueCursor` back as `cursor`; do not invent `page`/`offset` parameters.
 
 **5. The module, the barrel and the mount:**
 
@@ -338,6 +338,7 @@ test("tasks page through the built-in pagination, newest first, and stay private
 - **Tenant data (multi-tenant SaaS):** inject `TenantContext` (from `_modules/tenancy/`, on Better Auth's organization plugin) into the Reader and Writer, give the table an `organizationId` with an index, and filter every read by it ([auth-plugins.md](auth-plugins.md) §3).
 - **The feature sends or receives webhooks:** `webhooks.dispatch()` in the Writer, in the same mutation as the change; a `<feature>.webhook.controller.ts` with `@VerifyWebhook()` in the folder of the feature the webhook changes ([webhooks.md](webhooks.md)).
 - **Other apps call it with OAuth access tokens:** a controller behind `@RequireScopes(...)` calling internal functions with the token's subject ([auth-plugins.md](auth-plugins.md) §2).
+- **The REST API is public (partners, mobile, other teams):** configure the docs once with `http.docs({ info, securitySchemes, security, errors, tags, production: true })` in `forge/http.ts`, give every route a `summary`, `tags` and the stable error codes it answers (`errors: { 404: "task_not_found" }`), and name shared bodies (`v.object({...}, { name: "Task" })`) so they are one model ([server-features.md](server-features.md) "API docs and OpenAPI").
 - **A provider two features need:** `_modules/shared/` with a `SharedModule` that exports it, imported by both modules. Not before two features need it.
 - **A monorepo main app:** the CLI writes `<service>.service.ts`, `<service>.controller.ts`, `<service>.ts` and `_services.ts` for each remote service at the top of `forge/`; leave those where they are. Your own features still follow this blueprint.
 

@@ -21,7 +21,7 @@ The command finds the skill in this repository's `skills/` folder, asks which ag
 
 ## What it teaches
 
-The skill is a short `SKILL.md` that the agent loads when the task is about archlast-forge, plus reference files it opens only when it needs them. `SKILL.md` states the project's conventions as rules, not suggestions: every feature follows one blueprint, each kind of file has one place, the built-in systems (pagination, live queries, auth, uploads, validation, errors, scheduling) are used directly instead of rebuilt or wrapped, and it lists the mistakes agents have made so they are not repeated.
+The skill is a short `SKILL.md` that the agent loads when the task is about archlast-forge, plus reference files it opens only when it needs them. `SKILL.md` states the project's conventions as rules, not suggestions: every feature follows one blueprint, each kind of file has one place, the built-in systems (pagination, live queries, auth, uploads, validation, errors, scheduling, webhooks, the API docs, security headers, the web application firewall) are used directly instead of rebuilt or wrapped, and it lists the mistakes agents have made so they are not repeated. It also says what is new since the last minor release, so an agent doesn't rely on what it remembers of an older one.
 
 
 | Reference | Covers |
@@ -34,11 +34,11 @@ The skill is a short `SKILL.md` that the agent loads when the task is about arch
 | Forge RPC | routers, the generated types, the service class that calls them, meshes of services, errors |
 | Data and functions | schema, queries, mutations, actions, indexes, errors |
 | Full-stack apps and clients | routes, loaders, live queries, hydration, the clients for other frontends, mobile and desktop |
-| Server features | authentication, storage, scheduling, HTTP endpoints, limits |
+| Server features | authentication, storage, scheduling, HTTP endpoints, the API docs, security headers, the web application firewall, limits |
 | Better Auth plugins | being an OAuth 2.1 / OpenID Connect provider, organizations for multi-tenant SaaS, generating a plugin's tables, the other plugins |
 | Webhooks | sending, receiving or both with the engine's webhooks module, on the app's own database |
 | Testing | tests for your functions and services |
-| Operations | configuration, deployment, scaling, backups, upgrades, troubleshooting |
+| Operations | configuration, deployment, Postgres connections, scaling, backups, upgrades, troubleshooting |
 | Dashboard and observability | the admin dashboard, traces, issues, SLOs and alerts, custom spans and metrics, a debugging playbook |
 
 It is written against the code, the starters and these docs, and it repeats the rules that the engine enforces: `src/` and `app/` import only `forge/_generated`, queries and mutations do no I/O, a service class never reaches the database with a ctx it wasn't given, and Forge RPC is backend to backend only. The layout it asks for is the one in [Folder layout](nest.html#folder-layout).

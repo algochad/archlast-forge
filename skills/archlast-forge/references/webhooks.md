@@ -123,11 +123,12 @@ The other methods: `endpoints.update(id, changes, tenant)`, `endpoints.remove(id
 
 ```ts
 // forge/_modules/payments/payments.webhook.controller.ts (in the feature the webhook changes)
-import { Controller, Ctx, HttpCode, Post, type ActionCtx } from "@archlast/forge-runtime/nest";
+import { ApiHidden, Controller, Ctx, HttpCode, Post, type ActionCtx } from "@archlast/forge-runtime/nest";
 import { IncomingWebhook, VerifyWebhook, type IncomingWebhookData } from "@archlast/forge-runtime/nest/webhooks";
 import { internal } from "../../_generated/api";
 
 @Controller("webhooks")
+@ApiHidden() // served, but not in the API docs: only the provider calls it
 export class PaymentsWebhookController {
   @Post("payments") // POST /http/webhooks/payments
   @HttpCode(200)
@@ -152,16 +153,21 @@ async apply(webhookId: string, orderId: string, amount: number) {
 - `inbox.once(receiver, id)` in the mutation that applies the webhook makes it exactly-once: the id commits with the change, and if the mutation fails the sender's retry is applied. Do not dedupe on unsigned headers.
 - Answer fast; do slow work by scheduling it from that mutation.
 - The controller lives in the feature the webhook affects (`_modules/payments/`), named `<feature>.webhook.controller.ts`.
+- With the firewall on (`WAF=on`), a provider whose payloads trip the rules (a `text/plain` body, rich text, code) gets `403` before your guard runs: put its route in `WAF_IGNORE_PATHS` (`/http/webhooks/payments`, or the root path); the signature check still protects it.
 
-## 5. Inbound and outbound together
+## 5. Documenting the events you send
+
+The events are part of your API: list them in `http.docs({ webhooks: { events: { "order.paid": { summary: "An order was paid.", data: Order } }, retry: { attempts: 10 } } })` in `forge/http.ts` (`Order` a named `v.object({...}, { name: "Order" })`; `retry` only if you changed `WebhooksModule.forRoot`'s). The API docs then show the envelope, the signature headers, how to verify and the retry schedule. `eventTypes` (what may be dispatched) and `events` (what is documented) are separate lists: keep them in step.
+
+## 6. Inbound and outbound together
 
 Both run from the same `WebhooksModule.forRoot({ eventTypes, receivers })`: one module, one set of tables. A common shape: a provider's webhook arrives (`@VerifyWebhook`), its mutation changes your data with `inbox.once()` and, in the same mutation, `webhooks.dispatch()`es your own event to your customers. The receive and the send then commit together.
 
-## 6. Test
+## 7. Test
 
 `createTestBackend` runs it all: dispatch in a mutation, then `await t.finishScheduledFunctions()` runs every delivery and retry immediately. Point endpoints at a `Bun.serve` on localhost with `allowHttp: true, allowPrivateNetworks: true` in the test configuration only, and check signatures with `standardScheme.verify(...)`. Controllers need a running server; sign requests with `signWebhook({ id, timestamp, body, secrets })`. See [testing.md](testing.md).
 
-## 7. Common mistakes
+## 8. Common mistakes
 
 - Installing `@nestjs/webhooks`, `@nestjs/outbox`, Drizzle, BullMQ or a queue for webhooks.
 - `fetch`ing webhook URLs from a mutation, or from an action without the module (no outbox, retries, signing or log).
