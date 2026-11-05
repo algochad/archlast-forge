@@ -139,6 +139,20 @@ These are explained one by one, with what happens when each is hit, in [Limits a
 
 Raise limits only when you have a reason. A larger `MAX_REQUEST_BYTES` lets a single client hold more memory, and a larger `FUNCTION_TIMEOUT_MS` lets one slow query occupy the runtime for longer. Keep work that needs more than ten seconds in an action.
 
+## Web application firewall
+
+Off by default. What it inspects, what it costs and how to tune it: [Web application firewall](limits.html#web-application-firewall-opt-in). Unlike most settings these apply at once when saved from the dashboard (the Firewall page or Settings), with no restart.
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `WAF` | off | | Inspect requests with the OWASP Core Rule Set (Coraza) before the engine handles them. A flagged request gets `403`. |
+| `WAF_MODE` | `block` | `block`, `detect` | `detect` only logs what the rules would stop. |
+| `WAF_PARANOIA` | `1` | 1 to 4 | How strict the rules are. Higher levels flag more legitimate requests. |
+| `WAF_WORKERS` | `1` | integer ≥ 1 | WAF threads, each with its own copy of the rules in memory (over 100 MB). |
+| `WAF_MAX_BODY_KB` | `512` | integer ≥ 1 | The largest request body that is inspected; a larger one isn't. |
+| `WAF_IGNORE_PATHS` | none | comma-separated path prefixes | Requests under these aren't inspected. |
+| `WAF_DISABLED_RULES` | none | comma-separated CRS rule ids | Rules switched off, for one that stops something legitimate. |
+
 ## Cache
 
 | Variable | Default | Accepted | What it does |

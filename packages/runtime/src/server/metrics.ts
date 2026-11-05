@@ -7,6 +7,8 @@ export type LoopDelays = Map<string, { role: string; p99: number; max: number }>
 
 /** Per-function call counters and latency histograms, rendered in Prometheus text format. */
 export class Metrics {
+  /** The WAF's counters now; undefined when it is off. */
+  waf?: () => { inspected: number; blocked: number; detected: number; errors: number; rules: { id: number; count: number }[] } | undefined;
   private fns = new Map<string, { calls: number; errors: number; sum: number; buckets: number[] }>();
 
   observe(name: string, durationMs: number, ok: boolean) {
@@ -38,6 +40,7 @@ export class Metrics {
         `forge_function_duration_ms_count{${label(n)}} ${m.calls}`,
       ]),
       ...(cache?.enabled ? cacheLines(cache, label) : []),
+      ...wafLines(this.waf?.()),
       "# TYPE forge_subscriptions gauge",
       `forge_subscriptions ${gauges.subscriptions}`,
       "# TYPE forge_websocket_connections gauge",
@@ -85,5 +88,20 @@ function cacheLines(cache: CacheSnapshot, label: (name: string) => string) {
     `forge_cache_evictions_total ${cache.evictions}`,
     ...(cache.entries === null ? [] : ["# TYPE forge_cache_entries gauge", `forge_cache_entries ${cache.entries}`]),
     ...(cache.bytes === null ? [] : ["# TYPE forge_cache_bytes gauge", `forge_cache_bytes ${cache.bytes}`]),
+  ];
+}
+
+function wafLines(waf: ReturnType<NonNullable<Metrics["waf"]>>): string[] {
+  if (!waf) return [];
+  return [
+    "# HELP forge_waf_requests_total Requests the web application firewall inspected (inspected), stopped (blocked), flagged in detect mode (detected) or couldn't inspect (errors).",
+    "# TYPE forge_waf_requests_total counter",
+    `forge_waf_requests_total{result="inspected"} ${waf.inspected}`,
+    `forge_waf_requests_total{result="blocked"} ${waf.blocked}`,
+    `forge_waf_requests_total{result="detected"} ${waf.detected}`,
+    `forge_waf_requests_total{result="errors"} ${waf.errors}`,
+    ...(waf.rules.length
+      ? ["# HELP forge_waf_rule_matches_total Requests each Core Rule Set rule matched (the 100 that matched most).", "# TYPE forge_waf_rule_matches_total counter", ...waf.rules.map((r) => `forge_waf_rule_matches_total{rule="${r.id}"} ${r.count}`)]
+      : []),
   ];
 }

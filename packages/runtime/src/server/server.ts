@@ -26,6 +26,7 @@ import { buildRpc, errorResponse, HttpError, readBytes, readText, type Rpc, type
 import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager, type QueryObserver } from "./subscriptions";
 import { TelemetryClient } from "./telemetry/client";
+import { Firewall, settingsOf, type TestRequest } from "./waf/firewall";
 import { now as clock } from "./telemetry/context";
 import { OtlpExporter } from "./telemetry/export";
 import { telemetryForwarder } from "./telemetry/forward";
@@ -36,6 +37,17 @@ import { processSampler } from "./telemetry/sampler";
 import type { Span, TelemetryBatch } from "./telemetry/types";
 
 // Next to this module, like child.ts: the telemetry store's thread.
+/** The firewall's form on the dashboard, and the setting each field is saved as. */
+const WAF_FIELDS = [
+  ["enabled", "WAF"],
+  ["mode", "WAF_MODE"],
+  ["paranoia", "WAF_PARANOIA"],
+  ["workers", "WAF_WORKERS"],
+  ["maxBodyKb", "WAF_MAX_BODY_KB"],
+  ["ignorePaths", "WAF_IGNORE_PATHS"],
+  ["disabledRules", "WAF_DISABLED_RULES"],
+] as const;
+const WAF_WORKER = new URL(import.meta.url.endsWith(".ts") ? "./waf/worker.ts" : "./waf/worker.js", import.meta.url);
 const TELEMETRY_WORKER = new URL(import.meta.url.endsWith(".ts") ? "./telemetry/worker.ts" : "./telemetry/worker.js", import.meta.url);
 
 /** A socket of the RPC protocol, or of a Nest gateway under /http (`gateway`), whose events go to the function runtime. */
@@ -356,6 +368,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   let warnedEcho = false;
   const sockets = new Set<ServerWebSocket<SocketData>>();
 
+  const given = (name: string) => baseEnv[name] !== undefined && baseEnv[name] !== "";
+  const storedSettings = async () => Object.fromEntries((await runtime.admin<{ name: string; value: string }[]>("settings.stored", {}, "system")).map((r) => [r.name, r.value]));
   const admin = buildAdminApi({
     runtime,
     subs,
@@ -382,7 +396,6 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     async settings() {
       const rows = await runtime.admin<{ name: string; value: string; updatedAt: number; updatedBy: string | null }[]>("settings.stored", {}, "system");
       const now = new Map(rows.map((r) => [r.name, r]));
-      const given = (name: string) => baseEnv[name] !== undefined && baseEnv[name] !== "";
       return {
         restartable: Boolean(opts.restart),
         storedError: storedError ?? null,
@@ -406,6 +419,48 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         }),
       };
     },
+    waf: {
+      async info(minutes) {
+        const stored = await storedSettings();
+        const draft = loadConfig({ ...withSettings(baseEnv, stored), WAF: "on" }, dev).waf!;
+        return { ...firewall.snapshot(minutes), draft: settingsOf(draft), locked: WAF_FIELDS.filter(([, name]) => given(name)).map(([field]) => field) };
+      },
+      test: (input) => firewall.test(input as TestRequest),
+      async save(input, actor) {
+        const stored = await storedSettings();
+        const changes: Record<string, string | null> = {};
+        for (const [field, name] of WAF_FIELDS) {
+          const raw = input[field];
+          if (raw === undefined) continue;
+          if (given(name)) throw new HttpError("BAD_REQUEST", `${name} is set in the environment, which wins over the dashboard: change it where the engine is deployed`);
+          const def = SETTING.get(name)!;
+          const text = field === "enabled" ? (raw ? "on" : "off") : Array.isArray(raw) ? raw.join(",") : String(raw);
+          try {
+            changes[name] = text.trim() === "" ? null : checkValue(def, text);
+          } catch (e) {
+            if (e instanceof ConfigError) throw new HttpError("BAD_REQUEST", e.message);
+            throw e;
+          }
+        }
+        const all = { ...stored };
+        for (const [name, value] of Object.entries(changes)) if (value === null) delete all[name];
+        else all[name] = value;
+        try {
+          validateSettings(baseEnv, all, dev);
+          // Applied first: rules that don't load leave the firewall as it was, and nothing is saved.
+          await firewall.apply(loadConfig(withSettings(baseEnv, all), dev).waf);
+        } catch (e) {
+          if (e instanceof ConfigError) throw new HttpError("BAD_REQUEST", e.message);
+          throw new HttpError("BAD_REQUEST", `The firewall couldn't start with these settings: ${(e as Error).message}`);
+        }
+        for (const [name, value] of Object.entries(changes)) {
+          await runtime.admin("settings.save", { name, value }, actor);
+          if (value === null) delete startedWith[name];
+          else startedWith[name] = value;
+        }
+        return firewall.snapshot();
+      },
+    },
     async saveSetting(name, value, actor) {
       const def = SETTING.get(name);
       if (!def) throw new HttpError("NOT_FOUND", `No setting ${name}`);
@@ -416,8 +471,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (next === null) delete all[name];
         else all[name] = next;
         validateSettings(baseEnv, all, dev); // the engine must still start, and back up, with it
-        await runtime.admin("settings.save", { name, value: next }, actor);
         const overridden = baseEnv[name] !== undefined && baseEnv[name] !== "";
+        // The firewall changes while the server runs: its new threads load the rules first, so rules that can't load stop the change here.
+        const wafSetting = name === "WAF" || name.startsWith("WAF_");
+        if (wafSetting && !overridden) {
+          try {
+            await firewall.apply(loadConfig(withSettings(baseEnv, all), dev).waf);
+          } catch (e) {
+            throw new HttpError("BAD_REQUEST", `The firewall couldn't start with this: ${(e as Error).message}`);
+          }
+        }
+        await runtime.admin("settings.save", { name, value: next }, actor);
         // The pool's size applies at once in process mode: processes start, or finish their calls and stop. Into or out of inline mode needs a restart.
         let applied: string | undefined;
         if ((name === "RUNTIME_WORKERS" || name === "RUNTIME_WORKERS_RATIO") && !overridden && config.runtimeMode === "process") {
@@ -432,6 +496,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             }
             applied = `${runtime.size} function runtime process${runtime.size === 1 ? "" : "es"} running`;
           }
+        }
+        if (wafSetting && !overridden) {
+          if (next === null) delete startedWith[name];
+          else startedWith[name] = next;
+          applied = "the firewall changed while running";
         }
         return { name, live: Boolean(def.live), overridden, ...(applied && { applied }) };
       } catch (e) {
@@ -651,6 +720,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     }
   }
 
+  // The WAF starts before the server listens: a configuration that can't work (the rules, the module) stops the engine here, not after it is up and unguarded.
+  // It is there when it is off too, so the dashboard can switch it on.
+  const firewall = new Firewall(WAF_WORKER, config.apiDocs ? config.apiDocsPath : undefined);
+  await firewall.apply(config.waf);
+  metrics.waf = () => (firewall.enabled ? { ...firewall.stats.counters, rules: firewall.stats.ruleCounts() } : undefined);
+
   const server = Bun.serve<ServerSocket>({
     port: config.port,
     hostname: config.hostname,
@@ -745,6 +820,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         });
       }
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
+
+      // The WAF: everything below is what an attacker would reach (functions, auth, HTTP endpoints, pages), minus what the engine serves itself.
+      if (firewall.enabled) {
+        const outcome = await firewall.check(req, url, { address: clientIp(req, srv), port: srv.requestIP(req)?.port ?? 0 }, srv.port ?? config.port, maxBody, requestId);
+        if (outcome.kind === "block") return cors(req, withId(errorResponse({ message: "The request was blocked by the web application firewall", code: "FORBIDDEN", requestId })));
+        if (outcome.kind === "error" && outcome.refuse) return cors(req, withId(errorResponse({ message: "The web application firewall is unavailable", code: "SERVICE_UNAVAILABLE", requestId })));
+      }
 
       if (config.apiDocs && (path === config.apiDocsPath || path.startsWith(`${config.apiDocsPath}/`))) {
         const retry = await limited(req, srv);
@@ -1091,6 +1173,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       await cache?.close();
       await telemetry?.close();
       await store?.close();
+      firewall.close();
     },
   };
 }
