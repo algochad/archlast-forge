@@ -897,10 +897,20 @@ describe("a main app and its microservice: one dashboard", () => {
     const res = await fetch(`${main.url}/_admin/logs/stream?target=orders`, { headers: { "x-admin-key": ADMIN } });
     expect(res.headers.get("content-type")).toBe("text/event-stream");
     const reader = res.body!.getReader();
-    const text = async () => new TextDecoder().decode((await reader.read()).value);
-    expect(await text()).toBe(": connected\n\n");
+    // The stream also carries the log lines of earlier calls that arrive late, so read until the one looked for (or the stream ends).
+    let seen = "";
+    const until = async (part: string) => {
+      const deadline = Date.now() + 5_000;
+      while (!seen.includes(part) && Date.now() < deadline) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        seen += new TextDecoder().decode(value);
+      }
+      return seen;
+    };
+    expect(await until(": connected")).toStartWith(": connected\n\n");
     await fetch(`${orders.url}/rpc/todos:createList`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name: "streamed" }) });
-    expect(await text()).toContain('"name":"todos:createList"');
+    expect(await until('"name":"todos:createList"')).toContain('"name":"todos:createList"');
     await reader.cancel();
   });
 
