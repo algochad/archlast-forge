@@ -13,7 +13,9 @@ import { docsRouting, type ApiDocsPageConfig, type ApiDocsRouting } from "../api
 import { ConfigError, loadConfig, redisOwnerOf, reservedPathOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
 import { matchRoute } from "./http";
 import { RESET_TOPIC } from "./docstore";
-import { checkValue, readStoredSettings, SETTING, SETTINGS, validateSettings, withSettings } from "./settings";
+import { checkValue, liveEnv, readStoredSettings, SETTING, SETTINGS, validateSettings, withSettings } from "./settings";
+import { dashboardHost } from "./dashboard-host";
+import { CSP_REPORT_PATH, parseOverrides, SecurityHeaders, type SecurityOverrides } from "./security-headers";
 import { createStorage, LocalStorage, serveLocalStorage } from "./storage";
 import { ForgeError } from "../errors";
 import type { FunctionKind, UserIdentity } from "../functions";
@@ -91,6 +93,11 @@ export interface AppEnv {
   keepAlive(): void;
   /** Names the route this request matched (`/posts/:id`), so the dashboard groups its requests by route rather than by URL. */
   route?(pattern: string): void;
+  /**
+   * This response's Content-Security-Policy nonce, when the app's policy limits scripts: inline scripts the page renders (its state, React's
+   * streaming scripts, the app's own) must carry it, or the browser won't run them.
+   */
+  nonce?: string;
 }
 
 export interface ServerOptions {
@@ -220,6 +227,30 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   setLogFormat(config.logFormat);
   if (storedError) log("error", storedError);
   const startedWith = stored;
+
+  // Security headers (Helmet) for the REST API, the app's pages and the dashboard: presets, the code's options (each load), and the
+  // dashboard's HELMET and HELMET_CONFIG (live settings: the environment's win).
+  const storageOrigins = [...new Set([config.s3?.publicEndpoint, config.s3?.endpoint].filter((u): u is string => Boolean(u)).map((u) => new URL(u).origin))];
+  const security = new SecurityHeaders({ dev, https: config.authUrl.startsWith("https://"), storageOrigins, reports: true });
+  const securityOf = (all: Record<string, string>) => {
+    const live = liveEnv(baseEnv, all);
+    return { enabled: !["0", "false", "off", "no"].includes((live.HELMET ?? "on").toLowerCase()), overrides: parseOverrides(live.HELMET_CONFIG) };
+  };
+  try {
+    security.configure(securityOf(stored));
+  } catch (e) {
+    // A bad HELMET_CONFIG in the environment stops the start; one saved from the dashboard is set aside, as other bad saved settings are.
+    if (baseEnv.HELMET_CONFIG) throw new ConfigError((e as Error).message);
+    log("error", `ignoring the security headers saved from the dashboard: ${(e as Error).message}`);
+    security.configure(securityOf({ ...stored, HELMET_CONFIG: "" }));
+  }
+  const dashboardPage = opts.dashboard && config.dashboard && !config.dashboardUrl ? dashboardHost(opts.dashboard as unknown as { index: string }) : undefined;
+  /** Admin API answers are private: never kept by a cache, and with the dashboard's headers. */
+  const adminResponse = (res: Response) => {
+    const out = security.apply("dashboard", res);
+    if (!out.headers.has("cache-control")) out.headers.set("cache-control", "no-store");
+    return out;
+  };
   /** How the pool's size was worked out, for the Settings page: from the start, then from each change applied without a restart. */
   let pool = runtimeWorkersFor(env);
   const serverId = `${hostname()}:${process.pid}`;
@@ -366,6 +397,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       });
       await queries.reset().catch((e) => log("error", "cache reset failed", { error: String(e) })); // results from the old code are wrong
       subs.rerunAll();
+      // The code's security headers (http.helmet(), nest(http, { helmet })): options Helmet refuses fail the load like other code errors.
+      try {
+        security.configure({ code: manifest.helmet ?? {} });
+      } catch (e) {
+        throw new Error(`forge/http.ts: the security headers' options were refused: ${(e as Error).message}`);
+      }
       // In production a page or route the API docs would hide stops the start, rather than one of them silently losing the path.
       if (!dev) {
         const docs = await docsAt();
@@ -476,6 +513,47 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         return firewall.snapshot();
       },
     },
+    security: {
+      async info() {
+        const stored = await storedSettings();
+        return {
+          ...security.snapshot(),
+          locked: { enabled: given("HELMET"), overrides: given("HELMET_CONFIG") },
+          // What the dashboard has saved (the environment's, when it sets it): the page edits this.
+          saved: parseOverrides(given("HELMET_CONFIG") ? baseEnv.HELMET_CONFIG : stored.HELMET_CONFIG),
+        };
+      },
+      async save(input, actor) {
+        const changes: Record<string, string | null> = {};
+        if (input.enabled !== undefined) {
+          if (given("HELMET")) throw new HttpError("BAD_REQUEST", "HELMET is set in the environment, which wins over the dashboard");
+          changes.HELMET = input.enabled ? "on" : "off";
+        }
+        if (input.overrides !== undefined) {
+          if (given("HELMET_CONFIG")) throw new HttpError("BAD_REQUEST", "HELMET_CONFIG is set in the environment, which wins over the dashboard");
+          const text = JSON.stringify(input.overrides ?? {});
+          try {
+            parseOverrides(text);
+          } catch (e) {
+            throw new HttpError("BAD_REQUEST", (e as Error).message);
+          }
+          changes.HELMET_CONFIG = text === "{}" ? null : text;
+        }
+        const stored = await storedSettings();
+        const all = { ...stored };
+        for (const [k, v] of Object.entries(changes)) if (v === null) delete all[k];
+        else all[k] = v;
+        // Applied first: options Helmet refuses leave the headers as they were, and nothing is saved.
+        try {
+          security.configure(securityOf(all));
+        } catch (e) {
+          throw new HttpError("BAD_REQUEST", `Helmet refused these options: ${(e as Error).message}`);
+        }
+        for (const [name, value] of Object.entries(changes)) await runtime.admin("settings.save", { name, value }, actor);
+        return security.snapshot();
+      },
+      clearReports: () => security.clearReports(),
+    },
     async saveSetting(name, value, actor) {
       const def = SETTING.get(name);
       if (!def) throw new HttpError("NOT_FOUND", `No setting ${name}`);
@@ -486,6 +564,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (next === null) delete all[name];
         else all[name] = next;
         validateSettings(baseEnv, all, dev); // the engine must still start, and back up, with it
+        // The security headers change while the server runs; options Helmet refuses aren't saved.
+        if (name === "HELMET" || name === "HELMET_CONFIG")
+          try {
+            security.configure(securityOf(all));
+          } catch (e) {
+            throw new HttpError("BAD_REQUEST", (e as Error).message);
+          }
         const overridden = baseEnv[name] !== undefined && baseEnv[name] !== "";
         // The firewall changes while the server runs: its new threads load the rules first, so rules that can't load stop the change here.
         const wafSetting = name === "WAF" || name.startsWith("WAF_");
@@ -789,6 +874,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   await firewall.apply(config.waf);
   metrics.waf = () => (firewall.enabled ? { ...firewall.stats.counters, rules: firewall.stats.ruleCounts() } : undefined);
 
+  dashboardPage?.warm(); // built while the server starts, so the first visit doesn't wait
   const server = Bun.serve<ServerSocket>({
     port: config.port,
     hostname: config.hostname,
@@ -799,9 +885,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     development: false,
     routes: config.dashboardUrl
       ? { "/_dashboard": () => Response.redirect(`${config.dashboardUrl}/_dashboard#/microservices`, 302) }
-      : opts.dashboard && config.dashboard
-        ? { "/_dashboard": opts.dashboard }
-        : {},
+      : {},
     async fetch(req, srv) {
       const url = new URL(req.url);
       const path = url.pathname;
@@ -814,6 +898,21 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           { ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, error: runtime.loadError },
           { status: !shuttingDown && runtime.manifest && !runtime.loadError ? 200 : 503 },
         );
+      // Content-Security-Policy violation reports from browsers (the app's pages and the dashboard), for the dashboard's Security page.
+      if (path === CSP_REPORT_PATH && req.method === "POST") {
+        const retry = await limited(req, srv, "csp:");
+        if (retry) return tooMany(retry);
+        try {
+          const body = JSON.parse(await readText(req, 64 * 1024));
+          security.record(body, (page) => (page === "/_dashboard" || page.startsWith("/_dashboard/") ? "dashboard" : "app"));
+        } catch {}
+        return new Response(null, { status: 204 });
+      }
+      if (dashboardPage && (path === "/_dashboard" || path.startsWith("/_dashboard/"))) {
+        const page = await dashboardPage.serve(req, path);
+        if (page) return security.apply("dashboard", page);
+        return security.apply("dashboard", new Response("Not found", { status: 404 }));
+      }
       // The CLI's data commands. They run in the function runtime, which owns the database, so imports reach subscribers and nothing contends with the server for the write lock.
       if (path === "/_cli" && req.method === "POST") {
         const retry = await limited(req, srv, "cli:");
@@ -983,7 +1082,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           }
           // A body on a 204 or 304 is an error in a Response.
           const out = r.body instanceof ReadableStream ? r.body : r.body.byteLength ? r.body : null;
-          return withId(new Response(out, { status: r.status, headers: r.headers }));
+          const res = new Response(out, { status: r.status, headers: r.headers });
+          return withId(r.nest ? security.apply("api", res) : res);
         } catch (e) {
           if (root) telemetry!.end(root, failureOf(e));
           return withId(errorResponse(toPublicError(e, requestId, dev, { path })));
@@ -1062,7 +1162,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           const retry = await limited(req, srv, "admin:");
           if (retry) return withId(tooMany(retry));
         }
-        return withId(await handleAdmin(req, path, requestId));
+        return withId(adminResponse(await handleAdmin(req, path, requestId)));
       }
       if (opts.app) {
         await loading;
@@ -1095,10 +1195,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             });
         };
         let res: Response | undefined;
+        // A fresh nonce per page, when the app's policy limits scripts: its inline scripts carry it, and the policy names it.
+        const nonce = security.wantsNonce("app") ? Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64") : undefined;
         try {
           res = await opts.app.fetch(req, {
             requestId,
             dev,
+            ...(nonce && { nonce }),
             headers,
             async call(name, kind, args) {
               const started = clock();
@@ -1149,7 +1252,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             ...(res && res.status >= 500 && { error: { type: `HTTP ${res.status}`, message: `${root.operation} answered ${res.status}`, handled: false } }),
           });
         }
-        if (res) return res;
+        // The nonce is for documents; the app's files and JSON get the policy without it.
+        if (res) return security.apply("app", res, res.headers.get("content-type")?.includes("text/html") ? nonce : undefined);
       }
       return new Response("Not found", { status: 404 });
     },

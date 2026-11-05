@@ -32,7 +32,7 @@
     "./forge-rpc": "./src/forge-rpc/index.ts"
   },
   "scripts": {
-    "typecheck": "bun check && bun check -p test-types && bun check -p test/fixture-nest && bun check -p test/fixture-nest-io && bun check -p test/fixture-nest-sdl && bun check -p test/fixture-webhooks && bun check -p test/fixture-root",
+    "typecheck": "bun check && bun check -p test-types && bun check -p test/fixture-nest && bun check -p test/fixture-nest-io && bun check -p test/fixture-nest-sdl && bun check -p test/fixture-webhooks && bun check -p test/fixture-root && bun check -p test/fixture-helmet",
     "test": "bun test",
     "build": "rm -rf dist && bun build ./src/index.ts ./src/server/index.ts ./src/server/child.ts ./src/server/telemetry/worker.ts ./src/server/waf/worker.ts ./src/testing.ts ./src/nest.ts ./src/nest-websockets.ts ./src/nest-microservices.ts ./src/nest-graphql.ts ./src/nest-rpc.ts ./src/nest-webhooks.ts --root ./src --outdir ./dist --target bun --splitting --packages external && bun build ./src/forge-rpc/index.ts --outfile ./dist/forge-rpc/index.js --target bun --packages external --minify && tsc -p tsconfig.build.json"
   },
@@ -65,6 +65,7 @@
     "graphql": "17.0.2",
     "graphql-ws": "6.4.1",
     "graphql-yoga": "6.0.1",
+    "helmet": "8.3.0",
     "ioredis": "6.0.0",
     "kafkajs": "2.2.4",
     "mongodb": "7.8.0",

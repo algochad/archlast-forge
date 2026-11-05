@@ -65,6 +65,7 @@ export {
   type HttpAction,
   type HttpMethod,
   type HttpRouterOptions,
+  type HelmetConfig,
   type HttpRoute,
   type MigrationResult,
   type ModuleRefs,

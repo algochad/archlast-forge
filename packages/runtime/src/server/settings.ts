@@ -155,6 +155,23 @@ export const SETTINGS: SettingDef[] = [
   { name: "WAF_MAX_BODY_KB", group: "Firewall", type: "int", min: 1, default: "512", doc: "The largest request body that is inspected. A larger one isn't (its URL and headers still are)." },
   { name: "WAF_IGNORE_PATHS", group: "Firewall", type: "list", default: "none", doc: "Path prefixes whose requests are not inspected (comma-separated, like /webhooks). The dashboard, storage and the app's built files never are." },
   { name: "WAF_DISABLED_RULES", group: "Firewall", type: "list", default: "none", doc: "CRS rule ids to switch off (comma-separated, like 942100), for a rule that stops something legitimate. The log says which rule blocked a request." },
+  // -- security headers --
+  {
+    name: "HELMET",
+    group: "Security headers",
+    type: "bool",
+    live: true,
+    default: "on",
+    doc: "Security headers (Helmet) on the REST API of a Nest app, a full-stack app's pages and the dashboard, each with a preset of its own. Off sends none, whatever the code says.",
+  },
+  {
+    name: "HELMET_CONFIG",
+    group: "Security headers",
+    type: "string",
+    live: true,
+    default: "none",
+    doc: 'Changes to the presets and the code\'s options, per surface (api, app, dashboard), as JSON: {"app":{"csp":"report-only","add":{"img-src":["https://cdn.example.com"]}}}. The Security page of the dashboard writes it.',
+  },
   // -- storage --
   {
     name: "STORAGE",

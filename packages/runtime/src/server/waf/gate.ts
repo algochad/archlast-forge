@@ -6,8 +6,11 @@ import { WafPool, type ThreadInfo } from "./pool";
 import type { WireRequest } from "./worker";
 import { buildRules } from "./rules";
 
-/** What the engine's own routes carry and the rules would only trip over: the dashboard edits code and the like, and storage takes files. */
-const ENGINE_PATHS = ["/_dashboard", "/_admin", "/_storage", "/_app", "/_telemetry"];
+/**
+ * What the engine's own routes carry and the rules would only trip over: the dashboard edits code and the like, storage takes files, and a
+ * CSP violation report quotes the script it blocked (an injection the policy stopped would otherwise lose its report to the WAF).
+ */
+const ENGINE_PATHS = ["/_dashboard", "/_admin", "/_storage", "/_app", "/_telemetry", "/_csp"];
 /** Static files a browser asks for: nothing in them for an attacker to reach, and a page loads dozens. */
 const STATIC = /\.(?:js|mjs|css|map|png|jpe?g|gif|svg|ico|webp|avif|woff2?|ttf|otf|mp4|webm|mp3|wasm)$/i;
 

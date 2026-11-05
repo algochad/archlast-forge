@@ -357,6 +357,14 @@ Per route (`http.route({...})` or `@Contract({...})`): `summary`, `tags`, `secur
 
 The docs own only their page, `<path>/_docs/*`, the explorer path and the document: the app's own pages under the same prefix (`/docs/guides`) keep working, and a page or root route at one of the docs' paths is reported (production refuses to start). In dev `openapi.json?audience=all` is the complete document. Put prose in `forge/docs/*.mdx` (front matter `title`, `group`, `order`) and slots in `forge/docs/_slots/` (`header.mdx`, `sidebar-footer.mdx`, `operation-before.mdx`, `operation-after.mdx`). A full-stack app can render the reference in its own layout with `ApiReference` from `@archlast/forge-dashboard/api-docs/react`. Give every documented route `summary`, `tags` and `returns`: dev warns when one is missing.
 
+## Security headers (Helmet, on by default)
+
+The engine sets Helmet's headers itself on three surfaces, each with a preset: a Nest app's REST API (`default-src 'none'`, `DENY`, `no-referrer`), a full-stack app's pages (CSP with a per-page nonce, `script-src 'self' 'nonce-…' https:`, no eval, `same-origin-allow-popups`), and the dashboard (strict, `no-store` on `/_admin`). HSTS only in production over https. `http.route()` answers and `/rpc` are left alone. A header a handler sets wins.
+
+- Never add `app.use(helmet())` or a `helmet` dependency: change the presets with Helmet's own options (plain data; CSP directives merge one by one, the nonce is added for you): `http.helmet({ app: { contentSecurityPolicy: { directives: { "script-src": ["'self'", "https://js.stripe.com"] } } } })`, and `nest(http, { helmet: {...} | false })` for the API.
+- Inline scripts in pages need `<script nonce={useNonce()}>` (from `@archlast/forge-framework`).
+- Owners change them live on the dashboard's Security page (saved as `HELMET` and `HELMET_CONFIG`, JSON per surface: `csp: "report-only"`, `add: { "img-src": [...] }`); the environment wins. CSP violations are reported to `/_csp` and listed there.
+
 ## Limits you will meet
 
 Checked by the engine whatever your code does. Defaults, variable, what the caller sees:
@@ -453,6 +461,7 @@ When this file is not enough, read the page instead of guessing: the docs are th
 | [scheduling](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/scheduling.mdx)       | scheduled functions and crons                             |
 | [http](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/http.mdx)                   | HTTP endpoints, validators, CORS, rate limits, streaming  |
 | [api-docs](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/api-docs.mdx)           | OpenAPI and the API docs page                             |
+| [security-headers](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/security-headers.mdx) | Helmet presets, the page nonce, CSP sources and reports |
 | [limits](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/limits.mdx)               | every limit and the security model                        |
 | [configuration](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/configuration.mdx) | the variables behind these features                       |
 | [recipes](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/recipes.mdx)             | webhooks, cron cleanup, email, rate limits, uploads       |

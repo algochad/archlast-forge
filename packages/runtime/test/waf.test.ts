@@ -178,6 +178,9 @@ describe("in the server", () => {
     const q = `?x=${encodeURIComponent(ATTACK)}`;
     expect((await fetch(`${srv.url}/_api/openapi.json${q}`)).status).toBe(200);
     expect((await fetch(`${srv.url}/_api/somewhere${q}`)).status).toBe(403);
+    // A browser's report of a script the page's policy blocked quotes it, and the rules would refuse it (and its content type): it reaches the dashboard.
+    const report = { "csp-report": { "document-uri": `${srv.url}/page`, "effective-directive": "script-src-elem", "blocked-uri": "inline", "script-sample": "<script>alert(document.cookie)</script>" } };
+    expect((await fetch(`${srv.url}/_csp`, { method: "POST", headers: { "content-type": "application/csp-report" }, body: JSON.stringify(report) })).status).toBe(204);
   });
 
   test("a body over WAF_MAX_BODY_KB is not inspected, while its URL and headers still are", async () => {
@@ -291,6 +294,9 @@ describe("the firewall, switched while the server runs", () => {
       expect(bad.action).toBe("blocked");
       expect(bad.score).toBeGreaterThanOrEqual(5);
       expect(bad.rules.map((r) => r.id)).toContain(942100);
+      // The engine's own paths are shown as skipped, whatever the rules make of them: a CSP report quotes the script it blocked.
+      const report = await fw.test({ method: "POST", path: "/_csp", headers: { "content-type": "application/csp-report" }, body: JSON.stringify({ "csp-report": { "script-sample": "<script>alert(1)</script>" } }) });
+      expect(report).toMatchObject({ action: "blocked", skipped: "/_csp is the engine's own" });
       // Below the threshold: the matches are shown, and nothing stops it.
       const mild = await fw.test({ path: "/x", headers: { host: "127.0.0.1" } });
       expect(mild.action).toBe("allowed");

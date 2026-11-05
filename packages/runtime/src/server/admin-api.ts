@@ -84,6 +84,12 @@ export function buildAdminApi(opts: {
   };
   /** Restarts the whole server in this process, when its host can (the CLI can). */
   restart?: () => void;
+  /** The security headers (Helmet): what each surface sends, the CSP reports, and a change of the dashboard's part (live, saved). */
+  security: {
+    info: () => Promise<unknown>;
+    save: (input: Input, actor: string) => Promise<unknown>;
+    clearReports: () => void;
+  };
   maxRequestBytes: number;
   /** This app's name in telemetry and its microservices (MICROSERVICES), which its dashboard can show. */
   microservices?: () => { self: string; services: { name: string; url: string }[] };
@@ -150,6 +156,10 @@ export function buildAdminApi(opts: {
     /** Restarts this server's function runtime, e.g. to pick up `archlast-forge env` changes. */
     reload: { role: "admin", write: true, run: async () => (await opts.reload(), true) },
     settings: { role: "viewer", write: false, run: () => opts.settings() },
+    security: { role: "viewer", write: false, run: () => opts.security.info() },
+    /** What reaches the app's visitors and the dashboard's: the owner's, like the other settings. */
+    "security.save": { role: "owner", write: true, run: (input, ctx) => opts.security.save(input, ctx.admin.email) },
+    "security.clearReports": { role: "admin", write: true, run: () => (opts.security.clearReports(), true) },
     saveSetting: {
       role: "owner",
       write: true,

@@ -1,4 +1,8 @@
+import type { HelmetOptions } from "helmet";
 import { checkDocsConfig, type ApiDocsConfig, type RouteDocs } from "./api-docs";
+
+/** Helmet's options per surface, or false for no security headers there. */
+export type HelmetConfig = { api?: HelmetOptions | false; app?: HelmetOptions | false; dashboard?: HelmetOptions | false };
 import type { BetterAuthOptions } from "better-auth";
 import type {
   Doc,
@@ -524,9 +528,23 @@ export interface HttpRouterOptions {
  */
 export function httpRouter(options: HttpRouterOptions = {}) {
   const routes: HttpRoute[] = [];
+  let helmetConfig: HelmetConfig | undefined;
   let docsConfig: ApiDocsConfig | undefined;
   return {
     routes,
+    /** What `helmet()` was given. */
+    get helmetConfig() {
+      return helmetConfig;
+    },
+    /**
+     * The security headers (Helmet) of the app's surfaces, over the engine's presets: `api` (a Nest app's REST API, also `nest(http, { helmet })`),
+     * `app` (a full-stack app's pages) and `dashboard`. Each takes Helmet's own options (plain data; CSP directives merge one by one), or false
+     * for none. The dashboard's Security page can change them again. Call it once.
+     */
+    helmet(config: HelmetConfig) {
+      if (helmetConfig) throw new Error("http.helmet() is called once");
+      helmetConfig = config;
+    },
     /** Whether the routes are also served at the root, without `/http`. */
     root: options.root === true,
     /** What `docs()` was given. */

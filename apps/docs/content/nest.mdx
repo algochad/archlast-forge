@@ -197,7 +197,7 @@ nest(http, { controllers: [NotesController], providers: [Clock, NotesReader, Not
 export default http;
 ```
 
-- `nest(http, options)` takes `controllers`, `providers`, `imports` (Nest modules, including ones that configure middleware), `prefix`, `cors`, `microservices`, `websockets`, `setup` and `logger`. `nest(http, AppModule)` takes a module class instead.
+- `nest(http, options)` takes `controllers`, `providers`, `imports` (Nest modules, including ones that configure middleware), `prefix`, `cors`, `helmet`, `microservices`, `websockets`, `setup` and `logger`. `nest(http, AppModule)` takes a module class instead.
 - `prefix` (default `"/"`) is where the controllers answer below `/http`. With `prefix: "/api/"`, `@Controller("notes")` answers at `/http/api/notes`. With `httpRouter({ root: true })` they also answer at the root: `prefix: "/api/v1/"` serves `@Controller("notes")` at `/api/v1/notes` (see [Serving routes at the root](http.html#serving-routes-at-the-root); in a full-stack app give Nest a prefix, so the pages keep the other paths). Gateways follow the same path.
 - The providers here, and those of the modules in `imports`, are what `inject()` resolves, so register every service in one or the other, including ones only functions use.
 - Routes added with `http.route()` keep priority: exact paths win, then the longest prefix, then Nest. A path no one has answers with Nest's 404.
@@ -223,6 +223,7 @@ nest(http, {
 });
 ```
 
+- **Security headers are on by default.** Every controller answer gets Helmet's headers with the engine's REST API preset (`Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: no-referrer`, HSTS over https). `helmet` takes Helmet's own options over it, or `false`; a header a handler sets wins; the dashboard's Security page can change them again. Don't add `app.use(helmet())` in `setup`: the engine already sends them. See [Security headers](security-headers.html).
 - `cors` is what Nest's `enableCors()` takes: `true`, the options of the [`cors`](https://www.npmjs.com/package/cors) package, or a function of the request. It answers preflight `OPTIONS` requests and adds the headers to every response from the controllers.
 - `setup(app)` runs before the app starts, for anything else on `INestApplication`: global pipes, `enableVersioning()` (by URI), `setGlobalPrefix()`.
 

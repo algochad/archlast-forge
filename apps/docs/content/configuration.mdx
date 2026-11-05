@@ -121,6 +121,15 @@ Read again for every backup, so a change applies without a restart. See [Backups
 
 Without `BACKUP_S3_*` or `BACKUP_DIR`, backups go to the files' bucket under `_backups/` with `STORAGE=s3`, and to `DATA_DIR/backups` otherwise.
 
+## Security headers
+
+Explained in [Security headers](security-headers.html). Both apply at once when saved from the dashboard.
+
+| Variable | Default | Accepted | What it does |
+|---|---|---|---|
+| `HELMET` | `on` | `on`, `off` | Security headers (Helmet) on the REST API of a Nest app, a full-stack app's pages and the dashboard. `off` sends none, whatever the code says. |
+| `HELMET_CONFIG` | none | JSON | The dashboard's changes per surface (`api`, `app`, `dashboard`), over the presets and the code's options. The Security page writes it. |
+
 ## Limits
 
 These are explained one by one, with what happens when each is hit, in [Limits and security](limits.html#limits-and-what-happens-when-you-hit-them).

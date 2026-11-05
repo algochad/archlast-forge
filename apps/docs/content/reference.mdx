@@ -291,7 +291,8 @@ Anything else a function throws is reported as `Server error (request <id>)` out
 ### HTTP routes
 
 ```ts
-function httpRouter(options?: { root?: boolean }): { routes: HttpRoute[]; root: boolean; route(spec: HttpRoute): void; docs(config: ApiDocsConfig): void };
+function httpRouter(options?: { root?: boolean }): { routes: HttpRoute[]; root: boolean; route(spec: HttpRoute): void; docs(config: ApiDocsConfig): void; helmet(config: HelmetConfig): void };
+type HelmetConfig = { api?: HelmetOptions | false; app?: HelmetOptions | false; dashboard?: HelmetOptions | false }; // Helmet's options over the presets (security-headers.html)
 function httpAction(handler: (ctx: ActionCtx, request: Request) => Response | Promise<Response>): HttpAction;
 
 type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
@@ -416,6 +417,7 @@ interface NestOptions {
   microservices?: MicroserviceOptions[]; // each as app.connectMicroservice() takes it; they listen in the first function runtime process
   websockets?: "ws" | "socket.io"; // the gateways' protocol: @nestjs/platform-ws's JSON (default) or Socket.IO at /http + prefix + "/socket.io"
   setup?: (app: INestApplication) => void | Promise<void>; // before the app starts
+  helmet?: HelmetOptions | false;                 // the REST API's security headers over the engine's preset (security-headers.html)
   logger?: LoggerService | LogLevel[] | false; // default ["error", "warn"]
 }
 function inject<T extends object>(ctx: NeededCtx<T>, type: Type<T>): Promise<T>; // NeededCtx: the C of ForgeService<C>, or any ctx
@@ -510,6 +512,7 @@ interface AppEnv {
   identity(): Promise<UserIdentity | null>;
   rateLimited(): Promise<number | null>;          // seconds to wait, or null
   keepAlive(): void;                              // opt a response out of the idle timeout
+  nonce?: string;                                 // this page's CSP nonce: inline scripts the page renders must carry it
 }
 ```
 

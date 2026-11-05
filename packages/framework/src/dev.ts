@@ -38,10 +38,11 @@ export const DEV_SCRIPT = `(() => {
 `;
 
 /** The page shown instead of the app while the build is failing. */
-export function buildErrorPage(message: string): Response {
+/** `nonce`: the page's CSP nonce (AppEnv.nonce), which the inline script needs to run under the engine's policy for app pages. */
+export function buildErrorPage(message: string, nonce?: string): Response {
   const json = JSON.stringify({ title: "Build failed", message }).replace(/</g, "\\u003c");
   return new Response(
-    `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Build failed</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#0c0c10"><script>window.__FORGE_ERROR__=${json}</script><script type="module" src="/_app/__dev.js"></script></body></html>`,
+    `<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Build failed</title><meta name="viewport" content="width=device-width,initial-scale=1"></head><body style="margin:0;background:#0c0c10"><script${nonce ? ` nonce="${nonce}"` : ""}>window.__FORGE_ERROR__=${json}</script><script type="module" src="/_app/__dev.js"></script></body></html>`,
     { status: 500, headers: { "content-type": "text/html; charset=utf-8", "cache-control": "no-store" } },
   );
 }

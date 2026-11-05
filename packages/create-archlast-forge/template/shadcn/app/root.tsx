@@ -1,4 +1,4 @@
-import { isRouteErrorResponse, Link, NavLink, Outlet, useNavigate, useRouteError, useViewer } from "@archlast/forge-framework";
+import { isRouteErrorResponse, Link, NavLink, Outlet, useNavigate, useNonce, useRouteError, useViewer } from "@archlast/forge-framework";
 import { useAuth } from "@archlast/forge-react";
 import type { ReactNode } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
@@ -7,7 +7,8 @@ import { Button, buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import "./styles.css";
 
-// Runs before the first paint, so the saved theme (or the system's) does not flash the other one.
+// Runs before the first paint, so the saved theme (or the system's) does not flash the other one. It carries the page's nonce: the engine's
+// Content-Security-Policy runs an inline script only with it.
 const THEME = `try{var t=localStorage.getItem("theme");if(t==="dark"||(!t&&matchMedia("(prefers-color-scheme: dark)").matches))document.documentElement.classList.add("dark")}catch(e){}`;
 
 /** The HTML document around every page, including error pages. */
@@ -18,7 +19,7 @@ export function Layout({ children }: { children: ReactNode }) {
         <meta charSet="utf-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1" />
         <link rel="icon" href="/favicon.svg" type="image/svg+xml" />
-        <script dangerouslySetInnerHTML={{ __html: THEME }} />
+        <script nonce={useNonce()} dangerouslySetInnerHTML={{ __html: THEME }} />
       </head>
       <body className="flex min-h-dvh flex-col">{children}</body>
     </html>
