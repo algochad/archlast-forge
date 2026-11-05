@@ -10,7 +10,8 @@ export type Draft = { code: string; args: string };
 type Log = { time: number; level: string; message: string };
 type Result = { ok: boolean; kind?: "query" | "mutation"; value?: unknown; error?: string; line?: number; phase?: "compile" | "run"; ms: number; logs: Log[] };
 
-const validatorSource = (v: Validator) => (v.kind === "id" ? `v.id("${v.table}")` : ["string", "number", "boolean"].includes(v.kind) ? `v.${v.kind}()` : "v.string()");
+const validatorSource = (v: Validator) =>
+  v.kind === "id" ? `v.id("${v.table}")` : v.kind === "literal" ? `v.literal(${JSON.stringify(v.value)})` : ["string", "number", "boolean"].includes(v.kind) ? `v.${v.kind}()` : "v.string()";
 const sample = (v: Validator) => (v.kind === "number" ? 0 : v.kind === "boolean" ? false : "");
 
 /** A starting point for a table: the first thing most people want is to see its documents. */

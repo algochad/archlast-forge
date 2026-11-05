@@ -48,7 +48,7 @@ export const DESCRIPTIONS: Record<Slug, string> = {
   "security-headers":
     "Helmet's security headers on the REST API, the app's pages and the dashboard: the presets, the page nonce, changing them in code and on the dashboard, and CSP reports.",
   "api-docs":
-    "The generated OpenAPI 3.1 document and API docs page with a request explorer; writing your own docs pages.",
+    "The generated OpenAPI 3.1 document and the API docs page with Try it on every operation: configured in code, for one audience, with your auth, errors and webhooks.",
   clients:
     "The client library and the React, Vue and Svelte bindings: queries, mutations, uploads, auth, headers, calling the engine without the client.",
   mobile:

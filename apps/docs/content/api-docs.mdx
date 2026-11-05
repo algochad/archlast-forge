@@ -1,48 +1,200 @@
 # API docs and OpenAPI
 
-The engine describes the app's API as an OpenAPI 3.1 document, and serves it with a docs page in this site's style and an explorer where requests can be tried. The document is made from the code that runs: every public query, mutation and action, the routes in `forge/http.ts`, and the NestJS controllers, with request and response schemas taken from the same validators the engine checks calls against. Nothing is written by hand, so it can't drift.
+The engine describes the app's API as an OpenAPI 3.1 document and serves it with a docs page where every operation can be read and tried. The document is made from the code that runs: the public queries, mutations and actions, the routes in `forge/http.ts`, and the NestJS controllers, with request and response schemas taken from the same validators the engine checks calls against. Nothing is written by hand, so it can't drift. What validators can't say (the API's name, its authentication, its errors, the webhooks it sends, who the docs are for) is configured in code next to the routes.
+
+It works as an app's public REST reference: one setting leaves the reactive functions out, the document states the app's real authentication and error shape, and the page can be served in production at a path of your choosing, beside your own pages.
 
 ## Turning it on
 
-| Setting | Default | |
-|---|---|---|
-| `API_DOCS` | on in dev, off otherwise | Serve the document, the docs page and the explorer. |
-| `API_DOCS_PATH` | `/_api` | Where. It can't be under a path the engine serves itself (`/rpc`, `/http`, `/_dashboard`, …). |
-
-Set them in the environment or on the dashboard's Settings page. In production they stay off until you turn them on: the document lists every public function and route of the app. Anything listed is callable anyway, so this is about what you advertise, not about access.
+With no configuration the docs are at `/_api` in development and off in production, as before:
 
 | Path | What |
 |---|---|
-| `/_api` | The docs page: a guide to calling the API, your own pages, and every endpoint with its parameters, body, responses and an example `curl`. |
+| `/_api` | The docs page: the reference, your guides, and "Try it" on every operation. |
 | `/_api/openapi.json` | The document: minified, compressed (brotli or gzip, as the client accepts), with an `ETag`. |
-| `/_api/explorer` | The explorer ([Scalar](https://github.com/scalar/scalar)), for trying requests from the browser. |
+| `/_api/explorer` | The same page with the request builder open (`?op=<operationId>` picks the operation). |
+
+| Setting | Default | |
+|---|---|---|
+| `API_DOCS` | unset: the code decides | `on` or `off` wins over the code either way. |
+| `API_DOCS_PATH` | unset: `http.docs({ path })`, else `/_api` | Where the page is. It can't be under a path the engine serves itself (`/rpc`, `/http`, `/_dashboard`, …). |
+
+## Configuring the docs in code
+
+`http.docs({...})` in `forge/http.ts` says where the docs are, who they are for, and what the document says beyond the validators. It is checked when the module loads: a security scheme or a parameter a route names that isn't declared here fails the load.
+
+```ts
+// forge/http.ts
+import { httpRouter, v } from "@archlast/forge-runtime";
+
+const http = httpRouter({ root: true });
+
+const Problem = v.object(
+  { type: v.string({ format: "uri" }), title: v.string(), status: v.number({ int: true }), detail: v.optional(v.string()), code: v.string() },
+  { name: "Problem", description: "An RFC 9457 problem document." },
+);
+
+http.docs({
+  // Where
+  path: "/docs", // the page (default /_api)
+  openapi: "/openapi.json", // the document (default <path>/openapi.json)
+  explorer: "/docs/try", // the page with the request builder open (default <path>/explorer); false: no "Try it"
+  basePath: "/platform", // a reverse proxy serves the app under https://example.com/platform
+  production: true, // serve them in production too
+
+  // Who for
+  include: ["/api/v1"], // only paths under these prefixes
+  exclude: ["/api/v1/internal"],
+  functions: false, // leave out POST /rpc/<name>
+
+  // What the validators can't say
+  info: { title: "Midas API", version: "v1", description: "Accept payments. Every amount is in the smallest unit of its currency." },
+  servers: [process.env.PUBLIC_URL ?? "https://api.midas.example"],
+  securitySchemes: {
+    oauth: {
+      type: "oauth2",
+      flows: { clientCredentials: { tokenUrl: "/api/auth/oauth2/token", scopes: { "payments:read": "Read payments", "payments:write": "Create and refund payments" } } },
+    },
+  },
+  security: [{ oauth: [] }], // every route's default; a route's own wins
+  errors: { schema: Problem, contentType: "application/problem+json", common: { 401: "unauthorized", 429: "rate_limited" } },
+  parameters: {
+    idempotencyKey: { in: "header", name: "Idempotency-Key", schema: v.string({ maxLength: 255 }), description: "Makes a retried POST safe." },
+    version: { in: "header", name: "Midas-API-Version", schema: v.literal("v1"), global: true }, // on every route
+  },
+  headers: { "x-request-id": { description: "The request's id, for support." } }, // on every response
+  tags: [{ name: "Payments", description: "Charge a customer, once or on a schedule." }],
+  tagGroups: [{ name: "Core resources", tags: ["Payments", "Refunds"] }],
+  webhooks: { events: { "payment.succeeded": { summary: "A payment went through.", data: Payment } } }, // Payment: a v.object({ ... }, { name: "Payment" })
+
+  // The page
+  page: { title: "Midas", logo: { url: "/logo.svg" }, theme: { accent: "#6d28d9" } },
+});
+```
+
+| Field | Default | What it does |
+|---|---|---|
+| `path` | `/_api` | The docs page. `API_DOCS_PATH` wins. |
+| `openapi` | `<path>/openapi.json` | The document. `"/openapi.json"` puts it at the root. |
+| `explorer` | `<path>/explorer` | Opens the page with the request builder showing; `false` turns "Try it" off. |
+| `basePath` | none | A prefix a reverse proxy adds in front of the server. URLs in the page and the document's links start with it. |
+| `production` | `false` | Serve the docs in production too. `API_DOCS` wins. |
+| `include`, `exclude` | everything | Path prefixes the document keeps, and drops. |
+| `functions` | `true` | List the reactive functions (`POST /rpc/<name>`). `false` for a REST API's docs. |
+| `info` | the package name and the release | `title`, `version`, `description` (markdown), `termsOfService`, `contact`, `license`. |
+| `servers` | the address the document was asked at (`BETTER_AUTH_URL` when set) | Where requests go. |
+| `securitySchemes`, `security` | the engine's session cookie and bearer token, on `/rpc` only | The app's authentication, and the default requirement. |
+| `errors` | the engine's `ErrorBody` | `schema` (name it), `contentType`, and `common` errors every route can answer. |
+| `parameters` | none | Reusable parameters by key; routes list the keys they take, and `global` ones are on every route. |
+| `headers` | none | Headers every response carries. |
+| `tags`, `tagGroups` | tags in order of appearance | Descriptions (markdown) and the navigation's sections. |
+| `webhooks` | none | The events the app sends. See [Webhooks](webhooks.html#documenting-the-events-you-send). |
+| `page` | | The page's title, logo, theme, code-sample languages, request builder, credentials and strings. See [The page](#the-page). |
+
+## Who the document is for
+
+The document served is the **public** one: what `include`, `exclude`, `functions: false` and each route's `hidden` leave. In development, `openapi.json?audience=all` is the **complete** one, with everything the public one leaves out marked `x-internal: true`, and the page has a switch between the two. A route that is served but none of an integrator's business (an inbound webhook from a provider) is hidden with `hidden: true` on `http.route()` or `@Contract()`, or `@ApiHidden()` on a Nest controller or handler.
+
+## What a route says about itself
+
+The schemas come from the validators: `query`, `body` and `returns` on [HTTP routes](http.html#validators-and-the-openapi-document), `params`, `query`, `body` and `returns` on [`@Contract`](nest.html#contract-validators-and-the-openapi-document). Validators carry [constraints and documentation](schema.html#constraints-and-documentation) (enums, bounds, formats, descriptions, examples, names), which the document and the page show and the engine enforces. A route adds, for the document only:
+
+| Field | |
+|---|---|
+| `summary`, `description`, `tags` | What it is, and where it is listed. |
+| `security` | `[{ oauth: ["payments:write"] }]`, or `[]` for none. The scopes are shown on the operation. On Nest, `@ApiSecurity(scheme, scopes)` on a handler or controller says the same, and a scope guard can apply it itself. |
+| `errors` | `{ 404: "payment_not_found", 422: ["amount_too_small", { code: "currency_unsupported", description: "…" }] }`: the statuses and the stable codes, in the app's error shape. |
+| `parameters` | Keys of `http.docs({ parameters })`. |
+| `headers`, `responseHeaders` | Request headers it reads and response headers it sends. |
+| `status`, `responseDescription` | The success status (default 200, 201 for a Nest `POST`) and what the answer is. |
+| `codeSamples` | Your own snippets (an SDK call), shown before the generated ones. |
+| `hidden`, `deprecated`, `operationId` | |
+
+In development the engine warns once per load about documented routes with no `returns`, no `summary` or no tags: a reader of the page would notice.
 
 ## What the document holds
 
-- **Functions**: `POST /rpc/<module>:<name>` for each public function, the body being its `args` and the `200` answer `{ "result": … }` with its `returns` validator. Internal functions are left out. Errors share one `ErrorBody` schema: `{ "error": { "message", "code", "data"?, "requestId" } }` with the status codes in [Errors](errors.html).
-- **HTTP routes**: every `http.route()`, under `/http`. A `pathPrefix` route is `/http/<prefix>{rest}`. The query, body and answer come from the route's [validators](http.html#validators-and-the-openapi-document), when it declares them.
-- **NestJS controllers**: every controller method with a route, from Nest's own metadata (method and path, `:id` as `{id}`), grouped by controller. Methods with [`@Contract`](nest.html#contract-validators-and-the-openapi-document) get their schemas from it.
-- `servers` is `BETTER_AUTH_URL` when it is set, else the address the document was asked at. Security schemes describe the session cookie and Better Auth's bearer token, both optional: each function decides what an anonymous caller may do.
-- Schemas that appear more than once are written once, under `components.schemas`, and referenced. Only schemas something uses are there.
+- **Functions** (unless `functions: false`): `POST /rpc/<module>:<name>` for each public function, the body being its `args` and the `200` answer `{ "result": … }` with its `returns` validator. Internal functions are left out. Their errors share the engine's `ErrorBody` schema: `{ "error": { "message", "code", "data"?, "requestId" } }`, with the status codes in [Errors](errors.html), and their security is the engine's session cookie and Better Auth bearer token, both optional.
+- **HTTP routes**: every `http.route()`, under `/http`, or at the root with `httpRouter({ root: true })`. An `http.route()`'s validation failure is the engine's own `400` with `ErrorBody`; its other errors are in the app's error shape.
+- **NestJS controllers**: every controller method with a route, from Nest's own metadata (method and path, `:id` as `{id}`), grouped by controller unless it has tags. Its errors are in the app's error shape, since they go through your exception filters.
+- **Schemas**: inline, except validators with a `name`, which are written once under `components.schemas` and referred to. Names are yours, so they don't change when another schema is added.
+- **Webhooks**: the `webhooks` section, one entry per event, with the envelope, the three signature headers and an example, and `x-webhooks-signing` with the retry schedule.
+- Extensions the page reads: `x-tagGroups`, `x-codeSamples`, `x-error-codes` and `x-scopes` on operations, `x-internal`, `x-webhooks-signing`.
 
 The document is made once per load of the code: a change in dev, a reload or a restart makes the next one.
 
-## Your own pages
+## Paths: the docs and your own pages
 
-Put MDX files in `forge/docs/` and they appear on the docs page under Guide, ordered by file name (`01-orders.mdx` before `02-webhooks.mdx`), titled by their first `#` heading:
+The docs own a few paths, not a prefix: the page (`<path>` and `<path>/`), its assets (`<path>/_docs/…`), the explorer path, and the document. Anything else under `<path>` goes to your app, so a full-stack app can have its own `/docs/authentication` page beside the generated reference at `/docs`. If one of your pages (or a root-mounted HTTP route) takes one of the docs' paths, the engine logs both and your app keeps the path; in production it refuses to start, since one of the two would otherwise lose the path without a word. Move the docs with `http.docs({ path, openapi, explorer })` or `API_DOCS_PATH`.
 
-```mdx
-# Ordering
+## The page
 
-Orders are **final** once placed. Use `dryRun=true` to check one first.
+One page, laid out by resource: the API's description and base URL, an Authentication section made from the security schemes (OAuth2 flows with their token URL and a scopes table, bearer, API keys), then each tag with its description and its operations, the Webhooks the app sends (the envelope, the signature headers and how to verify them, the retry schedule, each event's payload), and the named Models. The navigation follows `tagGroups`, with your guides first.
+
+Each operation shows its method and path, summary and description, the scopes it needs, its parameters (path, query and headers, with enum values, constraints, defaults and examples), its request body as an attribute table with nested objects, its responses by status with their headers and error codes, a request and a response example (from the validators' examples, or made from the schema), and code samples: your own `codeSamples` first, then cURL, Node, Python and the other languages in `page.codeSamples.languages`. Samples show placeholders, never credentials. Each operation has a link of its own (`#/<tag>/<operationId>`).
+
+### Try it
+
+Every operation has a **Try it** button that opens the request builder on that operation, in the page, filled from its schema and examples. Its script is fetched the first time someone presses the button (and prefetched when the pointer or focus reaches it), so the page's first load doesn't carry it. `<path>/explorer` (or `?try` on an operation's link) opens the page with the builder showing; `?op=<operationId>` picks the operation. `http.docs({ explorer: false })` takes "Try it" away.
+
+**Credentials.** The page's **Authorize** panel takes the app's declared schemes: a bearer token, an API key, or OAuth2 client credentials (client id and secret in, the token fetched from the token URL, with the scopes and any extra parameters, and renewed before it ends). They are kept in `sessionStorage` (or in memory, with `page.credentials: "memory"`), sent only to the API and its token endpoint, and shared with the builder both ways. `page.explorer.auth` pre-selects a scheme and pre-fills the OAuth2 client id, scopes, token URL and extra token parameters such as RFC 8707's `resource`:
+
+```ts
+http.docs({
+  page: {
+    explorer: { auth: { preferredScheme: "oauth", oauth2: { scopes: ["payments:read"], extraParams: { resource: "https://api.midas.example/api/v1" } } } },
+  },
+});
 ```
 
-They are compiled when the page is first asked for (and again when a file changes), with React from the engine, so a backend needs nothing installed. They can use Markdown and JSX elements, not `import`s.
+The builder is the engine's fork of [Scalar](https://github.com/scalar/scalar)'s request builder: the source is a pinned Scalar release and a small patch series in `packages/dashboard/scalar/`, built by `bun scripts/update-scalar.ts` and vendored, with Scalar's MIT licence and every bundled package's in `THIRD_PARTY_NOTICES.md`. Nothing about your API leaves the server: no proxy (upstream's default proxy is patched out), no telemetry, no hosted features, no web fonts.
+
+### Guides and slots
+
+Put MDX files in `forge/docs/` and they appear before the reference. Front matter sets the title, the navigation section and the order; without it a page is titled by its first `#` heading and ordered by file name:
+
+```mdx
+---
+title: Accepting a payment
+group: Guides
+order: 1
+---
+
+Payments are **final** once captured. Use an `Idempotency-Key` on every `POST`.
+```
+
+Files in `forge/docs/_slots/` are not pages but places on the page: `header.mdx` (above the content), `sidebar-footer.mdx` (below the navigation), `operation-before.mdx` and `operation-after.mdx` (around every operation; they get `operation`, `path`, `method` and `tag` as props). They are compiled when the page is first asked for (and again when a file changes), with React from the engine, so a backend needs nothing installed. They can use Markdown and JSX elements, not `import`s.
+
+### Look and text
+
+| `page` field | |
+|---|---|
+| `title`, `logo` | The name in the header (default `info.title`) and a logo (`{ url, alt?, href? }`). |
+| `theme` | `mode` (`"auto"` follows the visitor, with a toggle; or `"light"`, `"dark"`), `accent`, `font`, `monoFont`, `radius`. The request builder takes the page's colours and fonts. |
+| `codeSamples.languages` | Generated samples, in order: `curl`, `node`, `python`, `go`, `php`, `ruby`, `java`, `csharp` (default `curl`, `node`, `python`). |
+| `explorer` | `false` for no "Try it", or `{ auth }` (above). |
+| `credentials` | `"session"` (default) or `"memory"`. |
+| `hide` | `models`, `webhooks`, `search`, `downloadLink`. |
+| `strings` | Every text on the page by key, for another language (the keys and their English text are `STRING_KEYS` in the dashboard's `api-docs/strings.ts`). Keys starting with `apiClient.` go to the request builder. |
+
+### In a full-stack app's own layout
+
+A full-stack app can render the reference inside its own pages, navigation and theme instead of (or beside) the engine's page. Add `@archlast/forge-dashboard` to the app's dependencies and render `ApiReference`:
+
+```tsx
+// app/routes/developers/api.tsx
+import "@archlast/forge-dashboard/api-docs/styles.css";
+import { ApiReference } from "@archlast/forge-dashboard/api-docs/react";
+
+export default function ApiPage() {
+  return <ApiReference openapiUrl="/openapi.json" explorerUrl="/docs/_docs/explorer.js" config={{ theme: { accent: "#6d28d9" } }} />;
+}
+```
+
+It renders on the server (pass `document` instead of `openapiUrl` to render the whole reference there) and hydrates in the browser. Its styles are scoped to the component and sit in one CSS layer, so they don't restyle the rest of your page, and your own unlayered rules win over them. `guides` and `slots` take React components; `explorerUrl: null` turns "Try it" off.
 
 ## Size
 
-The page is React, bundled when it is first asked for: minified, split so each of your pages loads when it is opened, and hashed and cached for a year. Its first load is about **72 KB gzipped** (HTML, script, stylesheet), plus the Geist fonts as two Latin `woff2` files (29 and 23 KB) fetched when text uses them.
+The page is React, bundled when it is first asked for: minified, split so guides, the Authorize panel and the code samples beyond cURL load when they are needed, and hashed and cached for a year. Its first load is about **86 KB gzipped** (HTML, script, stylesheet), plus the Geist fonts as two Latin `woff2` files (29 and 23 KB) fetched when text uses them.
 
-The explorer is on a page of its own, so it never weighs on the docs page or on your app: Scalar's standalone bundle, **1.06 MB with brotli** (1.43 MB gzipped, 4.9 MB raw), vendored in the engine rather than installed (the package is 56 MB), and loaded only by `/_api/explorer`. It runs with Scalar's hosted features off: no toolbar (share, SDK generation), no Ask AI, no telemetry, no web fonts, so nothing about your API leaves the server.
-
-The document for this site's test app is 115 KB pretty-printed with every schema written out, 57 KB minified with shared schemas, and 3.2 KB gzipped (2.3 KB with brotli) on the wire.
+The request builder is loaded only by "Try it": **812 KB with brotli** for the script and 23 KB for its stylesheet (3.4 MB raw), against 1.06 MB for the whole Scalar reference the engine used to serve on a page of its own.

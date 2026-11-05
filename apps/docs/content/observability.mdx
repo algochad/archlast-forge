@@ -132,7 +132,7 @@ What the engine reads from OpenTelemetry's conventions: `SERVER` spans are reque
 
 ## One dashboard for a main app and its microservices
 
-In a [monorepo](monorepo.html), each microservice is a backend of its own, and the main app's dashboard is the one for all of them. A microservice sends what it records to the main app, which keeps it with its own, so every page above covers the microservices beside the main app: their requests, traces (a call from the main app to a service is one trace), errors, logs, nodes, Nest classes and metrics. With a microservice picked in the top bar, the **Data**, **Files**, **Functions**, **Cache**, **Backups**, **Audit** and **Settings** pages show that service: its schema, documents and functions, through the main app. A microservice serves no dashboard of its own; its `/_dashboard` sends you to the main app's.
+In a [monorepo](monorepo.html), each microservice is a backend of its own, and the main app's dashboard is the one for all of them. A microservice sends what it records to the main app, which keeps it with its own, so every page above covers the microservices beside the main app: their requests, traces (a call from the main app to a service is one trace), errors, logs, nodes, Nest classes and metrics. With a microservice picked in the top bar, the **Data**, **Files**, **Functions**, **Cache**, **Firewall**, **Backups**, **Audit** and **Settings** pages show that service: its schema, documents and functions, through the main app. A microservice serves no dashboard of its own; its `/_dashboard` sends you to the main app's.
 
 | Where | Variable | |
 |---|---|---|

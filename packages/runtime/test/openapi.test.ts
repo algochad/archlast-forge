@@ -13,7 +13,8 @@ const fixture = join(import.meta.dir, "fixture");
 test("validators become JSON Schema", () => {
   expect(toJsonSchema(v.string())).toEqual({ type: "string" });
   expect(toJsonSchema(v.id("todos"))).toMatchObject({ type: "string", pattern: "^todos:[0-9a-f]{32}$" });
-  expect(toJsonSchema(v.array(v.union(v.number(), v.null())))).toEqual({ type: "array", items: { anyOf: [{ type: "number" }, { type: "null" }] } });
+  expect(toJsonSchema(v.array(v.union(v.number(), v.null())))).toEqual({ type: "array", items: { type: ["number", "null"] } });
+  expect(toJsonSchema(v.union(v.string(), v.number()))).toEqual({ anyOf: [{ type: "string" }, { type: "number" }] });
   expect(toJsonSchema(v.object({ a: v.boolean(), b: v.optional(v.string()) }))).toEqual({
     type: "object",
     properties: { a: { type: "boolean" }, b: { type: "string" } },

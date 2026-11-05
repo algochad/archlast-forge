@@ -14,6 +14,7 @@ import { Cache } from "./pages/Cache";
 import { Data } from "./pages/Data";
 import { Errors } from "./pages/Errors";
 import { Files } from "./pages/Files";
+import { Firewall } from "./pages/Firewall";
 import { Functions } from "./pages/Functions";
 import { Hotspots } from "./pages/Hotspots";
 import { Jobs } from "./pages/Jobs";
@@ -75,6 +76,7 @@ const PAGES: Record<string, PageDef> = {
   files: { label: "Files", icon: "files", group: "Backend", blurb: "Objects in storage, uploaded through presigned URLs." },
   functions: { label: "Functions", icon: "functions", group: "Backend", blurb: "Run any function with typed arguments, or write one on the spot." },
   cache: { label: "Cache", icon: "cache", group: "Backend", blurb: "How much work the query cache is saving." },
+  firewall: { label: "Firewall", icon: "shield", group: "Admin", blurb: "The web application firewall: what it blocked, how it is set, and what its rules make of a request." },
   alerts: { label: "Alerts", icon: "alerts", group: "Admin", blurb: "Rules over your telemetry, and what they caught." },
   keys: { label: "Ingest keys", icon: "key", group: "Admin", blurb: "Keys other services send OpenTelemetry with." },
   backups: { label: "Backups", icon: "backups", group: "Admin", blurb: "Snapshots of the data, the function source and the files: on a schedule or now, to download or restore." },
@@ -355,6 +357,7 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
                   {page === "data" && <Data manifest={m} admin={admin} />}
                   {page === "functions" && <Functions manifest={m} admin={admin} />}
                   {page === "cache" && <Cache admin={admin} />}
+                  {page === "firewall" && <Firewall admin={admin} />}
                   {page === "files" && <Files manifest={m} admin={admin} />}
                   {page === "audit" && <Audit />}
                   {page === "security" && <Security admin={admin} />}

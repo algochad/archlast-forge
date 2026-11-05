@@ -6,7 +6,7 @@ import { stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { preinit, preloadModule } from "react-dom";
 import { renderToReadableStream } from "react-dom/server";
-import { createStaticHandler, createStaticRouter, isRouteErrorResponse, RouterContextProvider, StaticRouterProvider, type StaticHandlerContext } from "react-router";
+import { createStaticHandler, createStaticRouter, isRouteErrorResponse, matchRoutes, RouterContextProvider, StaticRouterProvider, type StaticHandlerContext } from "react-router";
 import { BuildError, buildApp, readBuild, type BuildResult } from "./build";
 import { createViewerStore, forgeContext, type LoaderContext, type Viewer } from "./context";
 import { buildErrorPage, DEV_SCRIPT, DevEvents, watchApp } from "./dev";
@@ -26,6 +26,7 @@ export interface AppOptions {
 interface Loaded {
   build: BuildResult;
   handler: ReturnType<typeof createStaticHandler>;
+  routes: ReturnType<typeof toRouteObjects>;
   clientDir: string;
   /** app/root.tsx's `authPlugins`, for the client each render makes. */
   authPlugins?: unknown[];
@@ -117,7 +118,8 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
 
   async function load(build: BuildResult) {
     const mod = (await import(join(build.dir, build.manifest.server))) as { manifest: Parameters<typeof toRouteObjects>[0] };
-    loaded = { build, handler: createStaticHandler(toRouteObjects(mod.manifest)), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
+    const routes = toRouteObjects(mod.manifest);
+    loaded = { build, routes, handler: createStaticHandler(routes), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
   }
 
   async function rebuild(): Promise<boolean> {
@@ -255,6 +257,15 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     },
     dispose() {
       stopWatching();
+    },
+    /**
+     * Whether a page takes this path: a route that matches it below the root. A catch-all at the root (`app/routes/[...all].tsx`, a 404
+     * page) doesn't count, or nothing could share the server with the app.
+     */
+    matches(path) {
+      if (!loaded) return undefined;
+      const found = matchRoutes(loaded.routes, path);
+      return Boolean(found?.length && found.at(-1)!.pathnameBase !== "/");
     },
   };
 }

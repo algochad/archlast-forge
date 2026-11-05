@@ -24,7 +24,7 @@ describe("what ships", () => {
     for (const p of [
       "packages/runtime/src/server/cache.ts",
       "packages/create-archlast-forge/template/base/forge/schema.ts",
-      "packages/dashboard/vendor/scalar/standalone.js.br",
+      "packages/dashboard/vendor/scalar/explorer.js.br",
       "packages/cli/package.json",
       "docker/engine.Dockerfile",
     ])

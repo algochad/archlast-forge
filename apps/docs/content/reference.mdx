@@ -24,22 +24,29 @@ Every public export of every package, the wire protocol and the HTTP surface of 
 
 ```ts
 import { v, paginationOptsValidator, ValidationError } from "@archlast/forge-runtime";
-import type { Id, Infer, ObjectType, PropertyValidators, Validator } from "@archlast/forge-runtime";
+import type { Id, Infer, ObjectType, PropertyValidators, Validator, ValidatorMeta, ValidatorChecks, StringOptions, NumberOptions, ArrayOptions } from "@archlast/forge-runtime";
 ```
 
 | Validator | Type it describes |
 |---|---|
-| `v.string()` | `string` |
-| `v.number()` | `number` (finite) |
-| `v.boolean()` | `boolean` |
-| `v.null()` | `null` |
-| `v.id<TableName extends string>(table: TableName)` | `Id<TableName>` |
-| `v.array<E extends Validator<any, false>>(element: E)` | `Infer<E>[]` |
-| `v.object<F extends PropertyValidators>(fields: F)` | `ObjectType<F>`; unknown keys are rejected |
+| Validator | Type it describes |
+|---|---|
+| `v.string(opts?: StringOptions)` | `string`; `minLength`, `maxLength`, `pattern`, `format` checked |
+| `v.number(opts?: NumberOptions)` | `number` (finite); `min`, `max`, `exclusiveMin`, `exclusiveMax`, `int` checked |
+| `v.boolean(meta?: ValidatorMeta)` | `boolean` |
+| `v.null(meta?: ValidatorMeta)` | `null` |
+| `v.literal<const T extends string \| number \| boolean>(value: T, meta?)` | `T` |
+| `v.enum<const T extends [string, ...string[]]>(...values: T)` | `T[number]` (a union of literals) |
+| `v.id<TableName extends string>(table: TableName, meta?)` | `Id<TableName>` |
+| `v.array<E extends Validator<any, false>>(element: E, opts?: ArrayOptions)` | `Infer<E>[]`; `minItems`, `maxItems`, `unique` checked |
+| `v.object<F extends PropertyValidators>(fields: F, meta?: ValidatorMeta)` | `ObjectType<F>`; unknown keys are rejected |
 | `v.union<M extends [Validator<any, false>, ...Validator<any, false>[]]>(...members: M)` | `Infer<M[number]>` |
+| `v.nullable<I extends Validator<any, false>>(inner: I)` | `Infer<I> \| null` |
 | `v.optional<I extends Validator<any, false>>(inner: I)` | `Infer<I> \| undefined`; the key may be absent |
+| `v.any(meta?)` | `any`, unchecked |
+| `v.describe<V>(validator: V, meta: ValidatorMeta)` | `V`, with documentation added |
 
-There are no `v.literal`, `v.any`, `v.bytes`, `v.record`, `v.int64` or `v.date`. See [Schema and validators](schema.html#validators).
+`ValidatorMeta` is `{ description?, title?, example?, default?, deprecated?, name? }`: documentation for the OpenAPI document and the API docs page, never checked (`name` makes it a named schema there). There are no `v.bytes`, `v.record`, `v.int64` or `v.date`. See [Schema and validators](schema.html#validators).
 
 ```ts
 interface Validator<T = unknown, IsOptional extends boolean = boolean> {
@@ -284,7 +291,7 @@ Anything else a function throws is reported as `Server error (request <id>)` out
 ### HTTP routes
 
 ```ts
-function httpRouter(options?: { root?: boolean }): { routes: HttpRoute[]; root: boolean; route(spec: HttpRoute): void; helmet(config: HelmetConfig): void };
+function httpRouter(options?: { root?: boolean }): { routes: HttpRoute[]; root: boolean; route(spec: HttpRoute): void; docs(config: ApiDocsConfig): void; helmet(config: HelmetConfig): void };
 type HelmetConfig = { api?: HelmetOptions | false; app?: HelmetOptions | false; dashboard?: HelmetOptions | false }; // Helmet's options over the presets (security-headers.html)
 function httpAction(handler: (ctx: ActionCtx, request: Request) => Response | Promise<Response>): HttpAction;
 
@@ -298,7 +305,18 @@ interface HttpRoute {
   body?: Validator;             // the JSON body, checked before the handler
   returns?: Validator;          // for the OpenAPI document
   summary?: string; description?: string; tags?: string[];
+  // RouteDocs, for the OpenAPI document only:
+  hidden?: boolean; operationId?: string; deprecated?: boolean; status?: number; responseDescription?: string;
+  security?: SecurityRequirement[];                                   // [{ oauth: ["payments:write"] }]; [] for none
+  errors?: Record<number | string, DocError | DocError[]>;            // { 404: "payment_not_found" }
+  parameters?: string[];                                              // keys of http.docs({ parameters })
+  headers?: Record<string, { description?: string; required?: boolean; schema?: Validator; example?: unknown }>;
+  responseHeaders?: Record<string, { description?: string; schema?: Validator }>;
+  codeSamples?: { lang: string; label?: string; source: string }[];
 }
+// ApiDocsConfig (http.docs): path, openapi, explorer, basePath, production, include, exclude, functions, info, servers,
+// securitySchemes, security, errors { schema, contentType, common }, parameters, headers, tags, tagGroups, webhooks, page.
+// See API docs: api-docs.html#configuring-the-docs-in-code
 interface HttpAction { kind: "httpAction"; handler: (ctx: ActionCtx, request: Request) => Response | Promise<Response> }
 ```
 
@@ -387,7 +405,9 @@ Everything `@nestjs/common` exports (`Controller`, `Get`, `Post`, `Body`, `Param
 
 ```ts
 function nest(http: { route(spec: HttpRoute): void }, options: NestOptions | Type): void;
-function Contract(spec: { params?: PropertyValidators; query?: PropertyValidators; body?: Validator; returns?: Validator; summary?: string; description?: string; tags?: string[] }): MethodDecorator; // checked by an interceptor, listed in the OpenAPI document
+function Contract(spec: { params?: PropertyValidators; query?: PropertyValidators; body?: Validator; returns?: Validator; summary?: string; description?: string; tags?: string[] } & RouteDocs): MethodDecorator; // checked by an interceptor, listed in the OpenAPI document
+function ApiSecurity(scheme: string, scopes?: string[]): ClassDecorator & MethodDecorator; // how it is called, for the API docs; alternatives when repeated
+function ApiHidden(): ClassDecorator & MethodDecorator;                                     // left out of the API docs, still served
 interface NestOptions {
   controllers?: Type[];
   providers?: Provider[];
@@ -466,7 +486,7 @@ interface ServerOptions {
   env?: Record<string, string | undefined>;      // defaults to process.env
   dashboard?: HTMLBundle;                         // Bun HTML import, served at /_dashboard when enabled
   app?: AppHost;                                  // a frontend for every path the engine does not own
-  apiDocs?: ApiDocsHost;                          // the API docs page and explorer below API_DOCS_PATH (@archlast/forge-dashboard/api-docs)
+  apiDocs?: ApiDocsHost;                          // the API docs page and its request builder (@archlast/forge-dashboard/api-docs)
   restart?: () => Promise<void>;                  // stop and start again in this process: the dashboard's "Restart now" (settings)
 }
 
@@ -480,6 +500,7 @@ interface RunningServer {
 
 interface AppHost {
   fetch(req: Request, env: AppEnv): Response | undefined | Promise<Response | undefined>;
+  matches?(path: string): boolean | undefined;    // a page takes this path (the API docs check theirs against it); undefined until built
   dispose?(): void | Promise<void>;
 }
 

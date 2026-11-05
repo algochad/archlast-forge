@@ -1,4 +1,5 @@
 import type { HelmetOptions } from "helmet";
+import { checkDocsConfig, type ApiDocsConfig, type RouteDocs } from "./api-docs";
 
 /** Helmet's options per surface, or false for no security headers there. */
 export type HelmetConfig = { api?: HelmetOptions | false; app?: HelmetOptions | false; dashboard?: HelmetOptions | false };
@@ -489,7 +490,7 @@ export function httpAction(handler: HttpAction["handler"]): HttpAction {
   return { kind: "httpAction", handler };
 }
 
-export interface HttpRoute {
+export interface HttpRoute extends RouteDocs {
   method: HttpMethod;
   /** Exact path, e.g. "/stripe/webhook". */
   path?: string;
@@ -528,6 +529,7 @@ export interface HttpRouterOptions {
 export function httpRouter(options: HttpRouterOptions = {}) {
   const routes: HttpRoute[] = [];
   let helmetConfig: HelmetConfig | undefined;
+  let docsConfig: ApiDocsConfig | undefined;
   return {
     routes,
     /** What `helmet()` was given. */
@@ -545,6 +547,19 @@ export function httpRouter(options: HttpRouterOptions = {}) {
     },
     /** Whether the routes are also served at the root, without `/http`. */
     root: options.root === true,
+    /** What `docs()` was given. */
+    get docsConfig() {
+      return docsConfig;
+    },
+    /**
+     * The API docs: where they are, who they are for (`include`, `functions: false`), and what the OpenAPI document says beyond the
+     * validators (info, servers, security schemes, errors, parameters, headers, tags, webhooks), plus the page's look. Call it once.
+     */
+    docs(config: ApiDocsConfig) {
+      if (docsConfig) throw new Error("http.docs() is called once");
+      checkDocsConfig(config);
+      docsConfig = config;
+    },
     route(spec: HttpRoute) {
       const { method, path, pathPrefix, handler } = spec;
       if (!HTTP_METHODS.includes(method)) throw new Error(`HTTP route method must be one of ${HTTP_METHODS.join(", ")}, got "${method}"`);
