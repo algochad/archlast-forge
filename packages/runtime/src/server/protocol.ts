@@ -33,6 +33,8 @@ export interface HttpResponseMessage {
   body: ArrayBuffer | ReadableStream<Uint8Array>;
   stream?: true;
   telemetry?: CallTelemetry;
+  /** The answer is a Nest controller's (`nest(http, ...)`): the server gives it the REST API's security headers. */
+  nest?: true;
 }
 
 /** Server → function runtime, with no answer: the sockets of Nest gateways and GraphQL subscriptions under /http. */

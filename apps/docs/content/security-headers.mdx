@@ -1,0 +1,147 @@
+# Security headers
+
+The engine sets security headers with [Helmet](https://helmetjs.github.io/) on three kinds of answer, each with a preset made for it:
+
+| Surface | What | Preset in short |
+|---|---|---|
+| **REST API** | Your Nest controllers' answers (`nest(http, ...)`), under `/http` and at the root | JSON never renders: nothing may load from it, frame it or submit to it. |
+| **App pages** | A full-stack app's pages and files (React and React Router) | Inline scripts run only with the page's nonce, no `eval`, no plugins; your bundle, styles, images, fonts, https APIs and third-party SDKs load. |
+| **Dashboard** | `/_dashboard` and its API `/_admin` | Only its own files, no framing, no referrer, never cached. |
+
+They are on by default. A header a handler sets itself is never replaced, so a route that needs something else just sets it. `http.route()` answers (your own HTTP actions), `/rpc`, auth and the engine's other routes are left as they are.
+
+## What each preset sends
+
+All three send Helmet's `X-Content-Type-Options: nosniff`, `X-DNS-Prefetch-Control: off`, `X-Download-Options: noopen`, `X-Permitted-Cross-Domain-Policies: none`, `X-XSS-Protection: 0` and `Origin-Agent-Cluster`. In production over https (`BETTER_AUTH_URL` starts with `https://`) they also send `Strict-Transport-Security: max-age=31536000` (this host only: add subdomains yourself when every one of them is https), and the pages' policies `upgrade-insecure-requests`. In development neither is sent, so `http://` on a LAN address keeps working.
+
+| | REST API | App pages | Dashboard |
+|---|---|---|---|
+| `Content-Security-Policy` | `default-src 'none'; frame-ancestors 'none'; base-uri 'none'; form-action 'none'` | below | below |
+| `X-Frame-Options` | `DENY` | `SAMEORIGIN` | `DENY` |
+| `Referrer-Policy` | `no-referrer` | `strict-origin-when-cross-origin` | `no-referrer` |
+| `Cross-Origin-Opener-Policy` | `same-origin` | `same-origin-allow-popups` (sign-in and payment popups keep working) | `same-origin` |
+| `Cross-Origin-Resource-Policy` | `same-site` (CORS requests aren't affected) | `same-site` | `same-origin` |
+| `Cache-Control` | yours | yours | `no-store` on `/_admin` |
+
+The app pages' policy is meant to stop injected scripts without breaking a React app:
+
+```text
+default-src 'self'
+script-src 'self' 'nonce-<per request>' https:
+script-src-attr 'none'
+style-src 'self' 'unsafe-inline' https:
+img-src 'self' data: blob: https: <your bucket>
+font-src 'self' data: https:
+media-src 'self' data: blob: https: <your bucket>
+connect-src 'self' https: wss: <your bucket>
+frame-src 'self' https:
+worker-src 'self' blob:
+manifest-src 'self'
+object-src 'none'
+base-uri 'self'
+form-action 'self' https:
+frame-ancestors 'self'
+report-uri /_csp
+```
+
+An inline `<script>` without the nonce, an `onclick=` attribute, `eval` and `new Function`, plugins and a `<base>` pointing elsewhere are blocked; scripts from your bundle and from https (Stripe.js, an analytics snippet's file) load, as do styles, images, fonts and API calls over https. The dashboard's policy is `default-src 'none'` with `'self'` for scripts, styles (and inline styles), images, fonts and its API, plus your S3 bucket for files, `frame-ancestors 'none'`, `base-uri 'none'` and `form-action 'self'`.
+
+## The page nonce
+
+Every page gets a fresh nonce, named in its policy. The engine's own inline scripts carry it (the page's state, and React's streaming scripts), and so must any inline script your app renders. Take it from `useNonce()`:
+
+```tsx
+// app/root.tsx
+import { useNonce } from "@archlast/forge-framework";
+
+export function Layout({ children }: { children: React.ReactNode }) {
+  return (
+    <html lang="en">
+      <head>
+        <script nonce={useNonce()} dangerouslySetInnerHTML={{ __html: "/* runs before the first paint */" }} />
+      </head>
+      <body>{children}</body>
+    </html>
+  );
+}
+```
+
+The shadcn/ui starter's theme script already does. A script tag with `src` needs no nonce. `useNonce()` is undefined when the app's policy doesn't limit scripts (headers off, CSP off, or a policy that allows `'unsafe-inline'` scripts on purpose).
+
+## In code
+
+`http.helmet()` in `forge/http.ts` changes any surface with Helmet's own options, merged over the preset: each option replaces the preset's, and CSP directives merge one by one (camelCase or kebab-case; `null` removes one). `false` turns a surface off. For the REST API, `nest(http, { helmet })` says the same where the controllers are mounted:
+
+```ts
+// forge/http.ts
+import { httpRouter } from "@archlast/forge-runtime";
+import { nest } from "@archlast/forge-runtime/nest";
+
+const http = httpRouter({ root: true });
+
+http.helmet({
+  app: {
+    contentSecurityPolicy: {
+      directives: {
+        "script-src": ["'self'", "https://js.stripe.com"], // the nonce is added for you
+        "frame-src": ["https://js.stripe.com", "https://hooks.stripe.com"],
+        "img-src": ["'self'", "data:", "https://images.example.com"],
+      },
+    },
+  },
+});
+
+nest(http, {
+  prefix: "/api/",
+  controllers: [/* ... */],
+  helmet: { crossOriginResourcePolicy: { policy: "cross-origin" } }, // the API's files are embedded by other sites
+});
+
+export default http;
+```
+
+The options are plain data (they cross from the function runtime to the server): Helmet's function-valued directives aren't accepted, and the page's nonce is added for you. Options Helmet refuses fail the load, like any mistake in the code.
+
+## On the dashboard
+
+The dashboard's **Security** page (Admin) shows, for each surface, where its headers come from (the engine's preset, or customized in code) and exactly what it sends. An owner can change, without a restart:
+
+- **Headers**: on or off for the surface.
+- **Content-Security-Policy**: enforce, **report only** (sent as `Content-Security-Policy-Report-Only`: the browser reports what it would block and blocks nothing, to try a stricter policy on real traffic), or off.
+- **Allow more sources**: add a source to a directive (`https://js.stripe.com` to `script-src`, an image host to `img-src`).
+- **Framing**, **HSTS** (this host, with subdomains, preload), **Cross-Origin-Resource-Policy** and **Referrer-Policy**.
+
+What it sets wins over the code. It is saved as two settings, which apply at once:
+
+| Setting | Default | |
+|---|---|---|
+| `HELMET` | `on` | `off` sends no security headers anywhere, whatever the code says. |
+| `HELMET_CONFIG` | none | The dashboard's changes per surface, as JSON. |
+
+Set in the environment, either one wins over the dashboard and shows there as locked. `HELMET_CONFIG` looks like this:
+
+```json
+{
+  "app": { "csp": "report-only", "add": { "script-src": ["https://js.stripe.com"], "img-src": ["https://cdn.example.com"] } },
+  "api": { "crossOriginResourcePolicy": "cross-origin" },
+  "dashboard": { "hsts": { "maxAge": 31536000, "includeSubDomains": true } }
+}
+```
+
+| Field | |
+|---|---|
+| `enabled` | `false`: none on this surface; `true`: on, even where the code turned it off. |
+| `csp` | `"enforce"`, `"report-only"` or `"off"`. |
+| `add` | Sources added to directives. |
+| `directives` | Directives replaced; `null` removes one. |
+| `hsts` | `false`, or `{ maxAge, includeSubDomains, preload }`. |
+| `frameOptions` | `"DENY"`, `"SAMEORIGIN"` or `false`. |
+| `referrerPolicy`, `crossOriginResourcePolicy`, `crossOriginOpenerPolicy` | A policy, or `false` for none. |
+
+A value the engine would start with is checked when it is saved (or, from the environment, at start): a malformed one is refused with the field that is wrong.
+
+## What the policy blocked
+
+The app pages' and the dashboard's policies send violation reports to `/_csp`, and the Security page lists the latest 200 since the server started: the page, the directive, what was blocked, and whether it was blocked or only reported. When a legitimate script, image or API is blocked, add its source on the dashboard or in `http.helmet()`; when an inline script is, give it the nonce. Reports are rate limited like any request and kept in memory only.
+
+Rolling out a stricter policy: set `csp` to `"report-only"` on the dashboard, add the sources the reports name, and switch back to enforce when the list stays empty.

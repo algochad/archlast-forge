@@ -59,7 +59,7 @@ export async function startClient(manifest: ManifestNode) {
   const time = { now: state.now ?? Date.now(), timeZone: state.timeZone ?? "UTC" };
   hydrateRoot(
     document,
-    <Providers client={client} queryClient={queryClient} viewer={viewer} dev={state.dev} time={time}>
+    <Providers client={client} queryClient={queryClient} viewer={viewer} dev={state.dev} time={time} nonce={state.nonce}>
       <RouterProvider router={router} />
     </Providers>,
     { onRecoverableError: (error) => reportRecoverableError(error, window.__forgeNotice) },

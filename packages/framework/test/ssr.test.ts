@@ -22,6 +22,39 @@ beforeAll(async () => {
 });
 afterAll(() => srv.stop({ graceful: false }));
 
+describe("security headers (Helmet, the engine's preset for app pages)", () => {
+  test("a page's policy names a fresh nonce, and its inline scripts carry it", async () => {
+    const one = await get("/");
+    const csp = one.headers.get("content-security-policy")!;
+    const nonce = /'nonce-([A-Za-z0-9+/=]+)'/.exec(csp)?.[1];
+    expect(nonce).toBeDefined();
+    expect(csp).toContain("script-src 'self'");
+    expect(csp).toContain("object-src 'none'");
+    expect(csp).toContain("script-src-attr 'none'");
+    expect(csp).toContain("report-uri /_csp");
+    const page = await one.text();
+    const scripts = [...page.matchAll(/<script(?![^>]*\bsrc=)([^>]*)>/g)].map((m) => m[1]!);
+    expect(scripts.length).toBeGreaterThan(0);
+    for (const attrs of scripts) expect(attrs).toContain(`nonce="${nonce}"`); // the page's state, and anything React streams
+    expect(stateOf(page).nonce).toBe(nonce);
+    // Another request, another nonce.
+    expect((await get("/")).headers.get("content-security-policy")).not.toContain(nonce!);
+    expect(one.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(one.headers.get("x-frame-options")).toBe("SAMEORIGIN");
+    expect(one.headers.get("cross-origin-opener-policy")).toBe("same-origin-allow-popups");
+    expect(one.headers.get("referrer-policy")).toBe("strict-origin-when-cross-origin");
+    expect(one.headers.get("strict-transport-security")).toBeNull(); // not over http
+  });
+
+  test("the app's built files get the headers too, without a nonce", async () => {
+    const page = await html("/");
+    const asset = /src="(\/_app\/[^"]+\.js)"/.exec(page)?.[1];
+    const res = await get(asset!);
+    expect(res.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(res.headers.get("content-security-policy")).not.toContain("nonce");
+  });
+});
+
 describe("pages", () => {
   test("a page is a full document with its loader's live query already filled in", async () => {
     const res = await get("/");

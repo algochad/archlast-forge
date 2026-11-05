@@ -147,6 +147,23 @@ export const SETTINGS: SettingDef[] = [
   { name: "MAX_REQUEST_BYTES", group: "Limits", type: "int", min: 1, default: "8388608 (8 MiB)", doc: "An HTTP request body and a WebSocket message." },
   { name: "RATE_LIMIT_PER_MINUTE", group: "Limits", type: "int", min: 0, default: "1200 (off in dev)", doc: "Requests per client IP per minute. 0 turns rate limiting off." },
   { name: "MAX_SUBSCRIPTIONS_PER_CONNECTION", group: "Limits", type: "int", min: 1, default: "200", doc: "Live queries one WebSocket may hold." },
+  // -- security headers --
+  {
+    name: "HELMET",
+    group: "Security headers",
+    type: "bool",
+    live: true,
+    default: "on",
+    doc: "Security headers (Helmet) on the REST API of a Nest app, a full-stack app's pages and the dashboard, each with a preset of its own. Off sends none, whatever the code says.",
+  },
+  {
+    name: "HELMET_CONFIG",
+    group: "Security headers",
+    type: "string",
+    live: true,
+    default: "none",
+    doc: 'Changes to the presets and the code\'s options, per surface (api, app, dashboard), as JSON: {"app":{"csp":"report-only","add":{"img-src":["https://cdn.example.com"]}}}. The Security page of the dashboard writes it.',
+  },
   // -- storage --
   {
     name: "STORAGE",

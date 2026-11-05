@@ -148,6 +148,8 @@ The main risks the engine does not remove are the ones only your code can: who i
 
 **The app host's file serving.** Requests under `/_app` and for files in `public/` are resolved against a fixed directory. A path containing `..`, an encoded `%2e%2e`, a NUL byte, or any segment that starts with a dot (other than `.well-known`) is refused with 404, and a resolved path must stay inside the directory. `/.env` and `/../package.json` are not reachable. Files are served with `X-Content-Type-Options: nosniff`; pages carry `Cache-Control: private, no-cache`, `Vary: cookie` and `Referrer-Policy: strict-origin-when-cross-origin`.
 
+**Security headers.** Helmet's headers are on by default on a Nest app's REST API, a full-stack app's pages (a Content-Security-Policy with a per-page nonce, so an injected inline script doesn't run) and the dashboard (a strict policy: only its own files, no framing, `Cache-Control: no-store` on its API). See [Security headers](security-headers.html).
+
 **Production defaults that fail closed.** The engine refuses to start without `BETTER_AUTH_SECRET`, or with an `http://` `BETTER_AUTH_URL` (unless `ALLOW_INSECURE_HTTP`). The dashboard and custom functions are off, `/metrics` answers `404` without a token, and `/_cli` needs the admin key. The schema check refuses to serve data that no longer matches the schema.
 
 **Install scripts.** Dependencies in `forge/package.json` are installed with `--ignore-scripts` unless the manifest has `trustedDependencies`, and then only those may run scripts.

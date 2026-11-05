@@ -4,6 +4,11 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+### Changed
+
+- **Security headers (Helmet) are on by default**, with a preset for each kind of answer. A Nest app's REST API gets `Content-Security-Policy: default-src 'none'; frame-ancestors 'none'`, `X-Frame-Options: DENY`, `nosniff` and `no-referrer`. A full-stack app's pages get a Content-Security-Policy with a fresh nonce per page (inline scripts run only with it; your bundle, styles, images, fonts and https APIs and SDKs load), and `useNonce()` gives it to the inline scripts you render (the shadcn/ui starter's theme script uses it). The dashboard gets a strict policy (only its own files, no framing, `no-store` on its API). HSTS and `upgrade-insecure-requests` only in production over https. Change them in code with `http.helmet({ api, app, dashboard })` or `nest(http, { helmet })` (Helmet's own options, merged over the preset), or live on the dashboard's new **Security** page (saved as `HELMET` and `HELMET_CONFIG`), which also lists the CSP violations browsers report to `/_csp`. A header a handler sets is never replaced. See [Security headers](security-headers.html).
+- The dashboard's files are now served under `/_dashboard/_assets/` (they were at the root of the server), so a proxy that forwards only `/_dashboard` reaches all of it.
+
 ## 0.18.0
 
 Webhooks in and out, HTTP routes at the root, Better Auth client plugins in full-stack apps, MongoDB as a database for the whole engine, and SQLite that syncs every commit by default.

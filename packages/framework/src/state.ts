@@ -10,6 +10,8 @@ export interface PageState {
   viewer: Viewer | null;
   queries: DehydratedState;
   hydration: { loaderData: Record<string, unknown>; actionData: Record<string, unknown> | null; errors: Record<string, SerializedError> | null };
+  /** The page's CSP nonce, so the browser's render gives inline scripts the attribute the server's did. */
+  nonce?: string;
 }
 
 /** Errors cross the wire as plain data. */

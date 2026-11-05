@@ -1,3 +1,5 @@
+import type { HelmetConfig } from "../functions";
+import { checkHelmetConfig } from "./security-headers";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -88,6 +90,8 @@ export interface Project {
   http: HttpRoute[];
   /** forge/http.ts's router serves its routes at the root as well as under /http (`httpRouter({ root: true })`). */
   httpRoot?: boolean;
+  /** The security headers' options from code: `http.helmet()`, and `nest(http, { helmet })` for the API. */
+  helmet?: HelmetConfig;
 }
 
 export async function loadProject(forgeDir: string): Promise<Project> {
@@ -126,7 +130,12 @@ export async function loadProject(forgeDir: string): Promise<Project> {
       const taken = at === "/" ? undefined : reservedPathOf(at.replace(/\/$/, ""));
       if (taken) throw new Error(`forge/http.ts: ${r.method} ${at} can't be served at the root, where ${taken} is the engine's. Give it another path, or leave it under /http (httpRouter() without root).`);
     }
-  return { tables, functions, authOptions, crons, http: (router?.routes ?? []) as HttpRoute[], httpRoot };
+  // Code's security headers: http.helmet(), with nest(http, { helmet }) for the REST API. Plain data, since they cross into the server.
+  const mount = ((router?.routes ?? []) as HttpRoute[]).find((r) => (r.handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-mount")]);
+  const nestHelmet = mount && (mount.handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-helmet")];
+  const helmet: HelmetConfig | undefined = router?.helmetConfig || nestHelmet !== undefined ? { ...router?.helmetConfig, ...(nestHelmet !== undefined && { api: nestHelmet as HelmetConfig["api"] }) } : undefined;
+  if (helmet) checkHelmetConfig("forge/http.ts", helmet);
+  return { tables, functions, authOptions, crons, http: (router?.routes ?? []) as HttpRoute[], httpRoot, helmet };
 }
 
 export const tableSpecs = (tables: TablesSpec) =>
@@ -141,6 +150,8 @@ export interface Manifest {
   release?: string;
   /** forge/http.ts's routes (method and path only) when its router serves them at the root too (`httpRouter({ root: true })`). */
   rootRoutes?: Pick<HttpRoute, "method" | "path" | "pathPrefix">[];
+  /** The security headers' options from code (`http.helmet()`, `nest(http, { helmet })`). */
+  helmet?: HelmetConfig;
 }
 
 /** Variables deploy platforms and CI set to the commit being deployed, in the order they are trusted. */

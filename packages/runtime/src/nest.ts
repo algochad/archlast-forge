@@ -2,6 +2,7 @@
 // `nest(http, { controllers, providers })` in forge/http.ts mounts the app; `inject(ctx, Service)` resolves a service for a function call.
 // Requests reach Nest through ForgeAdapter, which takes them from the engine's /http routing, and gateway sockets through the engine's
 // server (onSocket): Nest never opens a server of its own. GraphQL, WebSocket gateways and microservices have their own entries.
+import type { HelmetOptions } from "helmet";
 import "reflect-metadata";
 import {
   applyDecorators,
@@ -256,6 +257,12 @@ export interface NestOptions {
    * `@Controller("users")` answers at /http/users. With a root router, `prefix: "/api/"` serves `@Controller("users")` at /api/users.
    */
   prefix?: string;
+  /**
+   * The REST API's security headers (Helmet). Default: the engine's API preset (no content may load from or frame a JSON answer, nosniff,
+   * no referrer, HSTS over https). Helmet's own options merge over it, CSP directives one by one; false sends none. A header a handler
+   * sets itself always wins, and the dashboard's Security page can change these again.
+   */
+  helmet?: HelmetOptions | false;
   /** CORS for the controllers, as Nest's `enableCors()` takes it: `true`, the options of the `cors` package, or a function of the request. */
   cors?: NestApplicationOptions["cors"];
   /** Microservice transports the app also listens on (TCP, Redis, NATS, MQTT, gRPC, Kafka, RabbitMQ), as `app.connectMicroservice()` takes them. */
@@ -309,6 +316,7 @@ export function nest(http: { route(spec: HttpRoute): void; root?: boolean }, opt
 
   const handler = httpAction(async (ctx, request) => (await started!).adapter.handle(request, ctx));
   (handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] = true;
+  if (o.helmet !== undefined) (handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-helmet")] = o.helmet;
   for (const method of METHODS) http.route({ method, pathPrefix: prefix, handler });
   (globalThis as Record<symbol, unknown>)[NEST_ROUTES] = async () => routesOf((await started!).app, http.root ? prefix : `/http${prefix}`);
 }

@@ -27,6 +27,7 @@ import { Overview } from "./pages/Overview";
 import { Releases } from "./pages/Releases";
 import { Requests } from "./pages/Requests";
 import { Runtime } from "./pages/Runtime";
+import { Security } from "./pages/Security";
 import { Settings } from "./pages/Settings";
 import { Slos } from "./pages/Slos";
 import { Spans } from "./pages/Spans";
@@ -77,6 +78,7 @@ const PAGES: Record<string, PageDef> = {
   alerts: { label: "Alerts", icon: "alerts", group: "Admin", blurb: "Rules over your telemetry, and what they caught." },
   keys: { label: "Ingest keys", icon: "key", group: "Admin", blurb: "Keys other services send OpenTelemetry with." },
   backups: { label: "Backups", icon: "backups", group: "Admin", blurb: "Snapshots of the data, the function source and the files: on a schedule or now, to download or restore." },
+  security: { label: "Security", icon: "lock", group: "Admin", blurb: "The security headers (Helmet) of your REST API, your app's pages and this dashboard, and what their policy blocked." },
   audit: { label: "Audit", icon: "audit", group: "Admin", blurb: "Every change made from this dashboard." },
   settings: { label: "Settings", icon: "settings", group: "Admin", blurb: "Everything the engine can be configured with, the functions' environment, the schema and live subscriptions." },
   trace: { label: "Trace", icon: "trace", blurb: "One request from end to end." },
@@ -355,6 +357,7 @@ function Shell({ admin, onSignOut }: { admin: Admin; onSignOut: () => void }) {
                   {page === "cache" && <Cache admin={admin} />}
                   {page === "files" && <Files manifest={m} admin={admin} />}
                   {page === "audit" && <Audit />}
+                  {page === "security" && <Security admin={admin} />}
                   {page === "backups" && <Backups admin={admin} />}
                   {page === "settings" && <Settings manifest={m} admin={admin} />}
                 </>
