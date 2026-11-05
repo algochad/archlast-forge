@@ -1,6 +1,19 @@
 export type Kind = "query" | "mutation" | "action";
 export type Role = "owner" | "admin" | "viewer";
-export type Validator = { kind: string; optional: boolean; table?: string; element?: Validator; fields?: Record<string, Validator>; members?: Validator[] };
+export type Validator = {
+  kind: string;
+  optional: boolean;
+  table?: string;
+  element?: Validator;
+  fields?: Record<string, Validator>;
+  members?: Validator[];
+  /** A literal's value. */
+  value?: string | number | boolean;
+  meta?: { description?: string; example?: unknown; default?: unknown; deprecated?: boolean; name?: string; title?: string };
+  checks?: { min?: number; max?: number; int?: boolean; minLength?: number; maxLength?: number; pattern?: string; format?: string; minItems?: number; maxItems?: number };
+};
+/** The values of a union of literals (an enum), or null when it is something else. */
+export const enumValues = (v: Validator) => (v.kind === "union" && v.members!.every((m) => m.kind === "literal") ? v.members!.map((m) => m.value!) : null);
 export type FunctionInfo = { name: string; kind: Kind; visibility: "public" | "internal"; args: Record<string, Validator>; returns?: Validator };
 export type TableInfo = {
   fields: Record<string, Validator>;
@@ -31,6 +44,49 @@ export type CacheInfo = {
   coalesced: number;
   skipped: number;
   functions: { name: string; hits: number; misses: number; coalesced: number; skipped: number; hitMs: number; missMs: number; perUser: boolean; savedMs: number }[];
+};
+export type FirewallSettings = { mode: "block" | "detect"; paranoia: number; workers: number; maxBodyKb: number; ignorePaths: string[]; disabledRules: number[] };
+export type FirewallEvent = {
+  id: number;
+  at: number;
+  action: "blocked" | "detected" | "error";
+  requestId: string;
+  method: string;
+  path: string;
+  ip: string;
+  rules: { id: number; message: string }[];
+  score: number;
+  error?: string;
+  ms: number;
+};
+export type FirewallInfo = {
+  enabled: boolean;
+  /** What is running; null while the firewall is off. */
+  settings: FirewallSettings | null;
+  /** What turning it on would run with: the saved settings, else the defaults. */
+  draft: FirewallSettings;
+  /** The form fields whose setting the environment gives, which the dashboard can't change. */
+  locked: (keyof FirewallSettings | "enabled")[];
+  onSince: number | null;
+  since: number;
+  threshold: number;
+  threads: { state: "up" | "starting" | "restarting"; waiting: number; served: number; restarts: number; lastError?: string }[];
+  counters: { inspected: number; blocked: number; detected: number; errors: number };
+  latency: { avg: number; p50: number; p95: number; p99: number; max: number };
+  timeline: { t: number; inspected: number; blocked: number; detected: number; errors: number }[];
+  rules: { id: number; message: string; count: number; blocked: number; detected: number }[];
+  paths: { path: string; count: number; blocked: number; detected: number }[];
+  ips: { ip: string; count: number; blocked: number; detected: number }[];
+  events: FirewallEvent[];
+};
+export type FirewallTest = {
+  action: "allowed" | "blocked" | "detected";
+  score: number;
+  threshold: number;
+  rules: { id: number; message: string; severity: number }[];
+  skipped?: string;
+  bodyInspected: boolean;
+  mode: "block" | "detect";
 };
 export type Admin = { email: string; role: Role };
 export type Doc = Record<string, unknown> & { _id: string; _creationTime: number };
@@ -113,7 +169,11 @@ export const typeOf = (v: Validator): string =>
         ? `{ ${fieldsOf(v.fields!)} }`
         : v.kind === "union"
           ? v.members!.map(typeOf).join(" | ")
-          : v.kind;
+          : v.kind === "literal"
+            ? JSON.stringify(v.value)
+            : v.kind === "number" && v.checks?.int
+              ? "integer"
+              : v.kind;
 
 export const fieldsOf = (fields: Record<string, Validator>) =>
   Object.entries(fields)

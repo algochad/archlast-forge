@@ -9,10 +9,13 @@ import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
 import { claimPrefix, connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
+import { docsRouting, type ApiDocsPageConfig, type ApiDocsRouting } from "../api-docs";
 import { ConfigError, loadConfig, redisOwnerOf, reservedPathOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
 import { matchRoute } from "./http";
 import { RESET_TOPIC } from "./docstore";
-import { checkValue, readStoredSettings, SETTING, SETTINGS, validateSettings, withSettings } from "./settings";
+import { checkValue, liveEnv, readStoredSettings, SETTING, SETTINGS, validateSettings, withSettings } from "./settings";
+import { dashboardHost } from "./dashboard-host";
+import { CSP_REPORT_PATH, parseOverrides, SecurityHeaders, type SecurityOverrides } from "./security-headers";
 import { createStorage, LocalStorage, serveLocalStorage } from "./storage";
 import { ForgeError } from "../errors";
 import type { FunctionKind, UserIdentity } from "../functions";
@@ -26,6 +29,7 @@ import { buildRpc, errorResponse, HttpError, readBytes, readText, type Rpc, type
 import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager, type QueryObserver } from "./subscriptions";
 import { TelemetryClient } from "./telemetry/client";
+import { Firewall, settingsOf, type TestRequest } from "./waf/firewall";
 import { now as clock } from "./telemetry/context";
 import { OtlpExporter } from "./telemetry/export";
 import { telemetryForwarder } from "./telemetry/forward";
@@ -36,6 +40,17 @@ import { processSampler } from "./telemetry/sampler";
 import type { Span, TelemetryBatch } from "./telemetry/types";
 
 // Next to this module, like child.ts: the telemetry store's thread.
+/** The firewall's form on the dashboard, and the setting each field is saved as. */
+const WAF_FIELDS = [
+  ["enabled", "WAF"],
+  ["mode", "WAF_MODE"],
+  ["paranoia", "WAF_PARANOIA"],
+  ["workers", "WAF_WORKERS"],
+  ["maxBodyKb", "WAF_MAX_BODY_KB"],
+  ["ignorePaths", "WAF_IGNORE_PATHS"],
+  ["disabledRules", "WAF_DISABLED_RULES"],
+] as const;
+const WAF_WORKER = new URL(import.meta.url.endsWith(".ts") ? "./waf/worker.ts" : "./waf/worker.js", import.meta.url);
 const TELEMETRY_WORKER = new URL(import.meta.url.endsWith(".ts") ? "./telemetry/worker.ts" : "./telemetry/worker.js", import.meta.url);
 
 /** A socket of the RPC protocol, or of a Nest gateway under /http (`gateway`), whose events go to the function runtime. */
@@ -58,6 +73,8 @@ export interface AppHost {
    */
   fetch(req: Request, env: AppEnv): Response | undefined | Promise<Response | undefined>;
   dispose?(): void | Promise<void>;
+  /** Whether one of the app's own routes takes this path (a page, not a catch-all); undefined while the app isn't built yet. The engine checks the API docs' paths against it. */
+  matches?(path: string): boolean | undefined;
 }
 
 /** What an app host may do for one request. */
@@ -76,6 +93,11 @@ export interface AppEnv {
   keepAlive(): void;
   /** Names the route this request matched (`/posts/:id`), so the dashboard groups its requests by route rather than by URL. */
   route?(pattern: string): void;
+  /**
+   * This response's Content-Security-Policy nonce, when the app's policy limits scripts: inline scripts the page renders (its state, React's
+   * streaming scripts, the app's own) must carry it, or the browser won't run them.
+   */
+  nonce?: string;
 }
 
 export interface ServerOptions {
@@ -86,7 +108,7 @@ export interface ServerOptions {
   dashboard?: HTMLBundle;
   /** A frontend served for every path the engine doesn't own. */
   app?: AppHost;
-  /** The API docs page and the explorer, served below API_DOCS_PATH when API_DOCS is on (the OpenAPI document is the engine's own). */
+  /** The API docs page and its request builder, at the docs' path when they are on (the OpenAPI document is the engine's own). */
   apiDocs?: ApiDocsHost;
   /**
    * Stops this server and starts it again in the same process, so settings saved from the dashboard apply. Given by hosts that can (the CLI);
@@ -95,9 +117,16 @@ export interface ServerOptions {
   restart?: () => Promise<void>;
 }
 
-/** Serves the API docs page, its assets and the explorer below `base`; null for a path it has nothing at. */
+/**
+ * Serves the API docs page: `base`, `base/`, `base/_docs/*` and `explorerPath`, and null for anything else, which then goes to the app.
+ * The same interface as DocsHost in @archlast/forge-dashboard's api-docs/contract.ts.
+ */
 export interface ApiDocsHost {
-  serve(req: Request, opts: { base: string; forgeDir: string; dev: boolean }): Promise<Response | null>;
+  serve(
+    req: Request,
+    opts: { base: string; publicBase: string; openapiUrl: string; explorerPath: string | null; dev: boolean; forgeDir: string; page: ApiDocsPageConfig },
+  ): Promise<Response | null>;
+  paths?(opts: { base: string; explorerPath: string | null }): { exact: string[]; prefixes: string[] };
 }
 
 /** `body` compressed for this request: brotli or gzip when the client takes them, else as it is. */
@@ -198,6 +227,30 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   setLogFormat(config.logFormat);
   if (storedError) log("error", storedError);
   const startedWith = stored;
+
+  // Security headers (Helmet) for the REST API, the app's pages and the dashboard: presets, the code's options (each load), and the
+  // dashboard's HELMET and HELMET_CONFIG (live settings: the environment's win).
+  const storageOrigins = [...new Set([config.s3?.publicEndpoint, config.s3?.endpoint].filter((u): u is string => Boolean(u)).map((u) => new URL(u).origin))];
+  const security = new SecurityHeaders({ dev, https: config.authUrl.startsWith("https://"), storageOrigins, reports: true });
+  const securityOf = (all: Record<string, string>) => {
+    const live = liveEnv(baseEnv, all);
+    return { enabled: !["0", "false", "off", "no"].includes((live.HELMET ?? "on").toLowerCase()), overrides: parseOverrides(live.HELMET_CONFIG) };
+  };
+  try {
+    security.configure(securityOf(stored));
+  } catch (e) {
+    // A bad HELMET_CONFIG in the environment stops the start; one saved from the dashboard is set aside, as other bad saved settings are.
+    if (baseEnv.HELMET_CONFIG) throw new ConfigError((e as Error).message);
+    log("error", `ignoring the security headers saved from the dashboard: ${(e as Error).message}`);
+    security.configure(securityOf({ ...stored, HELMET_CONFIG: "" }));
+  }
+  const dashboardPage = opts.dashboard && config.dashboard && !config.dashboardUrl ? dashboardHost(opts.dashboard as unknown as { index: string }) : undefined;
+  /** Admin API answers are private: never kept by a cache, and with the dashboard's headers. */
+  const adminResponse = (res: Response) => {
+    const out = security.apply("dashboard", res);
+    if (!out.headers.has("cache-control")) out.headers.set("cache-control", "no-store");
+    return out;
+  };
   /** How the pool's size was worked out, for the Settings page: from the start, then from each change applied without a restart. */
   let pool = runtimeWorkersFor(env);
   const serverId = `${hostname()}:${process.pid}`;
@@ -344,6 +397,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       });
       await queries.reset().catch((e) => log("error", "cache reset failed", { error: String(e) })); // results from the old code are wrong
       subs.rerunAll();
+      // The code's security headers (http.helmet(), nest(http, { helmet })): options Helmet refuses fail the load like other code errors.
+      try {
+        security.configure({ code: manifest.helmet ?? {} });
+      } catch (e) {
+        throw new Error(`forge/http.ts: the security headers' options were refused: ${(e as Error).message}`);
+      }
+      // In production a page or route the API docs would hide stops the start, rather than one of them silently losing the path.
+      if (!dev) {
+        const docs = await docsAt();
+        if (docs?.clashes.size) throw new Error(`the API docs and the app both claim ${[...docs.clashes].join(", ")}: move the docs with http.docs({ path, openapi, explorer }) or API_DOCS_PATH`);
+      }
       return manifest;
     });
     loading = p.catch(() => {});
@@ -356,6 +420,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   let warnedEcho = false;
   const sockets = new Set<ServerWebSocket<SocketData>>();
 
+  const given = (name: string) => baseEnv[name] !== undefined && baseEnv[name] !== "";
+  const storedSettings = async () => Object.fromEntries((await runtime.admin<{ name: string; value: string }[]>("settings.stored", {}, "system")).map((r) => [r.name, r.value]));
   const admin = buildAdminApi({
     runtime,
     subs,
@@ -382,7 +448,6 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     async settings() {
       const rows = await runtime.admin<{ name: string; value: string; updatedAt: number; updatedBy: string | null }[]>("settings.stored", {}, "system");
       const now = new Map(rows.map((r) => [r.name, r]));
-      const given = (name: string) => baseEnv[name] !== undefined && baseEnv[name] !== "";
       return {
         restartable: Boolean(opts.restart),
         storedError: storedError ?? null,
@@ -406,6 +471,89 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         }),
       };
     },
+    waf: {
+      async info(minutes) {
+        const stored = await storedSettings();
+        const draft = loadConfig({ ...withSettings(baseEnv, stored), WAF: "on" }, dev).waf!;
+        return { ...firewall.snapshot(minutes), draft: settingsOf(draft), locked: WAF_FIELDS.filter(([, name]) => given(name)).map(([field]) => field) };
+      },
+      test: (input) => firewall.test(input as TestRequest),
+      async save(input, actor) {
+        const stored = await storedSettings();
+        const changes: Record<string, string | null> = {};
+        for (const [field, name] of WAF_FIELDS) {
+          const raw = input[field];
+          if (raw === undefined) continue;
+          if (given(name)) throw new HttpError("BAD_REQUEST", `${name} is set in the environment, which wins over the dashboard: change it where the engine is deployed`);
+          const def = SETTING.get(name)!;
+          const text = field === "enabled" ? (raw ? "on" : "off") : Array.isArray(raw) ? raw.join(",") : String(raw);
+          try {
+            changes[name] = text.trim() === "" ? null : checkValue(def, text);
+          } catch (e) {
+            if (e instanceof ConfigError) throw new HttpError("BAD_REQUEST", e.message);
+            throw e;
+          }
+        }
+        const all = { ...stored };
+        for (const [name, value] of Object.entries(changes)) if (value === null) delete all[name];
+        else all[name] = value;
+        try {
+          validateSettings(baseEnv, all, dev);
+          // Applied first: rules that don't load leave the firewall as it was, and nothing is saved.
+          await firewall.apply(loadConfig(withSettings(baseEnv, all), dev).waf);
+        } catch (e) {
+          if (e instanceof ConfigError) throw new HttpError("BAD_REQUEST", e.message);
+          throw new HttpError("BAD_REQUEST", `The firewall couldn't start with these settings: ${(e as Error).message}`);
+        }
+        for (const [name, value] of Object.entries(changes)) {
+          await runtime.admin("settings.save", { name, value }, actor);
+          if (value === null) delete startedWith[name];
+          else startedWith[name] = value;
+        }
+        return firewall.snapshot();
+      },
+    },
+    security: {
+      async info() {
+        const stored = await storedSettings();
+        return {
+          ...security.snapshot(),
+          locked: { enabled: given("HELMET"), overrides: given("HELMET_CONFIG") },
+          // What the dashboard has saved (the environment's, when it sets it): the page edits this.
+          saved: parseOverrides(given("HELMET_CONFIG") ? baseEnv.HELMET_CONFIG : stored.HELMET_CONFIG),
+        };
+      },
+      async save(input, actor) {
+        const changes: Record<string, string | null> = {};
+        if (input.enabled !== undefined) {
+          if (given("HELMET")) throw new HttpError("BAD_REQUEST", "HELMET is set in the environment, which wins over the dashboard");
+          changes.HELMET = input.enabled ? "on" : "off";
+        }
+        if (input.overrides !== undefined) {
+          if (given("HELMET_CONFIG")) throw new HttpError("BAD_REQUEST", "HELMET_CONFIG is set in the environment, which wins over the dashboard");
+          const text = JSON.stringify(input.overrides ?? {});
+          try {
+            parseOverrides(text);
+          } catch (e) {
+            throw new HttpError("BAD_REQUEST", (e as Error).message);
+          }
+          changes.HELMET_CONFIG = text === "{}" ? null : text;
+        }
+        const stored = await storedSettings();
+        const all = { ...stored };
+        for (const [k, v] of Object.entries(changes)) if (v === null) delete all[k];
+        else all[k] = v;
+        // Applied first: options Helmet refuses leave the headers as they were, and nothing is saved.
+        try {
+          security.configure(securityOf(all));
+        } catch (e) {
+          throw new HttpError("BAD_REQUEST", `Helmet refused these options: ${(e as Error).message}`);
+        }
+        for (const [name, value] of Object.entries(changes)) await runtime.admin("settings.save", { name, value }, actor);
+        return security.snapshot();
+      },
+      clearReports: () => security.clearReports(),
+    },
     async saveSetting(name, value, actor) {
       const def = SETTING.get(name);
       if (!def) throw new HttpError("NOT_FOUND", `No setting ${name}`);
@@ -416,8 +564,24 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (next === null) delete all[name];
         else all[name] = next;
         validateSettings(baseEnv, all, dev); // the engine must still start, and back up, with it
-        await runtime.admin("settings.save", { name, value: next }, actor);
+        // The security headers change while the server runs; options Helmet refuses aren't saved.
+        if (name === "HELMET" || name === "HELMET_CONFIG")
+          try {
+            security.configure(securityOf(all));
+          } catch (e) {
+            throw new HttpError("BAD_REQUEST", (e as Error).message);
+          }
         const overridden = baseEnv[name] !== undefined && baseEnv[name] !== "";
+        // The firewall changes while the server runs: its new threads load the rules first, so rules that can't load stop the change here.
+        const wafSetting = name === "WAF" || name.startsWith("WAF_");
+        if (wafSetting && !overridden) {
+          try {
+            await firewall.apply(loadConfig(withSettings(baseEnv, all), dev).waf);
+          } catch (e) {
+            throw new HttpError("BAD_REQUEST", `The firewall couldn't start with this: ${(e as Error).message}`);
+          }
+        }
+        await runtime.admin("settings.save", { name, value: next }, actor);
         // The pool's size applies at once in process mode: processes start, or finish their calls and stop. Into or out of inline mode needs a restart.
         let applied: string | undefined;
         if ((name === "RUNTIME_WORKERS" || name === "RUNTIME_WORKERS_RATIO") && !overridden && config.runtimeMode === "process") {
@@ -433,6 +597,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             applied = `${runtime.size} function runtime process${runtime.size === 1 ? "" : "es"} running`;
           }
         }
+        if (wafSetting && !overridden) {
+          if (next === null) delete startedWith[name];
+          else startedWith[name] = next;
+          applied = "the firewall changed while running";
+        }
         return { name, live: Boolean(def.live), overridden, ...(applied && { applied }) };
       } catch (e) {
         if (e instanceof ConfigError) throw new HttpError("BAD_REQUEST", e.message);
@@ -440,20 +609,64 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
     },
   });
-  /** The OpenAPI document, made once per load of the code (a reload or restart brings a new manifest), minified. */
-  let openApi: { manifest: unknown; json: string; etag: string } | undefined;
+  /** The OpenAPI documents (the public one, and in dev the complete one), made once per load of the code (a reload brings a new manifest), minified. */
+  const openApi = new Map<string, { manifest: unknown; json: string; etag: string }>();
   async function openApiResponse(req: Request) {
     await loading;
     if (!runtime.manifest) return Response.json({ message: runtime.loadError ?? "The function runtime is not running" }, { status: 503 });
-    if (openApi?.manifest !== runtime.manifest) {
+    // The complete document lists what the public one leaves out: development only.
+    const audience = dev && new URL(req.url).searchParams.get("audience") === "all" ? "all" : "public";
+    let cached = openApi.get(audience);
+    if (cached?.manifest !== runtime.manifest) {
       const manifest = runtime.manifest;
-      const doc = await runtime.admin<Record<string, unknown>>("openapi", {}, "system");
-      // Calls go to the address browsers use: BETTER_AUTH_URL when it is set (a proxy in front may hide it from the request), else the one asked.
-      const json = JSON.stringify({ ...doc, servers: [{ url: env.BETTER_AUTH_URL ? config.authUrl : new URL(req.url).origin }] });
-      openApi = { manifest, json, etag: `"${Bun.hash(json).toString(36)}"` };
+      const doc = await runtime.admin<Record<string, unknown>>("openapi", { audience }, "system");
+      // Calls go to the servers the app names, else the address browsers use: BETTER_AUTH_URL when it is set (a proxy in front may hide it from the request), else the one asked.
+      const json = JSON.stringify(doc.servers ? doc : { ...doc, servers: [{ url: env.BETTER_AUTH_URL ? config.authUrl : new URL(req.url).origin }] });
+      openApi.set(audience, (cached = { manifest, json, etag: `"${Bun.hash(json).toString(36)}"` }));
     }
-    if (req.headers.get("if-none-match") === openApi.etag) return new Response(null, { status: 304, headers: { etag: openApi.etag } });
-    return compressed(req, openApi.json, { "content-type": "application/json", etag: openApi.etag, "cache-control": "no-cache", "x-content-type-options": "nosniff" });
+    if (req.headers.get("if-none-match") === cached.etag) return new Response(null, { status: 304, headers: { etag: cached.etag } });
+    return compressed(req, cached.json, { "content-type": "application/json", etag: cached.etag, "cache-control": "no-cache", "x-content-type-options": "nosniff" });
+  }
+
+  /**
+   * Where the API docs are for the loaded code, when they are on: API_DOCS decides if it is set, else they are on in development, and in
+   * production when `http.docs({ production: true })`. Paths an app route takes are left to the app (and reported once).
+   */
+  let docsPlan: { manifest: unknown; at: ApiDocsRouting | null; clashes: Set<string>; settled: boolean } | undefined;
+  async function docsAt(): Promise<{ at: ApiDocsRouting; clashes: Set<string> } | null> {
+    if (!runtime.manifest) await loading;
+    const manifest = runtime.manifest;
+    const plan = docsPlan;
+    if (plan && plan.manifest === manifest && plan.settled) return plan.at && { at: plan.at, clashes: plan.clashes };
+    const at = manifest?.docs ?? docsRouting(undefined, config.apiDocsPath);
+    const on = config.apiDocs ?? (dev || at.production);
+    if (!on) return void (docsPlan = { manifest, at: null, clashes: new Set(), settled: true }), null;
+    const found = docsClashes(manifest, at);
+    if (found.clashes.size && !(plan && plan.manifest === manifest && plan.clashes.size))
+      log("error", `the API docs and the app both claim ${[...found.clashes].map((c) => `${c} (${found.why.get(c)})`).join(", ")}: the app keeps them. Move the docs with http.docs({ path, openapi, explorer }) or API_DOCS_PATH.`);
+    docsPlan = { manifest, at, clashes: found.clashes, settled: found.settled };
+    return { at, clashes: found.clashes };
+  }
+  /** Whether the API docs serve this path: one of their own that no app route takes. */
+  function docsClaim({ at, clashes }: { at: ApiDocsRouting; clashes: Set<string> }, path: string) {
+    const page = path === at.path || path === `${at.path}/` || path.startsWith(`${at.path}/_docs/`) || path === at.explorer;
+    const claimed = (p: string) => !clashes.has(p) && !(p.startsWith(`${at.path}/_docs/`) && clashes.has(`${at.path}/_docs/`));
+    return (path === at.openapi || page) && claimed(path.replace(/\/$/, "") || path);
+  }
+  /** The docs' own paths that one of the app's routes (a page, or a root-mounted HTTP route) also takes. Unsettled while the app isn't built. */
+  function docsClashes(manifest: Manifest | undefined, at: ApiDocsRouting) {
+    const clashes = new Set<string>();
+    const why = new Map<string, string>();
+    let settled = true;
+    const owned = [at.path, at.openapi, ...(at.explorer ? [at.explorer] : []), `${at.path}/_docs/`];
+    for (const p of owned) {
+      const page = opts.app?.matches?.(p.endsWith("/") ? `${p}x` : p);
+      if (page === undefined && opts.app?.matches) settled = false;
+      if (page) (clashes.add(p), why.set(p, "a page in app/routes"));
+      const route = manifest?.rootRoutes?.find((r) => r.path === p || (r.pathPrefix !== undefined && p.startsWith(r.pathPrefix) && r.pathPrefix !== "/"));
+      if (route) (clashes.add(p), why.set(p, `forge/http.ts ${route.method} ${route.path ?? `${route.pathPrefix}*`}`));
+    }
+    return { clashes, why, settled };
   }
 
   const adminSessions = new Map<string, { admin: AdminInfo | null; at: number }>();
@@ -651,6 +864,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     }
   }
 
+  // The WAF starts before the server listens: a configuration that can't work (the rules, the module) stops the engine here, not after it is up and unguarded.
+  // It is there when it is off too, so the dashboard can switch it on.
+  // The WAF leaves the API docs' pages alone; where they are is known once the request handler has asked (docsAt, before the WAF's check).
+  const firewall = new Firewall(WAF_WORKER, (path) => {
+    const plan = docsPlan;
+    return plan?.at ? docsClaim({ at: plan.at, clashes: plan.clashes }, path) : false;
+  });
+  await firewall.apply(config.waf);
+  metrics.waf = () => (firewall.enabled ? { ...firewall.stats.counters, rules: firewall.stats.ruleCounts() } : undefined);
+
+  dashboardPage?.warm(); // built while the server starts, so the first visit doesn't wait
   const server = Bun.serve<ServerSocket>({
     port: config.port,
     hostname: config.hostname,
@@ -661,9 +885,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     development: false,
     routes: config.dashboardUrl
       ? { "/_dashboard": () => Response.redirect(`${config.dashboardUrl}/_dashboard#/microservices`, 302) }
-      : opts.dashboard && config.dashboard
-        ? { "/_dashboard": opts.dashboard }
-        : {},
+      : {},
     async fetch(req, srv) {
       const url = new URL(req.url);
       const path = url.pathname;
@@ -676,6 +898,21 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           { ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, error: runtime.loadError },
           { status: !shuttingDown && runtime.manifest && !runtime.loadError ? 200 : 503 },
         );
+      // Content-Security-Policy violation reports from browsers (the app's pages and the dashboard), for the dashboard's Security page.
+      if (path === CSP_REPORT_PATH && req.method === "POST") {
+        const retry = await limited(req, srv, "csp:");
+        if (retry) return tooMany(retry);
+        try {
+          const body = JSON.parse(await readText(req, 64 * 1024));
+          security.record(body, (page) => (page === "/_dashboard" || page.startsWith("/_dashboard/") ? "dashboard" : "app"));
+        } catch {}
+        return new Response(null, { status: 204 });
+      }
+      if (dashboardPage && (path === "/_dashboard" || path.startsWith("/_dashboard/"))) {
+        const page = await dashboardPage.serve(req, path);
+        if (page) return security.apply("dashboard", page);
+        return security.apply("dashboard", new Response("Not found", { status: 404 }));
+      }
       // The CLI's data commands. They run in the function runtime, which owns the database, so imports reach subscribers and nothing contends with the server for the write lock.
       if (path === "/_cli" && req.method === "POST") {
         const retry = await limited(req, srv, "cli:");
@@ -746,15 +983,35 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
 
-      if (config.apiDocs && (path === config.apiDocsPath || path.startsWith(`${config.apiDocsPath}/`))) {
+      // Where the API docs are for the loaded code (before the WAF, which leaves their pages alone).
+      const docs = config.apiDocs === false ? null : await docsAt();
+
+      // The WAF: everything below is what an attacker would reach (functions, auth, HTTP endpoints, pages), minus what the engine serves itself.
+      if (firewall.enabled) {
+        const outcome = await firewall.check(req, url, { address: clientIp(req, srv), port: srv.requestIP(req)?.port ?? 0 }, srv.port ?? config.port, maxBody, requestId);
+        if (outcome.kind === "block") return cors(req, withId(errorResponse({ message: "The request was blocked by the web application firewall", code: "FORBIDDEN", requestId })));
+        if (outcome.kind === "error" && outcome.refuse) return cors(req, withId(errorResponse({ message: "The web application firewall is unavailable", code: "SERVICE_UNAVAILABLE", requestId })));
+      }
+
+      // The API docs own a few exact paths and their assets' prefix; anything else below their path is the app's (its own pages under /docs).
+      if (docs && docsClaim(docs, path)) {
+        const { at } = docs;
         const retry = await limited(req, srv);
         if (retry) return withId(tooMany(retry));
-        if (path === `${config.apiDocsPath}/openapi.json`) return withId(await openApiResponse(req));
-        const page = await opts.apiDocs?.serve(req, { base: config.apiDocsPath, forgeDir: resolve(opts.forgeDir), dev });
-        if (page) return withId(page);
-        if (path === config.apiDocsPath && !opts.apiDocs)
-          return withId(Response.json({ message: `The docs page comes with @archlast/forge-dashboard; the OpenAPI document is at ${config.apiDocsPath}/openapi.json` }, { status: 404 }));
-        return withId(new Response("Not found", { status: 404 }));
+        if (path === at.openapi) return withId(await openApiResponse(req));
+        const served = await opts.apiDocs?.serve(req, {
+          base: at.path,
+          publicBase: at.basePath + at.path,
+          openapiUrl: at.basePath + at.openapi,
+          explorerPath: at.explorer,
+          dev,
+          forgeDir: resolve(opts.forgeDir),
+          page: at.page,
+        });
+        if (served) return withId(served);
+        if (path === at.path && !opts.apiDocs)
+          return withId(Response.json({ message: `The docs page comes with @archlast/forge-dashboard; the OpenAPI document is at ${at.basePath}${at.openapi}` }, { status: 404 }));
+        // Anything else falls through to the app's routes, which may have a page here.
       }
       if (localFiles && path.startsWith("/_storage/")) {
         const retry = await limited(req, srv, "storage:");
@@ -825,7 +1082,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           }
           // A body on a 204 or 304 is an error in a Response.
           const out = r.body instanceof ReadableStream ? r.body : r.body.byteLength ? r.body : null;
-          return withId(new Response(out, { status: r.status, headers: r.headers }));
+          const res = new Response(out, { status: r.status, headers: r.headers });
+          return withId(r.nest ? security.apply("api", res) : res);
         } catch (e) {
           if (root) telemetry!.end(root, failureOf(e));
           return withId(errorResponse(toPublicError(e, requestId, dev, { path })));
@@ -904,7 +1162,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           const retry = await limited(req, srv, "admin:");
           if (retry) return withId(tooMany(retry));
         }
-        return withId(await handleAdmin(req, path, requestId));
+        return withId(adminResponse(await handleAdmin(req, path, requestId)));
       }
       if (opts.app) {
         await loading;
@@ -937,10 +1195,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             });
         };
         let res: Response | undefined;
+        // A fresh nonce per page, when the app's policy limits scripts: its inline scripts carry it, and the policy names it.
+        const nonce = security.wantsNonce("app") ? Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64") : undefined;
         try {
           res = await opts.app.fetch(req, {
             requestId,
             dev,
+            ...(nonce && { nonce }),
             headers,
             async call(name, kind, args) {
               const started = clock();
@@ -991,7 +1252,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             ...(res && res.status >= 500 && { error: { type: `HTTP ${res.status}`, message: `${root.operation} answered ${res.status}`, handled: false } }),
           });
         }
-        if (res) return res;
+        // The nonce is for documents; the app's files and JSON get the policy without it.
+        if (res) return security.apply("app", res, res.headers.get("content-type")?.includes("text/html") ? nonce : undefined);
       }
       return new Response("Not found", { status: 404 });
     },
@@ -1091,6 +1353,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       await cache?.close();
       await telemetry?.close();
       await store?.close();
+      firewall.close();
     },
   };
 }

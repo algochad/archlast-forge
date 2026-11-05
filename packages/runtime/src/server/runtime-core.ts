@@ -1,4 +1,5 @@
 // The function runtime: forge/ modules, the database, auth and the scheduler. See startCore().
+import { docsRouting } from "../api-docs";
 import { mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { validateFields } from "../values";
@@ -7,13 +8,14 @@ import { createAuth } from "./auth";
 import { AUDITED_COMMANDS, runCommand } from "./cli-ops";
 import { loadConfig } from "./config";
 import { openDatabase } from "./db/open";
+import { describePlan } from "./db/pool-size";
 import { serverMemory } from "./db/sqlite";
 import type { Db } from "./db/types";
 import type { UserIdentity } from "../functions";
 import { Executor, logContext, serializeError, type CallHeaders, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
 import { checkHttpRequest, matchRoute, routeName } from "./http";
-import { buildOpenApi, type NestRoute } from "./openapi";
+import { buildOpenApi, docsWarnings, NEST_MOUNT, type NestRoute } from "./openapi";
 import type { HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
 import { createStorage } from "./storage";
@@ -206,18 +208,15 @@ export async function startCore(opts: {
 
   if (config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
   // Every function runtime process holds its own connections, so they share the RAM SQLite is given.
-  const db = await openDatabase(config, serverMemory() / config.runtimeWorkers);
-  if (config.databaseKind === "postgres" && worker === 0)
-    // Pools open their connections as load needs them, but a busy server can reach the maximum: say if that is more than Postgres allows.
-    void db.query<{ max_connections: string }>("SHOW max_connections").then(
-      ([row]) => {
-        const allowed = Number(row?.max_connections);
-        const most = config.runtimeWorkers * (config.databasePoolSize + config.databaseWritePoolSize) + 3;
-        if (allowed && most > allowed)
-          console.warn(`Postgres allows ${allowed} connections and this server may open up to ${most} (RUNTIME_WORKERS ${config.runtimeWorkers} x (DATABASE_POOL_SIZE ${config.databasePoolSize} + DATABASE_WRITE_POOL_SIZE ${config.databaseWritePoolSize}) + 3), without counting other servers: lower the pools or raise max_connections.`);
-      },
-      () => {},
-    );
+  // On Postgres the first process says what the pools hold against what the database allows, and warns when that is close to the limit.
+  const db = await openDatabase(config, serverMemory() / config.runtimeWorkers, {
+    plan: (plan) => {
+      if (worker !== 0) return;
+      const { level, message } = describePlan(plan);
+      if (level === "warn") console.warn(message);
+      else console.log(message);
+    },
+  });
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);
@@ -342,18 +341,19 @@ export async function startCore(opts: {
           return exec.runHttp(routeName(route), route.handler, new Request(url, { method, headers, body }), msg.headers, msg.requestId);
         }).then((r) => ((telemetry = r.telemetry), r.value));
         const out = [...res.headers].filter(([k]) => k !== "content-length");
+        const nest = (route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true ? { nest: true as const } : {};
         if (res.body && ((res as unknown as Record<symbol, unknown>)[STREAM] || res.headers.get("content-type")?.startsWith("text/event-stream")))
-          return { status: res.status, headers: out, body: res.body, stream: true, ...(telemetry && { telemetry }) } satisfies HttpResponseMessage;
+          return { status: res.status, headers: out, body: res.body, stream: true, ...nest, ...(telemetry && { telemetry }) } satisfies HttpResponseMessage;
         const blob = await res.blob();
         const bytes = await blob.arrayBuffer();
         // `new Response("text")` has no content-type header of its own: Bun.serve adds one when it sends. Passing the bytes along loses that,
         // so give text bodies the type the platform would have (binary bodies keep the default, and a handler can always set one).
         if (!out.some(([k]) => k === "content-type") && blob.type.startsWith("text/plain") && isText(bytes)) out.push(["content-type", blob.type]);
-        return { status: res.status, headers: out, body: bytes, ...(telemetry && { telemetry }) } satisfies HttpResponseMessage;
+        return { status: res.status, headers: out, body: bytes, ...nest, ...(telemetry && { telemetry }) } satisfies HttpResponseMessage;
       }
       case "admin":
         if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });
-        if (msg.op === "openapi") return openApi();
+        if (msg.op === "openapi") return openApi((msg.args as { audience?: "public" | "all" } | undefined)?.audience);
         return adminOp(deps, msg.op, msg.args ?? {}, msg.actor);
     }
   }
@@ -362,13 +362,21 @@ export async function startCore(opts: {
   // The folder around forge/, whose package.json names the project.
   const projectRootOf = (dir: string) => (["forge", "convex"].includes(basename(dir)) ? dirname(dir) : dir);
   /** The OpenAPI document: the manifest's functions, forge/http.ts's routes and, once the Nest app has started, its controllers' routes. */
-  const openApi = async () => {
+  let warned = false;
+  const openApi = async (audience: "public" | "all" = "public") => {
     const nestRoutes = (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-routes")] as (() => Promise<NestRoute[]>) | undefined;
     let title = basename(projectRootOf(forgeDir));
     try {
       title = JSON.parse(readFileSync(join(projectRootOf(forgeDir), "package.json"), "utf8")).name || title;
     } catch {}
-    return buildOpenApi({ title, version: release, functions: manifest.functions, http: project.http, httpRoot: project.httpRoot, nest: (await nestRoutes?.().catch(() => [])) ?? [] });
+    const doc = buildOpenApi({ title, version: release, functions: manifest.functions, http: project.http, httpRoot: project.httpRoot, nest: (await nestRoutes?.().catch(() => [])) ?? [], docs: project.docs, audience });
+    // In development, once per load: what a reader of the public docs would miss.
+    if (opts.dev && !warned && audience === "public") {
+      warned = true;
+      const missing = docsWarnings(doc);
+      if (missing.length) console.warn(`[api docs] ${missing.length} documented route${missing.length === 1 ? " has" : "s have"} gaps a reader will notice:\n  ${missing.join("\n  ")}`);
+    }
+    return doc;
   };
 
   const manifest: Manifest = {
@@ -385,6 +393,8 @@ export async function startCore(opts: {
     storage: Boolean(storage),
     release,
     // What the server matches at the root before handing a path to the pages: just the patterns, for a router with root: true.
+    docs: docsRouting(project.docs, config.apiDocsPath),
+    ...(project.helmet && { helmet: project.helmet }),
     ...(project.httpRoot && { rootRoutes: project.http.map((r) => ({ method: r.method, ...(r.path !== undefined ? { path: r.path } : { pathPrefix: r.pathPrefix }) })) }),
   };
   function event(msg: HostEvent) {

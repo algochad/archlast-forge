@@ -461,3 +461,14 @@ a.nav-item { text-decoration: none; }
 .compare-this.end { transform: translateX(-100%); justify-items: end; }
 .sm-edge-label { paint-order: stroke; stroke: var(--panel-2); stroke-width: 4px; stroke-linejoin: round; }
 @media (max-width: 900px) { .crumbs-top { display: none; } }
+
+/* Firewall */
+.fw-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); gap: 0.9rem 1.1rem; align-items: start; }
+.fw-x { display: inline-grid; place-items: center; border: 0; background: none; color: var(--faint); cursor: pointer; padding: 0; }
+.fw-x:hover { color: var(--bad); }
+
+/* Security headers */
+.sec-form { display: grid; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); gap: 0.9rem 1.1rem; align-items: start; }
+.sec-x { display: inline-grid; place-items: center; border: 0; background: none; color: var(--faint); cursor: pointer; padding: 0; }
+.sec-x:hover { color: var(--bad); }
+.sec-value { white-space: pre-wrap; word-break: break-all; font-size: 11.5px; }

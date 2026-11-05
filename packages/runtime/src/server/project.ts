@@ -1,3 +1,6 @@
+import type { HelmetConfig } from "../functions";
+import { checkHelmetConfig } from "./security-headers";
+import { checkRouteDocs, docsRouting, type ApiDocsConfig, type ApiDocsRouting } from "../api-docs";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, relative } from "node:path";
@@ -88,6 +91,10 @@ export interface Project {
   http: HttpRoute[];
   /** forge/http.ts's router serves its routes at the root as well as under /http (`httpRouter({ root: true })`). */
   httpRoot?: boolean;
+  /** The security headers' options from code: `http.helmet()`, and `nest(http, { helmet })` for the API. */
+  helmet?: HelmetConfig;
+  /** What forge/http.ts's `http.docs()` said. */
+  docs?: ApiDocsConfig;
 }
 
 export async function loadProject(forgeDir: string): Promise<Project> {
@@ -126,7 +133,21 @@ export async function loadProject(forgeDir: string): Promise<Project> {
       const taken = at === "/" ? undefined : reservedPathOf(at.replace(/\/$/, ""));
       if (taken) throw new Error(`forge/http.ts: ${r.method} ${at} can't be served at the root, where ${taken} is the engine's. Give it another path, or leave it under /http (httpRouter() without root).`);
     }
-  return { tables, functions, authOptions, crons, http: (router?.routes ?? []) as HttpRoute[], httpRoot };
+  // Code's security headers: http.helmet(), with nest(http, { helmet }) for the REST API. Plain data, since they cross into the server.
+  const mount = ((router?.routes ?? []) as HttpRoute[]).find((r) => (r.handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-mount")]);
+  const nestHelmet = mount && (mount.handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-helmet")];
+  const helmet: HelmetConfig | undefined = router?.helmetConfig || nestHelmet !== undefined ? { ...router?.helmetConfig, ...(nestHelmet !== undefined && { api: nestHelmet as HelmetConfig["api"] }) } : undefined;
+  if (helmet) checkHelmetConfig("forge/http.ts", helmet);
+  const docs = router?.docsConfig as ApiDocsConfig | undefined;
+  for (const r of (router?.routes ?? []) as HttpRoute[]) checkRouteDocs(`forge/http.ts: ${r.method} ${r.path ?? r.pathPrefix}`, r, docs);
+  if (docs) {
+    const at = docsRouting(docs);
+    for (const [key, p] of [["path", at.path], ["openapi", at.openapi], ["explorer", at.explorer]] as const) {
+      const taken = p && reservedPathOf(p);
+      if (taken) throw new Error(`forge/http.ts: http.docs({ ${key}: "${p}" }) is under ${taken}, which the engine serves`);
+    }
+  }
+  return { tables, functions, authOptions, crons, http: (router?.routes ?? []) as HttpRoute[], httpRoot, helmet, docs };
 }
 
 export const tableSpecs = (tables: TablesSpec) =>
@@ -141,6 +162,10 @@ export interface Manifest {
   release?: string;
   /** forge/http.ts's routes (method and path only) when its router serves them at the root too (`httpRouter({ root: true })`). */
   rootRoutes?: Pick<HttpRoute, "method" | "path" | "pathPrefix">[];
+  /** The security headers' options from code (`http.helmet()`, `nest(http, { helmet })`). */
+  helmet?: HelmetConfig;
+  /** Where the API docs are, from `http.docs()` (or the defaults). */
+  docs?: ApiDocsRouting;
 }
 
 /** Variables deploy platforms and CI set to the commit being deployed, in the order they are trusted. */

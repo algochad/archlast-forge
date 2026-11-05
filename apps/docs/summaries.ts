@@ -45,8 +45,10 @@ export const DESCRIPTIONS: Record<Slug, string> = {
   nest: "NestJS inside the engine: services with `ForgeService` and `inject()`, modules, controllers, gateways, GraphQL, microservice transports, folder layout.",
   "forge-rpc":
     "Typed calls between forge backends: `@Router` classes, generated types, the client service class, errors, tokens, moving from TCP.",
+  "security-headers":
+    "Helmet's security headers on the REST API, the app's pages and the dashboard: the presets, the page nonce, changing them in code and on the dashboard, and CSP reports.",
   "api-docs":
-    "The generated OpenAPI 3.1 document and API docs page with a request explorer; writing your own docs pages.",
+    "The generated OpenAPI 3.1 document and the API docs page with Try it on every operation: configured in code, for one audience, with your auth, errors and webhooks.",
   clients:
     "The client library and the React, Vue and Svelte bindings: queries, mutations, uploads, auth, headers, calling the engine without the client.",
   mobile:
@@ -96,6 +98,7 @@ export const TASKS: [task: string, pages: Slug[]][] = [
     ["auth", "storage", "scheduling"],
   ],
   ["Add REST endpoints, services and controllers", ["http", "nest"]],
+  ["Set security headers and a Content-Security-Policy", ["security-headers"]],
   ["Connect several backends", ["monorepo", "forge-rpc"]],
   ["Test it", ["testing"]],
   [

@@ -76,8 +76,20 @@ export function buildAdminApi(opts: {
   settings: () => Promise<unknown>;
   /** Checks a setting (would the engine start with it?) and stores it; null removes it. */
   saveSetting: (name: string, value: string | null, actor: string) => Promise<unknown>;
+  /** The web application firewall: what it shows, a request tried against its rules, and a change of its settings (applied at once and saved). */
+  waf: {
+    info: (minutes?: number) => Promise<unknown>;
+    test: (input: Input) => Promise<unknown>;
+    save: (input: Input, actor: string) => Promise<unknown>;
+  };
   /** Restarts the whole server in this process, when its host can (the CLI can). */
   restart?: () => void;
+  /** The security headers (Helmet): what each surface sends, the CSP reports, and a change of the dashboard's part (live, saved). */
+  security: {
+    info: () => Promise<unknown>;
+    save: (input: Input, actor: string) => Promise<unknown>;
+    clearReports: () => void;
+  };
   maxRequestBytes: number;
   /** This app's name in telemetry and its microservices (MICROSERVICES), which its dashboard can show. */
   microservices?: () => { self: string; services: { name: string; url: string }[] };
@@ -144,11 +156,20 @@ export function buildAdminApi(opts: {
     /** Restarts this server's function runtime, e.g. to pick up `archlast-forge env` changes. */
     reload: { role: "admin", write: true, run: async () => (await opts.reload(), true) },
     settings: { role: "viewer", write: false, run: () => opts.settings() },
+    security: { role: "viewer", write: false, run: () => opts.security.info() },
+    /** What reaches the app's visitors and the dashboard's: the owner's, like the other settings. */
+    "security.save": { role: "owner", write: true, run: (input, ctx) => opts.security.save(input, ctx.admin.email) },
+    "security.clearReports": { role: "admin", write: true, run: () => (opts.security.clearReports(), true) },
     saveSetting: {
       role: "owner",
       write: true,
       run: (input, ctx) => opts.saveSetting(String(input.name ?? ""), input.value === null || input.value === undefined ? null : String(input.value), ctx.admin.email),
     },
+    waf: { role: "viewer", write: false, run: (input) => opts.waf.info(input.minutes === undefined ? undefined : Number(input.minutes)) },
+    /** Runs a request through the rules and says what they make of it. It changes nothing and isn't counted, but it does use the WAF's threads. */
+    "waf.test": { role: "admin", write: true, run: (input) => opts.waf.test(input) },
+    /** Switching the firewall off, or a rule, is a decision about what reaches the app, so it is the owner's, like the other settings. */
+    "waf.save": { role: "owner", write: true, run: (input, ctx) => opts.waf.save(input, ctx.admin.email) },
     /** Restarts the whole server, which applies saved settings; the dashboard reconnects when it is back. */
     restart: {
       role: "owner",

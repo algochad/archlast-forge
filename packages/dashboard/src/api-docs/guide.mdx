@@ -1,8 +1,8 @@
-# Calling this API
+# Calling functions
 
-Everything here is generated from the code that runs: the functions in `forge/`, the routes in `forge/http.ts` and the NestJS controllers, with the validators the engine checks every call against. A change to a function's arguments shows up here on the next load.
+The functions in `forge/` that are public are callable over HTTP and over a WebSocket, with the arguments the validators in this document describe. A change to a function's arguments shows up here on the next load.
 
-## Functions
+## Over HTTP
 
 Every public query, mutation and action answers `POST /rpc/<module>:<name>` with its arguments as a JSON object:
 
@@ -13,12 +13,21 @@ curl -X POST https://app.example.com/rpc/messages:send \
 # {"result":"messages:4f1c..."}
 ```
 
-The answer is `{ "result": … }`, or `{ "error": { "message", "code", "requestId" } }` with a matching status: `400` for arguments that don't match (or a `ForgeError`), `401` when the function needs a signed-in caller, `408` past the time limit, `429` when rate limited, `500` otherwise. A query also answers `GET /rpc/<name>?args=<JSON>`, and the WebSocket at `/rpc` keeps it live; the client libraries do both for you.
+The answer is `{ "result": … }`, or `{ "error": { "message", "code", "requestId" } }` with a matching status: `400` for arguments that don't match (or a `ForgeError`), `401` when the function needs a signed-in caller, `408` past the time limit, `429` when rate limited, `500` otherwise. A query also answers `GET /rpc/<name>?args=<JSON>`. Every response carries `x-request-id`; send your own (1 to 64 letters, digits, `.`, `_`, `-`) to trace a call.
 
-## HTTP routes and controllers
+## Over the WebSocket
 
-Routes from `forge/http.ts` and NestJS controllers are served under `/http`, or at their own path when the app serves them at the root; each operation shows where it answers. A route that declares its `query` or `body` (or a controller method with `@Contract`) answers `400` with the reason when a request doesn't match, before its handler runs.
+A query stays live over a WebSocket at `/rpc`: the server sends its result again after each write that changes it. Messages are JSON:
+
+| Direction | Message |
+|---|---|
+| to server | `{ "type": "subscribe", "id": "1", "name": "messages:list", "args": {…} }` |
+| to server | `{ "type": "unsubscribe", "id": "1" }` |
+| to client | `{ "type": "data", "id": "1", "data": { "value": … } }`, or `{ "error": "…", "requestId": "…" }` in place of `value` when the query fails |
+| to client | `{ "type": "error", "id": "1", "error": { "message", "code" } }` when the subscription itself is refused; it ends there |
+
+Ids are strings of up to 64 characters that you choose. The first `data` message is the current result. After a dropped connection, connect again and subscribe again. The client libraries do all of this for you.
 
 ## Signing in
 
-Sessions are Better Auth's, at `/api/auth`: a browser sends the session cookie it was given at sign-in; other clients send `Authorization: Bearer <token>` when the app enables Better Auth's bearer plugin. Each function decides what an anonymous caller may do.
+Sessions are Better Auth's, at `/api/auth`: a browser sends the session cookie it was given at sign-in, and other clients send `Authorization: Bearer <token>` when the app enables Better Auth's bearer plugin (send the cookie on the WebSocket handshake too). Each function decides what an anonymous caller may do.

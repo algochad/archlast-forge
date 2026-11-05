@@ -1,6 +1,7 @@
 import { SQL } from "bun";
 import { pointReads } from "./coalesce";
 import { indexPlan, PREFIX, tableDDL } from "./migrate";
+import { isTooManyClients } from "./pool-size";
 import { scopedTx, type Db, type DbTx, type Dialect, type Row } from "./types";
 
 const field = (name: string) => `"doc"->'${name}'`;
@@ -86,8 +87,21 @@ class NeedsSnapshot extends Error {}
  * Pooled connections: `max` for reads (CPU count × 2 by default) and `writeMax` for write transactions (twice that). Writes run SERIALIZABLE;
  * callers retry on conflicts. A write waits for its commit and for the round trips of its statements, which more connections hide (6,100 patches a
  * second on 32 connections against 4,200 on 8), where a read is quick and a crowd of connections only competes for the CPU (47,000 reads a second
- * on 8 connections against 33,000 on 32). So they are separate pools. Connections open when they are needed, so a large maximum costs nothing idle.
+ * on 8 connections against 33,000 on 32). So they are separate pools. Bun opens every connection of a pool at its first query and keeps them, so
+ * `max + writeMax` is what a process holds from its start: `pool-size.ts` sizes them to fit the database.
  */
+let hintedAt = 0;
+/** The line that turns "sorry, too many clients already" into what to do about it; at most once a minute in a process or thread. */
+function tooManyClients(read: number, write: number) {
+  if (Date.now() - hintedAt < 60_000) return;
+  hintedAt = Date.now();
+  console.warn(
+    `Postgres refused a connection: "too many clients already" (max_connections is reached). This pool holds ${read} read + ${write} write connections; ` +
+      `each function-runtime process (RUNTIME_WORKERS) of every server holds DATABASE_POOL_SIZE + DATABASE_WRITE_POOL_SIZE, plus 3 for telemetry. ` +
+      `Lower those or raise Postgres's max_connections; the engine's start-up line "Postgres connections: …" shows its numbers.`,
+  );
+}
+
 export function createPostgresDb(url: string, max = navigator.hardwareConcurrency * 2, writeMax = max * 2): Db {
   const sql = new SQL(url, { max });
   const writer = writeMax === max ? sql : new SQL(url, { max: writeMax });
@@ -196,5 +210,14 @@ export function createPostgresDb(url: string, max = navigator.hardwareConcurrenc
       await Promise.all([sql.close(), writer === sql ? undefined : writer.close()]);
     },
   };
+  // Postgres refusing a connection is about the pools' sizes, not the statement that hit it: say so once a minute, with what to change.
+  for (const name of ["query", "execute", "transaction", "migrate"] as const) {
+    const fn = db[name] as (...a: unknown[]) => Promise<unknown>;
+    (db as unknown as Record<string, unknown>)[name] = (...a: unknown[]) =>
+      fn(...a).catch((e: unknown) => {
+        if (isTooManyClients(e)) tooManyClients(max, writeMax);
+        throw e;
+      });
+  }
   return db;
 }

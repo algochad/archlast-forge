@@ -1,4 +1,5 @@
-@scalar/api-reference 1.76.4 (git+https://github.com/scalar/scalar.git), standalone browser bundle, MIT:
+Scalar (https://github.com/scalar/scalar), release-2026-10-30-66ba1d7, MIT. The API explorer in this folder is built from a fork of it (packages/dashboard/scalar). The other packages the
+build contains, with their licences, are in packages/dashboard/THIRD_PARTY_NOTICES.md.
 
 MIT License
 

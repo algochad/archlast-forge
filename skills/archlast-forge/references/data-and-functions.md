@@ -61,20 +61,25 @@ export default defineSchema({
 - Documents are JSON, at most 1 MiB. No `Date`, `Map`, `bigint`, binary.
 - Per-user data goes in your own table with `userId: v.id("users")`, never in `users` (Better Auth owns it). You can read `users` (`ctx.db.get(me.userId)`, index `by_email`) and reference it with `v.id("users")`; do not write to it.
 
-| Validator                                        | Type                                | Notes                                                      |
-| ------------------------------------------------ | ----------------------------------- | ---------------------------------------------------------- |
-| `v.string()`, `v.boolean()`, `v.null()`          | `string`, `boolean`, `null`         |                                                            |
-| `v.number()`                                     | `number`                            | finite only (NaN and Infinity rejected); no integer type   |
-| `v.id("tasks")`                                  | `Id<"tasks">`                       | checks the table prefix only, not that the document exists |
-| `v.array(x)`, `v.object({...})`, `v.union(a, b)` |                                     | `v.object` is strict at every depth                        |
-| `v.optional(x)`                                  | `T \| undefined`, key may be absent | does not accept `null`                                     |
+| Validator                                        | Type                                | Notes                                                                    |
+| ------------------------------------------------ | ----------------------------------- | ------------------------------------------------------------------------ |
+| `v.string(opts?)`, `v.boolean()`, `v.null()`     | `string`, `boolean`, `null`         | string opts (checked): `minLength`, `maxLength`, `pattern`, `format`     |
+| `v.number(opts?)`                                | `number`                            | finite only; opts (checked): `int`, `min`, `max`, `exclusiveMin/Max`     |
+| `v.literal("x")`, `v.enum("a", "b")`             | `"x"`, `"a" \| "b"`                  | an enum is a union of literals; checked                                  |
+| `v.id("tasks")`                                  | `Id<"tasks">`                       | checks the table prefix only, not that the document exists               |
+| `v.array(x, opts?)`, `v.object({...}, meta?)`    |                                     | `v.object` is strict at every depth; array opts: `minItems`, `maxItems`, `unique` |
+| `v.union(a, b)`                                  | `A \| B`                            |                                                                          |
+| `v.nullable(x)`                                  | `T \| null`                         | present but null                                                         |
+| `v.optional(x)`                                  | `T \| undefined`, key may be absent | does not accept `null`                                                   |
 
-There is no `v.literal`, `v.any`, `v.record`, `v.bytes`, `v.bigint` or `v.date`. Store dates as `number` (ms), enums as `v.string()` and check the allowed values in the handler (`v.union(v.string(), v.string())` restricts nothing), files as `v.id("_storage")`.
+Every builder also takes documentation (checked nothing, written to OpenAPI): `description`, `example`, `default`, `deprecated`, `title`, and `name` (`v.object({...}, { name: "Price" })` makes it one named schema in the API docs). `v.describe(validator, meta)` adds it to one built without options. Use the checked options instead of checking bounds, formats or allowed values in the handler.
+
+There is no `v.record`, `v.bytes`, `v.bigint` or `v.date`, and `v.any()` is only for JSON whose shape is not yours. Store dates as `number` (ms) or `v.string({ format: "date-time" })`, files as `v.id("_storage")`.
 
 Rules that cause most schema errors:
 
 - `v.object` rejects keys it does not declare (`args.o.b is not in the validator`), in args and documents alike.
-- `v.optional(v.string())` accepts a missing key or `undefined`, not `null`. For null write `v.union(v.string(), v.null())`.
+- `v.optional(v.string())` accepts a missing key or `undefined`, not `null`. For null write `v.nullable(v.string())`.
 - `v.optional` wraps only a field of `defineTable`, `v.object` or `args`. `v.array(v.optional(x))` and `v.union(v.optional(x))` do not type-check.
 - References (`v.id`) are not enforced: deleting a document leaves the ids that point at it. Cascade by hand (section 6).
 - Types: `Doc<"tasks">`, `Id<"tasks">` from `./_generated/dataModel`; `Infer<typeof validator>` from the runtime.

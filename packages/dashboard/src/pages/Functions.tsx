@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { canWrite, get, post, typeOf, type Admin, type Doc, type FunctionInfo, type Manifest, type Page, type Validator } from "../api";
+import { canWrite, get, post, typeOf, type Admin, type Doc, type FunctionInfo, type Manifest, type Page, type Validator, enumValues } from "../api";
 import { Badge, Button, Empty, Field, JsonEditor, JsonView, KindPill, Segmented, useAction } from "../ui";
 
 type Run = { time: number; args: unknown; asUser?: string; ok: boolean; value: unknown; ms: number };
@@ -13,7 +13,7 @@ const readHistory = (name: string): Run[] => {
   }
 };
 
-const simple = (v: Validator) => ["string", "number", "boolean", "id", "null"].includes(v.kind);
+const simple = (v: Validator) => ["string", "number", "boolean", "id", "null", "literal"].includes(v.kind) || enumValues(v) !== null;
 
 export function Functions({ manifest, admin }: { manifest: Manifest; admin: Admin }) {
   const [filter, setFilter] = useState("");
@@ -54,8 +54,15 @@ function Runner({ fn, admin }: { fn: FunctionInfo; admin: Admin }) {
     const args: Record<string, unknown> = {};
     for (const [k, v] of Object.entries(fn.args)) {
       const raw = form[k];
+      const values = enumValues(v);
       if (v.kind === "boolean") args[k] = Boolean(raw);
       else if (v.kind === "null") args[k] = null;
+      else if (v.kind === "literal") args[k] = v.value;
+      else if (values) {
+        // The select holds the value's position, so a number literal stays a number.
+        if (raw !== undefined && raw !== "") args[k] = values[Number(raw)];
+        else if (!v.optional) args[k] = "";
+      }
       else if (raw === undefined || raw === "") {
         if (!v.optional) args[k] = v.kind === "number" ? NaN : ""; // let the server report the missing value
       } else args[k] = v.kind === "number" ? Number(raw) : raw;
@@ -135,6 +142,17 @@ function Runner({ fn, admin }: { fn: FunctionInfo; admin: Admin }) {
                         <input id={id} type="checkbox" checked={Boolean(form[k])} onChange={(e) => setForm({ ...form, [k]: e.target.checked })} />
                       ) : v.kind === "null" ? (
                         <input id={id} disabled value="null" />
+                      ) : v.kind === "literal" ? (
+                        <input id={id} disabled value={JSON.stringify(v.value)} />
+                      ) : enumValues(v) ? (
+                        <select id={id} value={String(form[k] ?? "")} onChange={(e) => setForm({ ...form, [k]: e.target.value })}>
+                          <option value="">{v.optional ? "(none)" : "Choose…"}</option>
+                          {enumValues(v)!.map((value, i) => (
+                            <option key={i} value={i}>
+                              {String(value)}
+                            </option>
+                          ))}
+                        </select>
                       ) : (
                         <input
                           id={id}

@@ -325,14 +325,45 @@ http.route({
 
 ## API docs and OpenAPI
 
-The engine builds an OpenAPI 3.1 document from what runs: every **public** function (`POST /rpc/<module>:<name>`, internal ones left out), every `http.route()` (under `/http`; validators `query`/`body`/`returns` become the schemas), and Nest controllers. Nothing to write by hand.
+The engine builds an OpenAPI 3.1 document from what runs: every **public** function (`POST /rpc/<module>:<name>`, internal ones left out), every `http.route()` (validators `query`/`body`/`returns` become the schemas, with their constraints, enums, descriptions and examples), and Nest controllers (`@Contract`). Nothing to write by hand. It serves the document and one docs page where each operation can be tried ("Try it", loaded only when pressed).
 
-| Setting         | Default                                                                                                                                                  |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `API_DOCS`      | on in dev, **off in production** (it advertises every public function; turn on deliberately)                                                             |
-| `API_DOCS_PATH` | `/_api`; cannot be under `/rpc`, `/http`, `/api/auth`, `/_dashboard`, `/_admin`, `/_cli`, `/_storage`, `/_app`, `/health`, `/ready`, `/metrics`, `/otlp` |
+Configure them **in code**, once, in `forge/http.ts`:
 
-`GET /_api` is the docs page, `/_api/openapi.json` the document (ETag, brotli/gzip), `/_api/explorer` the Scalar try-it page. Put prose in `forge/docs/*.mdx` (ordered by file name, titled by the first `# heading`, Markdown + JSX, no `imports`); they show under Guide. Give routes `summary`, `tags` and validators so the docs are useful. `servers` is `BETTER_AUTH_URL` when set.
+```ts
+const http = httpRouter({ root: true });
+http.docs({
+  path: "/docs", // the page; default /_api
+  openapi: "/openapi.json", // default <path>/openapi.json
+  production: true, // serve in production too (default: dev only)
+  include: ["/api/v1"], // the public audience: only these prefixes
+  functions: false, // leave /rpc out of a REST API's docs
+  info: { title: "Acme API", version: "v1", description: "..." },
+  securitySchemes: { oauth: { type: "oauth2", flows: { clientCredentials: { tokenUrl: "/api/auth/oauth2/token", scopes: { "orders:read": "Read orders" } } } } },
+  security: [{ oauth: [] }],
+  errors: { schema: Problem, contentType: "application/problem+json", common: { 401: "unauthorized" } }, // Problem: a named v.object
+  parameters: { idempotencyKey: { in: "header", name: "Idempotency-Key", schema: v.string() } },
+  tags: [{ name: "Orders", description: "..." }],
+  webhooks: { events: { "order.paid": { summary: "...", data: Order } } },
+  page: { title: "Acme", theme: { accent: "#6d28d9" } },
+});
+```
+
+Per route (`http.route({...})` or `@Contract({...})`): `summary`, `tags`, `security: [{ oauth: ["orders:write"] }]`, `errors: { 404: "order_not_found" }`, `parameters: ["idempotencyKey"]`, `responseHeaders`, `status`, `codeSamples`, `hidden: true` (served, not documented), `deprecated`. On Nest: `@ApiSecurity("oauth", scopes)` (put it in your scope guard's decorator so it documents itself) and `@ApiHidden()` (inbound webhooks).
+
+| Setting         | Default                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------ |
+| `API_DOCS`      | unset: the code decides (on in dev; in production with `production: true`); set, it wins        |
+| `API_DOCS_PATH` | unset: `http.docs({ path })`, else `/_api`; cannot be under an engine path (`/rpc`, `/http`, ...) |
+
+The docs own only their page, `<path>/_docs/*`, the explorer path and the document: the app's own pages under the same prefix (`/docs/guides`) keep working, and a page or root route at one of the docs' paths is reported (production refuses to start). In dev `openapi.json?audience=all` is the complete document. Put prose in `forge/docs/*.mdx` (front matter `title`, `group`, `order`) and slots in `forge/docs/_slots/` (`header.mdx`, `sidebar-footer.mdx`, `operation-before.mdx`, `operation-after.mdx`). A full-stack app can render the reference in its own layout with `ApiReference` from `@archlast/forge-dashboard/api-docs/react`. Give every documented route `summary`, `tags` and `returns`: dev warns when one is missing.
+
+## Security headers (Helmet, on by default)
+
+The engine sets Helmet's headers itself on three surfaces, each with a preset: a Nest app's REST API (`default-src 'none'`, `DENY`, `no-referrer`), a full-stack app's pages (CSP with a per-page nonce, `script-src 'self' 'nonce-…' https:`, no eval, `same-origin-allow-popups`), and the dashboard (strict, `no-store` on `/_admin`). HSTS only in production over https. `http.route()` answers and `/rpc` are left alone. A header a handler sets wins.
+
+- Never add `app.use(helmet())` or a `helmet` dependency: change the presets with Helmet's own options (plain data; CSP directives merge one by one, the nonce is added for you): `http.helmet({ app: { contentSecurityPolicy: { directives: { "script-src": ["'self'", "https://js.stripe.com"] } } } })`, and `nest(http, { helmet: {...} | false })` for the API.
+- Inline scripts in pages need `<script nonce={useNonce()}>` (from `@archlast/forge-framework`).
+- Owners change them live on the dashboard's Security page (saved as `HELMET` and `HELMET_CONFIG`, JSON per surface: `csp: "report-only"`, `add: { "img-src": [...] }`); the environment wins. CSP violations are reported to `/_csp` and listed there.
 
 ## Limits you will meet
 
@@ -352,7 +383,25 @@ Checked by the engine whatever your code does. Defaults, variable, what the call
 
 A function that never yields (`while (true)`) is killed after timeout + 5 s; in production inline mode that takes the whole process down, so it must run under a restarting supervisor (the generated compose has one). Rate limiting is per IP, not per user: limit expensive mutations per user in code. Counters are per process unless `REDIS_URL` is set. Behind a proxy set `TRUST_PROXY=1` (last `X-Forwarded-For` entry is used; only when the proxy overwrites that header), else all visitors share the proxy's budget. `POST /rpc/*` needs `content-type: application/json` (415 otherwise).
 
-**Security rules for app code:** authorize and check row ownership in every public function; helpers `internal*`; bound string/array args yourself (`v.string()` accepts 5 MiB); a `ForgeError` message goes to the browser, keep internals out; never `fetch` a user-supplied URL; verify webhook senders; every function can read the whole environment (`process.env`); actions are at-most-once so a charge needs an idempotency key. Only `ForgeError` and validation errors reach callers with their text, everything else becomes `Server error (request <id>)`.
+**Security rules for app code:** authorize and check row ownership in every public function; helpers `internal*`; bound string and array arguments in the validator (`v.string({ maxLength })`, `v.array(x, { maxItems })`; a bare `v.string()` accepts 5 MiB); a `ForgeError` message goes to the browser, keep internals out; never `fetch` a user-supplied URL; verify webhook senders; every function can read the whole environment (`process.env`); actions are at-most-once so a charge needs an idempotency key. Only `ForgeError` and validation errors reach callers with their text, everything else becomes `Server error (request <id>)`.
+
+## Web application firewall (opt-in)
+
+`WAF=on` runs every request through the OWASP Core Rule Set (Coraza) before it reaches a function: SQL injection, script injection, path traversal and the like get `403` (`code: "FORBIDDEN"`). Off by default; do not turn it on for an app that did not ask for it, since it costs about a millisecond a request and over 100 MB of memory per thread.
+
+| Variable             | Default | Effect                                                                                  |
+| -------------------- | ------- | --------------------------------------------------------------------------------------- |
+| `WAF`                | off     | Turns it on                                                                             |
+| `WAF_MODE`           | `block` | `detect` only logs what it would stop: start there on a live app                        |
+| `WAF_PARANOIA`       | `1`     | 1 to 4; higher flags more legitimate requests                                           |
+| `WAF_WORKERS`        | `1`     | Threads, each with its own copy of the rules in memory                                  |
+| `WAF_MAX_BODY_KB`    | `512`   | Larger bodies are not inspected (URL and headers still are)                             |
+| `WAF_IGNORE_PATHS`   | none    | Path prefixes that are not inspected, like `/http/stripe`                               |
+| `WAF_DISABLED_RULES` | none    | CRS rule ids to switch off, like `942100`; the log names the rules that blocked a call |
+
+It does not look at the dashboard, storage, `/_app` or static files. Bodies that are not a form, multipart, XML or JSON are refused (rule 920420), and a plain-text body with a line break is too (921150): a route that takes binary or text bodies, such as a webhook from a provider that sends `text/plain`, goes in `WAF_IGNORE_PATHS`. If sign-in blocks a strong password, add `/api/auth` there or switch off the rule the log names. It is a layer, not a substitute for authorizing in every function.
+
+The dashboard's **Firewall** page (admin group) watches it (counters, charts, the latest events, the rules, paths and clients that matched most, thread health) and, for owners, runs it with no restart: Off, Detect or Block, paranoia, threads, ignored paths and switched-off rules, saved as the `WAF_*` settings (a value the environment sets is shown locked). An event opens to switch off its rule or ignore its path, and **Try a request** shows what the live rules make of a described request. Roll out by turning it on in Detect, reading the events over real traffic, tuning, then Block. Its numbers are per server and start at zero with it; `/metrics` has `forge_waf_requests_total` and `forge_waf_rule_matches_total`.
 
 ## Telemetry hooks from app code
 
@@ -412,6 +461,7 @@ When this file is not enough, read the page instead of guessing: the docs are th
 | [scheduling](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/scheduling.mdx)       | scheduled functions and crons                             |
 | [http](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/http.mdx)                   | HTTP endpoints, validators, CORS, rate limits, streaming  |
 | [api-docs](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/api-docs.mdx)           | OpenAPI and the API docs page                             |
+| [security-headers](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/security-headers.mdx) | Helmet presets, the page nonce, CSP sources and reports |
 | [limits](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/limits.mdx)               | every limit and the security model                        |
 | [configuration](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/configuration.mdx) | the variables behind these features                       |
 | [recipes](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/recipes.mdx)             | webhooks, cron cleanup, email, rate limits, uploads       |

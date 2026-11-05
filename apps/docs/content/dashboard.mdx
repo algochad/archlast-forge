@@ -93,6 +93,10 @@ The alert rules over the telemetry and the keys other services send it with: see
 
 Every backup, newest first, with what it holds (documents and tables, files and their size, the number of source files and whether that source is the code running now), its kind (manual, scheduled, uploaded, made before a restore, or found in storage without a record) and its size. **Back up now** (admins) makes one, with or without files, and shows its progress. Owners can **Download** an archive, **Upload a backup** from somewhere else, **Restore** one (choosing whether files, and environment variables and settings, come back too; type `restore` to confirm; a safety backup is made first), delete one, and set the **Schedule** (off, hourly, daily or weekly at a UTC time, or a cron expression, how many to keep, with or without files). The card also says where backups are kept. See [Backups](backups.html).
 
+### Security
+
+The security headers (Helmet) of the REST API, the app's pages and the dashboard itself: for each, where they come from (the engine's preset, or your code), exactly what is sent, and, for owners, switches to change them at once: on or off, the Content-Security-Policy enforced, report-only or off, sources added to a directive, framing, HSTS, Cross-Origin-Resource-Policy and Referrer-Policy. Below, the CSP violations browsers reported. See [Security headers](security-headers.html).
+
 ### Audit
 
 The audit log: when, who, what, which target and the arguments, newest first (300 entries). It records dashboard writes and the CLI's `import`, `restore`, `env set`, `env rm`, `admin add`, `admin remove` and `migrate --run` (actor `cli`; never the secret values). Reads and sign-ins aren't in it (sign-ins are in the server log). See [audit log](#audit-log).

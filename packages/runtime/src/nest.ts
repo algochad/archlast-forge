@@ -2,6 +2,7 @@
 // `nest(http, { controllers, providers })` in forge/http.ts mounts the app; `inject(ctx, Service)` resolves a service for a function call.
 // Requests reach Nest through ForgeAdapter, which takes them from the engine's /http routing, and gateway sockets through the engine's
 // server (onSocket): Nest never opens a server of its own. GraphQL, WebSocket gateways and microservices have their own entries.
+import type { HelmetOptions } from "helmet";
 import "reflect-metadata";
 import {
   applyDecorators,
@@ -49,6 +50,7 @@ import { basename } from "node:path";
 import { Readable } from "node:stream";
 import { match } from "path-to-regexp";
 import { EMPTY, filter, fromEvent, mergeMap, Observable, takeUntil, type Subscription } from "rxjs";
+import type { RouteDocs, SecurityRequirement } from "./api-docs";
 import { httpAction, type ActionCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
 import { queryValue } from "./server/http";
 import { NEST_MOUNT, type NestRoute } from "./server/openapi";
@@ -256,6 +258,12 @@ export interface NestOptions {
    * `@Controller("users")` answers at /http/users. With a root router, `prefix: "/api/"` serves `@Controller("users")` at /api/users.
    */
   prefix?: string;
+  /**
+   * The REST API's security headers (Helmet). Default: the engine's API preset (no content may load from or frame a JSON answer, nosniff,
+   * no referrer, HSTS over https). Helmet's own options merge over it, CSP directives one by one; false sends none. A header a handler
+   * sets itself always wins, and the dashboard's Security page can change these again.
+   */
+  helmet?: HelmetOptions | false;
   /** CORS for the controllers, as Nest's `enableCors()` takes it: `true`, the options of the `cors` package, or a function of the request. */
   cors?: NestApplicationOptions["cors"];
   /** Microservice transports the app also listens on (TCP, Redis, NATS, MQTT, gRPC, Kafka, RabbitMQ), as `app.connectMicroservice()` takes them. */
@@ -309,6 +317,7 @@ export function nest(http: { route(spec: HttpRoute): void; root?: boolean }, opt
 
   const handler = httpAction(async (ctx, request) => (await started!).adapter.handle(request, ctx));
   (handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] = true;
+  if (o.helmet !== undefined) (handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-helmet")] = o.helmet;
   for (const method of METHODS) http.route({ method, pathPrefix: prefix, handler });
   (globalThis as Record<symbol, unknown>)[NEST_ROUTES] = async () => routesOf((await started!).app, http.root ? prefix : `/http${prefix}`);
 }
@@ -319,8 +328,11 @@ export function nest(http: { route(spec: HttpRoute): void; root?: boolean }, opt
  * /http routes convert theirs.
  *
  *     @Post(":id/items") @Contract({ params: { id: v.string() }, body: v.object({ sku: v.string(), qty: v.number() }), returns: v.object({ ok: v.boolean() }) })
+ *
+ * The documentation fields (RouteDocs: `security`, `errors`, `headers`, `parameters`, `hidden`, `codeSamples`, ...) go into the OpenAPI
+ * document and the API docs page only.
  */
-export interface ContractSpec {
+export interface ContractSpec extends RouteDocs {
   body?: Validator;
   query?: PropertyValidators;
   params?: PropertyValidators;
@@ -355,7 +367,39 @@ NestInjectable()(ContractInterceptor);
 
 export const Contract = (spec: ContractSpec) => applyDecorators(SetMetadata(CONTRACT, spec), UseInterceptors(ContractInterceptor));
 
+const API_SECURITY = "archlast-forge:api-security";
+const API_HIDDEN = "archlast-forge:api-hidden";
+
+/**
+ * Says, for the API docs, how a controller or a handler is called: `@ApiSecurity("oauth", ["payments:write"])`. Several are alternatives.
+ * A guard that checks scopes can document itself with it: `const Scopes = (...s: string[]) => applyDecorators(SetMetadata(SCOPES, s),
+ * UseGuards(ScopesGuard), ApiSecurity("oauth", s))`. A handler's own wins over its controller's, and `@Contract({ security })` over both.
+ */
+export function ApiSecurity(scheme: string, scopes: string[] = []): ClassDecorator & MethodDecorator {
+  return ((target: object, _key?: string | symbol, descriptor?: PropertyDescriptor) => {
+    const on = descriptor?.value ?? target;
+    const list = (Reflect.getOwnMetadata(API_SECURITY, on) as SecurityRequirement[] | undefined) ?? [];
+    Reflect.defineMetadata(API_SECURITY, [...list, { [scheme]: scopes }], on);
+  }) as ClassDecorator & MethodDecorator;
+}
+
+/** Leaves a controller or a handler out of the API docs (inbound webhooks from a payment provider, say). It is still served. */
+export function ApiHidden(): ClassDecorator & MethodDecorator {
+  return ((target: object, _key?: string | symbol, descriptor?: PropertyDescriptor) => {
+    Reflect.defineMetadata(API_HIDDEN, true, descriptor?.value ?? target);
+  }) as ClassDecorator & MethodDecorator;
+}
+
 /** Every controller route of the app, from Nest's own metadata (paths, methods) and @Contract: what the OpenAPI document lists. */
+/** A handler's @Contract with what ApiSecurity and ApiHidden say on it or its controller. */
+function contractOf(cls: Type, fn: unknown): NestRoute["contract"] {
+  const spec = Reflect.getMetadata(CONTRACT, fn as object) as ContractSpec | undefined;
+  const security = (Reflect.getOwnMetadata(API_SECURITY, fn as object) ?? Reflect.getOwnMetadata(API_SECURITY, cls)) as SecurityRequirement[] | undefined;
+  const hidden = Reflect.getOwnMetadata(API_HIDDEN, fn as object) === true || Reflect.getOwnMetadata(API_HIDDEN, cls) === true;
+  if (!spec && !security && !hidden) return undefined;
+  return { ...spec, ...(spec?.security === undefined && security && { security }), ...(hidden && { hidden: true }) };
+}
+
 function routesOf(app: INestApplication, prefix: string): NestRoute[] {
   const routes: NestRoute[] = [];
   const join = (...parts: string[]) => "/" + parts.map((p) => p.replace(/^\/+|\/+$/g, "")).filter(Boolean).join("/");
@@ -372,7 +416,7 @@ function routesOf(app: INestApplication, prefix: string): NestRoute[] {
         const paths = Reflect.getMetadata("path", fn) as string | string[] | undefined;
         if (method === undefined || paths === undefined || !METHOD_NAMES[method]) continue;
         for (const base of bases)
-          for (const p of [paths].flat()) routes.push({ method: METHOD_NAMES[method]!, path: join(prefix, base, p), name: `${cls.name}.${key}`, contract: Reflect.getMetadata(CONTRACT, fn) });
+          for (const p of [paths].flat()) routes.push({ method: METHOD_NAMES[method]!, path: join(prefix, base, p), name: `${cls.name}.${key}`, contract: contractOf(cls, fn) });
       }
     }
   return routes;

@@ -1,1 +1,8 @@
-1.76.4
+scalar release-2026-10-30-66ba1d7 + 2 patches
+upstream: https://github.com/scalar/scalar
+commit: 66ba1d7671c2f230af9be4ed7a94ee057683b8df
+patches:
+  0001-no-hosted-defaults.patch
+  0002-modal-empty-response-no-promotion.patch
+explorer.js: 3353942 bytes, sha256 12f2cfa11700c60261f3a81503b54a00684342f364b09b926b9222cf8c6b4940
+explorer.css: 165520 bytes, sha256 141634b03f652387358d6a34b139cc535b35120892be28ab4c5a3b9c940531f2

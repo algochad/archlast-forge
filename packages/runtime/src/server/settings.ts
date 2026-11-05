@@ -69,10 +69,10 @@ export const SETTINGS: SettingDef[] = [
     name: "API_DOCS",
     group: "Server",
     type: "bool",
-    default: "on in dev, off otherwise",
-    doc: "Serve the OpenAPI document (API_DOCS_PATH/openapi.json), the API docs page and the explorer. It lists every public function and HTTP route.",
+    default: "on in dev; in production when forge/http.ts says http.docs({ production: true })",
+    doc: "Serve the OpenAPI document and the API docs page. Set, it wins over the code. What the document lists is set in code (http.docs({ include, functions })).",
   },
-  { name: "API_DOCS_PATH", group: "Server", type: "string", default: "/_api", doc: "Where the API docs are served." },
+  { name: "API_DOCS_PATH", group: "Server", type: "string", default: "http.docs({ path }), else /_api", doc: "Where the API docs page is served, over what forge/http.ts says." },
   {
     name: "ALLOW_CUSTOM_FUNCTIONS",
     group: "Auth",
@@ -83,8 +83,8 @@ export const SETTINGS: SettingDef[] = [
   // -- database and cache --
   { name: "DATA_DIR", group: "Database", type: "string", default: "./data (/data in the image)", doc: "Where the SQLite database, telemetry and the built-in storage live.", envOnly: BOOT },
   { name: "DATABASE_URL", group: "Database", type: "string", secret: true, default: "SQLite in DATA_DIR", doc: "A Postgres database instead of the SQLite file.", envOnly: BOOT },
-  { name: "DATABASE_POOL_SIZE", group: "Database", type: "int", min: 1, default: "twice the CPU cores", doc: "Postgres connections each function-runtime process may open for reads." },
-  { name: "DATABASE_WRITE_POOL_SIZE", group: "Database", type: "int", min: 1, default: "twice DATABASE_POOL_SIZE", doc: "Postgres connections each function-runtime process may open for write transactions. More connections hide the latency of a commit; keep the total of all processes under Postgres's max_connections (100 by default)." },
+  { name: "DATABASE_POOL_SIZE", group: "Database", type: "int", min: 1, default: "sized from Postgres's max_connections", doc: "Postgres connections each function-runtime process holds for reads. Unset, this app's servers take 60% of what Postgres allows (at most twice the CPU cores for reads; 4 in development); the log says the numbers at start." },
+  { name: "DATABASE_WRITE_POOL_SIZE", group: "Database", type: "int", min: 1, default: "sized with DATABASE_POOL_SIZE; twice it when only that is set", doc: "Postgres connections each function-runtime process holds for write transactions. More connections hide the latency of a commit. A pool holds all its connections from the start: with the sizes set, keep REPLICAS × RUNTIME_WORKERS × (both pools) + 3 per server under Postgres's max_connections (100 by default)." },
   {
     name: "SQLITE_SYNCHRONOUS",
     group: "Database",
@@ -147,6 +147,31 @@ export const SETTINGS: SettingDef[] = [
   { name: "MAX_REQUEST_BYTES", group: "Limits", type: "int", min: 1, default: "8388608 (8 MiB)", doc: "An HTTP request body and a WebSocket message." },
   { name: "RATE_LIMIT_PER_MINUTE", group: "Limits", type: "int", min: 0, default: "1200 (off in dev)", doc: "Requests per client IP per minute. 0 turns rate limiting off." },
   { name: "MAX_SUBSCRIPTIONS_PER_CONNECTION", group: "Limits", type: "int", min: 1, default: "200", doc: "Live queries one WebSocket may hold." },
+  // -- web application firewall --
+  { name: "WAF", group: "Firewall", type: "bool", default: "off", doc: "Inspect every request with the OWASP Core Rule Set (Coraza) before the engine handles it. A request the rules flag gets a 403. Costs about a millisecond of CPU per request and over 100 MB of memory per WAF thread. The Firewall page of the dashboard watches it and changes it while it runs: the WAF_* settings apply at once, without a restart." },
+  { name: "WAF_MODE", group: "Firewall", type: "enum", options: ["block", "detect"], default: "block", doc: "`detect` only logs what the rules would stop, so a rollout can be watched before it blocks anything." },
+  { name: "WAF_PARANOIA", group: "Firewall", type: "int", min: 1, default: "1", doc: "How strict the rules are, 1 to 4. Higher levels catch more and flag more legitimate requests." },
+  { name: "WAF_WORKERS", group: "Firewall", type: "int", min: 1, default: "1", doc: "WAF threads. Each has its own copy of the rules in memory (over 100 MB); one handles around a thousand requests a second." },
+  { name: "WAF_MAX_BODY_KB", group: "Firewall", type: "int", min: 1, default: "512", doc: "The largest request body that is inspected. A larger one isn't (its URL and headers still are)." },
+  { name: "WAF_IGNORE_PATHS", group: "Firewall", type: "list", default: "none", doc: "Path prefixes whose requests are not inspected (comma-separated, like /webhooks). The dashboard, storage and the app's built files never are." },
+  { name: "WAF_DISABLED_RULES", group: "Firewall", type: "list", default: "none", doc: "CRS rule ids to switch off (comma-separated, like 942100), for a rule that stops something legitimate. The log says which rule blocked a request." },
+  // -- security headers --
+  {
+    name: "HELMET",
+    group: "Security headers",
+    type: "bool",
+    live: true,
+    default: "on",
+    doc: "Security headers (Helmet) on the REST API of a Nest app, a full-stack app's pages and the dashboard, each with a preset of its own. Off sends none, whatever the code says.",
+  },
+  {
+    name: "HELMET_CONFIG",
+    group: "Security headers",
+    type: "string",
+    live: true,
+    default: "none",
+    doc: 'Changes to the presets and the code\'s options, per surface (api, app, dashboard), as JSON: {"app":{"csp":"report-only","add":{"img-src":["https://cdn.example.com"]}}}. The Security page of the dashboard writes it.',
+  },
   // -- storage --
   {
     name: "STORAGE",

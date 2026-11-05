@@ -131,6 +131,14 @@ describe("controllers in the OpenAPI document", () => {
     expect(doc.paths["/http/orders"].get).toBeDefined(); // without a contract: listed, with no schemas
     expect(doc.paths["/http/plain"].get).toBeDefined(); // http.route() beside the Nest mount
     expect(Object.keys(doc.paths).filter((p) => p.endsWith("{rest}"))).toEqual([]); // the mount itself isn't a route
+    // A guard's ApiSecurity, a parameter's description and the route's errors, in the app's error shape.
+    const one = doc.paths["/http/orders/one/{id}"].get;
+    expect(one.security).toEqual([{ oauth: ["orders:read"] }]);
+    expect(one["x-scopes"]).toEqual(["orders:read"]);
+    expect(one.parameters[0]).toEqual({ name: "id", in: "path", required: true, schema: { type: "string", description: "The order's id" }, description: "The order's id" });
+    expect(one.responses["404"]).toEqual({ description: "`order_not_found`", content: { "application/json": { schema: { $ref: "#/components/schemas/NestError" } } } });
+    expect(doc.paths["/http/orders/hooks/provider"]).toBeUndefined(); // ApiHidden
+    expect((await http("/orders/hooks/provider", { method: "POST" })).status).toBe(201); // still served
 
     const post = (body: unknown) => http("/orders/acme?express=true", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
     const ok = await post({ sku: "a1", qty: 2 });

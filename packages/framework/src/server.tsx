@@ -6,7 +6,7 @@ import { stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { preinit, preloadModule } from "react-dom";
 import { renderToReadableStream } from "react-dom/server";
-import { createStaticHandler, createStaticRouter, isRouteErrorResponse, RouterContextProvider, StaticRouterProvider, type StaticHandlerContext } from "react-router";
+import { createStaticHandler, createStaticRouter, isRouteErrorResponse, matchRoutes, RouterContextProvider, StaticRouterProvider, type StaticHandlerContext } from "react-router";
 import { BuildError, buildApp, readBuild, type BuildResult } from "./build";
 import { createViewerStore, forgeContext, type LoaderContext, type Viewer } from "./context";
 import { buildErrorPage, DEV_SCRIPT, DevEvents, watchApp } from "./dev";
@@ -26,6 +26,7 @@ export interface AppOptions {
 interface Loaded {
   build: BuildResult;
   handler: ReturnType<typeof createStaticHandler>;
+  routes: ReturnType<typeof toRouteObjects>;
   clientDir: string;
   /** app/root.tsx's `authPlugins`, for the client each render makes. */
   authPlugins?: unknown[];
@@ -91,12 +92,12 @@ function serializeErrors(errors: StaticHandlerContext["errors"], o: { dev: boole
   );
 }
 
-function Page(props: { router: ReturnType<typeof createStaticRouter>; context: StaticHandlerContext; client: ArchlastForgeClient; queryClient: QueryClient; viewer: ReturnType<typeof createViewerStore>; time: TimeState; dev: boolean; css: string[]; preload: string[] }) {
+function Page(props: { router: ReturnType<typeof createStaticRouter>; context: StaticHandlerContext; client: ArchlastForgeClient; queryClient: QueryClient; viewer: ReturnType<typeof createViewerStore>; time: TimeState; dev: boolean; css: string[]; preload: string[]; nonce?: string }) {
   // Float hoists these into <head>, wherever the user's root document puts it.
   for (const href of props.css) preinit(`/_app/${href}`, { as: "style", precedence: "forge" });
   for (const file of props.preload) preloadModule(`/_app/${file}`, { as: "script" });
   return (
-    <Providers client={props.client} queryClient={props.queryClient} viewer={props.viewer} time={props.time} dev={props.dev}>
+    <Providers client={props.client} queryClient={props.queryClient} viewer={props.viewer} time={props.time} dev={props.dev} nonce={props.nonce}>
       <StaticRouterProvider router={props.router} context={props.context} hydrate={false} />
     </Providers>
   );
@@ -117,7 +118,8 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
 
   async function load(build: BuildResult) {
     const mod = (await import(join(build.dir, build.manifest.server))) as { manifest: Parameters<typeof toRouteObjects>[0] };
-    loaded = { build, handler: createStaticHandler(toRouteObjects(mod.manifest)), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
+    const routes = toRouteObjects(mod.manifest);
+    loaded = { build, routes, handler: createStaticHandler(routes), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
   }
 
   async function rebuild(): Promise<boolean> {
@@ -162,7 +164,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
 
   async function page(req: Request, env: AppEnv, url: URL): Promise<Response> {
     // While the build is broken the page says so, instead of showing the last build that worked.
-    if (buildError) return buildErrorPage(buildError);
+    if (buildError) return buildErrorPage(buildError, env.nonce);
     if (!loaded) return new Response("The app isn't built yet", { status: 503 });
     const wait = await env.rateLimited();
     if (wait !== null) return new Response("Too many requests", { status: 429, headers: { "retry-after": String(wait), "content-type": "text/plain; charset=utf-8" } });
@@ -213,6 +215,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       viewer: viewer.get(),
       queries: dehydrate(queryClient),
       hydration: { loaderData: context.loaderData, actionData: context.actionData, errors },
+      ...(env.nonce && { nonce: env.nonce }),
     };
     const router = createStaticRouter(handler.dataRoutes, context);
     const preload = [...new Set(context.matches.flatMap((m) => build.manifest.routes[m.route.id] ?? []))].filter((f) => f !== build.manifest.entry);
@@ -221,8 +224,10 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
 
     try {
       const stream = await renderToReadableStream(
-        <Page router={router} context={context} client={client} queryClient={queryClient} viewer={viewer} time={time} dev={dev} css={build.manifest.css} preload={preload} />,
+        <Page router={router} context={context} client={client} queryClient={queryClient} viewer={viewer} time={time} dev={dev} css={build.manifest.css} preload={preload} nonce={env.nonce} />,
         {
+          // React's own inline scripts (the page's state, streamed boundaries) carry the engine's CSP nonce.
+          ...(env.nonce && { nonce: env.nonce }),
           bootstrapScriptContent: `window.__FORGE__=${scriptJson(state)};`,
           bootstrapModules: [`/_app/${build.manifest.entry}`, ...(dev ? ["/_app/__dev.js"] : [])],
           signal: req.signal,
@@ -233,7 +238,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       return new Response(stream, { status, headers: { ...HTML_HEADERS, "x-request-id": env.requestId } });
     } catch (e) {
       log("error", `render failed (request ${env.requestId}): ${(e as Error)?.stack ?? e}`);
-      return dev ? buildErrorPage(`A page failed to render:\n\n${(e as Error)?.stack ?? e}`) : new Response(`Server error (request ${env.requestId})`, { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });
+      return dev ? buildErrorPage(`A page failed to render:\n\n${(e as Error)?.stack ?? e}`, env.nonce) : new Response(`Server error (request ${env.requestId})`, { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });
     }
   }
 
@@ -252,6 +257,15 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     },
     dispose() {
       stopWatching();
+    },
+    /**
+     * Whether a page takes this path: a route that matches it below the root. A catch-all at the root (`app/routes/[...all].tsx`, a 404
+     * page) doesn't count, or nothing could share the server with the app.
+     */
+    matches(path) {
+      if (!loaded) return undefined;
+      const found = matchRoutes(loaded.routes, path);
+      return Boolean(found?.length && found.at(-1)!.pathnameBase !== "/");
     },
   };
 }
