@@ -102,11 +102,11 @@ beforeAll(async () => {
     },
   });
   origin = `http://localhost:${server.port}`;
-});
+}, 120_000); // a cold Chromium on a CI runner takes longer to start than a hook's default 5 s
 afterAll(async () => {
   await browser?.close();
   server?.stop(true);
-});
+}, 30_000);
 
 const run = (name: string, fn: () => Promise<void>) => test(name, async () => (browser ? fn() : console.warn(`skipped: ${name}`)), 60_000);
 
