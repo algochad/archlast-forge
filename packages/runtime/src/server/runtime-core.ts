@@ -8,6 +8,7 @@ import { createAuth } from "./auth";
 import { AUDITED_COMMANDS, runCommand } from "./cli-ops";
 import { loadConfig } from "./config";
 import { openDatabase } from "./db/open";
+import { describePlan } from "./db/pool-size";
 import { serverMemory } from "./db/sqlite";
 import type { Db } from "./db/types";
 import type { UserIdentity } from "../functions";
@@ -207,18 +208,15 @@ export async function startCore(opts: {
 
   if (config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
   // Every function runtime process holds its own connections, so they share the RAM SQLite is given.
-  const db = await openDatabase(config, serverMemory() / config.runtimeWorkers);
-  if (config.databaseKind === "postgres" && worker === 0)
-    // Pools open their connections as load needs them, but a busy server can reach the maximum: say if that is more than Postgres allows.
-    void db.query<{ max_connections: string }>("SHOW max_connections").then(
-      ([row]) => {
-        const allowed = Number(row?.max_connections);
-        const most = config.runtimeWorkers * (config.databasePoolSize + config.databaseWritePoolSize) + 3;
-        if (allowed && most > allowed)
-          console.warn(`Postgres allows ${allowed} connections and this server may open up to ${most} (RUNTIME_WORKERS ${config.runtimeWorkers} x (DATABASE_POOL_SIZE ${config.databasePoolSize} + DATABASE_WRITE_POOL_SIZE ${config.databaseWritePoolSize}) + 3), without counting other servers: lower the pools or raise max_connections.`);
-      },
-      () => {},
-    );
+  // On Postgres the first process says what the pools hold against what the database allows, and warns when that is close to the limit.
+  const db = await openDatabase(config, serverMemory() / config.runtimeWorkers, {
+    plan: (plan) => {
+      if (worker !== 0) return;
+      const { level, message } = describePlan(plan);
+      if (level === "warn") console.warn(message);
+      else console.log(message);
+    },
+  });
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);

@@ -189,6 +189,7 @@
       "name": "@archlast/forge-runtime",
       "version": "0.17.0",
       "dependencies": {
+        "@coraza/core": "0.1.0-preview.3",
         "@grpc/grpc-js": "1.14.7",
         "@grpc/proto-loader": "0.8.1",
         "@nestjs/common": "12.3.2",
@@ -320,6 +321,8 @@
     "@clack/core": ["@clack/core@1.5.1", "", { "dependencies": { "fast-wrap-ansi": "^0.2.0", "sisteransi": "^1.0.5" } }, "sha512-iHTrHA8MtVuLl2TfZySmcKv1qO2PoyC9Z7pfSDozEuV5vtY3/wcOPKJXlqJ5Oq2Cx5DDGQGAMVx6HZfRRoVEbQ=="],
 
     "@clack/prompts": ["@clack/prompts@1.8.1", "", { "dependencies": { "@clack/core": "1.5.1", "fast-string-width": "^3.0.2", "fast-wrap-ansi": "^0.2.0", "sisteransi": "^1.0.5" } }, "sha512-dlT1m5e/0yUL0kRNcQn7yGLVThkgbB0Ga/1AmfDDC/8ik6AIiSf2QLQO2zPYvefsHP0aFgxO93cVLCCfDp7kzQ=="],
+
+    "@coraza/core": ["@coraza/core@0.1.0-preview.3", "", {}, "sha512-iENJbb/APocemRYv0gqmVBPFwZDtSHDRNGakCjAf4aftpc8Jl6Q3NbXxkzMKGRfIYRwkD5Hmoo+aroEoXI4R8A=="],
 
     "@envelop/core": ["@envelop/core@6.0.0", "", { "dependencies": { "@envelop/instrumentation": "^2.0.0", "@envelop/types": "^6.0.0", "@whatwg-node/promise-helpers": "^2.0.0", "tslib": "^2.5.0" } }, "sha512-r/FPut3JaDJnH64Hn6umeqxlZNMJsFf2IJmZzmv6F1m+Mxfez1zKmKIOOFFO4DRc6ghqqzZMvIH9r2/LVLWxuw=="],
 

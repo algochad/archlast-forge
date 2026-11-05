@@ -68,3 +68,33 @@ LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
 ```
+
+## coraza-node, Coraza and the OWASP Core Rule Set
+
+`src/server/waf/` is derived from [coraza-node](https://github.com/coraza-incubator/coraza-node) (`@coraza/core`'s `abi.ts`, `transaction.ts`, `wasm.ts`, `waf.ts` and `wasi.ts`, and `@coraza/coreruleset`'s `recommended()`), at version 0.1.0-preview.3:
+
+- the bindings to the WebAssembly module's exports and the request bundle's layout (`abi.ts`, `transaction.ts`);
+- the instantiation of the module and the WASI imports it uses (`wasm.ts`, `wasi.ts`; changed so that it runs on Bun, where `node:wasi` ends the process when Go's `main` returns);
+- the list of Core Rule Set files and the setup directives (`rules.ts`).
+
+The WebAssembly module itself (`dist/wasm/coraza.wasm`, which holds [OWASP Coraza](https://github.com/corazawaf/coraza) and the [OWASP Core Rule Set](https://github.com/coreruleset/coreruleset), also Apache-2.0) comes from the `@coraza/core` package, which the runtime depends on, and is not copied into this repository. Changes from the original are described where they are made in each file.
+
+```
+                                 Apache License
+                           Version 2.0, January 2004
+                        http://www.apache.org/licenses/
+
+   Licensed under the Apache License, Version 2.0 (the "License");
+   you may not use this file except in compliance with the License.
+   You may obtain a copy of the License at
+
+       http://www.apache.org/licenses/LICENSE-2.0
+
+   Unless required by applicable law or agreed to in writing, software
+   distributed under the License is distributed on an "AS IS" BASIS,
+   WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+   See the License for the specific language governing permissions and
+   limitations under the License.
+
+   Copyright 2026 Juan Pablo Tosso.
+```

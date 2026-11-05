@@ -36,7 +36,7 @@ export async function openProject(forgeDir: string, env: Record<string, string |
     config = loadConfig(withSettings(cliEnv, stored), dev);
   } catch {}
   if (config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
-  const db = await openDatabase(config);
+  const db = await openDatabase(cliPools(config));
   await migrateSystem(db);
   for (const { name, value } of await db.query<{ name: string; value: string }>(`SELECT "name", "value" FROM "_env"`)) env[name] ??= value;
   const project = await loadProject(forgeDir);
@@ -198,11 +198,14 @@ export { listEnv, removeEnv, setEnv };
 
 export { addAdmin, listAdmins, removeAdmin, type AdminRole };
 
+/** A CLI command is one process doing one thing at a time: a few connections, whatever the server's pools are. */
+const cliPools = (config: Config): Config => ({ ...config, databasePoolSize: config.databasePoolSize ?? 2, databaseWritePoolSize: config.databaseWritePoolSize ?? 2 });
+
 /** Opens just the database (no user code), for env and admin commands. */
 export async function openDb(env: Record<string, string | undefined> = process.env) {
   const config = loadConfig({ ...env, ALLOW_INSECURE_HTTP: "1", BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET || "cli" }, true);
   if (config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
-  const db = await openDatabase(config);
+  const db = await openDatabase(cliPools(config));
   await migrateSystem(db);
   return db;
 }

@@ -45,6 +45,49 @@ export type CacheInfo = {
   skipped: number;
   functions: { name: string; hits: number; misses: number; coalesced: number; skipped: number; hitMs: number; missMs: number; perUser: boolean; savedMs: number }[];
 };
+export type FirewallSettings = { mode: "block" | "detect"; paranoia: number; workers: number; maxBodyKb: number; ignorePaths: string[]; disabledRules: number[] };
+export type FirewallEvent = {
+  id: number;
+  at: number;
+  action: "blocked" | "detected" | "error";
+  requestId: string;
+  method: string;
+  path: string;
+  ip: string;
+  rules: { id: number; message: string }[];
+  score: number;
+  error?: string;
+  ms: number;
+};
+export type FirewallInfo = {
+  enabled: boolean;
+  /** What is running; null while the firewall is off. */
+  settings: FirewallSettings | null;
+  /** What turning it on would run with: the saved settings, else the defaults. */
+  draft: FirewallSettings;
+  /** The form fields whose setting the environment gives, which the dashboard can't change. */
+  locked: (keyof FirewallSettings | "enabled")[];
+  onSince: number | null;
+  since: number;
+  threshold: number;
+  threads: { state: "up" | "starting" | "restarting"; waiting: number; served: number; restarts: number; lastError?: string }[];
+  counters: { inspected: number; blocked: number; detected: number; errors: number };
+  latency: { avg: number; p50: number; p95: number; p99: number; max: number };
+  timeline: { t: number; inspected: number; blocked: number; detected: number; errors: number }[];
+  rules: { id: number; message: string; count: number; blocked: number; detected: number }[];
+  paths: { path: string; count: number; blocked: number; detected: number }[];
+  ips: { ip: string; count: number; blocked: number; detected: number }[];
+  events: FirewallEvent[];
+};
+export type FirewallTest = {
+  action: "allowed" | "blocked" | "detected";
+  score: number;
+  threshold: number;
+  rules: { id: number; message: string; severity: number }[];
+  skipped?: string;
+  bodyInspected: boolean;
+  mode: "block" | "detect";
+};
 export type Admin = { email: string; role: Role };
 export type Doc = Record<string, unknown> & { _id: string; _creationTime: number };
 export type Page<T = Doc> = { page: T[]; isDone: boolean; continueCursor: string };

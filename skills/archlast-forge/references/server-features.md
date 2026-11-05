@@ -377,6 +377,24 @@ A function that never yields (`while (true)`) is killed after timeout + 5 s; in 
 
 **Security rules for app code:** authorize and check row ownership in every public function; helpers `internal*`; bound string/array args yourself (`v.string()` accepts 5 MiB); a `ForgeError` message goes to the browser, keep internals out; never `fetch` a user-supplied URL; verify webhook senders; every function can read the whole environment (`process.env`); actions are at-most-once so a charge needs an idempotency key. Only `ForgeError` and validation errors reach callers with their text, everything else becomes `Server error (request <id>)`.
 
+## Web application firewall (opt-in)
+
+`WAF=on` runs every request through the OWASP Core Rule Set (Coraza) before it reaches a function: SQL injection, script injection, path traversal and the like get `403` (`code: "FORBIDDEN"`). Off by default; do not turn it on for an app that did not ask for it, since it costs about a millisecond a request and over 100 MB of memory per thread.
+
+| Variable             | Default | Effect                                                                                  |
+| -------------------- | ------- | --------------------------------------------------------------------------------------- |
+| `WAF`                | off     | Turns it on                                                                             |
+| `WAF_MODE`           | `block` | `detect` only logs what it would stop: start there on a live app                        |
+| `WAF_PARANOIA`       | `1`     | 1 to 4; higher flags more legitimate requests                                           |
+| `WAF_WORKERS`        | `1`     | Threads, each with its own copy of the rules in memory                                  |
+| `WAF_MAX_BODY_KB`    | `512`   | Larger bodies are not inspected (URL and headers still are)                             |
+| `WAF_IGNORE_PATHS`   | none    | Path prefixes that are not inspected, like `/http/stripe`                               |
+| `WAF_DISABLED_RULES` | none    | CRS rule ids to switch off, like `942100`; the log names the rules that blocked a call |
+
+It does not look at the dashboard, storage, `/_app` or static files. Bodies that are not a form, multipart, XML or JSON are refused (rule 920420), and a plain-text body with a line break is too (921150): a route that takes binary or text bodies, such as a webhook from a provider that sends `text/plain`, goes in `WAF_IGNORE_PATHS`. If sign-in blocks a strong password, add `/api/auth` there or switch off the rule the log names. It is a layer, not a substitute for authorizing in every function.
+
+The dashboard's **Firewall** page (admin group) watches it (counters, charts, the latest events, the rules, paths and clients that matched most, thread health) and, for owners, runs it with no restart: Off, Detect or Block, paranoia, threads, ignored paths and switched-off rules, saved as the `WAF_*` settings (a value the environment sets is shown locked). An event opens to switch off its rule or ignore its path, and **Try a request** shows what the live rules make of a described request. Roll out by turning it on in Detect, reading the events over real traffic, tuning, then Block. Its numbers are per server and start at zero with it; `/metrics` has `forge_waf_requests_total` and `forge_waf_rule_matches_total`.
+
 ## Telemetry hooks from app code
 
 Every request is recorded automatically (functions, DB statements, outbound `fetch`, jobs, HTTP routes). Add your own:
