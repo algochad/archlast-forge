@@ -1,4 +1,5 @@
 // The function runtime: forge/ modules, the database, auth and the scheduler. See startCore().
+import { docsRouting } from "../api-docs";
 import { mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 import { validateFields } from "../values";
@@ -13,7 +14,7 @@ import type { UserIdentity } from "../functions";
 import { Executor, logContext, serializeError, type CallHeaders, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
 import { checkHttpRequest, matchRoute, routeName } from "./http";
-import { buildOpenApi, type NestRoute } from "./openapi";
+import { buildOpenApi, docsWarnings, type NestRoute } from "./openapi";
 import type { HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
 import { createStorage } from "./storage";
@@ -353,7 +354,7 @@ export async function startCore(opts: {
       }
       case "admin":
         if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });
-        if (msg.op === "openapi") return openApi();
+        if (msg.op === "openapi") return openApi((msg.args as { audience?: "public" | "all" } | undefined)?.audience);
         return adminOp(deps, msg.op, msg.args ?? {}, msg.actor);
     }
   }
@@ -362,13 +363,21 @@ export async function startCore(opts: {
   // The folder around forge/, whose package.json names the project.
   const projectRootOf = (dir: string) => (["forge", "convex"].includes(basename(dir)) ? dirname(dir) : dir);
   /** The OpenAPI document: the manifest's functions, forge/http.ts's routes and, once the Nest app has started, its controllers' routes. */
-  const openApi = async () => {
+  let warned = false;
+  const openApi = async (audience: "public" | "all" = "public") => {
     const nestRoutes = (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-routes")] as (() => Promise<NestRoute[]>) | undefined;
     let title = basename(projectRootOf(forgeDir));
     try {
       title = JSON.parse(readFileSync(join(projectRootOf(forgeDir), "package.json"), "utf8")).name || title;
     } catch {}
-    return buildOpenApi({ title, version: release, functions: manifest.functions, http: project.http, httpRoot: project.httpRoot, nest: (await nestRoutes?.().catch(() => [])) ?? [] });
+    const doc = buildOpenApi({ title, version: release, functions: manifest.functions, http: project.http, httpRoot: project.httpRoot, nest: (await nestRoutes?.().catch(() => [])) ?? [], docs: project.docs, audience });
+    // In development, once per load: what a reader of the public docs would miss.
+    if (opts.dev && !warned && audience === "public") {
+      warned = true;
+      const missing = docsWarnings(doc);
+      if (missing.length) console.warn(`[api docs] ${missing.length} documented route${missing.length === 1 ? " has" : "s have"} gaps a reader will notice:\n  ${missing.join("\n  ")}`);
+    }
+    return doc;
   };
 
   const manifest: Manifest = {
@@ -385,6 +394,7 @@ export async function startCore(opts: {
     storage: Boolean(storage),
     release,
     // What the server matches at the root before handing a path to the pages: just the patterns, for a router with root: true.
+    docs: docsRouting(project.docs, config.apiDocsPath),
     ...(project.httpRoot && { rootRoutes: project.http.map((r) => ({ method: r.method, ...(r.path !== undefined ? { path: r.path } : { pathPrefix: r.pathPrefix }) })) }),
   };
   function event(msg: HostEvent) {

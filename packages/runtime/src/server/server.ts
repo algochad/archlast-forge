@@ -9,6 +9,7 @@ import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
 import { claimPrefix, connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
+import { docsRouting, type ApiDocsPageConfig, type ApiDocsRouting } from "../api-docs";
 import { ConfigError, loadConfig, redisOwnerOf, reservedPathOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
 import { matchRoute } from "./http";
 import { RESET_TOPIC } from "./docstore";
@@ -58,6 +59,8 @@ export interface AppHost {
    */
   fetch(req: Request, env: AppEnv): Response | undefined | Promise<Response | undefined>;
   dispose?(): void | Promise<void>;
+  /** Whether one of the app's own routes takes this path (a page, not a catch-all); undefined while the app isn't built yet. The engine checks the API docs' paths against it. */
+  matches?(path: string): boolean | undefined;
 }
 
 /** What an app host may do for one request. */
@@ -86,7 +89,7 @@ export interface ServerOptions {
   dashboard?: HTMLBundle;
   /** A frontend served for every path the engine doesn't own. */
   app?: AppHost;
-  /** The API docs page and the explorer, served below API_DOCS_PATH when API_DOCS is on (the OpenAPI document is the engine's own). */
+  /** The API docs page and its request builder, at the docs' path when they are on (the OpenAPI document is the engine's own). */
   apiDocs?: ApiDocsHost;
   /**
    * Stops this server and starts it again in the same process, so settings saved from the dashboard apply. Given by hosts that can (the CLI);
@@ -95,9 +98,16 @@ export interface ServerOptions {
   restart?: () => Promise<void>;
 }
 
-/** Serves the API docs page, its assets and the explorer below `base`; null for a path it has nothing at. */
+/**
+ * Serves the API docs page: `base`, `base/`, `base/_docs/*` and `explorerPath`, and null for anything else, which then goes to the app.
+ * The same interface as DocsHost in @archlast/forge-dashboard's api-docs/contract.ts.
+ */
 export interface ApiDocsHost {
-  serve(req: Request, opts: { base: string; forgeDir: string; dev: boolean }): Promise<Response | null>;
+  serve(
+    req: Request,
+    opts: { base: string; publicBase: string; openapiUrl: string; explorerPath: string | null; dev: boolean; forgeDir: string; page: ApiDocsPageConfig },
+  ): Promise<Response | null>;
+  paths?(opts: { base: string; explorerPath: string | null }): { exact: string[]; prefixes: string[] };
 }
 
 /** `body` compressed for this request: brotli or gzip when the client takes them, else as it is. */
@@ -344,6 +354,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       });
       await queries.reset().catch((e) => log("error", "cache reset failed", { error: String(e) })); // results from the old code are wrong
       subs.rerunAll();
+      // In production a page or route the API docs would hide stops the start, rather than one of them silently losing the path.
+      if (!dev) {
+        const docs = await docsAt();
+        if (docs?.clashes.size) throw new Error(`the API docs and the app both claim ${[...docs.clashes].join(", ")}: move the docs with http.docs({ path, openapi, explorer }) or API_DOCS_PATH`);
+      }
       return manifest;
     });
     loading = p.catch(() => {});
@@ -440,20 +455,58 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
     },
   });
-  /** The OpenAPI document, made once per load of the code (a reload or restart brings a new manifest), minified. */
-  let openApi: { manifest: unknown; json: string; etag: string } | undefined;
+  /** The OpenAPI documents (the public one, and in dev the complete one), made once per load of the code (a reload brings a new manifest), minified. */
+  const openApi = new Map<string, { manifest: unknown; json: string; etag: string }>();
   async function openApiResponse(req: Request) {
     await loading;
     if (!runtime.manifest) return Response.json({ message: runtime.loadError ?? "The function runtime is not running" }, { status: 503 });
-    if (openApi?.manifest !== runtime.manifest) {
+    // The complete document lists what the public one leaves out: development only.
+    const audience = dev && new URL(req.url).searchParams.get("audience") === "all" ? "all" : "public";
+    let cached = openApi.get(audience);
+    if (cached?.manifest !== runtime.manifest) {
       const manifest = runtime.manifest;
-      const doc = await runtime.admin<Record<string, unknown>>("openapi", {}, "system");
-      // Calls go to the address browsers use: BETTER_AUTH_URL when it is set (a proxy in front may hide it from the request), else the one asked.
-      const json = JSON.stringify({ ...doc, servers: [{ url: env.BETTER_AUTH_URL ? config.authUrl : new URL(req.url).origin }] });
-      openApi = { manifest, json, etag: `"${Bun.hash(json).toString(36)}"` };
+      const doc = await runtime.admin<Record<string, unknown>>("openapi", { audience }, "system");
+      // Calls go to the servers the app names, else the address browsers use: BETTER_AUTH_URL when it is set (a proxy in front may hide it from the request), else the one asked.
+      const json = JSON.stringify(doc.servers ? doc : { ...doc, servers: [{ url: env.BETTER_AUTH_URL ? config.authUrl : new URL(req.url).origin }] });
+      openApi.set(audience, (cached = { manifest, json, etag: `"${Bun.hash(json).toString(36)}"` }));
     }
-    if (req.headers.get("if-none-match") === openApi.etag) return new Response(null, { status: 304, headers: { etag: openApi.etag } });
-    return compressed(req, openApi.json, { "content-type": "application/json", etag: openApi.etag, "cache-control": "no-cache", "x-content-type-options": "nosniff" });
+    if (req.headers.get("if-none-match") === cached.etag) return new Response(null, { status: 304, headers: { etag: cached.etag } });
+    return compressed(req, cached.json, { "content-type": "application/json", etag: cached.etag, "cache-control": "no-cache", "x-content-type-options": "nosniff" });
+  }
+
+  /**
+   * Where the API docs are for the loaded code, when they are on: API_DOCS decides if it is set, else they are on in development, and in
+   * production when `http.docs({ production: true })`. Paths an app route takes are left to the app (and reported once).
+   */
+  let docsPlan: { manifest: unknown; at: ApiDocsRouting | null; clashes: Set<string>; settled: boolean } | undefined;
+  async function docsAt(): Promise<{ at: ApiDocsRouting; clashes: Set<string> } | null> {
+    if (!runtime.manifest) await loading;
+    const manifest = runtime.manifest;
+    const plan = docsPlan;
+    if (plan && plan.manifest === manifest && plan.settled) return plan.at && { at: plan.at, clashes: plan.clashes };
+    const at = manifest?.docs ?? docsRouting(undefined, config.apiDocsPath);
+    const on = config.apiDocs ?? (dev || at.production);
+    if (!on) return void (docsPlan = { manifest, at: null, clashes: new Set(), settled: true }), null;
+    const found = docsClashes(manifest, at);
+    if (found.clashes.size && !(plan && plan.manifest === manifest && plan.clashes.size))
+      log("error", `the API docs and the app both claim ${[...found.clashes].map((c) => `${c} (${found.why.get(c)})`).join(", ")}: the app keeps them. Move the docs with http.docs({ path, openapi, explorer }) or API_DOCS_PATH.`);
+    docsPlan = { manifest, at, clashes: found.clashes, settled: found.settled };
+    return { at, clashes: found.clashes };
+  }
+  /** The docs' own paths that one of the app's routes (a page, or a root-mounted HTTP route) also takes. Unsettled while the app isn't built. */
+  function docsClashes(manifest: Manifest | undefined, at: ApiDocsRouting) {
+    const clashes = new Set<string>();
+    const why = new Map<string, string>();
+    let settled = true;
+    const owned = [at.path, at.openapi, ...(at.explorer ? [at.explorer] : []), `${at.path}/_docs/`];
+    for (const p of owned) {
+      const page = opts.app?.matches?.(p.endsWith("/") ? `${p}x` : p);
+      if (page === undefined && opts.app?.matches) settled = false;
+      if (page) (clashes.add(p), why.set(p, "a page in app/routes"));
+      const route = manifest?.rootRoutes?.find((r) => r.path === p || (r.pathPrefix !== undefined && p.startsWith(r.pathPrefix) && r.pathPrefix !== "/"));
+      if (route) (clashes.add(p), why.set(p, `forge/http.ts ${route.method} ${route.path ?? `${route.pathPrefix}*`}`));
+    }
+    return { clashes, why, settled };
   }
 
   const adminSessions = new Map<string, { admin: AdminInfo | null; at: number }>();
@@ -746,15 +799,30 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       if (shuttingDown) return withId(Response.json({ message: "Server is shutting down" }, { status: 503, headers: { "retry-after": "1" } }));
 
-      if (config.apiDocs && (path === config.apiDocsPath || path.startsWith(`${config.apiDocsPath}/`))) {
-        const retry = await limited(req, srv);
-        if (retry) return withId(tooMany(retry));
-        if (path === `${config.apiDocsPath}/openapi.json`) return withId(await openApiResponse(req));
-        const page = await opts.apiDocs?.serve(req, { base: config.apiDocsPath, forgeDir: resolve(opts.forgeDir), dev });
-        if (page) return withId(page);
-        if (path === config.apiDocsPath && !opts.apiDocs)
-          return withId(Response.json({ message: `The docs page comes with @archlast/forge-dashboard; the OpenAPI document is at ${config.apiDocsPath}/openapi.json` }, { status: 404 }));
-        return withId(new Response("Not found", { status: 404 }));
+      // The API docs own a few exact paths and their assets' prefix; anything else below their path is the app's (its own pages under /docs).
+      const docs = config.apiDocs === false ? null : await docsAt();
+      if (docs) {
+        const { at, clashes } = docs;
+        const page = path === at.path || path === `${at.path}/` || path.startsWith(`${at.path}/_docs/`) || path === at.explorer;
+        const claimed = (p: string) => !clashes.has(p) && !(p.startsWith(`${at.path}/_docs/`) && clashes.has(`${at.path}/_docs/`));
+        if ((path === at.openapi || page) && claimed(path.replace(/\/$/, "") || path)) {
+          const retry = await limited(req, srv);
+          if (retry) return withId(tooMany(retry));
+          if (path === at.openapi) return withId(await openApiResponse(req));
+          const served = await opts.apiDocs?.serve(req, {
+            base: at.path,
+            publicBase: at.basePath + at.path,
+            openapiUrl: at.basePath + at.openapi,
+            explorerPath: at.explorer,
+            dev,
+            forgeDir: resolve(opts.forgeDir),
+            page: at.page,
+          });
+          if (served) return withId(served);
+          if (path === at.path && !opts.apiDocs)
+            return withId(Response.json({ message: `The docs page comes with @archlast/forge-dashboard; the OpenAPI document is at ${at.basePath}${at.openapi}` }, { status: 404 }));
+          // Anything else falls through to the app's routes, which may have a page here.
+        }
       }
       if (localFiles && path.startsWith("/_storage/")) {
         const retry = await limited(req, srv, "storage:");

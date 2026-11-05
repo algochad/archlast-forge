@@ -69,10 +69,10 @@ export const SETTINGS: SettingDef[] = [
     name: "API_DOCS",
     group: "Server",
     type: "bool",
-    default: "on in dev, off otherwise",
-    doc: "Serve the OpenAPI document (API_DOCS_PATH/openapi.json), the API docs page and the explorer. It lists every public function and HTTP route.",
+    default: "on in dev; in production when forge/http.ts says http.docs({ production: true })",
+    doc: "Serve the OpenAPI document and the API docs page. Set, it wins over the code. What the document lists is set in code (http.docs({ include, functions })).",
   },
-  { name: "API_DOCS_PATH", group: "Server", type: "string", default: "/_api", doc: "Where the API docs are served." },
+  { name: "API_DOCS_PATH", group: "Server", type: "string", default: "http.docs({ path }), else /_api", doc: "Where the API docs page is served, over what forge/http.ts says." },
   {
     name: "ALLOW_CUSTOM_FUNCTIONS",
     group: "Auth",

@@ -1,0 +1,28 @@
+Subject: [PATCH 2/2] The embedded request builder has no vendor promotion in its empty response panel
+
+Why: before a request is sent, the response panel of the modal layout shows a "Powered by scalar.com" link and a large ASCII-art
+computer. The modal is the only layout the engine uses, inside an app's own documentation page, where neither belongs (and the
+link is the one outbound link in the panel). The other layouts keep both, as upstream has them.
+
+Touches: packages/api-client ResponseEmpty.vue only (two v-if attributes).
+
+---
+diff --git a/packages/api-client/src/v2/blocks/response-block/components/ResponseEmpty.vue b/packages/api-client/src/v2/blocks/response-block/components/ResponseEmpty.vue
+index c0076b3..8a6b6d6 100644
+--- a/packages/api-client/src/v2/blocks/response-block/components/ResponseEmpty.vue
++++ b/packages/api-client/src/v2/blocks/response-block/components/ResponseEmpty.vue
+@@ -47,12 +47,14 @@ const { translate } = useLocalization()
+         </div>
+       </div>
+       <a
++        v-if="layout !== 'modal'"
+         class="gitbook-show scalar-version-number"
+         href="https://www.scalar.com"
+         target="_blank"
+         >{{ translate('apiClient.responseEmpty.poweredByScalarcom') }}</a
+       >
+       <ScalarAsciiArt
++        v-if="layout !== 'modal'"
+         :art="Computer"
+         class="text-c-3" />
+     </div>

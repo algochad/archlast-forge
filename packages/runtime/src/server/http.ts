@@ -22,7 +22,14 @@ export function queryValue(validator: Validator, values: string[]): unknown {
   const one = (raw: string, v: Validator): unknown => {
     if (v.kind === "number") return raw.trim() !== "" && Number.isFinite(Number(raw)) ? Number(raw) : raw;
     if (v.kind === "boolean") return raw === "true" || raw === "1" ? true : raw === "false" || raw === "0" ? false : raw;
-    if (v.kind === "union") return v.members!.some((m) => m.kind === "number") && Number.isFinite(Number(raw)) && raw.trim() !== "" ? Number(raw) : raw;
+    // A literal (or a union with one) is whichever of its values the text spells: `?status=1` for v.literal(1), `?all=true` for v.literal(true).
+    if (v.kind === "literal") return typeof v.value === "string" ? raw : String(v.value) === raw ? v.value : raw;
+    if (v.kind === "union") {
+      const literal = v.members!.find((m) => m.kind === "literal" && String(m.value) === raw);
+      if (literal) return literal.value;
+      if (v.members!.some((m) => m.kind === "null") && raw === "null") return null;
+      return v.members!.some((m) => m.kind === "number") && Number.isFinite(Number(raw)) && raw.trim() !== "" ? Number(raw) : raw;
+    }
     return raw;
   };
   return validator.kind === "array" ? values.map((raw) => one(raw, validator.element!)) : one(values.at(-1)!, validator);

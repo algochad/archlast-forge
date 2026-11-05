@@ -14,7 +14,7 @@ const features: [string, string, Slug][] = [
   ["Sign-in built in", "Email and password out of the box, social sign-in and more from one file, and sessions every function can read.", "auth"],
   ["File storage", "Uploads straight to S3-compatible storage, or files kept on the server's own disk behind signed links.", "storage"],
   ["Scheduling and crons", "Run a function later or on a schedule. Scheduled mutations run exactly once.", "scheduling"],
-  ["HTTP and API docs", "Webhooks and public routes beside your functions, with an OpenAPI document and an explorer generated from them.", "api-docs"],
+  ["HTTP and API docs", "Webhooks and public routes beside your functions, with an OpenAPI document and a docs page, Try it included, generated from them.", "api-docs"],
   ["A dashboard", "Browse and edit data, run functions, read logs, manage users and change settings, from the browser.", "dashboard"],
   ["Tracing and metrics", "Every request timed and traced, with error tracking, SLOs and alerts, kept in your own database.", "observability"],
   ["Backups", "The database and its files on a schedule, to a folder or a bucket, restored from the dashboard or the CLI.", "backups"],

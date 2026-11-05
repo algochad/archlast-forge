@@ -96,9 +96,10 @@ export interface Config {
   adminKey?: string;
   /** Serve /_dashboard and the admin API. Off by default outside dev. */
   dashboard: boolean;
-  /** Serve the OpenAPI document, the API docs page and the explorer at `apiDocsPath`. */
-  apiDocs: boolean;
-  apiDocsPath: string;
+  /** API_DOCS: serve the OpenAPI document and the docs page, or not; unset, the code decides (on in dev, and in production with `http.docs({ production: true })`). */
+  apiDocs?: boolean;
+  /** API_DOCS_PATH: where the docs page is, over what `http.docs({ path })` says. */
+  apiDocsPath?: string;
   authSecret?: string;
   authUrl: string;
   trustedOrigins: string[];
@@ -206,9 +207,9 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (storage === "s3" && !env.S3_ENDPOINT) fail("STORAGE=s3 needs S3_ENDPOINT and S3_BUCKET");
   if (storage === "local" && replicas > 1) fail("STORAGE=local keeps files on this server's disk; with REPLICAS > 1 use S3 (S3_ENDPOINT, S3_BUCKET)");
   if (!dev && !env.BETTER_AUTH_SECRET) fail("BETTER_AUTH_SECRET is required outside dev");
-  const apiDocsPath = (env.API_DOCS_PATH || "/_api").replace(/\/+$/, "");
-  if (!/^\/[A-Za-z0-9._~\/-]+$/.test(apiDocsPath)) fail(`API_DOCS_PATH must be a path like "/_api", got "${env.API_DOCS_PATH}"`);
-  if (reservedPathOf(apiDocsPath)) fail(`API_DOCS_PATH can't be under ${reservedPathOf(apiDocsPath)}, which the engine serves`);
+  const apiDocsPath = env.API_DOCS_PATH ? env.API_DOCS_PATH.replace(/\/+$/, "") : undefined;
+  if (apiDocsPath !== undefined && !/^\/[A-Za-z0-9._~\/-]+$/.test(apiDocsPath)) fail(`API_DOCS_PATH must be a path like "/_api", got "${env.API_DOCS_PATH}"`);
+  if (apiDocsPath && reservedPathOf(apiDocsPath)) fail(`API_DOCS_PATH can't be under ${reservedPathOf(apiDocsPath)}, which the engine serves`);
   const authUrl = env.BETTER_AUTH_URL ?? `http://localhost:${port}`;
   // Over http, Better Auth's cookies aren't marked Secure; behind a TLS proxy that silently weakens sessions.
   if (!dev && !authUrl.startsWith("https://") && !bool(env.ALLOW_INSECURE_HTTP, false))
@@ -249,7 +250,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     maxUploadBytes: int("MAX_UPLOAD_MB", 5120, 1) * 2 ** 20,
     adminKey: env.ADMIN_KEY || undefined,
     dashboard: bool(env.DASHBOARD, dev),
-    apiDocs: bool(env.API_DOCS, dev),
+    apiDocs: env.API_DOCS ? bool(env.API_DOCS, dev) : undefined,
     apiDocsPath,
     customFunctions: bool(env.ALLOW_CUSTOM_FUNCTIONS, dev),
     authSecret: env.BETTER_AUTH_SECRET,

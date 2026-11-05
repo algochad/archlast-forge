@@ -325,14 +325,37 @@ http.route({
 
 ## API docs and OpenAPI
 
-The engine builds an OpenAPI 3.1 document from what runs: every **public** function (`POST /rpc/<module>:<name>`, internal ones left out), every `http.route()` (under `/http`; validators `query`/`body`/`returns` become the schemas), and Nest controllers. Nothing to write by hand.
+The engine builds an OpenAPI 3.1 document from what runs: every **public** function (`POST /rpc/<module>:<name>`, internal ones left out), every `http.route()` (validators `query`/`body`/`returns` become the schemas, with their constraints, enums, descriptions and examples), and Nest controllers (`@Contract`). Nothing to write by hand. It serves the document and one docs page where each operation can be tried ("Try it", loaded only when pressed).
 
-| Setting         | Default                                                                                                                                                  |
-| --------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `API_DOCS`      | on in dev, **off in production** (it advertises every public function; turn on deliberately)                                                             |
-| `API_DOCS_PATH` | `/_api`; cannot be under `/rpc`, `/http`, `/api/auth`, `/_dashboard`, `/_admin`, `/_cli`, `/_storage`, `/_app`, `/health`, `/ready`, `/metrics`, `/otlp` |
+Configure them **in code**, once, in `forge/http.ts`:
 
-`GET /_api` is the docs page, `/_api/openapi.json` the document (ETag, brotli/gzip), `/_api/explorer` the Scalar try-it page. Put prose in `forge/docs/*.mdx` (ordered by file name, titled by the first `# heading`, Markdown + JSX, no `imports`); they show under Guide. Give routes `summary`, `tags` and validators so the docs are useful. `servers` is `BETTER_AUTH_URL` when set.
+```ts
+const http = httpRouter({ root: true });
+http.docs({
+  path: "/docs", // the page; default /_api
+  openapi: "/openapi.json", // default <path>/openapi.json
+  production: true, // serve in production too (default: dev only)
+  include: ["/api/v1"], // the public audience: only these prefixes
+  functions: false, // leave /rpc out of a REST API's docs
+  info: { title: "Acme API", version: "v1", description: "..." },
+  securitySchemes: { oauth: { type: "oauth2", flows: { clientCredentials: { tokenUrl: "/api/auth/oauth2/token", scopes: { "orders:read": "Read orders" } } } } },
+  security: [{ oauth: [] }],
+  errors: { schema: Problem, contentType: "application/problem+json", common: { 401: "unauthorized" } }, // Problem: a named v.object
+  parameters: { idempotencyKey: { in: "header", name: "Idempotency-Key", schema: v.string() } },
+  tags: [{ name: "Orders", description: "..." }],
+  webhooks: { events: { "order.paid": { summary: "...", data: Order } } },
+  page: { title: "Acme", theme: { accent: "#6d28d9" } },
+});
+```
+
+Per route (`http.route({...})` or `@Contract({...})`): `summary`, `tags`, `security: [{ oauth: ["orders:write"] }]`, `errors: { 404: "order_not_found" }`, `parameters: ["idempotencyKey"]`, `responseHeaders`, `status`, `codeSamples`, `hidden: true` (served, not documented), `deprecated`. On Nest: `@ApiSecurity("oauth", scopes)` (put it in your scope guard's decorator so it documents itself) and `@ApiHidden()` (inbound webhooks).
+
+| Setting         | Default                                                                                          |
+| --------------- | ------------------------------------------------------------------------------------------------ |
+| `API_DOCS`      | unset: the code decides (on in dev; in production with `production: true`); set, it wins        |
+| `API_DOCS_PATH` | unset: `http.docs({ path })`, else `/_api`; cannot be under an engine path (`/rpc`, `/http`, ...) |
+
+The docs own only their page, `<path>/_docs/*`, the explorer path and the document: the app's own pages under the same prefix (`/docs/guides`) keep working, and a page or root route at one of the docs' paths is reported (production refuses to start). In dev `openapi.json?audience=all` is the complete document. Put prose in `forge/docs/*.mdx` (front matter `title`, `group`, `order`) and slots in `forge/docs/_slots/` (`header.mdx`, `sidebar-footer.mdx`, `operation-before.mdx`, `operation-after.mdx`). A full-stack app can render the reference in its own layout with `ApiReference` from `@archlast/forge-dashboard/api-docs/react`. Give every documented route `summary`, `tags` and `returns`: dev warns when one is missing.
 
 ## Limits you will meet
 

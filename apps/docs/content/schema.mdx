@@ -77,28 +77,57 @@ Every value that enters or leaves the backend can be checked by a validator: fun
 
 | Validator | TypeScript type | Accepts |
 |---|---|---|
-| `v.string()` | `string` | Any string. |
-| `v.number()` | `number` | A finite number. `NaN` and `Infinity` are rejected. There is no separate integer type. |
+| `v.string(options?)` | `string` | Any string; with options, one that fits them (below). |
+| `v.number(options?)` | `number` | A finite number. `NaN` and `Infinity` are rejected. `{ int: true }` for whole numbers. |
 | `v.boolean()` | `boolean` | `true` or `false`. |
 | `v.null()` | `null` | Only `null`. |
+| `v.literal(value)` | the value's type, such as `"subscription"` | Exactly that string, number or boolean. |
+| `v.enum("a", "b", ...)` | `"a" \| "b" \| ...` | One of these strings (a union of literals). |
 | `v.id("table")` | `Id<"table">` | A string whose table prefix is `table`. |
-| `v.array(element)` | `Infer<element>[]` | An array whose every item passes `element`. |
-| `v.object({ ... })` | the object type | An object with exactly the declared keys. |
+| `v.array(element, options?)` | `Infer<element>[]` | An array whose every item passes `element`. |
+| `v.object({ ... }, meta?)` | the object type | An object with exactly the declared keys. |
 | `v.union(a, b, ...)` | `A \| B \| ...` | A value that passes at least one member. |
+| `v.nullable(inner)` | `T \| null` | A value that passes `inner`, or `null`: present, but not set. |
 | `v.optional(inner)` | `T \| undefined`, and the key may be absent | A missing key, `undefined`, or a value that passes `inner`. |
 | `v.any()` | `any` | Any JSON value, unchecked. Only for data whose shape is not yours to fix: the JSON fields Better Auth's plugins write, a webhook's payload. |
 
-Things that are deliberately not there: there are no literal, bytes, record, bigint or date validators, and `v.any()` is not a way around describing your own data. Store a date as a `number` (milliseconds), an enum as a `v.union` of `v.string()` values checked in your handler, and files in [file storage](storage.html) (a `v.id("_storage")` field). Documents travel as JSON, so a value has to survive `JSON.stringify` anyway.
+Things that are deliberately not there: there are no bytes, record, bigint or date validators, and `v.any()` is not a way around describing your own data. Store a date as a `number` (milliseconds) or an ISO string (`v.string({ format: "date-time" })`), and files in [file storage](storage.html) (a `v.id("_storage")` field). Documents travel as JSON, so a value has to survive `JSON.stringify` anyway.
+
+### Constraints and documentation
+
+The options of `v.string()`, `v.number()` and `v.array()` are **checked** wherever the validator is, like its kind: arguments, `returns`, documents on write, HTTP route and `@Contract` parameters and bodies. They are also written into the [OpenAPI document](api-docs.html).
+
+| Validator | Checked options |
+|---|---|
+| `v.string()` | `minLength`, `maxLength` (characters), `pattern` (a regular expression the string must match, as source text; anchor it with `^…$`), `format`: `"email"`, `"uri"`, `"uuid"`, `"date-time"` (ISO 8601 with an offset or `Z`), `"date"` |
+| `v.number()` | `min`, `max` (inclusive), `exclusiveMin`, `exclusiveMax`, `int` |
+| `v.array()` | `minItems`, `maxItems`, `unique` |
+
+Every builder also takes **documentation**, which checks nothing and goes into the OpenAPI document and the API docs page: `description` (markdown), `title`, `example`, `default` (documentation only: the engine doesn't fill it in), `deprecated`, and `name`. A `name` (`v.object({ ... }, { name: "Price" })`) makes the validator one schema in the document, under that name, referred to from everywhere it is used; two different validators can't share one. For validators built without options, `v.describe(validator, meta)` returns a copy with the documentation added:
+
+```ts
+const Price = v.object(
+  {
+    amount: v.number({ int: true, min: 1, description: "In the smallest unit of the currency (cents)." }),
+    currency: v.string({ pattern: "^[A-Z]{3}$", example: "USD" }),
+  },
+  { name: "Price", description: "What something costs." },
+);
+const kind = v.describe(v.enum("one_time", "subscription"), { description: "Paid once, or on a schedule." });
+const limit = v.optional(v.number({ int: true, min: 1, max: 100, default: 20 }));
+```
+
+A bad `pattern` or a negative length throws where the validator is written, so it fails at load, not at the first call. Validators without options stay exactly as they were (`v.string()` is still `{ kind: "string", optional: false }`).
 
 ### Details that matter
 
 **Objects are strict.** `v.object({ a: v.number() })` rejects any key it does not declare: `args.o.b is not in the validator`. This holds at every nesting level, in arguments and in documents. If you receive a value you do not control, validate the keys you know and keep the rest out.
 
-**`v.optional` is about absence, not `null`.** `v.optional(v.string())` accepts a missing key and `undefined`; it does not accept `null`. To allow `null`, say so: `v.union(v.string(), v.null())`, or both: `v.optional(v.union(v.number(), v.null()))`. Keys set to `undefined` count as absent at the top level of a document or `args` object, and JSON drops them anywhere else.
+**`v.optional` is about absence, not `null`.** `v.optional(v.string())` accepts a missing key and `undefined`; it does not accept `null`. To allow `null`, say so: `v.nullable(v.string())` (the same as `v.union(v.string(), v.null())`), or both: `v.optional(v.nullable(v.number()))`. Keys set to `undefined` count as absent at the top level of a document or `args` object, and JSON drops them anywhere else.
 
 **`optional` only wraps once, and only at a field.** The types allow `v.optional(x)` for a field of `v.object` or a table, an argument, and nowhere else: `v.array(v.optional(v.string()))` and `v.union(v.optional(...))` do not type-check.
 
-**Unions report the member kinds, not the member that was closest.** For `v.union(v.string(), v.number())` and the value `true`, the message is `args.u must be one of string | number, got true`. Prefer unions of distinct primitive kinds, or tag object members with a field that holds a fixed string and branch on it in your handler.
+**Unions report the member kinds, not the member that was closest.** For `v.union(v.string(), v.number())` and the value `true`, the message is `args.u must be one of string | number, got true`; a literal member is shown by its value (`one of "one_time" | "subscription"`). Prefer unions of distinct primitive kinds, or tag object members with a literal field (`kind: v.literal("card")`) and branch on it in your handler.
 
 **Validators are plain data.** `v.string()` returns `{ kind: "string", optional: false }`. That is why they can cross into the dashboard (which draws your schema) and into the function runtime process. Each validator compiles once to a [Zod](https://zod.dev) schema and is cached on the validator object, so reusing one validator constant in many places costs nothing.
 
@@ -118,6 +147,11 @@ Validation errors name the exact path and are sent to the caller unchanged (code
 | Unknown key, nested | `args.o.b is not in the validator` |
 | Missing nested key | `args.o.a is required` |
 | No union member matched | `args.u must be one of string \| number, got true` |
+| Not one of an enum's values | `args.kind must be one of "one_time" \| "subscription", got "monthly"` |
+| Not the literal | `args.version must be "v1", got "v2"` |
+| Out of bounds | `args.limit must be at least 1, got 0`, `… must be at most 100, got 101`, `… must be a whole number, got 1.5` |
+| Too short, too long, wrong format | `args.code must be at least 3 characters, got 2`, `args.code must match ^[A-Z]+$, got "usd"`, `args.email must be an email address, got "ada"` |
+| Array size | `args.events must have at least 1 item, got 0`, `… must not repeat an item` |
 | Arguments are not an object | `args must be an object, got [1]` |
 | Body is not JSON | `The request must be valid JSON` |
 | Document write | `lists.extra is not in the validator` (the path starts with the table name) |
