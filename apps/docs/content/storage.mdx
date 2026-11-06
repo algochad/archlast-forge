@@ -79,7 +79,7 @@ profiles: defineTable({ userId: v.id("users"), avatarId: v.optional(v.id("_stora
 const url = await ctx.storage.getUrl(profile.avatarId); // string | null
 ```
 
-`getUrl` returns a presigned GET URL, or `null` when no `_storage` row has that id. It does not check that the object exists in the bucket: a row whose upload never happened gives a URL that answers 404.
+`getUrl` returns a presigned GET URL, or `null` when no `_storage` row has that id (an id of another table is `null` too). It does not check that the object exists in the bucket: a row whose upload never happened gives a URL that answers 404.
 
 - **Every URL is signed and expires after one hour** (3600 s). The expiry isn't configurable from `ctx.storage`.
 - **There is no public mode.** The engine always signs. Anyone holding the URL can read the file until it expires, whether or not they are signed in, so the signature, not your auth, is the access control. Check access in the function that hands out the URL: only return it to people who may see the file.
@@ -93,9 +93,11 @@ const url = await ctx.storage.getUrl(profile.avatarId); // string | null
 await ctx.storage.delete(storageId);
 ```
 
-Deleting removes the `_storage` row **inside your transaction** and deletes the object from the bucket **after the transaction commits**, so a mutation that fails afterwards keeps both. Deleting an id that doesn't exist does nothing. The document that referenced the file keeps a dangling id unless you clear it too.
+Deleting removes the `_storage` row **inside your transaction** and deletes the object from the bucket **after the transaction commits**, so a mutation that fails afterwards keeps both. Deleting an id that doesn't exist, or that isn't a `_storage` id, does nothing. The document that referenced the file keeps a dangling id unless you clear it too.
 
 The reverse isn't automatic: deleting the document that points at a file does not delete the file. Do both in the same mutation (see the avatar example). Deleting a `_storage` document from the dashboard's Data page does delete the object as well, the same as the Files page's **Delete**.
+
+A `_storage` row's `key` is the object's name as `generateUploadUrl` made it: letters, digits, `.`, `_` and `-`, at most 200 characters, never a path. A write that sets another `key` (from code or the dashboard's Data page) fails validation, and storage refuses to sign, read or delete such a key, so a row can't name an object outside the files, such as a backup under `_backups/` in the same bucket.
 
 ## `S3_PUBLIC_ENDPOINT`
 
@@ -130,7 +132,7 @@ aws s3api put-bucket-cors --bucket my-bucket --cors-configuration '{
 }'
 ```
 
-The RustFS setups that `dev --with s3` and the backend stack create set `RUSTFS_CORS_ALLOWED_ORIGINS` to `*`. Narrow it to your origins in production by editing `compose.yaml`. For other servers, look for their CORS setting. A missing rule shows up in the browser console as a blocked request to the storage host, and `useUploadFile` rejects with a network error.
+The backend stack's `compose.yaml` sets `RUSTFS_CORS_ALLOWED_ORIGINS` to the app's origin (`https://${DOMAIN}` behind Caddy, else `BETTER_AUTH_URL`); add origins there, comma-separated, if other pages upload. `dev --with s3`, which runs on your machine only, allows `*`. For other servers, look for their CORS setting. A missing rule shows up in the browser console as a blocked request to the storage host, and `useUploadFile` rejects with a network error.
 
 ## Size, type and expiry limits
 
@@ -138,7 +140,7 @@ The RustFS setups that `dev --with s3` and the backend stack create set `RUSTFS_
 |---|---|
 | Upload URL lifetime | 1 hour, fixed |
 | Download URL lifetime | 1 hour, fixed (the dashboard's Files page opens 10-minute links) |
-| File size | **Not limited by the engine.** The bytes don't go through it, so `MAX_REQUEST_BYTES` doesn't apply. The server's own limits do (S3 allows 5 GB in a single PUT). |
+| File size | **Not limited by the engine.** The bytes don't go through it, so neither `MAX_REQUEST_BYTES` nor `MAX_UPLOAD_MB` (the built-in storage's limit) applies. A presigned `PUT` can't carry a size condition (only an S3 `POST` policy's `content-length-range` can, which Bun's S3 client doesn't sign), so the server's own limits are the only ones (S3 allows 5 GB in a single PUT). |
 | File type | **Not enforced.** The signature covers the URL and the `host` header only, not the content type or the length. |
 | Resumable or multipart uploads | Not supported. One PUT per file. |
 

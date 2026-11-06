@@ -71,7 +71,7 @@ const SERVICES = {
   },
   redis: { image: "redis:7-alpine", env: {}, volume: "/data", port: 6379, provides: (address: string) => ({ REDIS_URL: `redis://${address}` }) },
   s3: {
-    image: "rustfs/rustfs:latest",
+    image: "rustfs/rustfs:1.0.4",
     env: { RUSTFS_ACCESS_KEY: "forgeadmin", RUSTFS_SECRET_KEY: "forgeadmin", RUSTFS_CORS_ALLOWED_ORIGINS: "*" },
     volume: "/data",
     cmd: ["/data"],
@@ -154,7 +154,7 @@ export function startServices(name: string, services: Service[], opts: { host?: 
   if (services.includes("s3")) {
     // The bucket must exist before the first upload.
     for (let i = 0; i < 30; i++) {
-      const mb = docker(["run", "--rm", "--network", name, "-e", "AWS_ACCESS_KEY_ID=forgeadmin", "-e", "AWS_SECRET_ACCESS_KEY=forgeadmin", "-e", "AWS_DEFAULT_REGION=us-east-1", "amazon/aws-cli", "--endpoint-url", `http://${name}-s3:9000`, "s3", "mb", "s3://forge"]);
+      const mb = docker(["run", "--rm", "--network", name, "-e", "AWS_ACCESS_KEY_ID=forgeadmin", "-e", "AWS_SECRET_ACCESS_KEY=forgeadmin", "-e", "AWS_DEFAULT_REGION=us-east-1", "amazon/aws-cli:2.39.3", "--endpoint-url", `http://${name}-s3:9000`, "s3", "mb", "s3://forge"]);
       if (mb.ok || /BucketAlready/.test(mb.err)) break;
       Bun.sleepSync(1000);
     }
@@ -173,11 +173,23 @@ export interface RunOptions {
   envFile?: string;
 }
 
+/** The user the engine image runs as: the base image's `bun`. */
+const ENGINE_UID = "1000:1000";
+
+/**
+ * Engine images before the engine stopped running as root made their volumes root's: hand one that is to the engine's user, once (a
+ * container of the same image, as root, that only does that).
+ */
+function ownVolume(image: string, volume: string) {
+  docker(["run", "--rm", "--user", "root", "--entrypoint", "sh", "-v", `${volume}:/v`, image, "-c", `[ "$(stat -c %u:%g /v)" = "${ENGINE_UID}" ] || chown -R ${ENGINE_UID} /v`]);
+}
+
 /** Runs the engine container. In dev, forge/ is mounted read-only and the engine watches it. */
 export function runEngine(o: RunOptions) {
   const name = containerName(o.forgeDir, o.dev);
   const image = o.image ?? ensureEngineImage();
   docker(["rm", "-f", name]);
+  for (const volume of [`${name}-data`, ...(o.dev ? [`${name}-modules`] : [])]) ownVolume(image, volume);
   const serviceEnv = startServices(name, o.services ?? []).env;
   const env = { PORT: "3000", DATA_DIR: "/data", ...serviceEnv, ...o.env };
   const envFile = o.envFile ?? join(o.forgeDir, ".env");

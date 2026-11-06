@@ -1,6 +1,6 @@
 // Runs inside the engine container. The host's forge/ is mounted read-only at SRC; the engine keeps a copy at APP
 // (its own filesystem), installs its dependencies there for Linux, and serves it.
-import { cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
+import { accessSync, constants, cpSync, existsSync, mkdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from "node:fs";
 import { dirname, join, relative } from "node:path";
 import type { AppHost } from "@archlast/forge-runtime/server";
 import { loadFramework } from "./app";
@@ -105,9 +105,26 @@ export async function prepare() {
   if (loadProjectConfig(SRC)?.mode === "framework") await prepareApp();
 }
 
+/**
+ * The engine image runs as `bun`, not root. A volume an earlier image made (as root) can't be written then: say how to hand it over, instead
+ * of failing later on the first write.
+ */
+function checkWritable(dir: string) {
+  try {
+    mkdirSync(dir, { recursive: true });
+    accessSync(dir, constants.W_OK);
+  } catch {
+    fail(
+      `${dir} isn't writable by the engine's user (bun, uid 1000). A volume made by an engine image before it stopped running as root belongs to root; ` +
+        `hand it over once with \`docker compose run --rm --user root --entrypoint chown app -R 1000:1000 ${dir}\` (\`archlast-forge dev\` and \`start\` do this themselves).`,
+    );
+  }
+}
+
 /** `engine serve`: the container's main process. */
 export async function engineServe(dev: boolean) {
   if (!existsSync(join(SRC, "schema.ts"))) fail(`No schema.ts in ${SRC}. Mount your forge/ directory there.`);
+  if (process.getuid?.() !== 0) for (const dir of [process.env.DATA_DIR ?? "/data", APP, join(APP, "node_modules")]) checkWritable(dir);
   sync();
   if (!existsSync(join(APP, "node_modules", "@archlast", "forge-runtime"))) installDeps();
   const env = { ...process.env, DATA_DIR: process.env.DATA_DIR ?? "/data" };

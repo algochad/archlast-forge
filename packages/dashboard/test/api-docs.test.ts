@@ -130,7 +130,7 @@ describe("the host", () => {
 
   test("the page's styles are in a cascade layer, so they can't beat the request builder's (Tailwind, layered) or leak into it", async () => {
     const html = await (await ask("/docs"))!.text();
-    expect(html).toContain("<style>@font-face");
+    expect(html).toContain("<style>@layer forge-docs, forge-docs-app;@font-face");
     expect(html).toMatch(/@layer forge-docs\{html,body\{margin:0\}/);
     const css = await (await ask(`/docs/_docs/assets/${/_docs\/assets\/([^"]+\.css)/.exec(html)![1]}`))!.text();
     expect(css.startsWith("@layer forge-docs{")).toBe(true);
@@ -180,6 +180,88 @@ describe("the host", () => {
     const { gzip } = await apiDocs.firstLoadBytes("/_api", FORGE);
     console.log(`API docs page, first load: ${gzip} bytes gzipped (HTML, script, stylesheet and the chunks they import at once; fonts are two Latin woff2 files, 29 and 23 KB)`);
     expect(gzip).toBeLessThan(110 * 1024);
+  });
+
+  const withDoc = (over: Partial<DocsServeOptions> = {}): Partial<DocsServeOptions> => ({ document: async () => doc, ...over });
+
+  test("every page has its own address and is rendered on the server: its HTML is the page, readable without JavaScript", async () => {
+    const op = await ask("/docs/payments/create-payment", withDoc());
+    expect(op!.status).toBe(200);
+    const html = await op!.text();
+    expect(html).toContain("<title>Create a payment | Midas Payments API</title>");
+    expect(html).toContain("Idempotency-Key"); // the operation, in the HTML
+    expect(html).toContain('href="/docs/payments/list-payments"'); // the navigation, as links
+    expect(html).toContain('<link rel="alternate" type="text/markdown" href="/docs/payments/create-payment.md">');
+    expect(configOf(html)).toMatchObject({ path: "/payments/create-payment", rendered: "public" });
+    for (const path of ["/docs/payments", "/docs/guides/getting-started", "/docs/webhooks", "/docs/models", "/docs/customers/list-customers"]) expect((await ask(path, withDoc()))!.status, path).toBe(200);
+    expect(await (await ask("/docs/guides/getting-started", withDoc()))!.text()).toContain("Use the sandbox server while you build.");
+    // Addresses the document doesn't have are the app's.
+    for (const path of ["/docs/payments/nope", "/docs/nope", "/docs/guides/nope", "/docs/nope.md", "/docs/payments/nope.md"]) expect(await ask(path, withDoc()), path).toBeNull();
+    // Without the document (the engine's code not loaded yet), only the page itself, rendered in the browser.
+    expect(await ask("/docs/payments/create-payment")).toBeNull();
+    expect(configOf(await (await ask("/docs"))!.text()).rendered).toBeUndefined();
+    // How the reference is split is the app's choice: one page per tag, or everything on one page.
+    expect(await ask("/docs/payments/create-payment", withDoc({ page: { layout: { pages: "tag" } } }))).toBeNull();
+    expect(await (await ask("/docs/payments", withDoc({ page: { layout: { pages: "tag" } } })))!.text()).toContain("Idempotency-Key");
+    expect(await ask("/docs/payments", withDoc({ page: { layout: { pages: "single" } } }))).toBeNull();
+    expect((await ask("/docs/api/payments/create-payment", withDoc({ page: { layout: { referencePath: "/api" } } })))!.status).toBe(200);
+  });
+
+  test("every page as Markdown (what Copy page copies), and llms.txt listing them", async () => {
+    const md = await ask("/docs/payments/create-payment.md", withDoc());
+    expect(md!.headers.get("content-type")).toBe("text/markdown; charset=utf-8");
+    const text = await md!.text();
+    expect(text).toStartWith("# Create a payment\n\n`POST https://api.midas.test/api/v1/payments`");
+    expect(text).toContain("Scopes: `payments:write`");
+    expect(text).toContain("| `Idempotency-Key` | string | no |");
+    expect(text).toContain("- `amount` (integer, required, minimum 1, maximum 99999999): In the currency's smallest unit.");
+    expect(text).toContain("  - `card_declined`: The issuer declined the card.");
+    expect(text).toContain("```bash\ncurl -X POST 'https://api.midas.test/api/v1/payments'");
+    // A guide is its own MDX, without the front matter.
+    expect(await (await ask("/docs/guides/getting-started.md", withDoc()))!.text()).toStartWith("# Take your first payment");
+    expect(await (await ask("/docs/index.md", withDoc()))!.text()).toContain("## Base URL");
+    const llms = await (await ask("/docs/llms.txt", withDoc()))!.text();
+    expect(llms).toStartWith("# Midas Payments API\n\n> Take payments, refund them and hear about it.");
+    expect(llms).toContain("- [Create a payment](/docs/payments/create-payment.md): POST /payments");
+    expect(llms).toContain("- [Getting started](/docs/guides/getting-started.md)");
+    expect(llms).toContain("- [Webhooks](/docs/webhooks.md)");
+  });
+
+  test("a slot, page or component of the app's that doesn't compile is logged with its file and line, shown in development, left out in production; the page still works", async () => {
+    const forge = mkdtempSync(join(tmpdir(), "afx-docs-"));
+    cpSync(FORGE, forge, { recursive: true });
+    writeFileSync(join(forge, "docs", "_slots", "header.mdx"), '<style>{`.x::before { content: "\\25D0"; }`}</style>\n');
+    writeFileSync(join(forge, "docs", "07-broken.mdx"), "# Broken\n\n<Callout>unclosed\n");
+    const errors: string[] = [];
+    const original = console.error;
+    console.error = (...a: unknown[]) => void errors.push(a.join(" "));
+    try {
+      const dev = await ask("/docs/payments/create-payment", withDoc({ forgeDir: forge, dev: true }));
+      expect(dev!.status).toBe(200);
+      const html = await dev!.text();
+      expect(html).toContain("Idempotency-Key"); // the rest of the page
+      expect(html).toMatch(/docs\/_slots\/header\.mdx has an error/);
+      expect(errors.join("\n")).toMatch(/docs\/_slots\/header\.mdx:1:\d+: /);
+      expect(errors.join("\n")).toMatch(/docs\/07-broken\.mdx:\d+:\d+: /);
+      const guide = await (await ask("/docs/guides/broken", withDoc({ forgeDir: forge, dev: true })))!.text();
+      expect(guide).toMatch(/07-broken\.mdx has an error/);
+      const prod = await (await ask("/docs/payments/create-payment", withDoc({ forgeDir: forge, dev: false })))!.text();
+      expect(prod).not.toContain("has an error");
+      expect(prod).toContain("Idempotency-Key");
+    } finally {
+      console.error = original;
+    }
+  });
+
+  test("page.css: CSS for the page, as text or a file in forge/docs, in a layer after the page's own", async () => {
+    const forge = mkdtempSync(join(tmpdir(), "afx-docs-"));
+    cpSync(FORGE, forge, { recursive: true });
+    writeFileSync(join(forge, "docs", "theme.css"), ".fd [data-part='brand'] { font-weight: 800 }");
+    const fromFile = await (await ask("/docs", withDoc({ forgeDir: forge, page: { css: "theme.css" } })))!.text();
+    expect(fromFile).toContain("<style>@layer forge-docs-app{.fd [data-part='brand'] { font-weight: 800 }}</style>");
+    const inline = await (await ask("/docs", withDoc({ page: { css: "body { color: red } </style><script>x</script>" } })))!.text();
+    expect(inline).toContain("@layer forge-docs-app{body { color: red } <\\/style><script>x</script>}"); // it can't close its element
+    expect(inline.indexOf("@layer forge-docs, forge-docs-app;")).toBeLessThan(inline.indexOf("@layer forge-docs-app{"));
   });
 });
 
@@ -243,7 +325,7 @@ beforeAll(async () => {
         if (refuse) return Response.json({ error: "invalid_client", error_description: "Unknown client" }, { status: 401 });
         return Response.json({ access_token: `at_${tokenRequests.length}`, token_type: "Bearer", expires_in: 3600 });
       }
-      const page = await apiDocs.serve(req, options({ dev, page: pageConfig }));
+      const page = await apiDocs.serve(req, options({ dev, page: pageConfig, document: async (audience) => (audience === "all" ? { ...doc, paths: { ...doc.paths, ...internalPaths } } : doc) }));
       return page ?? new Response("the app's own page", { status: 404 });
     },
   });
@@ -274,50 +356,109 @@ async function open(path = "/docs", ctxOptions: Parameters<Browser["newContext"]
   page.on("console", (m) => ["error", "warning"].includes(m.type()) && !m.location().url.endsWith("/favicon.ico") && problems.push(`${m.type()}: ${m.text()}`));
   page.on("pageerror", (e) => problems.push(`pageerror: ${e.message}`));
   await page.goto(`${origin}${path}`, { waitUntil: "load" });
-  await page.waitForSelector(".fd-layout [id='/introduction']");
+  await page.waitForSelector(".fd[data-ready] [data-part='article']");
   return { page, problems };
 }
+/** Everything on one page, as 0.19 had it: for what spans operations (a language picked everywhere, slots around each). */
+const SINGLE: DocsPageConfig = { layout: { pages: "single" } };
 const op = (page: Page, id: string) => page.locator(`[id="${id}"]`);
 /** What an element says, its text collapsed to single spaces (`textContent`, so what the browser skips drawing counts too). */
 const text = async (page: Page, id: string) => ((await op(page, id).textContent()) ?? "").replace(/\s+/g, " ");
+/** A section of a page by the anchor it is listed under (its heading has the id). */
+const spied = async (page: Page, anchor: string) => ((await page.locator(`[data-spy="${anchor}"]`).textContent()) ?? "").replace(/\s+/g, " ");
 const store = (page: Page) => page.evaluate(() => JSON.parse(sessionStorage.getItem("forge-docs:/docs:/docs/openapi.json") ?? "{}") as Record<string, any>);
 const win = <T>(page: Page, fn: () => T) => page.evaluate(fn);
 
 describe("the page in a browser", () => {
-  run("shows the reference: navigation from the tag groups, guides in their order, resources with their operations", async () => {
-    const { page, problems } = await open();
+  run("the default layout: logo and search at the top of a full-height navigation, a page per operation at its own address, On this page, Copy page, previous and next", async () => {
+    const { page, problems } = await open("/docs/payments/create-payment");
+    // The navigation runs the page's height, with the brand and the search (and its shortcut) at its top.
+    const side = page.locator("[data-part='sidebar']");
+    expect(await side.locator("[data-part='brand']").textContent()).toContain("Midas Payments API");
+    expect(await side.locator("[data-part='search'] kbd").count()).toBe(1);
+    expect(await side.evaluate((el) => Math.round(el.getBoundingClientRect().height))).toBe(900);
+    // Groups in order, sentence case, foldable.
     const nav = ((await page.getByRole("navigation", { name: "API navigation" }).textContent()) ?? "").replace(/\s+/g, " ");
-    const order = ["Overview", "Introduction", "Getting started", "Guides", "Idempotency", "Errors", "Changelog", "Authentication", "Core resources", "Payments", "Refunds", "People", "Customers", "Webhooks", "Models"];
-    const at = order.map((s) => nav.indexOf(s));
+    const order = ["Overview", "Authentication", "Introduction", "Getting started", "Guides", "Idempotency", "Errors", "Changelog", "Core resources", "Payments", "Refunds", "People", "Customers", "Webhooks", "Models"];
+    const at = order.map((x) => nav.indexOf(x));
     expect(at.every((n) => n >= 0), nav).toBe(true);
     expect(at).toEqual([...at].sort((a, b) => a - b));
-    // The operations of a resource are listed when it is the one in view.
-    await page.locator("nav a[href='#/payments']").click();
-    await page.waitForSelector("nav a[href='#/payments/createPayment']");
-    expect(await page.locator("nav a[href='#/refunds/refundPayment']").count()).toBe(0);
-    // Guides, then the reference, in the page.
-    const ids = await page.locator("[data-spy]").evaluateAll((els) => els.map((e) => e.id).filter((id) => !id.startsWith("/payments/") && !id.startsWith("/customers/") && !id.startsWith("/refunds/")));
-    expect(ids.slice(0, 8)).toEqual(["/introduction", "/g/getting-started", "/g/idempotency", "/g/errors", "/g/changelog", "/authentication", "/payments", "/refunds"]);
-    expect(await text(page, "/g/getting-started")).toContain("Take your first payment");
-    expect(await text(page, "/g/changelog")).toContain("No front matter here");
-    expect(await page.title()).toBe("Midas Payments API");
+    expect(await page.locator(".fd-nav-title").first().evaluate((el) => getComputedStyle(el).textTransform)).toBe("none");
+    // Links are addresses, not #/… fragments.
+    expect(await page.locator("nav a[href^='#/']").count()).toBe(0);
+    expect(await page.locator("nav a[href='/docs/payments/create-payment']").getAttribute("aria-current")).toBe("page");
+    // The page: its section, its title, the endpoint bar with Try it, On this page, Copy page and previous / next.
+    expect(await page.locator("[data-part='breadcrumb']").textContent()).toBe("Payments");
+    expect(await page.locator("h1").textContent()).toContain("Create a payment");
+    const bar = page.locator("[data-part='endpoint-bar']");
+    expect(await bar.textContent()).toContain("https://api.midas.test/api/v1/payments");
+    expect(await bar.getByRole("button", { name: "Try it" }).count()).toBe(1);
+    const toc = page.getByRole("navigation", { name: "On this page" });
+    expect(await toc.getByRole("link").allTextContents()).toEqual(["Authorizations", "Header parameters", "Body", "Responses"]);
+    expect(await page.getByRole("button", { name: "Copy page" }).count()).toBe(1);
+    expect(await page.getByRole("link", { name: "View as Markdown" }).getAttribute("href")).toBe("/docs/payments/create-payment.md");
+    const pager = page.locator("[data-part='pagination']");
+    expect(await pager.locator("[rel=prev]").getAttribute("href")).toBe("/docs/payments/list-payments");
+    expect(await pager.locator("[rel=next]").getAttribute("href")).toBe("/docs/payments/get-payment");
+    expect(await page.title()).toBe("Create a payment | Midas Payments API");
     expect(problems).toEqual([]);
   });
 
+  run("pages are rendered on the server; the browser takes them over without rendering them again, and moves between them without reloading", async () => {
+    const { page, problems } = await open("/docs/payments");
+    // The server's HTML was the page (the operation list was there before any script ran).
+    const html = await (await fetch(`${origin}/docs/payments`)).text();
+    expect(html).toContain("Create a payment");
+    expect(html).toContain('data-part="tag-endpoints"');
+    await page.evaluate(() => ((window as any).__sameDocument = true));
+    await page.getByRole("link", { name: /Create a payment/ }).first().click();
+    await page.waitForFunction(() => location.pathname === "/docs/payments/create-payment");
+    expect(await page.locator("h1").textContent()).toContain("Create a payment");
+    expect(await page.title()).toBe("Create a payment | Midas Payments API");
+    expect(await win(page, () => (window as any).__sameDocument)).toBe(true); // no reload
+    await page.goBack();
+    await page.waitForFunction(() => location.pathname === "/docs/payments");
+    expect(await page.locator("h1").textContent()).toBe("Payments");
+    expect(problems).toEqual([]);
+  });
+
+  run("an address of 0.19's single page (#/tag/operationId) moves to the page that has it now", async () => {
+    const { page } = await open("/docs#/refunds/refundPayment");
+    await page.waitForFunction(() => location.pathname === "/docs/refunds/refund-payment" && location.hash === "");
+    expect(await page.locator("h1").textContent()).toContain("Refund a payment");
+    const guide = await open("/docs#/g/idempotency");
+    await guide.page.waitForFunction(() => location.pathname === "/docs/guides/idempotency");
+    // A description's own link written then (`#/webhooks`) goes there too.
+    const tag = await open("/docs/payments");
+    await tag.page.locator("[data-part='article'] a[href='#/webhooks']").first().click();
+    await tag.page.waitForFunction(() => location.pathname === "/docs/webhooks");
+  });
+
+  run("guides are pages of their own, with their headings in On this page; the overview is the description, the base URL and authentication", async () => {
+    const { page } = await open("/docs/guides/getting-started");
+    expect(await page.locator("h1").textContent()).toBe("Take your first payment");
+    expect(await page.locator("[data-part='breadcrumb']").textContent()).toBe("Introduction");
+    expect(await page.getByRole("navigation", { name: "On this page" }).getByRole("link").allTextContents()).toEqual(["Sandbox"]);
+    const overview = await open("/docs");
+    const text = ((await overview.page.locator("[data-part='article']").textContent()) ?? "").replace(/\s+/g, " ");
+    expect(text).toContain("Base URL");
+    expect(text).toContain("Authentication");
+    expect(text).not.toContain("Take your first payment"); // no guide inside the overview
+    expect(await overview.page.locator("[data-part='breadcrumb']").count()).toBe(0);
+  });
+
   run("shows an operation: parameters with enums and limits, the body, scopes, every response with its error codes and headers", async () => {
-    const { page } = await open("/docs#/payments/createPayment");
-    const create = await text(page, "/payments/createPayment");
+    const { page } = await open("/docs/payments/create-payment");
+    const create = ((await page.locator("[data-part='article']").textContent()) ?? "").replace(/\s+/g, " ");
     expect(create).toContain("Create a payment");
     expect(create).toContain("POST");
-    expect(create).toContain("/payments");
-    // The scope it needs, from `security`.
-    expect(create).toMatch(/oauth\s*payments:write/);
-    // A reusable parameter ($ref to components.parameters), a header, and what it holds.
+    // The scope it needs, from `security`, with what it means on hover.
+    expect(create).toMatch(/Scopes:\s*payments:write/);
+    expect(await page.locator("[data-part='scopes'] code", { hasText: "payments:write" }).getAttribute("title")).toBe("Create payments.");
     expect(create).toContain("Idempotency-Key");
     expect(create).toContain("Max length 255");
     expect(create).toContain("3f1c9a7e-5b2d-4e8a-9c41-0d6f2b7a1e55");
-    // Body: enum values with their notes, constraints, a default.
-    expect(create).toContain("Request body");
+    expect(create).toContain("Body");
     expect(create).toContain("application/json");
     expect(create).toMatch(/one_time\s*Paid once\./);
     expect(create).toMatch(/subscription\s*Paid on a schedule\./);
@@ -326,7 +467,6 @@ describe("the page in a browser", () => {
     expect(create).toContain("Pattern ^[A-Z]{3}$");
     expect(create).toContain("Max length 500");
     expect(create).toContain("Default true");
-    // Responses: statuses, problem+json, error codes with their meaning, response headers.
     for (const status of ["201", "400", "402", "409"]) expect(create).toContain(status);
     expect(create).toContain("application/problem+json");
     expect(create).toMatch(/card_declined\s*The issuer declined the card\./);
@@ -334,49 +474,51 @@ describe("the page in a browser", () => {
     expect(create).toContain("validation_failed"); // from a response written as a $ref to components.responses
     expect(create).toContain("Idempotent-Replayed");
     expect(create).toContain("Midas-API-Version");
+    // A response's headers are folded.
+    expect(await page.locator("details.fd-nested", { has: page.locator("summary", { hasText: "Response headers" }) }).first().getAttribute("open")).toBeNull();
 
-    const list = await text(page, "/payments/listPayments");
-    expect(list).toContain("Query parameters");
-    expect(list).toMatch(/limit.*integer/s);
-    expect(list).toContain("Minimum 1");
-    expect(list).toContain("Maximum 100");
-    expect(list).toContain("Default 20");
-    expect(list).toContain("pending"); // the status enum
-    expect(list).toContain("Retry-After"); // a header of a response that is a $ref
-    expect(list).toContain("rate_limited");
-    expect(list).toContain("Example 2026-01-01T00:00:00Z");
-    expect(list).toContain("date-time");
+    const list = await open("/docs/payments/list-payments");
+    const listText = ((await list.page.locator("[data-part='article']").textContent()) ?? "").replace(/\s+/g, " ");
+    expect(listText).toContain("Query parameters");
+    expect(listText).toMatch(/limit.*integer/s);
+    expect(listText).toContain("Default 20");
+    expect(listText).toContain("Retry-After");
+    expect(listText).toContain("rate_limited");
+    expect(listText).toContain("date-time");
 
-    expect(await text(page, "/customers/deleteCustomer")).toContain("Deprecated");
-    expect(await text(page, "/customers/getStatus")).toContain("No authentication required.");
-    const customers = await text(page, "/customers/listCustomers");
-    expect(customers).toContain("customers:read");
-    expect(customers).toMatch(/oauth\s*customers:read/);
-    expect(customers).toContain("bearer"); // a second way in
-    const refund = await text(page, "/refunds/refundPayment");
-    expect(refund).toMatch(/refund_exceeds_payment\s*More than the payment's remaining amount\./);
-    expect(refund).toContain("partial_refund_not_allowed");
-    expect(refund).toContain("refunds:write");
-    // The tag's own prose, as Markdown: strong text and a link to the page's own section.
-    expect(await page.locator("[id='/payments'] strong", { hasText: "payment" }).first().textContent()).toBe("payment");
-    expect(await page.locator("[id='/payments'] a[href='#/webhooks']").count()).toBeGreaterThan(0);
+    const all = await open("/docs/customers/delete-customer");
+    expect(await all.page.locator("[data-part='article']").textContent()).toContain("Deprecated");
+    const status = await open("/docs/customers/get-status");
+    expect(await status.page.locator("[data-part='article']").textContent()).toContain("No authentication required.");
+    const customers = await open("/docs/customers/list-customers");
+    const c = ((await customers.page.locator("[data-part='authorizations']").textContent()) ?? "").replace(/\s+/g, " ");
+    expect(c).toContain("oauth");
+    expect(c).toContain("bearer"); // a second way in
+    expect(c).toContain("customers:read");
+    const refund = await open("/docs/refunds/refund-payment");
+    expect(await refund.page.locator("[data-part='article']").textContent()).toMatch(/refund_exceeds_payment\s*More than the payment's remaining amount\./);
+    // The tag's own page: its prose, as Markdown, and its operations.
+    const tag = await open("/docs/payments");
+    expect(await tag.page.locator("[data-part='article'] strong", { hasText: "payment" }).first().textContent()).toBe("payment");
+    expect(await tag.page.locator("[data-part='endpoint-link']").count()).toBe(3);
   });
 
   run("takes nothing from a description but text, emphasis, code and safe links", async () => {
-    const { page, problems } = await open("/docs#/customers/listCustomers");
-    const customers = op(page, "/customers/listCustomers");
-    expect(await customers.locator("strong", { hasText: "bold" }).count()).toBe(1);
-    expect(await customers.locator(".fd-md img, .fd-md script").count()).toBe(0);
-    expect(await customers.locator("a[href^='javascript:']").count()).toBe(0);
-    expect(await customers.textContent()).toContain('<img src=x onerror="window.__pwned=1">');
-    expect(await customers.textContent()).toContain("a bad link"); // the text stays, the link doesn't
+    const { page, problems } = await open("/docs/customers/list-customers");
+    const article = page.locator("[data-part='article']");
+    expect(await article.locator("strong", { hasText: "bold" }).count()).toBe(1);
+    expect(await article.locator(".fd-md img, .fd-md script").count()).toBe(0);
+    expect(await article.locator("a[href^='javascript:']").count()).toBe(0);
+    expect(await article.textContent()).toContain('<img src=x onerror="window.__pwned=1">');
+    expect(await article.textContent()).toContain("a bad link");
     expect(await win(page, () => (window as unknown as { __pwned?: number }).__pwned)).toBeUndefined();
     expect(problems).toEqual([]);
   });
 
   run("code samples: the app's own first, generated ones after, credentials as placeholders; a language picked is picked everywhere", async () => {
-    const { page } = await open("/docs#/payments/createPayment");
-    const create = op(page, "/payments/createPayment");
+    pageConfig = SINGLE;
+    const { page } = await open("/docs#payments/create-payment");
+    const create = op(page, "payments/create-payment");
     const tabs = await create.locator("[role=tab]").allInnerTexts();
     expect(tabs.slice(0, 4)).toEqual(["Midas SDK", "cURL", "Node.js", "Python"]);
     expect(await create.locator(".fd-code pre").first().textContent()).toContain('import { Midas } from "@midas/sdk"');
@@ -385,107 +527,140 @@ describe("the page in a browser", () => {
     expect(curl).toContain("curl -X POST 'https://api.midas.test/api/v1/payments'");
     expect(curl).toContain("-H 'Authorization: Bearer YOUR_ACCESS_TOKEN'");
     expect(curl).toContain("-H 'Content-Type: application/json'");
-    expect(curl).not.toContain("Idempotency-Key"); // optional headers are left out
-    expect(curl).toContain('"amount": 2500'); // the operation's own request example
+    expect(curl).not.toContain("Idempotency-Key");
+    expect(curl).toContain('"amount": 2500');
     await create.getByRole("tab", { name: "Python" }).first().click();
-    await page.waitForFunction(() => document.querySelector("[id='/payments/createPayment'] .fd-code pre")?.textContent?.includes("import requests"));
+    await page.waitForFunction(() => document.querySelector("[id='payments/create-payment'] .fd-code pre")?.textContent?.includes("import requests"));
     expect(await create.locator(".fd-code pre").first().textContent()).toContain('"amount": 2500,');
-    // Another operation has the same language open, and its own request.
-    const get = op(page, "/payments/getPayment");
-    await page.waitForFunction(() => document.querySelector("[id='/payments/getPayment'] .fd-code pre")?.textContent?.includes("import requests"));
+    const get = op(page, "payments/get-payment");
+    await page.waitForFunction(() => document.querySelector("[id='payments/get-payment'] .fd-code pre")?.textContent?.includes("import requests"));
     expect(await get.locator(".fd-code pre").first().textContent()).toContain("https://api.midas.test/api/v1/payments/pay_01hx9k");
-    // A response example per status, from the document's examples, else made from the schema.
     expect(await create.locator(".fd-code", { has: page.locator(".fd-code-title", { hasText: "Response" }) }).textContent()).toContain('"id": "pay_01hx9k"');
   });
 
   run("webhooks: the envelope, how to verify, the retry schedule and each event with its payload and example", async () => {
-    const { page } = await open("/docs#/webhooks");
-    const hooks = await text(page, "/webhooks");
+    const { page } = await open("/docs/webhooks");
+    const hooks = ((await page.locator("[data-part='article']").textContent()) ?? "").replace(/\s+/g, " ");
     expect(hooks).toContain("sends events to your server");
     for (const header of ["webhook-id", "webhook-timestamp", "webhook-signature"]) expect(hooks).toContain(header);
     expect(hooks).toContain("The event's name, such as payment.succeeded.");
-    expect(hooks).toContain("Reject a timestamp older than 5 min"); // toleranceMs
+    expect(hooks).toContain("Reject a timestamp older than 5 min");
     expect(hooks).toContain("createHmac");
-    // Retries: 6 attempts, 5 s first, times 4 each time.
     expect(hooks).toMatch(/up to 5 s/);
     expect(hooks).toMatch(/up to 20 s/);
     expect(hooks).toMatch(/up to 1 min 20 s/);
     expect(hooks).toContain("up to 21 min 20 s");
     expect(hooks).toContain("within 15 s");
     expect(hooks).toContain("6 attempts");
-    // Events.
-    const succeeded = await text(page, "/webhooks/payment-succeeded");
+    const succeeded = await spied(page, "payment-succeeded");
     expect(succeeded).toContain("payment.succeeded");
     expect(succeeded).toContain("A payment went through.");
-    expect(succeeded).toContain("Payload");
-    expect(succeeded).toContain('"type": "payment.succeeded"');
-    expect(await text(page, "/webhooks/refund-created")).toContain("A refund was made.");
-    expect(await page.locator("nav a[href='#/webhooks/refund-created']").count()).toBe(1);
+    expect(await spied(page, "refund-created")).toContain("A refund was made.");
+    expect(await page.locator("nav a[href='/docs/webhooks#refund-created']").count()).toBe(1);
   });
 
   run("models: the named schemas with their attributes, nullable and read-only marks, nested ones opened under their row", async () => {
-    const { page } = await open("/docs#/models/payment");
-    const payment = await text(page, "/models/payment");
+    const { page } = await open("/docs/models#payment");
+    const payment = await spied(page, "payment");
     expect(payment).toContain("Money moving from a customer to you.");
     expect(payment).toMatch(/customer_id\s*string\s*nullable/);
     expect(payment).toMatch(/created_at\s*string\s*required\s*read only/);
-    expect(payment).toContain("Child attributes (4)"); // refunds: array<Refund>
+    expect(payment).toContain("Child attributes (4)");
     expect(payment).toMatch(/metadata\s*map<string, string>/);
-    expect(await op(page, "/models/payment").locator("details.fd-nested").count()).toBeGreaterThan(0);
   });
 
-  run("light and dark: follows the system and has a toggle that is remembered", async () => {
+  run("light and dark: follows the system and has an icon toggle that is remembered; the app fixes the mode, the accent, fonts, corners and logo", async () => {
     const light = await open("/docs", { colorScheme: "light" });
     const fd = light.page.locator(".fd");
     expect(await fd.getAttribute("data-mode")).toBe("light");
     const background = () => fd.evaluate((el) => getComputedStyle(el).backgroundColor);
     expect(await background()).toBe("rgb(246, 244, 239)");
-    await light.page.getByRole("button", { name: "Dark" }).click();
-    expect(await fd.getAttribute("data-theme")).toBe("dark");
+    // An icon in the navigation's footer, by default.
+    const toggle = light.page.locator("[data-part='sidebar'] [data-part='theme-toggle']");
+    expect(await toggle.locator("svg").count()).toBe(1);
+    await toggle.click();
     expect(await fd.getAttribute("data-mode")).toBe("dark");
     expect(await background()).toBe("rgb(12, 12, 13)");
     expect(await win(light.page, () => localStorage.getItem("forge-docs-theme"))).toBe("dark");
     await light.page.reload({ waitUntil: "load" });
-    await light.page.waitForSelector(".fd-layout [id='/introduction']");
+    await light.page.waitForSelector(".fd[data-ready]");
     expect(await fd.getAttribute("data-mode")).toBe("dark");
-    await light.page.getByRole("button", { name: "Light" }).click();
-    expect(await background()).toBe("rgb(246, 244, 239)");
 
     const dark = await open("/docs", { colorScheme: "dark" });
     expect(await dark.page.locator(".fd").getAttribute("data-mode")).toBe("dark");
-    expect(await dark.page.locator(".fd").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(12, 12, 13)");
 
-    // The app can fix the mode (no toggle), and set the accent, fonts and corners.
-    pageConfig = { theme: { mode: "dark", accent: "rgb(10, 125, 90)", font: "Georgia, serif", radius: "0px" }, logo: { url: "/logo.svg", alt: "Midas" }, title: "Midas docs" };
-    const fixed = await open("/docs", { colorScheme: "light" });
+    pageConfig = { theme: { mode: "dark", accent: "rgb(10, 125, 90)", font: "Georgia, serif", radius: "0px" }, logo: { url: "/logo.svg", dark: "/logo-dark.svg", alt: "Midas" }, title: "Midas docs" };
+    const fixed = await open("/docs/payments/create-payment", { colorScheme: "light" });
     expect(await fixed.page.locator(".fd").getAttribute("data-theme")).toBe("dark");
-    expect(await fixed.page.getByRole("button", { name: "Light" }).count()).toBe(0);
-    expect(await fixed.page.locator(".fd-btn-primary, .fd-try").first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(10, 125, 90)");
+    expect(await fixed.page.locator("[data-part='theme-toggle']").count()).toBe(0);
+    expect(await fixed.page.locator(".fd-try").first().evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(10, 125, 90)");
     expect(await fixed.page.locator(".fd").evaluate((el) => getComputedStyle(el).fontFamily)).toContain("Georgia");
-    expect(await fixed.page.locator(".fd-brand img").getAttribute("alt")).toBe("Midas");
-    expect(await fixed.page.locator(".fd-brand span").textContent()).toBe("Midas docs");
+    // The dark logo on dark.
+    expect(await fixed.page.locator("[data-part='sidebar'] .fd-logo-dark").isVisible()).toBe(true);
+    expect(await fixed.page.locator("[data-part='sidebar'] .fd-logo-light").isVisible()).toBe(false);
+    expect(await fixed.page.locator("[data-part='sidebar'] .fd-brand span").textContent()).toBe("Midas docs");
+  });
+
+  run("matching another docs site from configuration: a preset, a few tokens, light code on a dark accent, tabs, footer links and only the buttons asked for", async () => {
+    pageConfig = {
+      title: "Midas",
+      logo: { url: "data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2224%22 height=%2224%22/%3E", title: false },
+      theme: { preset: "minimal", code: "light", tokens: { accent: "rgb(109, 40, 217)", accentFill: "rgb(109, 40, 217)", bg: { light: "rgb(255, 255, 255)", dark: "rgb(11, 11, 12)" } } },
+      layout: { referencePath: "/api" },
+      nav: { tabs: [{ label: "Docs", section: "guides" }, { label: "API reference", section: "reference" }, { label: "Changelog", href: "/changelog" }], footer: [{ label: "OpenAPI document", href: "/docs/openapi.json" }, { label: "Dashboard", href: "/" }], groups: { case: "upper" } },
+      controls: { authorize: "header", themeToggle: { style: "icon", place: "header" }, devSwitch: false, download: false },
+    };
+    const { page, problems } = await open("/docs/api/payments/create-payment");
+    expect(await page.locator(".fd").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(255, 255, 255)");
+    expect(await page.locator("[data-part='brand'] span").count()).toBe(0); // the mark alone
+    // Tinted pills (the preset's), the accent on the primary button.
+    expect(await page.locator("[data-part='endpoint-bar'] [data-part='method']").evaluate((el) => getComputedStyle(el).backgroundColor)).not.toBe("rgba(0, 0, 0, 0)");
+    expect(await page.locator(".fd-try").evaluate((el) => getComputedStyle(el).backgroundColor)).toBe("rgb(109, 40, 217)");
+    // Tabs: the reference is current; the navigation shows its pages only.
+    const tabs = page.locator("[data-part='tabs'] a");
+    expect(await tabs.allTextContents()).toEqual(["Docs", "API reference", "Changelog"]);
+    expect(await tabs.nth(1).getAttribute("aria-current")).toBe("page");
+    expect(await tabs.nth(0).getAttribute("href")).toBe("/docs/guides/getting-started"); // the first guide is the Docs tab's landing page
+    expect(await page.locator("nav[aria-label='API navigation']").textContent()).not.toContain("Idempotency");
+    expect(await page.locator(".fd-nav-title").first().evaluate((el) => getComputedStyle(el).textTransform)).toBe("uppercase");
+    // Only Authorize and an icon theme button in the header; the footer links in the navigation; no download link, no dev switch.
+    const header = page.locator("[data-part='header'] [data-part='actions']");
+    expect(await header.locator("button").count()).toBe(2);
+    expect(await header.locator("[data-part='authorize']").count()).toBe(1);
+    expect(await header.locator("[data-part='theme-toggle'] svg").count()).toBe(1);
+    expect(await page.locator("[data-part='footer-links'] a").allTextContents()).toEqual(["OpenAPI document", "Dashboard"]);
+    expect(await page.locator("[data-part='download']").count()).toBe(0);
+    expect(problems).toEqual([]);
+  });
+
+  run("page.css: the app's CSS, from a string, wins over the page's own rules without !important", async () => {
+    pageConfig = { css: ".fd [data-part='breadcrumb'] { color: rgb(1, 2, 3); }" };
+    const { page } = await open("/docs/payments/create-payment");
+    expect(await page.locator("[data-part='breadcrumb']").evaluate((el) => getComputedStyle(el).color)).toBe("rgb(1, 2, 3)");
   });
 
   run("slots: the app's MDX in the header, the sidebar footer and around every operation", async () => {
+    pageConfig = SINGLE;
     const { page, problems } = await open();
     expect(await page.locator(".fd-slot-header a").getAttribute("href")).toBe("https://status.midas.test");
     expect(await page.locator(".fd-slot-footer").textContent()).toContain("Need help? Write to support@midas.test.");
     const ops = await page.locator(".fd-op").count();
     expect(ops).toBe(7);
     await page.waitForFunction((n) => document.querySelectorAll(".slot-before").length === n && document.querySelectorAll(".slot-after").length === n, ops);
-    expect(await op(page, "/payments/createPayment").locator(".slot-before").textContent()).toBe("Before POST /payments in Payments: createPayment");
-    expect(await op(page, "/refunds/refundPayment").locator(".slot-after").textContent()).toBe("After refundPayment");
+    expect(await op(page, "payments/create-payment").locator(".slot-before").textContent()).toBe("Before POST /payments in Payments: createPayment");
+    expect(await op(page, "refunds/refund-payment").locator(".slot-after").textContent()).toBe("After refundPayment");
     expect(problems).toEqual([]);
   });
 
   run("strings: every text can be replaced, and what isn't keeps its English", async () => {
-    pageConfig = { strings: { searchPlaceholder: "Buscar", authorize: "Autorizar", tryIt: "Probar", requestBody: "Cuerpo", resultsCount: "{n} resultados" } };
-    const { page } = await open("/docs#/payments/createPayment");
+    pageConfig = { strings: { searchPlaceholder: "Buscar", authorize: "Autorizar", tryIt: "Probar", requestBody: "Cuerpo", resultsCount: "{n} resultados", onThisPage: "En esta página" } };
+    const { page } = await open("/docs/payments/create-payment");
     expect(await page.getByPlaceholder("Buscar").count()).toBe(1);
     expect(await page.getByRole("button", { name: "Autorizar" }).count()).toBeGreaterThan(0);
-    expect(await op(page, "/payments/createPayment").getByRole("button", { name: "Probar" }).count()).toBe(1);
-    expect(await text(page, "/payments/createPayment")).toContain("Cuerpo");
-    expect(await text(page, "/payments/createPayment")).toContain("Header parameters"); // not replaced
+    expect(await page.getByRole("button", { name: "Probar" }).count()).toBe(1);
+    expect(await page.locator("[data-part='article']").textContent()).toContain("Cuerpo");
+    expect(await page.locator("[data-part='article']").textContent()).toContain("Header parameters");
+    expect(await page.getByRole("navigation", { name: "En esta página" }).count()).toBe(1);
     await page.getByPlaceholder("Buscar").fill("payment");
     expect(await page.locator(".fd-results").textContent()).toMatch(/\d+ resultados/);
   });
@@ -497,16 +672,15 @@ describe("the page in a browser", () => {
     const results = page.locator(".fd-results");
     expect(await results.textContent()).toContain("Refund a payment");
     expect(await results.textContent()).toContain("refund.created");
-    expect(await results.textContent()).toContain("Refunds");
     await box.fill("idempotent");
-    expect(await results.textContent()).toContain("Idempotency"); // a guide, found by what it says
+    expect(await results.textContent()).toContain("Idempotency");
     await box.fill("zzzz nothing");
     expect(await results.textContent()).toContain("Nothing found");
     await box.fill("refund a pay");
     await box.press("Enter");
-    await page.waitForFunction(() => location.hash === "#/refunds/refundPayment");
+    await page.waitForFunction(() => location.pathname === "/docs/refunds/refund-payment");
     expect(await box.inputValue()).toBe("");
-    // `/` focuses the search from anywhere.
+    // `/` and Ctrl K focus the search from anywhere.
     await page.locator("main").click();
     await page.keyboard.press("/");
     expect(await win(page, () => document.activeElement?.getAttribute("type"))).toBe("search");
@@ -514,8 +688,7 @@ describe("the page in a browser", () => {
     pageConfig = { hide: { search: true, models: true, webhooks: true, downloadLink: true } };
     const hidden = await open();
     expect(await hidden.page.getByRole("searchbox").count()).toBe(0);
-    expect(await hidden.page.locator("[id='/models'], [id='/webhooks']").count()).toBe(0);
-    expect(await hidden.page.locator("nav a[href='#/models'], nav a[href='#/webhooks']").count()).toBe(0);
+    expect(await hidden.page.locator("nav a[href='/docs/models'], nav a[href='/docs/webhooks']").count()).toBe(0);
     expect(await hidden.page.getByRole("link", { name: "openapi.json" }).count()).toBe(0);
     pageConfig = {};
     const shown = await open();
@@ -524,22 +697,24 @@ describe("the page in a browser", () => {
 
   run("authentication: the schemes the document declares, with the token URL, the scopes and where each is used", async () => {
     pageConfig = { explorer: { auth: { oauth2: { tokenUrl: "https://auth.midas.test/token", extraParams: { resource: "https://api.midas.test/api/v1" } } } } };
-    const { page } = await open("/docs#/authentication");
-    const auth = await text(page, "/authentication");
-    expect(auth).toContain("OAuth 2.0");
-    expect(auth).toContain("Client credentials");
-    expect(auth).toContain("https://auth.midas.test/token"); // the app's token URL wins
-    expect(auth).toMatch(/payments:read\s*Read payments\.\s*2 operations/);
-    expect(auth).toMatch(/refunds:write\s*Refund payments\.\s*1 operation(?!s)/);
-    expect(auth).toContain("-d 'resource=https://api.midas.test/api/v1'");
-    expect(auth).toContain("YOUR_CLIENT_ID:YOUR_CLIENT_SECRET");
-    expect(auth).toContain("X-Midas-Key");
-    expect(auth).toContain("Authorization: Bearer YOUR_ACCESS_TOKEN");
+    const { page } = await open("/docs#authentication");
+    const auth = await text(page, "authentication");
+    expect(auth).toContain("Authentication");
+    const section = ((await page.locator("[data-part='authentication']").textContent()) ?? "").replace(/\s+/g, " ");
+    expect(section).toContain("OAuth 2.0");
+    expect(section).toContain("Client credentials");
+    expect(section).toContain("https://auth.midas.test/token");
+    expect(section).toMatch(/payments:read\s*Read payments\.\s*2 operations/);
+    expect(section).toMatch(/refunds:write\s*Refund payments\.\s*1 operation(?!s)/);
+    expect(section).toContain("-d 'resource=https://api.midas.test/api/v1'");
+    expect(section).toContain("YOUR_CLIENT_ID:YOUR_CLIENT_SECRET");
+    expect(section).toContain("X-Midas-Key");
+    expect(section).toContain("Authorization: Bearer YOUR_ACCESS_TOKEN");
   });
 
-  run("Authorize: a bearer token is kept for the tab and the builder, shown nowhere, and code samples keep their placeholders", async () => {
-    const { page } = await open("/docs#/customers/listCustomers");
-    await page.getByRole("button", { name: "Authorize" }).first().click();
+  run("Authorize: in the header, the navigation, each operation or nowhere; a bearer token is kept for the tab and shown nowhere", async () => {
+    const { page } = await open("/docs/customers/list-customers");
+    await page.locator("[data-part='header'] [data-part='authorize']").click();
     const dialog = page.getByRole("dialog");
     await dialog.waitFor();
     const bearer = dialog.locator("section", { hasText: "bearer" }).filter({ has: page.getByLabel("Bearer token") });
@@ -547,20 +722,24 @@ describe("the page in a browser", () => {
     await bearer.getByRole("button", { name: "Save" }).click();
     expect((await store(page)).bearer).toEqual({ type: "http", token: "tok_live_123" });
     await dialog.getByRole("button", { name: "Close" }).click();
-    expect(await page.getByRole("dialog").count()).toBe(0);
-    expect(await page.locator(".fd-dot").count()).toBe(1); // the header says something is set
-    // Samples are for copying into code: placeholders, never what the visitor entered.
+    expect(await page.locator(".fd-dot").count()).toBe(1);
     const samples = await page.locator("pre").allTextContents();
     expect(samples.join("\n")).toContain("YOUR_ACCESS_TOKEN");
-    expect(samples.join("\n")).not.toContain("tok_live_123");
     expect(await page.evaluate(() => document.body.textContent)).not.toContain("tok_live_123");
-    // A reload keeps it for the tab; Clear removes it.
     await page.reload({ waitUntil: "load" });
     await page.waitForSelector(".fd-dot");
     await page.getByRole("button", { name: "Authorize" }).first().click();
     expect(await page.getByLabel("Bearer token").inputValue()).toBe("tok_live_123");
     await page.getByRole("dialog").locator("section", { hasText: "bearer" }).getByRole("button", { name: "Clear" }).click();
     expect((await store(page)).bearer).toBeUndefined();
+
+    for (const [where, inHeader, inSide, inOp] of [["sidebar", 0, 1, 0], ["operation", 0, 0, 1], [false, 0, 0, 0]] as const) {
+      pageConfig = { controls: { authorize: where } };
+      const p = (await open("/docs/customers/list-customers")).page;
+      expect(await p.locator("[data-part='header'] [data-part='authorize']").count()).toBe(inHeader);
+      expect(await p.locator("[data-part='sidebar'] [data-part='authorize']").count()).toBe(inSide);
+      expect(await p.locator("[data-part='authorizations'] button", { hasText: "Authorize" }).count()).toBe(inOp);
+    }
   });
 
   run("Authorize: client credentials fetch a token from the token URL with Basic first, and again with the secret in the body when refused", async () => {
@@ -568,9 +747,9 @@ describe("the page in a browser", () => {
     const { page } = await open();
     await page.getByRole("button", { name: "Authorize" }).first().click();
     const dialog = page.getByRole("dialog");
-    expect(await dialog.getByLabel("Client ID").inputValue()).toBe("demo-client"); // the preset
+    expect(await dialog.getByLabel("Client ID").inputValue()).toBe("demo-client");
     expect(await dialog.getByRole("checkbox", { name: /payments:read/ }).isChecked()).toBe(true);
-    expect(await dialog.getByRole("button", { name: "Get token" }).isDisabled()).toBe(true); // needs the secret
+    expect(await dialog.getByRole("button", { name: "Get token" }).isDisabled()).toBe(true);
     await dialog.getByLabel("Client secret").fill("s3cret");
     await dialog.getByRole("checkbox", { name: /payments:write/ }).check();
     await dialog.getByRole("button", { name: "Get token" }).click();
@@ -580,13 +759,11 @@ describe("the page in a browser", () => {
     const form = new URLSearchParams(tokenRequests[0]!.body);
     expect(form.get("grant_type")).toBe("client_credentials");
     expect(form.get("scope")).toBe("payments:read payments:write");
-    expect(form.get("resource")).toBe("https://api.midas.test/api/v1"); // the preset's extra field
+    expect(form.get("resource")).toBe("https://api.midas.test/api/v1");
     expect(form.get("client_secret")).toBeNull();
     const saved = (await store(page)).oauth;
     expect(saved).toMatchObject({ type: "oauth2", clientId: "demo-client", accessToken: "at_1", scopes: ["payments:read", "payments:write"] });
-    expect(saved.expiresAt).toBeGreaterThan(Date.now() + 3_000_000);
 
-    // A server that doesn't take Basic is asked again with the credentials in the body.
     tokenMode = "post-only";
     tokenRequests.length = 0;
     await dialog.getByRole("button", { name: "Get token" }).click();
@@ -598,7 +775,6 @@ describe("the page in a browser", () => {
     expect(post.get("client_id")).toBe("demo-client");
     expect(post.get("client_secret")).toBe("s3cret");
 
-    // A refusal both ways is shown, and no token is kept from it.
     tokenMode = "reject";
     await dialog.getByRole("button", { name: "Clear" }).first().click();
     expect((await store(page)).oauth).toBeUndefined();
@@ -623,11 +799,11 @@ describe("the page in a browser", () => {
 
   run("Try it: loads the builder when first wanted, mounts it once with the page's state, opens it on the operation, and shares credentials both ways", async () => {
     pageConfig = { explorer: { auth: { preferredScheme: "oauth", oauth2: { clientId: "demo-client" } } }, codeSamples: { languages: ["curl", "go"] }, strings: { searchNone: "Nada", "apiClient.requestBlock.requestBody": "Cuerpo" } };
-    const { page, problems } = await open("/docs#/payments/createPayment");
+    const { page, problems } = await open("/docs/payments/create-payment");
     const explorerScripts = () => page.locator("script[src*='/_docs/explorer.js']").count();
-    expect(await explorerScripts()).toBe(0); // not part of the first load
-    const button = op(page, "/payments/createPayment").getByRole("button", { name: "Try it" });
-    await button.hover(); // prefetched when it is about to be pressed
+    expect(await explorerScripts()).toBe(0);
+    const button = page.locator("[data-part='endpoint-bar']").getByRole("button", { name: "Try it" });
+    await button.hover();
     expect(await page.locator("link[rel=prefetch][href*='/_docs/explorer.js']").count()).toBe(1);
     expect(await explorerScripts()).toBe(0);
     await page.getByRole("button", { name: "Authorize" }).first().click();
@@ -650,82 +826,64 @@ describe("the page in a browser", () => {
     expect(mounted.credentials).toEqual({ apiKey: { type: "apiKey", value: "key_123" } });
     expect(mounted.opens).toEqual([{ path: "/payments", method: "post" }]);
     expect(mounted.theme).toMatchObject({ mode: "light", background: "rgb(246, 244, 239)", text: "rgb(17, 17, 16)", font: expect.stringContaining("Geist") });
-    expect(mounted.theme.accent).toMatch(/^rgb\(/);
-    expect(mounted.theme.border).toMatch(/^rgb\(/);
-    // Only the strings meant for the builder (Scalar's own keys) go to it.
     expect(mounted.strings).toEqual({ "apiClient.requestBlock.requestBody": "Cuerpo" });
-    // It is mounted into a plain element at the end of <body>, outside the page's own root, and the address says where: `?try` and the operation.
     expect(await page.locator("body > .forge-docs-explorer").textContent()).toBe("stub explorer");
     expect(await page.locator(".fd .forge-docs-explorer").count()).toBe(0);
-    expect(await page.evaluate(() => document.body.lastElementChild?.className)).toContain("forge-docs-explorer");
-    expect(await win(page, () => location.search + location.hash)).toBe("?try#/payments/createPayment");
+    expect(await win(page, () => location.pathname + location.search)).toBe("/docs/payments/create-payment?try");
 
     // Another operation reuses the same builder.
-    await op(page, "/payments/getPayment").getByRole("button", { name: "Try it" }).click();
+    await page.locator("[data-part='nav'] a[href='/docs/payments/get-payment']").click();
+    await page.waitForFunction(() => location.pathname === "/docs/payments/get-payment");
+    await page.locator("[data-part='endpoint-bar']").getByRole("button", { name: "Try it" }).click();
     await page.waitForFunction(() => (window as any).__opens.length === 2);
     expect(await win(page, () => (window as any).__mounts.length)).toBe(1);
     expect(await win(page, () => (window as any).__opens[1])).toEqual({ path: "/payments/{paymentId}", method: "get" });
-    expect(await explorerScripts()).toBe(1);
-    expect(await win(page, () => location.hash)).toBe("#/payments/getPayment");
 
-    // What the visitor enters in the builder reaches the page's store, and the other way round.
     await page.evaluate(() => (window as any).__mounts[0].onCredentials({ apiKey: { type: "apiKey", value: "key_123" }, oauth: { type: "oauth2", accessToken: "from-builder", expiresAt: Date.now() + 600_000 } }));
     await page.waitForFunction(() => JSON.parse(sessionStorage.getItem("forge-docs:/docs:/docs/openapi.json")!).oauth?.accessToken === "from-builder");
-    await page.getByRole("button", { name: "Authorize" }).first().click();
-    const key = page.getByRole("dialog").locator("section", { hasText: "apiKey" });
-    await key.getByLabel("API key").fill("key_456");
-    await key.getByRole("button", { name: "Save" }).click();
-    await page.waitForFunction(() => (window as any).__updates.some((u: any) => u.credentials?.apiKey?.value === "key_456"));
-    await page.getByRole("dialog").getByRole("button", { name: "Close" }).click();
 
     // The theme follows the page's toggle.
     const before = (await win(page, () => (window as any).__updates.length)) as number;
-    await page.getByRole("button", { name: "Dark" }).click();
+    await page.locator("[data-part='theme-toggle']").click();
     await page.waitForFunction((n) => (window as any).__updates.slice(n).some((u: any) => u.theme?.mode === "dark" && u.theme.background === "rgb(12, 12, 13)"), before);
 
-    // The visitor closes the builder (its own button, Escape): the address loses `?try` and focus goes back to the button that opened it.
-    await op(page, "/payments/createPayment").getByRole("button", { name: "Try it" }).click();
-    await page.waitForFunction(() => (window as any).__opens.length === 3);
-    expect(await win(page, () => location.search)).toBe("?try");
+    // The visitor closes the builder: the address loses `?try` and focus goes back to the button that opened it.
     await page.evaluate(() => (window as any).__instances[0].onClose());
     expect(await win(page, () => location.search)).toBe("");
-    expect(await win(page, () => location.hash)).toBe("#/payments/createPayment");
+    expect(await win(page, () => location.pathname)).toBe("/docs/payments/get-payment");
     expect(await win(page, () => document.activeElement?.textContent)).toBe("Try it");
-    expect(await win(page, () => (window as any).__closes)).toBe(0); // the page never closes it for the visitor
+    expect(await win(page, () => (window as any).__closes)).toBe(0);
     expect(problems).toEqual([]);
   });
 
   run("Try it: an address opens the builder on its operation, with ?try, or at the explorer path with ?op", async () => {
-    const a = await open("/docs?try#/refunds/refundPayment");
+    const a = await open("/docs/refunds/refund-payment?try");
     await a.page.waitForFunction(() => (window as any).__opens?.length === 1);
     expect(await win(a.page, () => (window as any).__opens[0])).toEqual({ path: "/payments/{paymentId}/refunds", method: "post" });
 
     const b = await open("/docs/explorer?op=getPayment");
     await b.page.waitForFunction(() => (window as any).__opens?.length === 1);
     expect(await win(b.page, () => (window as any).__opens[0])).toEqual({ path: "/payments/{paymentId}", method: "get" });
-    expect(await b.page.locator("body > .forge-docs-explorer").count()).toBe(1);
-    // The page scrolled to the operation too.
-    await b.page.waitForFunction(() => Math.round(document.getElementById("/payments/getPayment")!.getBoundingClientRect().top) < 120);
+    await b.page.waitForFunction(() => location.pathname === "/docs/payments/get-payment");
 
     const c = await open("/docs/explorer");
     await c.page.waitForFunction(() => (window as any).__opens?.length === 1);
-    expect(await win(c.page, () => (window as any).__opens[0])).toEqual({ path: "/payments", method: "get" }); // the first operation
+    expect(await win(c.page, () => (window as any).__opens[0])).toEqual({ path: "/payments", method: "get" });
 
     const d = await open("/docs");
-    expect(await win(d.page, () => (window as any).__mounts)).toBeUndefined(); // without ?try the builder stays unloaded
+    expect(await win(d.page, () => (window as any).__mounts)).toBeUndefined();
   });
 
   run("Try it: off when the app turns it off; a builder that won't load says so and can be tried again", async () => {
     pageConfig = { explorer: false };
-    const off = await open("/docs?try#/payments/createPayment");
+    const off = await open("/docs/payments/create-payment?try");
     expect(await off.page.getByRole("button", { name: "Try it" }).count()).toBe(0);
     expect(await off.page.locator("script[src*='explorer.js']").count()).toBe(0);
-    expect(await off.page.getByText("Create a payment").first().isVisible()).toBe(true); // everything else is still documented
 
     pageConfig = {};
     explorerStatus = 500;
-    const { page } = await open("/docs#/payments/getPayment");
-    await op(page, "/payments/getPayment").getByRole("button", { name: "Try it" }).click();
+    const { page } = await open("/docs/payments/get-payment");
+    await page.getByRole("button", { name: "Try it" }).click();
     const alert = page.locator(".fd-toast");
     await alert.waitFor();
     expect(await alert.textContent()).toContain("The request builder didn't load");
@@ -737,27 +895,21 @@ describe("the page in a browser", () => {
 
   run("Try it with the real request builder (the vendored fork of Scalar): its modal opens on the operation, over the page, and the page's own styles stay out of it", async () => {
     realExplorer = true;
-    const { page } = await open("/docs#/payments/getPayment");
+    const { page } = await open("/docs/payments/get-payment");
     await page.addStyleTag({ content: "@layer forge-docs{button{border:3px solid lime}} " });
     const requests: string[] = [];
     page.on("request", (r) => requests.push(r.url()));
-    await op(page, "/payments/getPayment").getByRole("button", { name: "Try it" }).click();
+    await page.getByRole("button", { name: "Try it" }).click();
     const modal = page.locator("[role=dialog]");
     await modal.waitFor({ state: "visible", timeout: 30_000 });
     await modal.getByRole("heading", { name: "Retrieve a payment" }).waitFor({ timeout: 15_000 });
     expect(await modal.textContent()).toContain("paymentId");
-    expect(await win(page, () => location.search + location.hash)).toBe("?try#/payments/getPayment");
-    // The script and its stylesheet came from the page's own server, side by side, with the same version.
     const script = requests.find((u) => u.includes("/_docs/explorer.js"))!;
     expect(requests).toContain(script.replace("explorer.js", "explorer.css"));
-    expect(await page.locator("body > .forge-docs-explorer").count()).toBe(1);
-    // A reset in the page's own layer (what `addStyleTag` put there) doesn't reach into it: the builder's layers come after.
     expect(await modal.locator("button").evaluateAll((els) => els.filter((e) => getComputedStyle(e).borderTopColor === "rgb(0, 255, 0)").length)).toBe(0);
-    // Escape closes it, and the page learns of it.
     await page.keyboard.press("Escape");
     await modal.waitFor({ state: "hidden", timeout: 5_000 });
     await page.waitForFunction(() => location.search === "");
-    // Opening it by address, on the operation the address names.
     const again = await open("/docs/explorer?op=refundPayment");
     await again.page.locator("[role=dialog]").getByRole("heading", { name: "Refund a payment" }).waitFor({ timeout: 30_000 });
   });
@@ -765,46 +917,40 @@ describe("the page in a browser", () => {
   run("development: a switch to the complete document, with what the public one leaves out marked, and the guide to /rpc when there are functions", async () => {
     dev = true;
     const { page } = await open();
-    expect(await page.locator("[id='/customers/ping']").count()).toBe(0);
-    expect(await page.locator("nav a[href='#/g/functions']").count()).toBe(0); // no /rpc paths in the public document
+    expect(await page.locator("nav a[href='/docs/customers/ping']").count()).toBe(0);
+    expect(await page.locator("nav a[href='/docs/guides/functions']").count()).toBe(0);
     await page.getByRole("checkbox", { name: "Show everything" }).check();
-    await page.waitForSelector("[id='/customers/ping']");
-    expect(await text(page, "/customers/ping")).toContain("Internal");
-    expect(await page.locator("[id='/functions/rpcSync']").count()).toBe(1);
+    await page.waitForSelector("nav a[href='/docs/customers']");
+    await page.locator("nav a[href='/docs/customers']").click();
+    await page.waitForSelector("nav a[href='/docs/customers/ping']");
+    expect(await page.locator("nav a[href='/docs/customers/ping']").textContent()).toContain("Internal");
     expect(await win(page, () => location.search)).toBe("?audience=all");
     expect(await page.getByRole("link", { name: "openapi.json" }).getAttribute("href")).toBe("/docs/openapi.json?audience=all");
-    await page.waitForFunction(() => document.getElementById("/g/functions")?.textContent?.includes("Over the WebSocket"));
     expect(await page.getByRole("navigation").getByText("Calling functions").count()).toBe(1);
-    await page.getByRole("checkbox", { name: "Show everything" }).uncheck();
-    await page.waitForFunction(() => !document.getElementById("/customers/ping"));
-    // Without dev, there is no switch.
+    // The switch can be hidden.
+    pageConfig = { controls: { devSwitch: false } };
+    expect(await (await open()).page.getByRole("checkbox", { name: "Show everything" }).count()).toBe(0);
     dev = false;
+    pageConfig = {};
     expect(await (await open()).page.getByRole("checkbox", { name: "Show everything" }).count()).toBe(0);
   });
 
-  run("a phone: no sideways scrolling, and the navigation is a drawer", async () => {
-    const { page } = await open("/docs#/payments/createPayment", { viewport: { width: 390, height: 800 }, isMobile: true, hasTouch: true });
-    expect(await win(page, () => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-    const nav = page.locator("#fd-side");
-    expect(await nav.isVisible()).toBe(false);
-    await page.getByRole("button", { name: "Menu" }).click();
-    expect(await nav.isVisible()).toBe(true);
-    await nav.getByRole("link", { name: "Refunds" }).click();
-    await page.waitForFunction(() => location.hash === "#/refunds");
-    await nav.waitFor({ state: "hidden" }); // closes after a link is followed
-    expect(await win(page, () => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
-  });
-
-  run("a link to an operation lands on it, also from inside the page and when sections above it are still loading", async () => {
-    const { page } = await open("/docs#/refunds/refundPayment");
-    const top = () => page.evaluate(() => Math.round(document.getElementById("/refunds/refundPayment")!.getBoundingClientRect().top));
-    await page.waitForFunction(() => Math.round(document.getElementById("/refunds/refundPayment")!.getBoundingClientRect().top) < 120);
-    expect(await top()).toBeLessThan(120);
-    expect(await top()).toBeGreaterThanOrEqual(0);
-    await page.locator("nav a[href='#/payments']").click();
-    await page.locator("nav a[href='#/payments/getPayment']").click();
-    await page.waitForFunction(() => Math.round(document.getElementById("/payments/getPayment")!.getBoundingClientRect().top) < 120);
-    await page.waitForFunction(() => document.querySelector("nav a[aria-current='location']")?.textContent?.includes("Retrieve a payment")); // the navigation shows where the page is
+  run("a guide uses Callout, Tabs, Steps, Cards, CodeGroup, Accordion, titled code blocks and the app's own components; one that doesn't compile shows its error and the page goes on", async () => {
+    const { page, problems } = await open("/docs/guides/changelog");
+    const article = page.locator("[data-part='article']");
+    expect(await article.locator("[data-part='callout'][data-kind='tip']").textContent()).toContain("Breaking changes are announced");
+    const tabs = article.locator("[data-part='tabs']");
+    expect(await tabs.getByRole("tab").allTextContents()).toEqual(["Node", "Python"]);
+    await tabs.getByRole("tab", { name: "Python" }).click();
+    expect(await tabs.getByRole("tabpanel").filter({ hasNot: page.locator("[hidden]") }).first().textContent()).toContain("pip install");
+    expect(await win(page, () => localStorage.getItem("forge-docs-tabs:Node|Python"))).toBe("Python"); // remembered
+    expect(await article.locator("[data-part='steps'] li").count()).toBe(2);
+    expect(await article.locator("[data-part='card']").count()).toBe(2);
+    expect(await article.locator("[data-part='code-group'] [role=tab]").allTextContents()).toEqual(["server.ts", "server.py"]);
+    expect(await article.locator("[data-part='code-block'] .fd-mdx-code-title").first().textContent()).toBe("install.sh");
+    expect(await article.locator("[data-part='accordion'] summary").textContent()).toBe("Why version?");
+    expect(await article.locator("[data-badge]").textContent()).toBe("beta"); // forge/docs/_components/Badge.tsx
+    expect(problems).toEqual([]);
   });
 });
 

@@ -12,4 +12,8 @@ export interface BootConfig {
   tryOpen: boolean;
   dev: boolean;
   page: DocsPageConfig;
+  /** The page shown, below `publicBase` ("" for the overview). */
+  path: string;
+  /** The HTML is the page, rendered on the server with the document of this audience: the browser hydrates it with the same document. */
+  rendered?: "public" | "all";
 }

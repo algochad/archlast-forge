@@ -141,7 +141,7 @@ In a [monorepo](monorepo.html), each microservice is a backend of its own, and t
 | Each microservice | `OTEL_SERVICE_NAME` | Its name, as the main app's `MICROSERVICES` lists it. Required with `DASHBOARD_URL`. |
 | Both | `DASHBOARD_TOKEN` | A secret of 16 characters or more that they share. |
 
-`archlast-forge init --monorepo`, `add service`, `remove` and `workspace sync` write these to the apps' `.env` for development (each app on this machine, on its port). In production, set them with the addresses the stacks reach each other at.
+`archlast-forge init --monorepo`, `add service`, `remove` and `workspace sync` write these to the apps' `.env` for development (each app on this machine, on its port). With Docker on one machine, each app's `compose.override.yaml` sets the addresses on the monorepo's network ([Deploying a monorepo](monorepo.html#deploying)); elsewhere, set them with the addresses the stacks reach each other at.
 
 - **Telemetry**: a microservice keeps no telemetry store. Once a second it posts what it recorded to the main app's `/_telemetry` with the token; while the main app is away (a restart, a deploy) it holds up to a minute of it and sends it when it is back. The main app refuses telemetry under its own name.
 - **Data and settings**: the dashboard sends a page's calls to the main app with the microservice's name, and the main app forwards them to the service with the token and the role of whoever is signed in. The service checks the role as its own dashboard would: a viewer can't edit a document there either. Only the main app may do this: the service accepts the token for its admin API, and nothing else does but its own `ADMIN_KEY`, when it has one.
@@ -174,7 +174,7 @@ A rule watches one number over the last 1, 5, 10, 15, 30 or 60 minutes: the serv
   "rule": { "id": "rule_…", "name": "Checkout errors", "metric": "error_rate", "threshold": 5, "comparator": ">", "service": null, "operation": "orders:checkout" } }
 ```
 
-`text` is what Slack and Discord incoming webhooks show as it is; `state` is `firing` or `resolved`. A window with no requests has no rate or latency, so a rule on one keeps its state until requests come (a request count is 0, and can fire). An SLO's burn-rate rules are deleted with it. **Send a test** on the rule's form checks the webhook.
+`text` is what Slack and Discord incoming webhooks show as it is; `state` is `firing` or `resolved`. A window with no requests has no rate or latency, so a rule on one keeps its state until requests come (a request count is 0, and can fire). An SLO's burn-rate rules are deleted with it. **Send a test** on the rule's form checks the webhook. Webhooks go to public addresses only: a host that resolves to a private, loopback or link-local address (the cloud metadata service among them) isn't called, redirects aren't followed, and a failure says only that the address isn't allowed, the host didn't resolve, the HTTP status, or that nothing answered.
 
 ## Configuration
 

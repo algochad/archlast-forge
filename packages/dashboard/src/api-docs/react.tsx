@@ -25,12 +25,34 @@ export interface ApiReferenceProps {
   /** Pages of prose shown before the reference, in the navigation. */
   guides?: { slug: string; title: string; group?: string; order?: number; content: ComponentType }[];
   slots?: Slots;
+  /** Components the guides' MDX can use by name, beside the built-in ones (Callout, Tabs, Steps, Cards, CodeGroup, Accordion). */
+  components?: Record<string, ComponentType<any>>;
+  /**
+   * Where the reference's own links start, with `config.layout.pages` set to "operation" or "tag" (the default inside an app is "single", with
+   * `#anchor` links). It then shows the page at `path` below it; the app's router renders the component there.
+   */
+  basePath?: string;
+  path?: string;
   className?: string;
 }
 
 const DEFAULT_EXPLORER = "/_api/_docs/explorer.js";
 
-export function ApiReference({ openapiUrl, document, config, explorerUrl = DEFAULT_EXPLORER, guides, slots, className }: ApiReferenceProps) {
+export function ApiReference({ openapiUrl, document, config, explorerUrl = DEFAULT_EXPLORER, guides, slots, components, basePath = "", path = "", className }: ApiReferenceProps) {
   const pages: Guide[] | undefined = guides?.map((g) => ({ slug: g.slug, title: g.title, group: g.group, order: g.order, content: g.content }));
-  return <Reference embed openapiUrl={openapiUrl} document={document} config={config} explorerUrl={explorerUrl} guides={pages} slots={slots} className={className} publicBase={openapiUrl} />;
+  return (
+    <Reference
+      embed
+      openapiUrl={openapiUrl}
+      document={document}
+      config={config}
+      explorerUrl={explorerUrl}
+      guides={pages}
+      slots={slots}
+      components={components}
+      className={className}
+      publicBase={basePath}
+      path={path}
+    />
+  );
 }

@@ -78,3 +78,46 @@ export async function signUp(base: string, email: string, name: string) {
 export const call = async (base: string, fn: string, args: unknown, cookie = "") =>
   json(await fetch(`${base}/rpc/${fn}`, { method: "POST", headers: { "content-type": "application/json", cookie }, body: JSON.stringify(args) }));
 
+
+export interface MonorepoApp {
+  dir: string;
+  base: string;
+  env: (key: string) => string | undefined;
+  cli: (...args: string[]) => ReturnType<typeof sh>;
+}
+/** A monorepo from the packed tarballs, installed at its root only (as a fresh clone is: `dev` has never run), each app on its own port. */
+export function createMonorepo(name: string, mode: string, services: string[], microservices: string[], ports: Record<string, number>) {
+  const parent = mkdtempSync(join(tmpdir(), "afx-e2e-"));
+  const root = join(parent, name);
+  const creator = mkdtempSync(join(tmpdir(), "afx-creator-"));
+  scratch.push(parent, creator);
+  writeFileSync(join(creator, "package.json"), "{}");
+  must(["bun", "add", join(PACK, tarballs.find((t) => t.startsWith("create-archlast-forge"))!)], creator);
+  must(
+    ["bun", join(creator, "node_modules/create-archlast-forge/src/index.ts"), root, "--mode", mode, "--services", services.join(",") || "none", "--monorepo", "--microservices", microservices.join(","), "--yes", "--no-install", "--no-git"],
+    ROOT,
+  );
+  const overrides = Object.fromEntries(tarballs.map((t) => [t.replace(/-\d+\.\d+\.\d+.*\.tgz$/, "").replace(/^archlast-forge-/, "@archlast/forge-"), `file:${join(PACK, t)}`]));
+  const manifests = must(["find", ".", "-name", "package.json", "-not", "-path", "*/node_modules/*"], root).split("\n");
+  for (const rel of manifests) {
+    const file = join(root, rel);
+    const pkg = JSON.parse(readFileSync(file, "utf8"));
+    for (const field of ["dependencies", "devDependencies"]) for (const dep of Object.keys(pkg[field] ?? {})) if (overrides[dep]) pkg[field][dep] = overrides[dep];
+    pkg.overrides = overrides;
+    writeFileSync(file, JSON.stringify(pkg, null, 2));
+  }
+  must(["bun", "install"], root);
+  const app = (a: string): MonorepoApp => {
+    const dir = join(root, "apps", a);
+    const envFile = join(dir, ".env");
+    const port = ports[a]!;
+    writeFileSync(envFile, readFileSync(envFile, "utf8").replace(/^BETTER_AUTH_URL=.*$/m, `BETTER_AUTH_URL=http://localhost:${port}`).replace(/^PORT=.*$/m, `PORT=${port}`));
+    return {
+      dir,
+      base: `http://localhost:${port}`,
+      env: (key) => new RegExp(`^${key}=(.*)$`, "m").exec(readFileSync(envFile, "utf8"))?.[1],
+      cli: (...args) => sh(["bunx", "archlast-forge", ...args], dir),
+    };
+  };
+  return { root, apps: Object.fromEntries(Object.keys(ports).map((a) => [a, app(a)])) as Record<string, MonorepoApp> };
+}

@@ -7,7 +7,7 @@ For what the generated files are see [scaffolding.md](scaffolding.md); for choos
 
 **Invoke.** The CLI is `@archlast/forge-cli` (bin `archlast-forge`), a `devDependency` of every project. Inside a project use its scripts (`bun run dev`), `bunx archlast-forge <command>` or `./node_modules/.bin/archlast-forge`. With no project yet: `bun create archlast-forge <dir>`, `bunx create-archlast-forge <dir>` or `bunx --package @archlast/forge-cli archlast-forge init <dir>`. All three `init` forms are one program.
 
-**Project scripts** the starters write: `dev` (`archlast-forge dev`), `codegen`, `typecheck` (`archlast-forge codegen && tsc --noEmit`, backend: `tsc -p forge --noEmit`), `up`, `down`, `format`; full-stack adds `build` (`build --no-docker`) and `start` (`start --no-docker`); backend adds `logs`. In a monorepo the root scripts are `turbo run dev|build|typecheck`; a service's or added app's `dev` is `archlast-forge dev --no-docker --port <n>`, and a backend main app that has services gets `--no-docker` too (a full-stack main app keeps plain `archlast-forge dev`).
+**Project scripts** the starters write: `dev` (`archlast-forge dev`), `codegen`, `typecheck` (`archlast-forge codegen && tsc --noEmit`, which in a full-stack app covers `app/` and the `forge/` files it reaches, not all of `forge/` (`npx tsc --noEmit -p forge`) nor `test/`; backend: `tsc -p forge --noEmit`), `up`, `down`, `format`; full-stack adds `build` (`build --no-docker`) and `start` (`start --no-docker`); backend adds `logs`. In a monorepo the root scripts are `turbo run dev|build|typecheck`; a service's or added app's `dev` is `archlast-forge dev --no-docker --port <n>`, and a backend main app that has services gets `--no-docker` too (a full-stack main app keeps plain `archlast-forge dev`).
 
 **Which project a command acts on.** Commands look for the forge folder in this order: `--dir <path>`, `./forge/schema.ts`, `./schema.ts` (the cwd is the forge folder), `./convex/schema.ts` (old name, prints a warning). None: `✗ No schema.ts in <abs>. Pass --dir <path to forge/>.` The project root is the parent of `forge/`; `archlast-forge.json`, `compose.yaml`, `.env` live there.
 
@@ -256,7 +256,7 @@ Installs server dependencies if changed, writes `forge/_generated/api.ts` and `d
 archlast-forge build [--tag <image>] [--no-docker]
 ```
 
-Runs codegen, then:
+Installs `forge/package.json` if it changed (in a monorepo nothing else does) and runs codegen, then:
 
 - **Docker** (default): builds the app image from the project's `Dockerfile` on the engine image (`--build-arg ENGINE_IMAGE=...`), tag `--tag` or `<project>-<hash>:latest`; builds or pulls the engine image if missing. A project with no `Dockerfile` gets a generated one around `forge/`. Ends `✓ built <tag>`. Failures: `Engine image build failed`, `App image build failed`.
 - **`--no-docker`, full-stack**: production bundles into `.forge/build` (browser and server), prints first-load sizes. Build errors print file/line/column, exit 1.

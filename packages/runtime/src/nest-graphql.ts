@@ -2,9 +2,9 @@
 // graphql-yoga under /http (POST and GET at `path`, default /graphql) and runs subscriptions with graphql-ws over the engine's sockets at
 // the same path. `GraphQLModule.forRoot({ driver: ForgeGraphQLDriver, autoSchemaFile: true })`.
 import { AbstractGraphQLDriver, Resolver as NestResolver, type GqlModuleOptions } from "@nestjs/graphql";
-import type { GraphQLSchema } from "graphql";
+import { NoSchemaIntrospectionCustomRule, type GraphQLSchema } from "graphql";
 import { makeServer } from "graphql-ws";
-import { createYoga, type YogaServerOptions } from "graphql-yoga";
+import { createYoga, type Plugin, type YogaServerOptions } from "graphql-yoga";
 // By the package's own name, not "./nest": the build keeps nest.ts its own entry then, and its `export *` of @nestjs/common survives.
 import { onSocket, timeClass, type ForgeSocket, type NestRequest, type NestResponse } from "@archlast/forge-runtime/nest";
 
@@ -22,9 +22,43 @@ export const Resolver = ((...args: unknown[]) => {
 export { createPubSub } from "@archlast/forge-runtime/nest";
 
 export interface ForgeGraphQLOptions extends GqlModuleOptions {
-  /** More graphql-yoga options: `graphiql`, `maskedErrors`, `plugins`, `cors`. */
+  /**
+   * More graphql-yoga options: `graphiql`, `maskedErrors`, `plugins`, `cors`. The engine's defaults differ from yoga's: `cors` allows only
+   * the engine's trusted origins (BETTER_AUTH_URL's and TRUSTED_ORIGINS; none of its own when nest() has `cors`), and `graphiql` is on in
+   * development only.
+   */
   yoga?: Omit<YogaServerOptions<Record<string, unknown>, Record<string, unknown>>, "schema" | "graphqlEndpoint" | "context">;
+  /** Answer introspection queries. Default: in development only. */
+  introspection?: boolean;
+  /**
+   * Take operations only as JSON (`application/json`), the default. A form-encoded or multipart POST
+   * is one a cross-site page can send with the visitor's cookies and no preflight; `false` takes them too (multipart file uploads need it).
+   */
+  jsonOnly?: boolean;
 }
+
+/** What the engine's function runtime says (runtime-core.ts sets it); an older engine doesn't, and then nothing is trusted and it isn't development. */
+const engine = () => (globalThis as Record<symbol, { dev?: boolean; trustedOrigins?: string[] } | undefined>)[Symbol.for("archlast-forge.host")];
+
+/**
+ * Refuses a POST whose body isn't JSON, comparing the media type whole (`text/plain; x=application/json` isn't JSON). GraphQL over HTTP
+ * sends requests as application/json; application/graphql-response+json is what a client accepts back.
+ */
+const jsonOnly = (): Plugin => ({
+  onRequest({ request, endResponse, fetchAPI }) {
+    if (request.method !== "POST") return;
+    const type = request.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase();
+    if (type === "application/json") return;
+    endResponse(new fetchAPI.Response(JSON.stringify({ errors: [{ message: "Send the operation as application/json" }] }), { status: 415, headers: { "content-type": "application/json" } }));
+  },
+});
+
+/** No introspection unless `allowed()`: graphql-js's own rule, at validation. */
+const noIntrospection = (allowed: () => boolean): Plugin => ({
+  onValidate({ addValidationRule }) {
+    if (!allowed()) addValidationRule(NoSchemaIntrospectionCustomRule);
+  },
+});
 
 export class ForgeGraphQLDriver extends AbstractGraphQLDriver<ForgeGraphQLOptions> {
   private yoga?: ReturnType<typeof createYoga>;
@@ -33,7 +67,23 @@ export class ForgeGraphQLDriver extends AbstractGraphQLDriver<ForgeGraphQLOption
     const { schema, path = "/graphql" } = options;
     // A resolver's context has `req` (for `@Ctx()`, the caller's ActionCtx is on it), plus what `context` adds.
     const context = async (init: Record<string, unknown>) => ({ ...init, ...(typeof options.context === "function" ? await options.context(init) : options.context) });
-    const yoga = (this.yoga = createYoga({ ...options.yoga, schema, graphqlEndpoint: path, context }));
+    // Read for each request, not here: the Nest app starts while forge/http.ts loads, before the engine says what it is (runtime-core sets
+    // the host after its migrations), so a driver that read it at start could see nothing: no GraphiQL in development, no trusted origin.
+    const dev = () => engine()?.dev ?? false;
+    const trusted = () => engine()?.trustedOrigins ?? [];
+    // Yoga's own default reflects any Origin with credentials: any site could read a signed-in visitor's answers.
+    const cors =
+      options.yoga?.cors !== undefined
+        ? options.yoga.cors
+        : (this.httpAdapterHost.httpAdapter as { corsEnabled?: boolean }).corsEnabled
+          ? false
+          : (request: Request) => {
+              const origin = request.headers.get("origin");
+              return origin && trusted().includes(origin) ? { origin: [origin], credentials: true } : false;
+            };
+    const introspection = options.introspection;
+    const plugins = [...(options.jsonOnly === false ? [] : [jsonOnly()]), ...(introspection === true ? [] : [noIntrospection(() => introspection ?? dev())]), ...(options.yoga?.plugins ?? [])];
+    const yoga = (this.yoga = createYoga({ ...options.yoga, graphiql: options.yoga?.graphiql ?? (() => dev()), cors, plugins, schema, graphqlEndpoint: path, context }));
 
     const serve = async (req: NestRequest, res: NestResponse) => {
       // The engine already read the body (to parse it for controllers), so yoga gets it again from rawBody, on the path Nest sees.

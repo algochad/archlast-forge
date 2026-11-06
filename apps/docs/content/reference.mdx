@@ -348,6 +348,20 @@ const defineAuth: (options: AuthOptions) => AuthOptions;
 
 Default-export from `forge/auth.ts`. Without that file, `{ emailAndPassword: { enabled: true } }` is used. Guide: [Authentication](auth.html).
 
+Better Auth's plugins come with the engine, at its Better Auth version (nothing to install, nothing runs unless `plugins` lists them):
+
+| Import | Contents |
+|---|---|
+| `@archlast/forge-runtime/auth` | everything `better-auth/plugins` exports (`organization`, `twoFactor`, `admin`, `jwt`, `bearer`, `magicLink`, `emailOTP`, `genericOAuth`, `username`, `phoneNumber`, …), and `oauthProvider` |
+| `@archlast/forge-runtime/auth/oauth-provider` | everything `@better-auth/oauth-provider` exports |
+| `@archlast/forge-runtime/auth/api-key` | everything `@better-auth/api-key` exports (`apiKey`) |
+| `@archlast/forge-runtime/auth/passkey` | everything `@better-auth/passkey` exports (`passkey`) |
+| `@archlast/forge-runtime/auth/sso` | everything `@better-auth/sso` exports (`sso`) |
+| `@archlast/forge-runtime/auth/scim` | everything `@better-auth/scim` exports (`scim`) |
+| `@archlast/forge-runtime/auth/i18n` | everything `@better-auth/i18n` exports (`i18n`) |
+
+The tables of every plugin in `plugins` are declared by the engine ([Plugin tables](auth.html#plugin-tables)); `codegen` writes their types to `forge/_generated/authTables.ts`.
+
 ### Data migrations
 
 ```ts
@@ -442,9 +456,13 @@ type QueryCtx, MutationCtx, ActionCtx; // re-exported from @archlast/forge-runti
 ```ts
 class ForgeGraphQLDriver; // GraphQLModule.forRoot({ driver: ForgeGraphQLDriver, ... })
 interface ForgeGraphQLOptions extends GqlModuleOptions {
-  yoga?: YogaServerOptions; // more options for Yoga: graphiql, maskedErrors, plugins (not schema, graphqlEndpoint or context)
+  yoga?: YogaServerOptions; // more options for Yoga: graphiql, maskedErrors, plugins, cors (not schema, graphqlEndpoint or context)
+  introspection?: boolean; // answer introspection queries; default: in development only
+  jsonOnly?: boolean; // take operations only as application/json (default true); false also takes form-encoded and multipart bodies
 }
 ```
+
+The defaults differ from Yoga's: `cors` allows only the engine's trusted origins (`BETTER_AUTH_URL`'s and `TRUSTED_ORIGINS`) with credentials, and adds nothing when `nest()` has its own `cors`; `graphiql` is on in development only.
 
 `@archlast/forge-runtime/nest/microservices` exports everything `@nestjs/microservices` does (`Transport`, `MessagePattern`, `EventPattern`, `Payload`, `ClientsModule`, `ClientProxyFactory`, ...), except that `Ctx` is the engine's (above) and Nest's transport context decorator is `TransportCtx`.
 
@@ -898,9 +916,9 @@ Connect to `/rpc` (`ws://` or `wss://`). The handshake carries the cookies and `
 | server to client | `{ "type": "data", "id": "<id>", "data": <QueryUpdate> }` |
 | server to client | `{ "type": "error", "id": "<id>", "error": { "message", "code", "data"?, "requestId" } }` |
 
-`QueryUpdate` is `{ "value": <result> }` when the query ran, or `{ "error": "<message>", "data"?, "requestId" }` when it failed (argument validation, a thrown `ForgeError`, a server error). A failed update does not end the subscription: it re-runs on the next write. The first `data` message is the query's current result, then one follows each relevant write; an update identical to the previous one is not sent again, and writes close together are batched into one re-run (50 ms).
+`QueryUpdate` is `{ "value": <result> }` when the query ran, or `{ "error": "<message>", "data"?, "requestId" }` when it failed (a thrown `ForgeError`, a server error, a result that fails `returns`). A failed update does not end the subscription: it re-runs on the next write. The first `data` message is the query's current result, then one follows each relevant write; an update identical to the previous one is not sent again, and writes close together are batched into one re-run (50 ms).
 
-A `type: "error"` message ends that subscription and means the subscribe request itself was refused: `NOT_FOUND` (`No query "<name>"`; also for mutations, actions and internal functions), `BAD_REQUEST` (`Subscription <id> already exists`), or `TOO_MANY_REQUESTS` (`At most 200 subscriptions per connection`, `MAX_SUBSCRIPTIONS_PER_CONNECTION`).
+A `type: "error"` message ends that subscription and means the subscribe request itself was refused: `NOT_FOUND` (`No query "<name>"`; also for mutations, actions and internal functions), `BAD_REQUEST` (`Subscription <id> already exists`, or arguments that fail validation, with the validation message), `PAYLOAD_TOO_LARGE` (a message over `MAX_SUBSCRIPTION_BYTES`, 64 KiB, or a connection whose live queries would hold more than 16 times that), or `TOO_MANY_REQUESTS` (`At most 200 subscriptions per connection`, `MAX_SUBSCRIPTIONS_PER_CONNECTION`).
 
 The server closes the socket for:
 
@@ -920,7 +938,7 @@ Everything the engine answers on its one port.
 | Path | Purpose |
 |---|---|
 | `GET /health` | Liveness: `200 {"ok":true}` while the process is up. |
-| `GET /ready` | Readiness: `200 {"ready":true}` once the functions are loaded; `503 {"ready":false,"error":...}` while loading, after a load error, or during shutdown. |
+| `GET /ready` | Readiness: `200 {"ready":true}` once the functions are loaded; `503 {"ready":false}` while loading, after a load error, or during shutdown; in dev also `"error"`, the load error. |
 | `GET /metrics` | Prometheus text. See below. |
 | `POST /rpc/<name>`, `GET /rpc/<name>?args=` | Function calls (above). |
 | `WS /rpc` | Live queries (above). |

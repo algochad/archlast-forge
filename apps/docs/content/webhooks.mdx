@@ -107,7 +107,7 @@ export class OrdersWriter extends ForgeService<MutationCtx> {
 
 Each attempt is claimed in a mutation, sent from an action, and settled in another mutation. If the process stops mid-send, a fallback job takes the delivery up again once its lease (the timeout plus a minute) is over, and it counts as an attempt.
 
-**Destinations.** Only `https://` URLs, unless `allowHttp`. The host is resolved on every attempt. Loopback, private and shared addresses are refused unless `allowPrivateNetworks` (or `allowedAddresses` lists them). Link-local addresses and the cloud metadata service are always refused, and redirects are never followed. The connection is not pinned to the address that was checked, so a DNS answer that changes between the check and the request is not caught: block metadata and internal ranges at the network too if senders can choose URLs.
+**Destinations.** Only `https://` URLs, unless `allowHttp`. The host is resolved once on every attempt, every address it has is checked, and the request connects to those addresses (with the URL's host for TLS and `Host`), so a DNS answer that changes between the check and the request can't send it elsewhere. A host that can't be resolved isn't called: the attempt fails and is retried. Loopback, private and shared addresses (IPv6 site-local `fec0::/10` too) are refused unless `allowPrivateNetworks` (or `allowedAddresses` lists them). Link-local addresses, the cloud metadata service and the unspecified addresses (`0.0.0.0/8`, `::`) are always refused, a NAT64 address (`64:ff9b::/96`) is checked as the IPv4 address it reaches, and redirects are never followed. Blocking metadata and internal ranges at the network too is still worth it if senders can choose URLs.
 
 ### Documenting the events you send
 

@@ -232,6 +232,21 @@ export function buildOpenApi(input: OpenApiInput) {
   /** Whether the public document leaves this path out, and so the complete one marks it internal. */
   const leftOut = (path: string, hidden?: boolean) =>
     Boolean(hidden) || (docs.include?.length ? !underAny(path, docs.include) : false) || underAny(path, docs.exclude ?? []);
+  // An operation id written in the code is kept. A route without one but with a summary gets it from the summary ("Create a product" is
+  // createAProduct), unique in the document: it ends the docs page's address and names the method in generated clients, where the
+  // controller and method (`CheckoutsController_create`) would be an implementation detail.
+  const taken = new Set([...input.http.map((r) => r.operationId), ...input.nest.map((n) => n.contract?.operationId)].filter((id): id is string => !!id));
+  const idOf = (given: string | undefined, summary: string | undefined, fallback: string) => {
+    if (given) return given;
+    const words = (summary ?? "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").replace(/[^A-Za-z0-9\s]+/g, " ").split(/\s+/).filter(Boolean);
+    if (!words.length) return fallback;
+    const base = words.map((w, i) => (i ? w[0]!.toUpperCase() + w.slice(1).toLowerCase() : w.toLowerCase())).join("").replace(/^(?=\d)/, "op");
+    let id = base;
+    for (let n = 2; taken.has(id); n++) id = `${base}${n}`;
+    taken.add(id);
+    return id;
+  };
+
   const add = (path: string, method: string, op: Record<string, unknown>, hidden?: boolean) => {
     const internal = leftOut(path, hidden);
     if (internal && !all) return;
@@ -356,7 +371,7 @@ export function buildOpenApi(input: OpenApiInput) {
       path,
       r.method,
       {
-        operationId: r.operationId ?? `http_${r.method}_${(r.path ?? r.pathPrefix!).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`,
+        operationId: idOf(r.operationId, r.summary, `http_${r.method}_${(r.path ?? r.pathPrefix!).replace(/[^A-Za-z0-9]+/g, "_").replace(/^_+|_+$/g, "")}`),
         tags: r.tags ?? ["HTTP routes"],
         summary: r.summary ?? name,
         ...(r.description && { description: r.description }),
@@ -380,7 +395,7 @@ export function buildOpenApi(input: OpenApiInput) {
       path,
       n.method,
       {
-        operationId: c.operationId ?? n.name.replace(/[^A-Za-z0-9_]/g, "_"),
+        operationId: idOf(c.operationId, c.summary, n.name.replace(/[^A-Za-z0-9_]/g, "_")),
         tags: c.tags ?? [n.name.split(".")[0]!],
         summary: c.summary ?? `${n.method} ${n.path}`,
         ...(c.description && { description: c.description }),

@@ -20,7 +20,7 @@ acme/
     contracts/        @acme/contracts: the services' Forge RPC types, for the backends that call them (--transport forge-rpc, the default)
 ```
 
-Every app is a whole archlast-forge project, made as `init` makes one: its own `forge/`, `compose.yaml`, `Dockerfile` and `.env`, deployed on its own. `bun run dev` at the root starts them all (`turbo run dev`): the main app on port 3000, the services on 3001, 3002 and so on, on this machine (`--no-docker`) so they reach each other's transports. `bun run typecheck` runs each app's codegen and `tsc`, then `packages/api`'s. A backend main app's package is `@acme/backend`, because `@acme/api` is `packages/api`.
+Every app is a whole archlast-forge project, made as `init` makes one: its own `forge/`, `compose.yaml`, `Dockerfile` and `.env`, deployed on its own ([Deploying](#deploying)). `bun run dev` at the root starts them all (`turbo run dev`): the main app on port 3000, the services on 3001, 3002 and so on, on this machine (`--no-docker`) so they reach each other's transports. `bun run typecheck` runs each app's codegen and `tsc`, then `packages/api`'s. A backend main app's package is `@acme/backend`, because `@acme/api` is `packages/api`.
 
 ## Shared types
 
@@ -97,7 +97,7 @@ The apps of a monorepo may share a Redis (and a Postgres server): the engine put
 
 ## One dashboard
 
-The main app's dashboard is the monorepo's: each service sends its telemetry there and serves no dashboard of its own, so requests, traces, errors, logs, [nodes](observability.html#nodes) and Nest classes of every app are on one set of pages, and with a service picked in the top bar its data, schema and functions are too. `init`, `add service`, `remove` and `workspace sync` keep the apps' `.env` in step: `MICROSERVICES` in the main app, `DASHBOARD_URL` and `OTEL_SERVICE_NAME` in each service, and the `DASHBOARD_TOKEN` they share. A monorepo made with 0.15.0 or before gets them from `archlast-forge workspace sync`. In production, set them with the addresses the apps reach each other at; see [one dashboard](observability.html#one-dashboard-for-a-main-app-and-its-microservices).
+The main app's dashboard is the monorepo's: each service sends its telemetry there and serves no dashboard of its own, so requests, traces, errors, logs, [nodes](observability.html#nodes) and Nest classes of every app are on one set of pages, and with a service picked in the top bar its data, schema and functions are too. `init`, `add service`, `remove` and `workspace sync` keep the apps' `.env` in step: `MICROSERVICES` in the main app, `DASHBOARD_URL` and `OTEL_SERVICE_NAME` in each service, and the `DASHBOARD_TOKEN` they share. A monorepo made with 0.15.0 or before gets them from `archlast-forge workspace sync`. Deployed with Docker on one machine, each app's `compose.override.yaml` gives them the addresses on the monorepo's network ([Deploying](#deploying)); see also [one dashboard](observability.html#one-dashboard-for-a-main-app-and-its-microservices).
 
 ## Services calling services
 
@@ -198,4 +198,23 @@ curl -X POST localhost:3000/http/orders/hello -H 'content-type: application/json
 | `redis` | the Redis at `MICROSERVICES_REDIS_URL` (default `redis://127.0.0.1:6379`) | the same URL | a Redis server; `ioredis` (added to each backend's `forge/package.json`) |
 | `nats` | the NATS server at `MICROSERVICES_NATS_URL` (default `nats://127.0.0.1:4222`) | the same URL | a NATS server; `nats` (added to each backend) |
 
-A service listens in the first function runtime process of its server, so a message is handled once per server. In production every app is its own stack: for Forge RPC or TCP, put the stacks on one network and give callers the services' hosts and ports; for Redis or NATS, point every app at the same broker.
+A service listens in the first function runtime process of its server, so a message is handled once per server. Deployed, every app is its own stack, and [Deploying](#deploying) puts the stacks on one network with the callers' addresses; for Redis or NATS, every app also needs `MICROSERVICES_REDIS_URL` or `MICROSERVICES_NATS_URL` pointing at the same broker.
+
+## Deploying
+
+Each app has its own stack, and `bun run up` (`archlast-forge up`) in its folder builds its image and starts it. Nothing runs at the monorepo's root:
+
+```bash
+(cd apps/orders && bun run up)
+(cd apps/web && bun run up)
+```
+
+On one machine the stacks find each other. `init --monorepo`, `add`, `remove` and `workspace sync` write a `compose.override.yaml` beside each app's `compose.yaml` when the monorepo has services. Docker Compose merges that file in (so does `archlast-forge`, for `up`, `down`, `logs` and the data commands). It puts the app on the Docker network `<monorepo>-apps` under the app's name, so `orders` is `http://orders:3000` to the others, and gives each app what it needs to reach the others there:
+
+| App | What `compose.override.yaml` sets |
+|---|---|
+| the main app | `<SERVICE>_RPC_URL=http://<service>:<rpc port>` (Forge RPC; `.env` can still set another), or `<SERVICE>_HOST` and `<SERVICE>_PORT` (TCP); `MICROSERVICES=<service>=http://<service>:3000,…` |
+| each service | `DASHBOARD_URL=http://<main app>:3000` |
+| every app | `FORGE_RPC_TOKEN` (Forge RPC) and `DASHBOARD_TOKEN` from its `.env`; `MICROSERVICES_REDIS_URL` or `MICROSERVICES_NATS_URL` from its `.env` for those transports, which `up` refuses to start without |
+
+`.env` keeps the development addresses (`localhost`), which `bun run dev` uses. The file's values win over `compose.yaml`'s, and the commands write it again whenever the apps change. To change it, delete its first line (`# Written by archlast-forge…`), which makes the file yours, and the commands leave it alone. For apps on several machines, make it yours and put in the addresses the apps reach each other at, and expose each service's transport port to its callers only. On another orchestrator, set the same variables there.

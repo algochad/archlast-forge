@@ -152,6 +152,9 @@ async function smoke(mode: "framework" | "backend") {
     const apiPage = await (await fetch(`${base}/_api`)).text();
     const apiScript = /src="(\/_api\/_docs\/assets\/[^"]+\.js)"/.exec(apiPage)?.[1];
     if (!apiScript || !(await fetch(`${base}${apiScript}`)).ok) throw new Error("the API docs page isn't served");
+    // Rendered on the server from the installed package (its second, Bun-targeted build), with its Markdown index beside it.
+    if (!apiPage.includes('data-part="root"')) throw new Error("the API docs page isn't rendered on the server");
+    if (!(await (await fetch(`${base}/_api/llms.txt`)).text()).includes("/_api/index.md")) throw new Error("the API docs' llms.txt isn't served");
     // The request builder (the engine's fork of Scalar), loaded by "Try it": the script and the stylesheet beside it.
     if ((await (await fetch(`${base}/_api/_docs/explorer.js`)).arrayBuffer()).byteLength < 1_000_000) throw new Error("the request builder (vendored Scalar fork) isn't served");
     if (!(await fetch(`${base}/_api/_docs/explorer.css`)).ok) throw new Error("the request builder's stylesheet isn't served");

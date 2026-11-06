@@ -4,7 +4,7 @@
 import { HttpError } from "../rpc";
 import type { WafConfig } from "../config";
 import { log } from "../logger";
-import { WafGate, type Outcome } from "./gate";
+import { WafGate, type Outcome, type Owns } from "./gate";
 import type { ThreadInfo } from "./pool";
 import { INBOUND_THRESHOLD } from "./rules";
 import { WafStats } from "./stats";
@@ -50,12 +50,12 @@ export class Firewall {
   private queue: Promise<unknown> = Promise.resolve();
 
   /**
-   * `worker` is the module the WAF threads run (the server names it, as it does the telemetry worker's); `docsOwn` says which paths the API
-   * docs serve, which the WAF leaves alone like the engine's other pages.
+   * `worker` is the module the WAF threads run (the server names it, as it does the telemetry worker's); `owns` says which requests the
+   * engine answers itself (its own pages, the API docs, the app's files), which the WAF leaves alone.
    */
   constructor(
     private worker: URL,
-    private docsOwn?: (path: string) => boolean,
+    private owns?: Owns,
   ) {}
 
   get enabled() {
@@ -86,7 +86,7 @@ export class Firewall {
       return;
     }
     if (old && same(old.config, config)) return;
-    const next = await WafGate.start(this.worker, config, this.docsOwn);
+    const next = await WafGate.start(this.worker, config, this.owns);
     this.gate = next;
     old?.retire();
     log("info", `web application firewall ${old ? "changed" : "on"}: ${config.mode}, paranoia ${config.paranoia}, ${config.workers} thread${config.workers === 1 ? "" : "s"}`);
@@ -95,7 +95,7 @@ export class Firewall {
   /** Inspects a request (anything the engine hands out), counts what came of it and logs what was stopped. Passes what it isn't asked to look at. */
   async check(req: Request, url: URL, client: { address: string; port: number }, serverPort: number, readLimit: number, requestId: string): Promise<Outcome> {
     const gate = this.gate;
-    if (!gate || gate.skips(req.method, url.pathname)) return { kind: "pass" };
+    if (!gate || (await gate.skips(req.method, url.pathname))) return { kind: "pass" };
     const started = performance.now();
     const outcome = await gate.check(req, url, client, serverPort, readLimit);
     const ms = performance.now() - started;
@@ -134,7 +134,7 @@ export class Firewall {
     const pathname = parsed.pathname;
     const result = await gate.explain({ method, url: target, protocol: "HTTP/1.1", headers, remoteAddr: "203.0.113.9", remotePort: 40000, serverPort: 0 }, body);
     const action = result.verdict.action === "block" ? "blocked" : result.verdict.action === "detected" ? "detected" : "allowed";
-    const skipped = gate.skipReason(method, pathname);
+    const skipped = await gate.skipReason(method, pathname);
     return {
       action,
       score: result.score,

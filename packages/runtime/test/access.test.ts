@@ -3,12 +3,12 @@ import { join } from "node:path";
 import { startServer, type RunningServer } from "../src/server/server";
 import { tempDir } from "./helpers";
 
-const admin = { "x-admin-key": "secret", "x-forge-admin": "1", "content-type": "application/json" };
+const admin = { "x-admin-key": "secret-for-tests", "x-forge-admin": "1", "content-type": "application/json" };
 let srv: RunningServer;
 type Fixture = "fixture-access" | "fixture-access-plugin";
 const modes: Record<"process" | "inline", (fixture: Fixture) => Promise<RunningServer>> = {
   // dev always runs the functions in a child process
-  process: (fixture) => startServer({ forgeDir: join(import.meta.dir, fixture), dev: true, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret" } }),
+  process: (fixture) => startServer({ forgeDir: join(import.meta.dir, fixture), dev: true, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret-for-tests" } }),
   // the production default: the functions run inside the server process
   inline: (fixture) =>
     startServer({
@@ -17,7 +17,7 @@ const modes: Record<"process" | "inline", (fixture: Fixture) => Promise<RunningS
         ...process.env,
         PORT: "0",
         DATA_DIR: tempDir(),
-        ADMIN_KEY: "secret",
+        ADMIN_KEY: "secret-for-tests",
         DASHBOARD: "on",
         BETTER_AUTH_SECRET: "s".repeat(32),
         ALLOW_INSECURE_HTTP: "1",

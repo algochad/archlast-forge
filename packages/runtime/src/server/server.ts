@@ -3,7 +3,7 @@ import { brotliCompressSync } from "node:zlib";
 import { timingSafeEqual } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { availableParallelism, hostname } from "node:os";
-import { extname, join, relative, resolve } from "node:path";
+import { basename, extname, join, relative, resolve } from "node:path";
 import { buildAdminApi } from "./admin-api";
 import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
@@ -24,7 +24,7 @@ import { log, setLogFormat } from "./logger";
 import { Metrics, type LoopDelays } from "./metrics";
 import type { Manifest } from "./project";
 import { toPublicError } from "./public-error";
-import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./ratelimit";
+import { MemoryRateLimiter, rateKeyOf, RedisRateLimiter, type RateLimiter } from "./ratelimit";
 import { buildRpc, errorResponse, HttpError, readBytes, readText, type Rpc, type SocketData } from "./rpc";
 import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager, type QueryObserver } from "./subscriptions";
@@ -75,6 +75,11 @@ export interface AppHost {
   dispose?(): void | Promise<void>;
   /** Whether one of the app's own routes takes this path (a page, not a catch-all); undefined while the app isn't built yet. The engine checks the API docs' paths against it. */
   matches?(path: string): boolean | undefined;
+  /**
+   * Whether a GET of this path is answered with one of the app's files (its built assets, a file in public/) and no app code. The web
+   * application firewall leaves those alone; anything else, a static-looking path included, is inspected.
+   */
+  serves?(path: string): boolean | Promise<boolean>;
 }
 
 /** What an app host may do for one request. */
@@ -124,7 +129,17 @@ export interface ServerOptions {
 export interface ApiDocsHost {
   serve(
     req: Request,
-    opts: { base: string; publicBase: string; openapiUrl: string; explorerPath: string | null; dev: boolean; forgeDir: string; page: ApiDocsPageConfig },
+    opts: {
+      base: string;
+      publicBase: string;
+      openapiUrl: string;
+      explorerPath: string | null;
+      dev: boolean;
+      forgeDir: string;
+      page: ApiDocsPageConfig;
+      /** The OpenAPI document the page describes (the complete one only in development), for pages rendered on the server; null while the code isn't loaded. */
+      document?: (audience?: "public" | "all") => Promise<unknown>;
+    },
   ): Promise<Response | null>;
   paths?(opts: { base: string; explorerPath: string | null }): { exact: string[]; prefixes: string[] };
 }
@@ -173,14 +188,15 @@ const lastForwarded = (header: string | null | undefined) => header?.split(",").
 const SOURCE_FILES = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
 
 /**
- * Lines around `line` of a source file named in a stack trace, for the dashboard's error view. Only the project's own code: files under
- * the directory that holds forge/ (so a full-stack app's app/ too), not dependencies, and only source files.
+ * Lines around `line` of a source file named in a stack trace, for the dashboard's error view. Only the code that runs in the engine:
+ * source files in forge/ and a full-stack app's app/, not dependencies, and nothing else in the project (scripts, configuration).
  */
 async function sourceContext(forgeDir: string, file: string, line: number, around = 6) {
   const root = resolve(forgeDir, "..");
   const path = resolve(root, file.replace(/^file:\/\//, ""));
   const rel = relative(root, path);
-  if (rel.startsWith("..") || rel.split(/[\\/]/).includes("node_modules") || !SOURCE_FILES.has(extname(path))) return null;
+  const parts = rel.split(/[\\/]/);
+  if (rel.startsWith("..") || ![basename(forgeDir), "app"].includes(parts[0]!) || parts.includes("node_modules") || !SOURCE_FILES.has(extname(path))) return null;
   const f = Bun.file(path);
   if (!(await f.exists()) || f.size > 2_000_000) return null;
   const lines = (await f.text()).split("\n");
@@ -349,7 +365,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     subs.rerunAll();
   });
 
-  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
+  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
   const maxBody = config.limits.maxRequestBytes;
   // Files kept on this server's disk are served here; uploads to them, and backups uploaded to the dashboard, may be larger than other requests.
   const localFiles = config.storage === "local" ? (createStorage(config) as LocalStorage) : undefined;
@@ -610,20 +626,27 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     },
   });
   /** The OpenAPI documents (the public one, and in dev the complete one), made once per load of the code (a reload brings a new manifest), minified. */
-  const openApi = new Map<string, { manifest: unknown; json: string; etag: string }>();
-  async function openApiResponse(req: Request) {
+  const openApi = new Map<string, { manifest: unknown; json: string; etag: string; doc?: unknown }>();
+  /** The document for this request (the public one, or in development the complete one when it asks), made once per load of the code. */
+  async function openApiDocument(req: Request, audience = dev && new URL(req.url).searchParams.get("audience") === "all" ? "all" : "public") {
     await loading;
-    if (!runtime.manifest) return Response.json({ message: runtime.loadError ?? "The function runtime is not running" }, { status: 503 });
-    // The complete document lists what the public one leaves out: development only.
-    const audience = dev && new URL(req.url).searchParams.get("audience") === "all" ? "all" : "public";
-    let cached = openApi.get(audience);
+    if (!runtime.manifest) return null;
+    // Without BETTER_AUTH_URL the document names the address that was asked, so one asked through another Host header is a document of its own.
+    const key = env.BETTER_AUTH_URL ? audience : `${audience} ${new URL(req.url).origin}`;
+    let cached = openApi.get(key);
     if (cached?.manifest !== runtime.manifest) {
       const manifest = runtime.manifest;
       const doc = await runtime.admin<Record<string, unknown>>("openapi", { audience }, "system");
       // Calls go to the servers the app names, else the address browsers use: BETTER_AUTH_URL when it is set (a proxy in front may hide it from the request), else the one asked.
       const json = JSON.stringify(doc.servers ? doc : { ...doc, servers: [{ url: env.BETTER_AUTH_URL ? config.authUrl : new URL(req.url).origin }] });
-      openApi.set(audience, (cached = { manifest, json, etag: `"${Bun.hash(json).toString(36)}"` }));
+      if (openApi.size >= 32) openApi.clear();
+      openApi.set(key, (cached = { manifest, json, etag: `"${Bun.hash(json).toString(36)}"` }));
     }
+    return cached;
+  }
+  async function openApiResponse(req: Request) {
+    const cached = await openApiDocument(req);
+    if (!cached) return Response.json({ message: runtime.loadError ?? "The function runtime is not running" }, { status: 503 });
     if (req.headers.get("if-none-match") === cached.etag) return new Response(null, { status: 304, headers: { etag: cached.etag } });
     return compressed(req, cached.json, { "content-type": "application/json", etag: cached.etag, "cache-control": "no-cache", "x-content-type-options": "nosniff" });
   }
@@ -653,6 +676,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     const claimed = (p: string) => !clashes.has(p) && !(p.startsWith(`${at.path}/_docs/`) && clashes.has(`${at.path}/_docs/`));
     return (path === at.openapi || page) && claimed(path.replace(/\/$/, "") || path);
   }
+  /** A path below the docs' own that they may answer (a page of theirs), when no page of the app or root route takes it. */
+  function docsMayServe({ at }: { at: ApiDocsRouting }, path: string, method: string) {
+    if ((method !== "GET" && method !== "HEAD") || !path.startsWith(`${at.path}/`)) return false;
+    if (opts.app?.matches?.(path)) return false;
+    return !runtimeManifestRootRoute(path);
+  }
+  const runtimeManifestRootRoute = (path: string) => runtime.manifest?.rootRoutes?.some((r) => r.path === path || (r.pathPrefix !== undefined && r.pathPrefix !== "/" && path.startsWith(r.pathPrefix)));
   /** The docs' own paths that one of the app's routes (a page, or a root-mounted HTTP route) also takes. Unsettled while the app isn't built. */
   function docsClashes(manifest: Manifest | undefined, at: ApiDocsRouting) {
     const clashes = new Set<string>();
@@ -685,11 +715,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (!token) return null;
     const cached = adminSessions.get(token);
     if (cached && Date.now() - cached.at < 10_000) return cached.admin;
-    const found = await runtime.admin<AdminInfo | null>("session", { token }, "system").catch(() => null);
+    const found = await runtime.admin<AdminInfo | null>("session", { token, key: keyFingerprint }, "system").catch(() => null);
     adminSessions.set(token, { admin: found, at: Date.now() });
     if (adminSessions.size > 1000) adminSessions.clear();
     return found;
   }
+  /** Names the current ADMIN_KEY without revealing it: the sessions it signed in hold it, so rotating the key ends them. */
+  const keyFingerprint = config.adminKey ? new Bun.CryptoHasher("sha256").update(`archlast-forge admin key\n${config.adminKey}`).digest("hex").slice(0, 32) : undefined;
   const adminCookie = (token: string, maxAge: number) => `afx_admin=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${config.authUrl.startsWith("https://") ? "; Secure" : ""}`;
 
   const cors = (req: Request, res: Response) => {
@@ -720,12 +752,24 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     }
   };
 
+  /**
+   * WebSockets open per client (MAX_CONNECTIONS_PER_IP): each holds its subscriptions and their arguments, so the per-connection bounds would
+   * otherwise multiply with the sockets one client opens. Undefined when the client may open another, else the answer to refuse it with.
+   */
+  const openSockets = new Map<string, number>();
+  const socketSlot = (req: Request, srv: Server<SocketData>): { slot?: string; refuse?: Response } => {
+    const max = config.limits.maxConnectionsPerIp;
+    if (!max) return {};
+    const slot = rateKeyOf(clientIp(req, srv));
+    if ((openSockets.get(slot) ?? 0) >= max) return { refuse: Response.json({ message: `At most ${max} WebSockets per client (MAX_CONNECTIONS_PER_IP)` }, { status: 429, headers: { "retry-after": "10" } }) };
+    return { slot };
+  };
   const clientIp = (req: Request, srv: Server<SocketData>) => (config.trustProxy && lastForwarded(req.headers.get("x-forwarded-for"))) || srv.requestIP(req)?.address || "unknown";
   /** Seconds to wait when this client is over its rate limit; with no limit configured, null at once and the client's address is never looked up. */
   const limited = (req: Request, srv: Server<SocketData>, prefix = ""): Promise<number | null> | null => {
     const max = config.limits.rateLimitPerMinute;
     if (!max) return null;
-    return limiter.consume(prefix + clientIp(req, srv), { window: 60, max }).then((r) => (r.allowed ? null : (r.retryAfter ?? 60)));
+    return limiter.consume(prefix + rateKeyOf(clientIp(req, srv)), { window: 60, max }).then((r) => (r.allowed ? null : (r.retryAfter ?? 60)));
   };
   const tooMany = (retryAfter: number) => Response.json({ message: "Too many requests" }, { status: 429, headers: { "retry-after": String(retryAfter) } });
 
@@ -740,7 +784,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const out =
           body.key !== undefined
             ? config.adminKey && sameSecret(body.key, config.adminKey)
-              ? await runtime.admin<{ token: string; admin: AdminInfo }>("keySession", {}, "system")
+              ? await runtime.admin<{ token: string; admin: AdminInfo }>("keySession", { key: keyFingerprint }, "system")
               : null
             : await runtime.admin<{ token: string; admin: AdminInfo }>("login", { email: body.email, password: body.password }, "system");
         if (!out) return Response.json({ message: "Invalid admin key" }, { status: 401 });
@@ -866,10 +910,20 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   // The WAF starts before the server listens: a configuration that can't work (the rules, the module) stops the engine here, not after it is up and unguarded.
   // It is there when it is off too, so the dashboard can switch it on.
-  // The WAF leaves the API docs' pages alone; where they are is known once the request handler has asked (docsAt, before the WAF's check).
-  const firewall = new Firewall(WAF_WORKER, (path) => {
+  // The WAF leaves alone what the engine answers itself, and only where it does: a path it doesn't serve (no dashboard, S3 storage, a file
+  // that isn't there) goes to the app's code and is inspected. Where the API docs are is known once the request handler has asked (docsAt,
+  // before the WAF's check).
+  const firewall = new Firewall(WAF_WORKER, async (method, path) => {
+    const under = (p: string) => path === p || path.startsWith(`${p}/`);
+    if (dashboardPage && under("/_dashboard")) return "/_dashboard is the engine's own";
+    if (path.startsWith("/_admin/")) return "/_admin is the engine's own";
+    if (localFiles && path.startsWith("/_storage/")) return "/_storage is the engine's own";
+    if (method === "POST" && path === "/_telemetry") return "/_telemetry is the engine's own";
+    if (method === "POST" && path === CSP_REPORT_PATH) return `${CSP_REPORT_PATH} is the engine's own`;
     const plan = docsPlan;
-    return plan?.at ? docsClaim({ at: plan.at, clashes: plan.clashes }, path) : false;
+    if (plan?.at && docsClaim({ at: plan.at, clashes: plan.clashes }, path)) return "the API docs are the engine's own";
+    if ((method === "GET" || method === "HEAD") && (await opts.app?.serves?.(path))) return "the app's files aren't inspected";
+    return undefined;
   });
   await firewall.apply(config.waf);
   metrics.waf = () => (firewall.enabled ? { ...firewall.stats.counters, rules: firewall.stats.ruleCounts() } : undefined);
@@ -895,7 +949,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (path === "/health") return Response.json({ ok: true });
       if (path === "/ready")
         return Response.json(
-          { ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, error: runtime.loadError },
+          // Why the code didn't load is for the logs (and the dev overlay): it can name files, hosts and data, and anyone may ask /ready.
+          { ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, ...(dev && { error: runtime.loadError }) },
           { status: !shuttingDown && runtime.manifest && !runtime.loadError ? 200 : 503 },
         );
       // Content-Security-Policy violation reports from browsers (the app's pages and the dashboard), for the dashboard's Security page.
@@ -993,8 +1048,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (outcome.kind === "error" && outcome.refuse) return cors(req, withId(errorResponse({ message: "The web application firewall is unavailable", code: "SERVICE_UNAVAILABLE", requestId })));
       }
 
-      // The API docs own a few exact paths and their assets' prefix; anything else below their path is the app's (its own pages under /docs).
-      if (docs && docsClaim(docs, path)) {
+      // The API docs own a few exact paths and their assets' prefix, and may answer a page of theirs below their path (an operation, a guide,
+      // its Markdown) unless the app has a page or a root route there; anything they don't answer is the app's (its own pages under /docs).
+      if (docs && (docsClaim(docs, path) || (opts.apiDocs && docsMayServe(docs, path, req.method)))) {
         const { at } = docs;
         const retry = await limited(req, srv);
         if (retry) return withId(tooMany(retry));
@@ -1007,6 +1063,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           dev,
           forgeDir: resolve(opts.forgeDir),
           page: at.page,
+          document: async (audience) => {
+            const cached = await openApiDocument(req, audience === "all" && dev ? "all" : "public");
+            return cached ? (cached.doc ??= JSON.parse(cached.json)) : null;
+          },
         });
         if (served) return withId(served);
         if (path === at.path && !opts.apiDocs)
@@ -1023,8 +1083,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (!originAllowed(req)) return new Response("Origin not allowed. Add it to TRUSTED_ORIGINS.", { status: 403 });
         const retry = await limited(req, srv);
         if (retry) return tooMany(retry);
+        const { slot, refuse } = socketSlot(req, srv);
+        if (refuse) return refuse;
         const ip = config.limits.rateLimitPerMinute ? clientIp(req, srv) : undefined;
-        const data: SocketData = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, traceparent: req.headers.get("traceparent") ?? undefined, ip, live: new Map() };
+        const data: SocketData = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, traceparent: req.headers.get("traceparent") ?? undefined, ip, live: new Map(), slot };
         if (srv.upgrade(req, { data })) return;
         return new Response("WebSocket upgrade failed", { status: 400 });
       }
@@ -1040,9 +1102,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           const retry = await limited(req, srv);
           if (retry) return tooMany(retry);
           await loading;
+          const { slot, refuse } = socketSlot(req, srv);
+          if (refuse) return refuse;
           const ip = config.limits.rateLimitPerMinute ? clientIp(req, srv) : undefined;
           const gateway = { sid: crypto.randomUUID(), path: routed.pathname + routed.search, headers: [...req.headers] as [string, string][] };
-          const data: ServerSocket = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, ip, live: new Map(), gateway };
+          const data: ServerSocket = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, ip, live: new Map(), gateway, slot };
           if (srv.upgrade(req, { data, headers: subprotocol(req) })) return;
           return new Response("WebSocket upgrade failed", { status: 400 });
         }
@@ -1158,7 +1222,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       if (path.startsWith("/_admin/")) {
         if (!adminApi) return new Response("Not found", { status: 404 });
-        if (path === "/_admin/login") {
+        // Sign-ins and wrong admin keys share a budget per client, so neither a password nor the key can be guessed at full speed.
+        const key = req.headers.get("x-admin-key");
+        if (path === "/_admin/login" || (key !== null && !(config.adminKey && sameSecret(key, config.adminKey)))) {
           const retry = await limited(req, srv, "admin:");
           if (retry) return withId(tooMany(retry));
         }
@@ -1265,6 +1331,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       open(ws) {
         connections++;
         sockets.add(ws);
+        if (ws.data.slot) openSockets.set(ws.data.slot, (openSockets.get(ws.data.slot) ?? 0) + 1);
         const g = ws.data.gateway;
         if (!g) return;
         gatewaySockets.set(g.sid, ws);
@@ -1272,7 +1339,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       },
       async message(ws, msg) {
         if (config.limits.rateLimitPerMinute) {
-          const r = await limiter.consume(ws.data.ip ?? "unknown", { window: 60, max: config.limits.rateLimitPerMinute });
+          const r = await limiter.consume(rateKeyOf(ws.data.ip ?? "unknown"), { window: 60, max: config.limits.rateLimitPerMinute });
           if (!r.allowed) return ws.close(1008, "Too many requests");
         }
         await loading; // a socket can connect before the function runtime has loaded, as an HTTP request can
@@ -1284,6 +1351,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       close(ws, code, reason) {
         connections--;
         sockets.delete(ws);
+        const slot = ws.data.slot;
+        if (slot) {
+          const n = (openSockets.get(slot) ?? 1) - 1;
+          if (n > 0) openSockets.set(slot, n);
+          else openSockets.delete(slot);
+        }
         const g = ws.data.gateway;
         if (!g) return rpc.close(ws);
         gatewaySockets.delete(g.sid);

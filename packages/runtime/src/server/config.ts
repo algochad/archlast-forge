@@ -62,6 +62,10 @@ export interface Limits {
   /** Requests (HTTP calls and WebSocket messages) per client IP per minute. 0 disables. */
   rateLimitPerMinute: number;
   maxSubscriptionsPerConnection: number;
+  /** The JSON size of one subscribe message; one connection's live queries together may hold 16 times this. */
+  maxSubscriptionBytes: number;
+  /** WebSockets one client IP (an IPv6 /64) may hold open on this server. 0 disables. */
+  maxConnectionsPerIp: number;
   /** Calls waiting for one function runtime process; past this, new calls are refused with 503 instead of queueing. */
   maxPendingCalls: number;
 }
@@ -228,7 +232,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const apiDocsPath = env.API_DOCS_PATH ? env.API_DOCS_PATH.replace(/\/+$/, "") : undefined;
   if (apiDocsPath !== undefined && !/^\/[A-Za-z0-9._~\/-]+$/.test(apiDocsPath)) fail(`API_DOCS_PATH must be a path like "/_api", got "${env.API_DOCS_PATH}"`);
   if (apiDocsPath && reservedPathOf(apiDocsPath)) fail(`API_DOCS_PATH can't be under ${reservedPathOf(apiDocsPath)}, which the engine serves`);
-  const authUrl = env.BETTER_AUTH_URL ?? `http://localhost:${port}`;
+  // Empty is unset, as everywhere else that reads it: an origin is parsed from it (CORS, trusted origins), and "" isn't a URL.
+  const authUrl = env.BETTER_AUTH_URL || `http://localhost:${port}`;
   // Over http, Better Auth's cookies aren't marked Secure; behind a TLS proxy that silently weakens sessions.
   if (!dev && !authUrl.startsWith("https://") && !bool(env.ALLOW_INSECURE_HTTP, false))
     fail(`BETTER_AUTH_URL must be https:// outside dev (got "${authUrl}"). Set ALLOW_INSECURE_HTTP=1 only for local testing.`);
@@ -244,6 +249,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if ((dashboardUrl || Object.keys(microservices).length) && !dashboardToken)
     fail(`${dashboardUrl ? "DASHBOARD_URL" : "MICROSERVICES"} needs DASHBOARD_TOKEN: the secret the main app and its microservices share`);
   if (dashboardToken && dashboardToken.length < 16) fail("DASHBOARD_TOKEN must be at least 16 characters");
+  // It signs in as the owner, from anywhere that reaches /_admin: outside dev it can't be a word someone could guess.
+  if (!dev && env.ADMIN_KEY && env.ADMIN_KEY.length < 16) fail("ADMIN_KEY must be at least 16 characters outside dev (`openssl rand -hex 24` makes one)");
   // Its telemetry joins the main app's under this name, which the main app's MICROSERVICES uses too; two engines both named archlast-forge would merge.
   if (dashboardUrl && !env.OTEL_SERVICE_NAME) fail("DASHBOARD_URL needs OTEL_SERVICE_NAME: this microservice's name, as the main app's MICROSERVICES lists it");
   const sqliteSynchronous = (env.SQLITE_SYNCHRONOUS || "FULL").toUpperCase() as Config["sqliteSynchronous"];
@@ -292,6 +299,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       maxRequestBytes: int("MAX_REQUEST_BYTES", 8 * 1024 * 1024, 1),
       rateLimitPerMinute: int("RATE_LIMIT_PER_MINUTE", dev ? 0 : 1200),
       maxSubscriptionsPerConnection: int("MAX_SUBSCRIPTIONS_PER_CONNECTION", 200, 1),
+      maxSubscriptionBytes: int("MAX_SUBSCRIPTION_BYTES", 64 * 1024, 1),
+      maxConnectionsPerIp: int("MAX_CONNECTIONS_PER_IP", 256, 0),
       maxPendingCalls: int("MAX_PENDING_CALLS", 1000, 1),
     },
     waf,

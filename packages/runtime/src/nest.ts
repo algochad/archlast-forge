@@ -78,6 +78,9 @@ interface EngineHost {
   wsClose(sid: string, code?: number, reason?: string): void;
   /** Sends a PubSub event to every function runtime process (this one too). */
   relay(topic: string, payload: unknown): void;
+  /** Development mode, and the browser origins the engine trusts (BETTER_AUTH_URL's, TRUSTED_ORIGINS); an older engine doesn't say. */
+  dev?: boolean;
+  trustedOrigins?: string[];
 }
 const hostOf = () => (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.host")] as EngineHost | undefined;
 
@@ -351,9 +354,16 @@ class ContractInterceptor implements NestInterceptor {
       const req = context.switchToHttp().getRequest<ForgeRequest>();
       const fromText = (fields: PropertyValidators, given: Record<string, string | string[] | undefined>) =>
         Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, given[k] === undefined ? undefined : queryValue(v, [given[k]!].flat())]));
+      // The handler gets the values as they were checked (`?limit=2` is the number 2 for v.number()), not the text: the arguments
+      // (@Param, @Query) are read from the request after the interceptors run. Fields the contract doesn't name stay as they came.
+      const convert = (fields: PropertyValidators, given: Record<string, unknown>, path: string) => {
+        const values = fromText(fields, given as Record<string, string | string[] | undefined>);
+        validateFields(fields, values, path);
+        for (const [k, v] of Object.entries(values)) if (v !== undefined) given[k] = v;
+      };
       try {
-        if (spec.params) validateFields(spec.params, fromText(spec.params, req.params), "params");
-        if (spec.query) validateFields(spec.query, fromText(spec.query, req.query), "query");
+        if (spec.params) convert(spec.params, req.params, "params");
+        if (spec.query) convert(spec.query, req.query, "query");
         if (spec.body) validate(spec.body, req.body, "body");
       } catch (e) {
         if (e instanceof ValidationError) throw new BadRequestException(e.message);
@@ -675,9 +685,10 @@ const bytes = (chunk: unknown, encoding?: BufferEncoding) =>
 /** "json" → application/json, as Express's `res.type()` does. */
 const mime = (type: string) => (type.includes("/") ? type : Bun.file(`x.${type.replace(/^\./, "")}`).type);
 
+/** Query or form fields; a repeated name is an array. Only the object's own keys count (`?toString=x` is a field), and `__proto__` is dropped, as `qs` does. */
 const toObject = (params: URLSearchParams) => {
   const out: Record<string, string | string[]> = {};
-  for (const [k, v] of params) out[k] = k in out ? [...[out[k]!].flat(), v] : v;
+  for (const [k, v] of params) if (k !== "__proto__") out[k] = Object.hasOwn(out, k) ? [...[out[k]!].flat(), v] : v;
   return out;
 };
 
@@ -689,6 +700,7 @@ class ForgeRequest extends EventEmitter {
   readonly hostname: string;
   readonly protocol: string;
   readonly headers: Record<string, string>;
+  /** As the URL gave them; on a route with a `@Contract`, the fields it names hold their checked values (`?limit=2` is the number 2). */
   readonly query: Record<string, string | string[]>;
   readonly cookies: Record<string, string>;
   /** Node's connection, as engine.io reads it; the engine's server knows the address, which isn't passed on. */
@@ -699,6 +711,7 @@ class ForgeRequest extends EventEmitter {
     this.encoding = encoding;
     return this;
   }
+  /** The path's parameters as text; on a route with a `@Contract`, the ones it names hold their checked values. */
   params: Record<string, string> = {};
   [FORGE_CTX]: ActionCtx;
 
@@ -986,6 +999,8 @@ const METHOD_NAMES: Partial<Record<RequestMethod, string>> = {
 /** Nest's HTTP adapter for archlast-forge. Nest registers its routes here at `init()`, and the engine's /http routing calls `handle()`. */
 class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeResponse> {
   private notFound?: Handler;
+  /** Whether the app answers CORS itself (nest()'s `cors`, `app.enableCors()`): then what it mounts, such as GraphQL, adds none of its own. */
+  corsEnabled = false;
   private readonly router: Router;
 
   constructor(private readonly prefix: string) {
@@ -1112,6 +1127,7 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
   }
   /** `app.enableCors()` and the `cors` option of nest(): the `cors` package, ahead of every route, so preflight requests get their answer. */
   enableCors(options?: Parameters<typeof cors>[0]) {
+    this.corsEnabled = true;
     const run = cors(options);
     this.router.first((req, res, next) => run(req as never, res as never, next));
   }
