@@ -267,5 +267,12 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       const found = matchRoutes(loaded.routes, path);
       return Boolean(found?.length && found.at(-1)!.pathnameBase !== "/");
     },
+    /** Whether `fetch` answers a GET of this path with a file and no page code: the built assets under /_app, and files that are in public/. */
+    async serves(path) {
+      if (path.startsWith("/_app/")) return true;
+      if (!/\.[^/]+$/.test(path)) return false;
+      const file = inside(publicDir, path);
+      return Boolean(file && (await isFile(file)));
+    },
   };
 }

@@ -12,8 +12,6 @@
 // Wiring (forge/): spread `webhookTables` into schema.ts, export `webhookFunctions()` from forge/webhooks.ts, import
 // `WebhooksModule.forRoot({...})` in a feature module. See apps/docs/content/webhooks.mdx.
 import { createHash, createHmac, randomBytes, timingSafeEqual } from "node:crypto";
-import { lookup } from "node:dns/promises";
-import { BlockList, isIP } from "node:net";
 // By the package's own name, not "./nest": the build keeps nest.ts its own entry then (see nest-websockets.ts).
 import {
   applyDecorators,
@@ -34,6 +32,7 @@ import { ForgeError } from "./errors";
 import { internalAction, internalMutation, type ActionCtx, type MutationCtx, type QueryCtx } from "./functions";
 import { defineTable } from "./schema";
 import { v } from "./values";
+import { destinationOf, sendTo } from "./webhook-destination";
 
 // ---------------------------------------------------------------------------------------------------------------------------------
 // Options
@@ -573,51 +572,6 @@ export class WebhookDeliveries extends ForgeService<MutationCtx> {
   }
 }
 
-// Addresses no webhook may reach: link-local (and the cloud metadata service on it) always; private, loopback and shared ranges unless allowed.
-const alwaysBlocked = new BlockList();
-alwaysBlocked.addSubnet("169.254.0.0", 16, "ipv4");
-alwaysBlocked.addSubnet("fe80::", 10, "ipv6");
-alwaysBlocked.addAddress("fd00:ec2::254", "ipv6");
-alwaysBlocked.addSubnet("0.0.0.0", 8, "ipv4");
-const privateRanges = new BlockList();
-for (const [a, bits] of [["10.0.0.0", 8], ["172.16.0.0", 12], ["192.168.0.0", 16], ["127.0.0.0", 8], ["100.64.0.0", 10]] as const) privateRanges.addSubnet(a, bits, "ipv4");
-privateRanges.addAddress("::1", "ipv6");
-privateRanges.addSubnet("fc00::", 7, "ipv6");
-
-const familyOf = (ip: string) => (isIP(ip) === 6 ? "ipv6" : "ipv4");
-const unmapped = (ip: string) => (ip.toLowerCase().startsWith("::ffff:") && isIP(ip.slice(7)) === 4 ? ip.slice(7) : ip);
-
-/** Why a URL may not be called, or null. Resolves the host and checks every address it has (checked again on every attempt). */
-async function blockedReason(url: string, o: Resolved): Promise<string | null> {
-  let u: URL;
-  try {
-    u = new URL(url);
-  } catch {
-    return "not a URL";
-  }
-  if (u.protocol !== "https:" && !(o.allowHttp && u.protocol === "http:")) return "not https";
-  const host = u.hostname.replace(/^\[|\]$/g, "");
-  let addresses: string[];
-  try {
-    addresses = isIP(host) ? [host] : (await lookup(host, { all: true })).map((a) => a.address);
-  } catch {
-    return null; // the attempt will fail on its own and be retried
-  }
-  const allowed = new BlockList();
-  for (const a of o.allowedAddresses) {
-    const [ip, bits] = a.split("/");
-    if (bits) allowed.addSubnet(ip!, Number(bits), familyOf(ip!));
-    else allowed.addAddress(ip!, familyOf(ip!));
-  }
-  for (const raw of addresses) {
-    const ip = unmapped(raw);
-    const family = familyOf(ip);
-    if (alwaysBlocked.check(ip, family)) return `the address ${ip} is link-local or a metadata service`;
-    if (!o.allowPrivateNetworks && privateRanges.check(ip, family) && !allowed.check(ip, family)) return `the address ${ip} is private`;
-  }
-  return null;
-}
-
 const retryAfterOf = (value: string | null) => {
   if (!value) return undefined;
   if (/^\d+$/.test(value.trim())) return Number(value) * 1000;
@@ -635,14 +589,16 @@ export class WebhookWorker extends ForgeService<ActionCtx> {
     if (!claimed) return;
     const started = performance.now();
     const outcome: Outcome = { deliveryId, attempt: claimed.attempt, durationMs: 0 };
-    const blocked = await blockedReason(claimed.url, o);
-    if (blocked) {
+    const to = await destinationOf(claimed.url, o);
+    if ("blocked" in to) {
       outcome.blocked = true;
-      outcome.error = `Destination blocked: ${blocked}`;
+      outcome.error = `Destination blocked: ${to.blocked}`;
+    } else if ("error" in to) {
+      outcome.error = to.error;
     } else {
       const timestamp = Math.floor(Date.now() / 1000);
       try {
-        const res = await fetch(claimed.url, {
+        const res = await sendTo(to, {
           method: "POST",
           headers: {
             "content-type": "application/json",

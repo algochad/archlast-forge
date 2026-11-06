@@ -17,7 +17,7 @@ There are two ways in, chosen on the sign-in screen.
 
 Dashboard accounts are their own thing. They are not the users of your app (those are Better Auth's `users`), and an app user can't sign in here. See [authentication](auth.html#dashboard-accounts-are-separate).
 
-A successful sign-in sets an `afx_admin` cookie: `HttpOnly`, `SameSite=Strict`, valid for 12 hours, and `Secure` when `BETTER_AUTH_URL` is `https://`. The server keeps only a hash of the token. When the session ends or is revoked the page returns to the sign-in screen. Sign-in attempts are rate limited per IP, with their own counter next to the one for normal calls (`RATE_LIMIT_PER_MINUTE`).
+A successful sign-in sets an `afx_admin` cookie: `HttpOnly`, `SameSite=Strict`, valid for 12 hours, and `Secure` when `BETTER_AUTH_URL` is `https://`. The server keeps only a hash of the token. When the session ends or is revoked the page returns to the sign-in screen. Sign-in attempts, and requests with a wrong `x-admin-key`, are rate limited per IP, with their own counter next to the one for normal calls (`RATE_LIMIT_PER_MINUTE`). Setting an account's password again (`archlast-forge admin add` with its email) signs it out everywhere, and a session signed in with `ADMIN_KEY` ends when the key changes.
 
 ## Roles
 

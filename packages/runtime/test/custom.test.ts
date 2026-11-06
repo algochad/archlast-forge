@@ -163,7 +163,7 @@ describe("runCustom in production", () => {
     DATA_DIR: dataDir,
     BETTER_AUTH_SECRET: "s".repeat(32),
     ALLOW_INSECURE_HTTP: "1",
-    ADMIN_KEY: "root-key",
+    ADMIN_KEY: "root-key-for-tests",
     DASHBOARD: "on",
     RATE_LIMIT_PER_MINUTE: "100000",
     LOG_FORMAT: "json",
@@ -188,10 +188,10 @@ describe("runCustom in production", () => {
   test("off by default, even for the owner", async () => {
     const srv = await startServer({ forgeDir: fixture, env: env() });
     try {
-      const res = await post(srv, { "x-admin-key": "root-key" });
+      const res = await post(srv, { "x-admin-key": "root-key-for-tests" });
       expect(res.status).toBe(403);
       expect(((await res.json()) as any).error.message).toContain("ALLOW_CUSTOM_FUNCTIONS");
-      expect(((await (await fetch(`${srv.url}/_admin/server`, { headers: { "x-admin-key": "root-key" } })).json()) as any).customFunctions).toBe(false);
+      expect(((await (await fetch(`${srv.url}/_admin/server`, { headers: { "x-admin-key": "root-key-for-tests" } })).json()) as any).customFunctions).toBe(false);
     } finally {
       await srv.stop();
     }

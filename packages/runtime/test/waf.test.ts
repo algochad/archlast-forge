@@ -183,6 +183,26 @@ describe("in the server", () => {
     expect((await fetch(`${srv.url}/_csp`, { method: "POST", headers: { "content-type": "application/csp-report" }, body: JSON.stringify(report) })).status).toBe(204);
   });
 
+  test("only what the engine or the app's files answer is left alone: a path of that shape that goes to code is inspected", async () => {
+    // A stand-in app: `/logo.png` is one of its files, anything else is its code (a loader, a route with a `:file` parameter).
+    const srv = await startServer({
+      forgeDir: join(import.meta.dir, "fixture"),
+      env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json", WAF: "1" },
+      app: { fetch: () => new Response("app"), serves: async (path) => path === "/logo.png" },
+    });
+    started.push(srv);
+    const q = `?q=${encodeURIComponent(ATTACK)}`;
+    const status = (path: string) => fetch(`${srv.url}${path}`).then((r) => r.status);
+    expect(await status(`/logo.png${q}`)).toBe(200); // a real file: nothing in it for an attacker to reach
+    expect(await status(`/posts/x.png${q}`)).toBe(403); // looks static, but the app's code answers it
+    expect(await status(`/http/files/x.png${q}`)).toBe(403);
+    // The engine's prefixes where it doesn't serve them: the dashboard is off, storage isn't local, and a GET of /_csp isn't a report.
+    expect(await status(`/_dashboard${q}`)).toBe(403);
+    expect(await status(`/_storage/x${q}`)).toBe(403);
+    expect(await status(`/_csp${q}`)).toBe(403);
+    expect(await status(`/_telemetry${q}`)).toBe(403);
+  });
+
   test("a body over WAF_MAX_BODY_KB is not inspected, while its URL and headers still are", async () => {
     const srv = await serve({ WAF_MAX_BODY_KB: "1" });
     const post = (body: string, query = "") => fetch(`${srv.url}/http/echo${query}`, { method: "POST", headers: { "content-type": "application/json" }, body }).then((r) => r.status);

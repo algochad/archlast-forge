@@ -66,7 +66,7 @@ Arguments may be omitted when the function takes none. A `QueryUpdate` is `{ val
 - **Identical subscriptions are shared.** Two `watch` calls with the same function and arguments (compared as `JSON.stringify`, so key order matters) use one server subscription, and a late listener gets the latest value at once. The server subscription ends when the last listener leaves.
 - **The first message is the current result**; after that, one message after each write that affects the query. See [reactivity](reactivity.html).
 - **A failing query is an update, not an exception**: `{ error, data?, requestId? }` is delivered to the listener, and the subscription stays active. A later successful run delivers a `value` again.
-- **A refused subscription** (an unknown query, or more than `MAX_SUBSCRIPTIONS_PER_CONNECTION`, 200 by default) delivers one error update and ends. It is not retried; unsubscribe and watch again.
+- **A refused subscription** (an unknown query, arguments that fail validation, a `subscribe` message over `MAX_SUBSCRIPTION_BYTES`, or more than `MAX_SUBSCRIPTIONS_PER_CONNECTION`, 200 by default) delivers one error update and ends. It is not retried; unsubscribe and watch again.
 - **Arguments are validated on the server** with the same rules as a call.
 
 ### Connection behavior

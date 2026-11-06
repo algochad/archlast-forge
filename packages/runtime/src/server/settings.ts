@@ -79,6 +79,7 @@ export const SETTINGS: SettingDef[] = [
     type: "bool",
     default: "on in dev, off otherwise",
     doc: "Let owners run code typed into the dashboard, with the function runtime's privileges.",
+    envOnly: "It lets a dashboard session run any code on the server, so only whoever deploys it may turn it on.",
   },
   // -- database and cache --
   { name: "DATA_DIR", group: "Database", type: "string", default: "./data (/data in the image)", doc: "Where the SQLite database, telemetry and the built-in storage live.", envOnly: BOOT },
@@ -147,6 +148,8 @@ export const SETTINGS: SettingDef[] = [
   { name: "MAX_REQUEST_BYTES", group: "Limits", type: "int", min: 1, default: "8388608 (8 MiB)", doc: "An HTTP request body and a WebSocket message." },
   { name: "RATE_LIMIT_PER_MINUTE", group: "Limits", type: "int", min: 0, default: "1200 (off in dev)", doc: "Requests per client IP per minute. 0 turns rate limiting off." },
   { name: "MAX_SUBSCRIPTIONS_PER_CONNECTION", group: "Limits", type: "int", min: 1, default: "200", doc: "Live queries one WebSocket may hold." },
+  { name: "MAX_CONNECTIONS_PER_IP", group: "Limits", type: "int", min: 0, default: "256", doc: "WebSockets one client IP (an IPv6 /64) may hold open on one server; past it the handshake gets 429. 0 turns it off. Behind a proxy it needs TRUST_PROXY, or every visitor is the proxy." },
+  { name: "MAX_SUBSCRIPTION_BYTES", group: "Limits", type: "int", min: 1, default: "65536 (64 KiB)", doc: "The JSON size of one live query's subscribe message, its arguments included. The live queries of one WebSocket may hold 16 times this together." },
   // -- web application firewall --
   { name: "WAF", group: "Firewall", type: "bool", default: "off", doc: "Inspect every request with the OWASP Core Rule Set (Coraza) before the engine handles it. A request the rules flag gets a 403. Costs about a millisecond of CPU per request and over 100 MB of memory per WAF thread. The Firewall page of the dashboard watches it and changes it while it runs: the WAF_* settings apply at once, without a restart." },
   { name: "WAF_MODE", group: "Firewall", type: "enum", options: ["block", "detect"], default: "block", doc: "`detect` only logs what the rules would stop, so a rollout can be watched before it blocks anything." },
