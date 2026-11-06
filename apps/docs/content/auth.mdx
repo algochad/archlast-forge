@@ -48,43 +48,30 @@ Everything else is yours: `plugins`, `socialProviders`, `session`, `user`, `acco
 ### Plugins
 
 ```ts
-import { bearer } from "better-auth/plugins";
+import { bearer } from "@archlast/forge-runtime/auth";
 
 export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [bearer()] });
 ```
 
-`better-auth` is installed next to the runtime, so `better-auth/plugins` resolves from `forge/` without adding anything.
+Better Auth's plugins come with the engine, at the Better Auth version it pins, with nothing to install:
+
+- `@archlast/forge-runtime/auth` has everything `better-auth/plugins` exports: `admin`, `anonymous`, `bearer`, `captcha`, `customSession`, `deviceAuthorization`, `emailOTP`, `genericOAuth` (and its providers: `auth0`, `keycloak`, `okta`, `microsoftEntraId`, …), `haveIBeenPwned`, `jwt`, `lastLoginMethod`, `magicLink`, `multiSession`, `oAuthProxy`, `oneTap`, `oneTimeToken`, `openAPI`, `organization`, `phoneNumber`, `siwe`, `twoFactor`, `username` and their helpers, plus `oauthProvider`.
+- Better Auth's separately published plugins each have a subpath, so an app loads only what it imports: `@archlast/forge-runtime/auth/oauth-provider`, `/auth/api-key` (`apiKey`), `/auth/passkey` (`passkey`), `/auth/sso` (`sso`), `/auth/scim` (`scim`) and `/auth/i18n` (`i18n`), each with everything its package exports.
+- None of them runs unless `plugins` lists it. Plugins that need an SDK of yours (`@better-auth/stripe` and the Stripe SDK, `@better-auth/expo` for a mobile app, `@better-auth/electron`) don't come with the engine: install them in `forge/` at the engine's version (below).
 
 - **Plugins that only add fields** to `users` or `sessions` work as is. The admin plugin adds `role` and `banned`; they land on the user document.
-- **Plugins that add tables** (organization, OAuth provider, JWT, two-factor, passkey, and others) need those tables in your `schema.ts`, with **every field the plugin writes**. A missing table fails with `Unknown table "members"` and a missing field with `members.role is not in the validator`, because tables you declare are validated strictly. Generate the declarations from the plugins themselves instead of copying them by hand (below).
-- **A plugin from its own package** (`@better-auth/oauth-provider`, `@better-auth/passkey`, …) must match the Better Auth version the engine pins, or it brings a second copy of Better Auth: `bun add @better-auth/oauth-provider@1.7.12` in `forge/` for this release (`grep '"version"' forge/node_modules/better-auth/package.json` shows the pinned one).
+- **Plugins that add tables** (organization, OAuth provider, JWT, two-factor, passkey, and others) get them from the engine: it reads the tables a plugin describes from the plugin itself when the app loads, and `archlast-forge codegen` writes their types to `forge/_generated/authTables.ts`, so `ctx.db.query("members")` is typed. Declare nothing for them in `schema.ts` (see [Plugin tables](#plugin-tables)).
+- **A plugin that doesn't come with the engine** (`@better-auth/stripe`, `@better-auth/expo`, …) must match the Better Auth version the engine pins, or it brings a second copy of Better Auth: `bun add @better-auth/stripe@1.7.12` in `forge/` for this release (`grep '"version"' forge/node_modules/better-auth/package.json` shows the pinned one).
 
-### Declaring a plugin's tables
+### Plugin tables
 
-Save this as `forge/_auth-tables.ts` (the leading `_` keeps it out of your API), run `bun _auth-tables.ts` from `forge/`, and paste what it prints into `defineSchema({ … })`:
+The tables a plugin needs are the engine's to declare, like `users` and `sessions`. When the app loads, every plugin in `defineAuth({ plugins })` that describes models of its own gets a table for each, as Better Auth's document adapter stores it:
 
-```ts
-// Prints defineTable() lines for the tables Better Auth's plugins add, from the plugins' own schema, for the version installed.
-import auth from "./auth";
-const plural = (m: string) => `${m}s`; // the engine's adapter adds an s to every model name (jwks -> jwkss)
-const builtIn = new Set(["user", "session", "account", "verification"]);
-const type = (t: unknown): string =>
-  Array.isArray(t) || t === "string[]" ? "v.array(v.string())" : t === "number[]" ? "v.array(v.number())"
-  : t === "string" ? "v.string()" : t === "number" || t === "date" ? "v.number()" : t === "boolean" ? "v.boolean()" : "v.any()";
-for (const plugin of (auth as { plugins?: { id: string; schema?: Record<string, { modelName?: string; fields: Record<string, any> }> }[] }).plugins ?? [])
-  for (const [model, def] of Object.entries(plugin.schema ?? {})) {
-    if (builtIn.has(model)) {
-      console.log(`// ${plugin.id} adds to ${model}s: ${Object.keys(def.fields).join(", ")} (a built-in table: nothing to declare)`);
-      continue;
-    }
-    // Better Auth writes null for an optional field it leaves empty, so optional fields also accept null.
-    const fields = Object.entries(def.fields).map(([f, a]) => `${f}: ${a.required === false ? `v.optional(v.union(${type(a.type)}, v.null()))` : type(a.type)}`);
-    const indexes = Object.entries(def.fields).filter(([, a]) => a.unique || a.index || a.references).map(([f]) => `.index("by_${f}", ["${f}"])`);
-    console.log(`  ${plural(def.modelName ?? model)}: defineTable({ ${fields.join(", ")} })${indexes.join("")}, // ${plugin.id}`);
-  }
-```
+- the name is the model name plus `s` (the JWT plugin's `jwks` is the table `jwkss`, `member` is `members`), or its `modelName` plus `s` when the plugin's options rename it;
+- dates are numbers, JSON fields are `v.any()`, and an optional field also accepts the `null` Better Auth writes when it leaves one empty;
+- every field the plugin marks unique, indexed or a reference gets an index, `by_<field>` (`members.by_userId`).
 
-Three things it gets right that hand-written tables get wrong: names are the model name plus `s` (the JWT plugin's `jwks` is the table `jwkss`), dates are numbers, and an empty optional field arrives as `null` (`oauthClients.clientDiscoveryId must be a string, got null` otherwise). JSON fields become `v.any()`. Run it again after upgrading.
+They follow the plugin's options (`organization({ teams: { enabled: true } })` adds `teams` and `teamMembers`) and the installed version, and an app that uses no such plugin has none of them. Run `archlast-forge codegen` after changing `forge/auth.ts` (`dev` does it for you): it writes `forge/_generated/authTables.ts` so the types know them. A table you declare yourself in `schema.ts` under the same name is kept as you wrote it, which is how apps that declared them before keep working.
 
 Table names `users`, `sessions`, `accounts` and `verifications` are reserved; `defineSchema` rejects them. Keep your own per-user data in a separate table keyed by `userId` (see [Roles and ownership](#roles-and-ownership)).
 
@@ -323,7 +310,7 @@ A React Native app keeps the session in the device's secure storage with Better 
 Add the plugin and sign-in returns a `set-auth-token` header. Send it back as `Authorization: Bearer <token>` on `/rpc/…`, `/http/…` and `/api/auth/…` calls:
 
 ```ts
-import { bearer } from "better-auth/plugins";
+import { bearer } from "@archlast/forge-runtime/auth";
 export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [bearer()] });
 ```
 
@@ -339,15 +326,12 @@ Adding any plugin turns the fast cookie path off (see above); the cookie still w
 
 Other apps can let people sign in with your app ("Sign in with Acme") and call your API on their behalf, with Better Auth's [OAuth Provider plugin](https://better-auth.com/docs/plugins/oauth-provider). Your app becomes an authorization server: the authorization-code flow with PKCE, consent, ID tokens, refresh-token rotation, client registration, discovery and JWKS. Use the plugin; do not build an OAuth server yourself.
 
-```bash
-cd forge && bun add @better-auth/oauth-provider@1.7.12   # the Better Auth version the engine pins
-```
+The plugin comes with the engine (`@archlast/forge-runtime/auth`), with the JWT plugin it signs its tokens with. Its tables (`jwkss`, `oauthClients`, `oauthResources`, `oauthClientResources`, `oauthRefreshTokens`, `oauthAccessTokens`, `oauthConsents`, `oauthClientAssertions`) are the engine's to declare ([Plugin tables](#plugin-tables)).
 
 ```ts
 // forge/auth.ts
 import { defineAuth } from "@archlast/forge-runtime";
-import { oauthProvider } from "@better-auth/oauth-provider";
-import { jwt } from "better-auth/plugins";
+import { jwt, oauthProvider } from "@archlast/forge-runtime/auth";
 
 /** Your own API as an OAuth resource: access tokens for it are JWTs with this audience. */
 export const API_RESOURCE = `${process.env.BETTER_AUTH_URL ?? "http://localhost:3000"}/http`; // the engine serves /http/* routes
@@ -375,7 +359,7 @@ export default defineAuth({
 
 **Decide who may register clients.** Without `clientPrivileges`, any signed-in user can create, change and delete OAuth clients, which in an app with open sign-up means every user. It receives `{ action, user, session, headers, clientId? }`; return `true` to allow. Leave it out only when you want users to register their own apps.
 
-Then declare the plugins' tables ([above](#declaring-a-plugins-tables): `jwkss`, `oauthClients`, `oauthAccessTokens`, `oauthRefreshTokens`, `oauthConsents`, `oauthResources`, `oauthClientResources`, `oauthClientAssertions`), and add the consent page.
+Then run `archlast-forge codegen` (the plugins' tables are the engine's, [above](#plugin-tables)), and add the consent page.
 
 Everything is served under `/api/auth`, so the issuer is `BETTER_AUTH_URL/api/auth`:
 
@@ -511,7 +495,7 @@ The other side of [being an OAuth provider](#being-an-oauth-21-and-openid-connec
 ```ts
 // forge/auth.ts
 import { defineAuth } from "@archlast/forge-runtime";
-import { genericOAuth } from "better-auth/plugins";
+import { genericOAuth } from "@archlast/forge-runtime/auth";
 
 export const ACME_URL = process.env.ACME_URL ?? "http://localhost:3000";
 export const ACME_API = `${ACME_URL}/http`; // the resource Partner's tokens are for
@@ -581,11 +565,11 @@ For a SaaS where customers are organizations with members and roles, use Better 
 
 ```ts
 // forge/auth.ts
-import { organization } from "better-auth/plugins";
+import { organization } from "@archlast/forge-runtime/auth";
 export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [organization()] });
 ```
 
-Declare its tables with the [generator](#declaring-a-plugins-tables) (`organizations`, `members`, `invitations`; it also adds `activeOrganizationId` to sessions, a built-in table). Users manage organizations through `/api/auth/organization/*`: `create`, `set-active`, `invite-member`, `accept-invitation`, `update-member-role`, `remove-member`, `list`. A separate frontend gets them as `client.auth.organization.*` with Better Auth's `organizationClient()` in [`authPlugins`](clients.html); a full-stack page calls those addresses with `fetch`.
+Its tables (`organizations`, `members`, `invitations`; `teams` and `teamMembers` with teams on) are the engine's to declare ([Plugin tables](#plugin-tables)); it also adds `activeOrganizationId` to sessions, a built-in table. Users manage organizations through `/api/auth/organization/*`: `create`, `set-active`, `invite-member`, `accept-invitation`, `update-member-role`, `remove-member`, `list`. A separate frontend gets them as `client.auth.organization.*` with Better Auth's `organizationClient()` in [`authPlugins`](clients.html); a full-stack page calls those addresses with `fetch`.
 
 The tenant of a call is the organization active in the caller's session, checked against their membership, in one service every tenant-scoped feature injects:
 
