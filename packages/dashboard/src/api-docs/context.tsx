@@ -3,6 +3,7 @@ import { createContext, useContext, useSyncExternalStore, type ComponentType } f
 import type { AuthPreset, CodeSampleLanguage, DocsPageConfig } from "./contract";
 import type { CredentialStore } from "./credentials";
 import type { Arranged, OpEntry, OpenApi, Operation } from "./openapi";
+import type { Site, Target } from "./site";
 import { makeTranslate, type Translate } from "./strings";
 
 export type SlotName = "header" | "sidebar-footer" | "operation-before" | "operation-after";
@@ -34,6 +35,8 @@ export interface Guide {
   /** The page itself, when the caller has it (it then renders on a server too), or how to load it when it is first shown. */
   content?: ComponentType;
   load?: () => Promise<{ default: ComponentType }>;
+  /** Its file (forge/docs/…), for errors. */
+  file?: string;
 }
 
 export interface DocContext {
@@ -52,6 +55,16 @@ export interface DocContext {
   preset: AuthPreset | undefined;
   authorize: () => void;
   tryIt: { enabled: boolean; open: (entry: OpEntry, opener: HTMLElement | null) => void; prefetch: () => void };
+  /** The pages and where everything is. */
+  site: Site;
+  /** Where the page is as the browser sees it; links start with it. */
+  publicBase: string;
+  /** A target's link. */
+  href: (target: Target | null | undefined) => string;
+  /** Development: show what failed to build or render. */
+  dev: boolean;
+  /** The app's MDX components and the built-in ones, by name. */
+  mdx: Record<string, ComponentType<any>>;
 }
 
 /** A value components read with useStore: changing it re-renders only them, not everything that reads the context. */
@@ -76,4 +89,6 @@ export function useDoc(): DocContext {
   return c;
 }
 export const useT = () => useContext(Ctx)?.t ?? defaultT;
+/** The context, or null outside the reference (a page that has no document yet). */
+export const useDocSafe = () => useContext(Ctx);
 const defaultT = makeTranslate();

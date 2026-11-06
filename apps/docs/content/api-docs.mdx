@@ -10,9 +10,11 @@ With no configuration the docs are at `/_api` in development and off in producti
 
 | Path | What |
 |---|---|
-| `/_api` | The docs page: the reference, your guides, and "Try it" on every operation. |
+| `/_api` | The docs: the overview, your guides and the reference, a page each, rendered on the server, with "Try it" on every operation. |
+| `/_api/<tag>/<operation>`, `/_api/guides/<slug>`, … | A page of the docs ([Pages and addresses](#pages-and-addresses)). |
+| `/_api/<page>.md`, `/_api/index.md`, `/_api/llms.txt` | Each page as Markdown, and the index of them ([Markdown and llms.txt](#markdown-and-llmstxt)). |
 | `/_api/openapi.json` | The document: minified, compressed (brotli or gzip, as the client accepts), with an `ETag`. |
-| `/_api/explorer` | The same page with the request builder open (`?op=<operationId>` picks the operation). |
+| `/_api/explorer` | The overview with the request builder open (`?op=<operationId>` picks the operation). |
 
 | Setting | Default | |
 |---|---|---|
@@ -108,7 +110,8 @@ The schemas come from the validators: `query`, `body` and `returns` on [HTTP rou
 | `headers`, `responseHeaders` | Request headers it reads and response headers it sends. |
 | `status`, `responseDescription` | The success status (default 200, 201 for a Nest `POST`) and what the answer is. |
 | `codeSamples` | Your own snippets (an SDK call), shown before the generated ones. |
-| `hidden`, `deprecated`, `operationId` | |
+| `hidden`, `deprecated` | |
+| `operationId` | The operation's id, the end of its page's address (`createProduct` is `/docs/products/create-product`) and a generated client's method name. Without one it comes from `summary` ("Create a product" is `createAProduct`), unique in the document, else from the route (`http_GET_…`, or the controller and method). |
 
 In development the engine warns once per load about documented routes with no `returns`, no `summary` or no tags: a reader of the page would notice.
 
@@ -125,17 +128,32 @@ The document is made once per load of the code: a change in dev, a reload or a r
 
 ## Paths: the docs and your own pages
 
-The docs own a few paths, not a prefix: the page (`<path>` and `<path>/`), its assets (`<path>/_docs/…`), the explorer path, and the document. Anything else under `<path>` goes to your app, so a full-stack app can have its own `/docs/authentication` page beside the generated reference at `/docs`. If one of your pages (or a root-mounted HTTP route) takes one of the docs' paths, the engine logs both and your app keeps the path; in production it refuses to start, since one of the two would otherwise lose the path without a word. Move the docs with `http.docs({ path, openapi, explorer })` or `API_DOCS_PATH`.
+The docs own their page (`<path>` and `<path>/`), its assets (`<path>/_docs/…`), the explorer path and the document. Below `<path>`, they answer an address only when it is one of their pages, its Markdown or `llms.txt`, and only when none of your pages (or a root-mounted HTTP route) takes it; anything else goes to your app. So a full-stack app can have its own `/docs/blog` beside the generated reference at `/docs`. If one of your pages takes one of the docs' fixed paths, the engine logs both and your app keeps the path; in production it refuses to start, since one of the two would otherwise lose the path without a word. Move the docs with `http.docs({ path, openapi, explorer })` or `API_DOCS_PATH`.
 
 ## The page
 
-One page, laid out by resource: the API's description and base URL, an Authentication section made from the security schemes (OAuth2 flows with their token URL and a scopes table, bearer, API keys), then each tag with its description and its operations, the Webhooks the app sends (the envelope, the signature headers and how to verify them, the retry schedule, each event's payload), and the named Models. The navigation follows `tagGroups`, with your guides first.
+With no configuration the page has the layout readers know from most API docs:
 
-Each operation shows its method and path, summary and description, the scopes it needs, its parameters (path, query and headers, with enum values, constraints, defaults and examples), its request body as an attribute table with nested objects, its responses by status with their headers and error codes, a request and a response example (from the validators' examples, or made from the schema), and code samples: your own `codeSamples` first, then cURL, Node, Python and the other languages in `page.codeSamples.languages`. Samples show placeholders, never credentials. Each operation has a link of its own (`#/<tag>/<operationId>`).
+- **A navigation that runs the page's height**, with the logo, the name and the version at its top, search with its shortcut (`⌘K`, `Ctrl K` or `/`), groups in sentence case that fold, the current page marked, and at its foot your links, the openapi.json link and the light/dark switch (an icon).
+- **A bar above the content** with the header slot, the Authorize button and, when you have them, tabs.
+- **A page per topic**, at an address of its own: the overview (the API's description, its base URLs and the authentication it takes), each guide, each tag (its description and its operations), each operation, the webhooks and the models. Above the title, the section the page is in; beside it **Copy page** (the page as Markdown) and **View as Markdown**; at its end **previous and next**; on wide screens an **On this page** column that follows the reading. Headings have a link of their own.
+- **An operation**: its title, an endpoint bar (method, full URL, copy, **Try it**), its description, then Authorizations (the schemes, and "Scopes:" with each scope's meaning on hover), path, query and header parameters, the body, and the responses with their error codes (their headers folded), beside a sticky column of code: your own `codeSamples` first, then cURL, Node, Python and the other languages in `page.codeSamples.languages` (one choice for every operation), and a response example per status. Samples show placeholders, never credentials.
+
+Pages are rendered on the server, so they read without JavaScript and every address can be shared, crawled and opened in a new tab. The browser then takes the page over and moves between pages without reloading.
+
+### Pages and addresses
+
+| `page.layout.pages` | An operation's address | |
+|---|---|---|
+| `"operation"` (default) | `/docs/payments/create-payment` | A page per operation; a tag's page lists its operations. |
+| `"tag"` | `/docs/payments#create-payment` | A page per tag, its operations one after another. |
+| `"single"` | `/docs#payments/create-payment` | Everything on one page, as earlier releases had it. |
+
+The end of an operation's address is its `operationId` in lowercase words. Guides are at `/docs/guides/<slug>` (the file name without a leading number), the webhooks at `/docs/webhooks`, the models at `/docs/models`. `page.layout.referencePath: "/api"` puts the reference below a path of its own (`/docs/api/payments/create-payment`), apart from the guides. An address of the single page of earlier releases (`/docs#/payments/createPayment`) moves to the page that has it now, and so do such links in your descriptions.
 
 ### Try it
 
-Every operation has a **Try it** button that opens the request builder on that operation, in the page, filled from its schema and examples. Its script is fetched the first time someone presses the button (and prefetched when the pointer or focus reaches it), so the page's first load doesn't carry it. `<path>/explorer` (or `?try` on an operation's link) opens the page with the builder showing; `?op=<operationId>` picks the operation. `http.docs({ explorer: false })` takes "Try it" away.
+Every operation has a **Try it** button in its endpoint bar that opens the request builder on that operation, in the page, filled from its schema and examples. Its script is fetched the first time someone presses the button (and prefetched when the pointer or focus reaches it), so the page's first load doesn't carry it. `<path>/explorer` (or `?try` on an operation's address) opens the page with the builder showing; `?op=<operationId>` picks the operation. `http.docs({ explorer: false })` takes "Try it" away.
 
 **Credentials.** The page's **Authorize** panel takes the app's declared schemes: a bearer token, an API key, or OAuth2 client credentials (client id and secret in, the token fetched from the token URL, with the scopes and any extra parameters, and renewed before it ends). They are kept in `sessionStorage` (or in memory, with `page.credentials: "memory"`), sent only to the API and its token endpoint, and shared with the builder both ways. `page.explorer.auth` pre-selects a scheme and pre-fills the OAuth2 client id, scopes, token URL and extra token parameters such as RFC 8707's `resource`:
 
@@ -149,9 +167,9 @@ http.docs({
 
 The builder is the engine's fork of [Scalar](https://github.com/scalar/scalar)'s request builder: the source is a pinned Scalar release and a small patch series in `packages/dashboard/scalar/`, built by `bun scripts/update-scalar.ts` and vendored, with Scalar's MIT licence and every bundled package's in `THIRD_PARTY_NOTICES.md`. Nothing about your API leaves the server: no proxy (upstream's default proxy is patched out), no telemetry, no hosted features, no web fonts.
 
-### Guides and slots
+### Guides
 
-Put MDX files in `forge/docs/` and they appear before the reference. Front matter sets the title, the navigation section and the order; without it a page is titled by its first `#` heading and ordered by file name:
+Put MDX files in `forge/docs/` and each is a page. Front matter sets the title, the navigation section and the order; without it a page is titled by its first `#` heading and ordered by file name. Its `#` heading is the page's title, and its `##` and `###` headings are its "On this page":
 
 ```mdx
 ---
@@ -160,22 +178,95 @@ group: Guides
 order: 1
 ---
 
-Payments are **final** once captured. Use an `Idempotency-Key` on every `POST`.
+# Accepting a payment
+
+<Callout type="warning">Payments are **final** once captured.</Callout>
+
+<Steps>
+  <Step title="Create a client">In the dashboard.</Step>
+  <Step title="Take a payment">Send an `Idempotency-Key` on every `POST`.</Step>
+</Steps>
 ```
 
-Files in `forge/docs/_slots/` are not pages but places on the page: `header.mdx` (above the content), `sidebar-footer.mdx` (below the navigation), `operation-before.mdx` and `operation-after.mdx` (around every operation; they get `operation`, `path`, `method` and `tag` as props). They are compiled when the page is first asked for (and again when a file changes), with React from the engine, so a backend needs nothing installed. They can use Markdown and JSX elements, not `import`s.
+Guides can use these without importing anything:
 
-### Look and text
+| Component | |
+|---|---|
+| `<Callout type title>` | `type` is `note` (default), `info`, `tip`, `warning` or `danger`; `<Note>`, `<Info>`, `<Tip>`, `<Warning>` and `<Danger>` are the same with the type set. |
+| `<Tabs group>` with `<Tab title>` | The choice is remembered, and shared by tabs with the same titles (or the same `group`). |
+| `<Steps>` with `<Step title>` | Numbered steps. |
+| `<Cards cols>` with `<Card title href icon>` | A grid of links or notes. |
+| `<CodeGroup>` | Code blocks as tabs, titled by their `title`. |
+| `<Accordion title defaultOpen>`, `<AccordionGroup>` | Folded sections. |
+| ` ```ts title="server.ts" ` | A code block with a title, its language and a copy button. |
+
+Your own components go in `forge/docs/_components/`: a `.tsx` file's default export is there by the file's name (`callout-box.tsx` is `<CalloutBox>`), and its capitalised named exports by their names. They run with the page's own React, so a backend needs nothing installed.
+
+### Slots
+
+Files in `forge/docs/_slots/` are not pages but places on every page: `header.mdx` (the bar above the content), `sidebar-footer.mdx` (the foot of the navigation), `operation-before.mdx` and `operation-after.mdx` (around every operation; they get `operation`, `path`, `method` and `tag` as props). Pages, slots and components are compiled when the page is first asked for (and again when a file changes), with React from the engine. They can use Markdown and JSX elements, not `import`s.
+
+**A mistake doesn't take the page down.** A page, slot or component that doesn't compile is logged with its file and line (`✗ the API docs page: forge/docs/_slots/header.mdx:1:10: Could not parse expression with acorn`), and in its place the page shows that message in development and nothing in production; one that fails while rendering is caught the same way. The rest of the page works.
+
+### Layout and controls
 
 | `page` field | |
 |---|---|
-| `title`, `logo` | The name in the header (default `info.title`) and a logo (`{ url, alt?, href? }`). |
-| `theme` | `mode` (`"auto"` follows the visitor, with a toggle; or `"light"`, `"dark"`), `accent`, `font`, `monoFont`, `radius`. The request builder takes the page's colours and fonts. |
+| `layout.shell` | `"sidebar"` (default: logo and search at the top of a full-height navigation) or `"header"` (a full-width header above the navigation and the content). |
+| `layout.pages`, `layout.referencePath` | How the reference is split into pages, and where it goes ([above](#pages-and-addresses)). |
+| `layout.toc`, `layout.pagination`, `layout.breadcrumbs` | "On this page", previous and next, the section above a page's title. Default true. |
+| `layout.pageActions` | `["copy", "markdown"]` (default), either one, or `false`. |
+| `nav.tabs` | Top-level sections as tabs: `{ label, section: "guides" }` (your guides; the first is the tab's landing page), `{ label, section: "reference" }`, or `{ label, href }`. With a guides tab, the navigation shows the active tab's pages. |
+| `nav.footer` | Links at the foot of the navigation: `[{ label: "Dashboard", href: "/" }]`. |
+| `nav.groups` | `collapsible` (default true), `case`: `"sentence"` (default, as written) or `"upper"`. |
+| `controls.authorize` | Where the Authorize button is: `"header"` (default), `"sidebar"`, `"operation"` (in each operation's Authorizations) or `false`. |
+| `controls.themeToggle` | `"icon"` (default), `"text"`, `false`, or `{ style, place: "header" \| "sidebar" }`. Shown while `theme.mode` is `"auto"`. |
+| `controls.devSwitch` | Development's "Show everything" switch. Default true. |
+| `controls.download` | The openapi.json link: `"sidebar"` (default with the sidebar shell), `"header"` or `false`. |
+| `content.responseHeaders` | `"collapsed"` (default) or `"open"`. |
+| `hide` | `models`, `webhooks`, `search`, `downloadLink`. |
 | `codeSamples.languages` | Generated samples, in order: `curl`, `node`, `python`, `go`, `php`, `ruby`, `java`, `csharp` (default `curl`, `node`, `python`). |
 | `explorer` | `false` for no "Try it", or `{ auth }` (above). |
 | `credentials` | `"session"` (default) or `"memory"`. |
-| `hide` | `models`, `webhooks`, `search`, `downloadLink`. |
 | `strings` | Every text on the page by key, for another language (the keys and their English text are `STRING_KEYS` in the dashboard's `api-docs/strings.ts`). Keys starting with `apiClient.` go to the request builder. |
+
+### Look
+
+| `page` field | |
+|---|---|
+| `title`, `logo` | The name beside the logo (default `info.title`), and the logo: `{ url, dark?, alt?, href?, title? }`, `dark` for dark mode, `title: false` for the mark alone. |
+| `theme.preset` | Where the look starts: `"default"` (warm paper, outlined method labels), `"minimal"` (white, hairline borders, light code panels, tinted method labels) or `"dark"` (dark first). |
+| `theme.mode` | `"auto"` (default: follows the visitor, with a switch), `"light"` or `"dark"`. |
+| `theme.tokens` | Any of the page's colours, one value or `{ light, dark }`: `bg`, `surface`, `text`, `muted`, `faint`, `border`, `borderStrong`, `accent`, `accentFill` (primary buttons), `codeBg`, `inlineCodeBg`, `ok`, `warn`, `err` (statuses and methods), `synKey`, `synStr`, `synNum`, `synLit` (JSON). `accent` sets `accent` and `accentFill` together. |
+| `theme.code` | Code panels in a mode of their own: `"dark"` panels on a light page, `"light"`, or `"auto"` (default). |
+| `theme.pills` | Method labels `"outline"` or `"tinted"`. |
+| `theme.font`, `theme.monoFont`, `theme.radius`, `theme.sidebarWidth`, `theme.density` | Font stacks, corner radius, the navigation's width, `"compact"` or `"comfortable"`. |
+| `css` | Your CSS: the text, or a file in `forge/docs` (`"theme.css"`). It is in a cascade layer after the page's, so it wins without `!important`. |
+
+The request builder takes the page's colours and fonts. To restyle beyond the settings, use the tokens (each is the custom property `--fd-<name>`, kebab-case) and these `data-part` attributes, which stay stable; the `fd-*` classes may change:
+
+`root`, `sidebar`, `brand`, `version`, `search`, `nav`, `nav-group`, `nav-item`, `sidebar-footer`, `footer-links`, `header`, `tabs`, `actions`, `authorize`, `theme-toggle`, `download`, `dev-switch`, `content`, `article`, `page-head`, `breadcrumb`, `page-actions`, `toc`, `pagination`, `overview`, `authentication`, `tag`, `tag-endpoints`, `operation`, `endpoint-bar`, `method`, `try-it`, `authorizations`, `scopes`, `code-panel`, `webhooks`, `webhook`, `models`, `model`, `guide`, `heading`, `callout`, `tabs`, `steps`, `cards`, `card`, `accordion`, `code-block`, `code-group`, `content-error`, `slot-header`, `slot-operation-before`, `slot-operation-after`.
+
+To look like another docs site, start from a preset and change a few tokens:
+
+```ts
+http.docs({
+  page: {
+    logo: { url: "/logo.svg", dark: "/logo-dark.svg", title: false },
+    theme: { preset: "minimal", code: "light", tokens: { accent: { light: "#6d28d9", dark: "#a78bfa" } } },
+    nav: {
+      tabs: [{ label: "Docs", section: "guides" }, { label: "API reference", section: "reference" }, { label: "Changelog", href: "/changelog" }],
+      footer: [{ label: "OpenAPI document", href: "/docs/openapi.json" }, { label: "Dashboard", href: "/" }],
+    },
+    controls: { themeToggle: { style: "icon", place: "header" }, download: false },
+    layout: { referencePath: "/api" },
+  },
+});
+```
+
+### Markdown and llms.txt
+
+Every page is also Markdown at its address plus `.md` (`/docs/payments/create-payment.md`; the overview is `/docs/index.md`): an operation as its method and URL, authorizations and scopes, parameters as a table, the body's fields, the responses with their error codes, an example response and a cURL request; a guide as its own MDX without the front matter. That is what **Copy page** copies. `/docs/llms.txt` lists every page's Markdown by section, with a line about each, for tools and language models.
 
 ### In a full-stack app's own layout
 
@@ -191,10 +282,10 @@ export default function ApiPage() {
 }
 ```
 
-It renders on the server (pass `document` instead of `openapiUrl` to render the whole reference there) and hydrates in the browser. Its styles are scoped to the component and sit in one CSS layer, so they don't restyle the rest of your page, and your own unlayered rules win over them. `guides` and `slots` take React components; `explorerUrl: null` turns "Try it" off.
+It renders on the server (pass `document` instead of `openapiUrl` to render the whole reference there) and hydrates in the browser. Its styles are scoped to the component and sit in one CSS layer, so they don't restyle the rest of your page, and your own unlayered rules win over them. `guides`, `slots` and `components` (for the guides' MDX) take React components; `explorerUrl: null` turns "Try it" off. Inside your page it shows everything on one page with `#anchor` links by default; with `config.layout.pages` set to `"operation"` or `"tag"`, pass `basePath` (where your route is) and `path` (the part after it) and render it from a catch-all route.
 
 ## Size
 
-The page is React, bundled when it is first asked for: minified, split so guides, the Authorize panel and the code samples beyond cURL load when they are needed, and hashed and cached for a year. Its first load is about **86 KB gzipped** (HTML, script, stylesheet), plus the Geist fonts as two Latin `woff2` files (29 and 23 KB) fetched when text uses them.
+The page is React, bundled when it is first asked for: minified, split so guides, the Authorize panel and the code samples beyond cURL load when they are needed, and hashed and cached for a year. Its first load is about **95 KB gzipped** (the HTML shell, script, stylesheet; a page's own server-rendered HTML comes on top), plus the Geist fonts as two Latin `woff2` files (29 and 23 KB) fetched when text uses them.
 
 The request builder is loaded only by "Try it": **812 KB with brotli** for the script and 23 KB for its stylesheet (3.4 MB raw), against 1.06 MB for the whole Scalar reference the engine used to serve on a page of its own.

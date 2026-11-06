@@ -11,16 +11,126 @@
 
 export type CodeSampleLanguage = "curl" | "node" | "python" | "go" | "php" | "ruby" | "java" | "csharp";
 
+/**
+ * The page's colours, as CSS custom properties (`--fd-<name>`, kebab-case: `borderStrong` is `--fd-border-strong`). Every rule of the page's
+ * stylesheet uses them, so setting them restyles the whole page; the names are stable.
+ */
+export type DocsToken =
+  | "bg" // the page
+  | "surface" // a raised or hovered area: the search field, a hovered navigation item
+  | "text"
+  | "muted" // secondary text
+  | "faint" // labels, captions
+  | "border"
+  | "borderStrong" // buttons, inputs
+  | "accent" // links, the active item, focus rings
+  | "accentFill" // the background of primary buttons ("Try it")
+  | "codeBg" // code panels and blocks
+  | "inlineCodeBg" // `code` in text, the selected tab
+  | "ok" // 2xx, GET
+  | "warn" // 4xx, PUT and PATCH
+  | "err" // 5xx, DELETE
+  | "synKey" // JSON keys
+  | "synStr" // strings
+  | "synNum" // numbers
+  | "synLit"; // true, false, null
+/** One value for both modes, or one for each. */
+export type DocsTokenValue = string | { light: string; dark: string };
+
 export interface DocsTheme {
-  /** "auto" follows the visitor's system setting, with a toggle on the page. Default "auto". */
+  /**
+   * What the page starts from, before the settings below: "default" (warm paper, outlined method pills), "minimal" (white, hairline borders,
+   * light code panels, tinted pills) or "dark" (dark first). Default "default".
+   */
+  preset?: "default" | "minimal" | "dark";
+  /** "auto" follows the visitor's system setting, with a toggle on the page. Default "auto" ("dark" with the dark preset). */
   mode?: "auto" | "light" | "dark";
-  /** The accent colour (links, buttons, the active item), any CSS colour. */
+  /** The accent colour (links, buttons, the active item), any CSS colour: the same as `tokens.accent` and `tokens.accentFill` together. */
   accent?: string;
   /** Font stacks for text and code. Default: the engine's (Geist, Geist Mono). */
   font?: string;
   monoFont?: string;
   /** Corner radius, a CSS length. */
   radius?: string;
+  /** Any of the page's colours, for both modes or each. */
+  tokens?: Partial<Record<DocsToken, DocsTokenValue>>;
+  /** Code panels in their own mode: "dark" panels on a light page, as many docs sites have. Default "auto" (the page's mode). */
+  code?: "auto" | "light" | "dark";
+  /** HTTP method labels: "outline" or "tinted" (a pale fill of the method's colour). Default: "outline", "tinted" with the minimal preset. */
+  pills?: "outline" | "tinted";
+  /** The navigation's width, a CSS length. Default 272px. */
+  sidebarWidth?: string;
+  /** "compact" is a little denser: smaller text and spacing. Default "comfortable". */
+  density?: "comfortable" | "compact";
+}
+
+/** A link of the navigation's footer, or of the top tabs. */
+export interface DocsLink {
+  label: string;
+  href: string;
+}
+
+export interface DocsLayout {
+  /**
+   * "sidebar" (the default): the logo and search at the top of a navigation that runs the page's full height, with a bar of tabs and buttons
+   * above the content. "header": a full-width header above the navigation and the content.
+   */
+  shell?: "sidebar" | "header";
+  /**
+   * How the reference is split into pages, each with its own address: "operation" (the default: `<path>/<tag>/<operation>`, a page for each
+   * tag listing its operations), "tag" (one page per tag, operations stacked, `<path>/<tag>#<operation>`) or "single" (everything on one page,
+   * as before; the default of the embeddable component).
+   */
+  pages?: "operation" | "tag" | "single";
+  /** A path the reference's pages go under, so guides and reference are apart: "/api" puts an operation at `<path>/api/<tag>/<operation>`. Default "". */
+  referencePath?: string;
+  /** The "On this page" column on the right (wide screens only). Default true. */
+  toc?: boolean;
+  /** The buttons at the top of a page: "copy" (the page as Markdown, to the clipboard) and "markdown" (open it). Default both; false for none. */
+  pageActions?: false | ("copy" | "markdown")[];
+  /** Previous and next links at the end of a page. Default true. */
+  pagination?: boolean;
+  /** The section a page is in, above its title. Default true. */
+  breadcrumbs?: boolean;
+}
+
+export interface DocsNav {
+  /**
+   * Top-level sections, as tabs above the content: `{ label, section: "guides" }` (the app's forge/docs pages; its first page is the tab's
+   * landing page), `{ label, section: "reference" }` (the overview and the reference), or `{ label, href }` (a link). With tabs, the navigation
+   * shows the active tab's pages.
+   */
+  tabs?: ({ label: string; section: "guides" | "reference" } | DocsLink)[];
+  /** Links at the bottom of the navigation (the repository, support, a dashboard). */
+  footer?: DocsLink[];
+  groups?: {
+    /** Groups can be folded. Default true. */
+    collapsible?: boolean;
+    /** How group titles are written: "sentence" (as given, the default), "upper" (small capitals). */
+    case?: "sentence" | "upper";
+  };
+}
+
+export interface DocsControls {
+  /**
+   * The Authorize button (credentials for "Try it", when the API has security schemes): in the top bar ("header", the default), at the
+   * bottom of the navigation ("sidebar"), only in each operation's Authorizations ("operation"), or nowhere (false).
+   */
+  authorize?: "header" | "sidebar" | "operation" | false;
+  /**
+   * The light/dark switch, shown while `theme.mode` is "auto": an "icon" or "text" button, in the navigation's footer with the sidebar shell and
+   * in the header with the header shell unless `place` says otherwise. false hides it (the page then follows the system).
+   */
+  themeToggle?: false | "icon" | "text" | { style?: "icon" | "text"; place?: "header" | "sidebar" };
+  /** Development: the switch that also lists what the public document leaves out. Default true. */
+  devSwitch?: boolean;
+  /** The link to openapi.json: in the navigation's footer ("sidebar", the default with the sidebar shell), the header, or nowhere. */
+  download?: "header" | "sidebar" | false;
+}
+
+export interface DocsContent {
+  /** A response's headers: folded ("collapsed", the default) or open. */
+  responseHeaders?: "collapsed" | "open";
 }
 
 /** What the request builder starts with, for the app's real authentication. Credentials themselves are never configured: the visitor enters them. */
@@ -40,17 +150,30 @@ export interface AuthPreset {
 }
 
 export interface DocsPageConfig {
-  /** The name in the header. Default: the document's `info.title`. */
+  /** The name beside the logo. Default: the document's `info.title`. */
   title?: string;
-  logo?: { url: string; alt?: string; href?: string };
+  /**
+   * The logo: `url` (on light), `dark` (on dark, else `url`), where it links (default: the overview), and `title: false` to show the mark
+   * without the name beside it.
+   */
+  logo?: { url: string; dark?: string; alt?: string; href?: string; title?: boolean };
   theme?: DocsTheme;
+  layout?: DocsLayout;
+  nav?: DocsNav;
+  controls?: DocsControls;
+  content?: DocsContent;
+  /**
+   * The app's own CSS for the page: the text itself, or a file under forge/docs (`"theme.css"`). It is in a cascade layer after the page's, so
+   * it wins without `!important`. Restyle through `--fd-*` tokens and `[data-part="…"]` (the list is in the docs); the `fd-*` classes may change.
+   */
+  css?: string;
   /** Generated code samples, in this order. Default ["curl", "node", "python"]. Operations' own `x-codeSamples` always come first. */
   codeSamples?: { languages?: CodeSampleLanguage[] };
   /** The request builder. `false` turns "Try it" off (the page still documents everything). */
   explorer?: false | { auth?: AuthPreset };
   /** Where credentials the visitor enters are kept: "session" (sessionStorage, the default) or "memory" (gone on reload). */
   credentials?: "session" | "memory";
-  /** Sections the page can leave out. */
+  /** Sections the page can leave out. (`downloadLink: true` is `controls.download: false`.) */
   hide?: { models?: boolean; webhooks?: boolean; search?: boolean; downloadLink?: boolean };
   /**
    * Text the page shows, by key, for another language: STRING_KEYS in strings.ts lists the keys and their English text. Keys that start
@@ -75,13 +198,20 @@ export interface DocsServeOptions {
   dev: boolean;
   forgeDir: string;
   page: DocsPageConfig;
+  /**
+   * The OpenAPI document, for pages rendered on the server, their Markdown and `llms.txt` (null while the app's code isn't loaded). Without
+   * it the host answers only the page itself, which then renders in the browser.
+   */
+  document?: (audience?: "public" | "all") => Promise<unknown>;
 }
 
 /**
- * The host answers exactly these paths and nothing else below `base`, so the app's own pages under the same prefix keep working:
- *   - `base` and `base + "/"`: the page
+ * The host answers these paths and nothing else below `base`, so the app's own pages under the same prefix keep working:
+ *   - `base` and `base + "/"`: the overview page
  *   - `base + "/_docs/*"`: its assets, fonts and the request builder's bundle
- *   - `explorerPath`: the page with the builder open
+ *   - `explorerPath`: the overview with the builder open
+ *   - each page of the document and the app's guides (`base/<tag>/<operation>`, `base/guides/<slug>`, …), its Markdown (`<page>.md`,
+ *     `base/index.md` for the overview) and `base/llms.txt`; the engine asks for these only when no page or root route of the app takes them
  * It returns null for anything else (and for an unknown asset), and the engine then hands the request to the app.
  */
 export interface DocsHost {
