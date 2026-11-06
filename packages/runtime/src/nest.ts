@@ -354,9 +354,16 @@ class ContractInterceptor implements NestInterceptor {
       const req = context.switchToHttp().getRequest<ForgeRequest>();
       const fromText = (fields: PropertyValidators, given: Record<string, string | string[] | undefined>) =>
         Object.fromEntries(Object.entries(fields).map(([k, v]) => [k, given[k] === undefined ? undefined : queryValue(v, [given[k]!].flat())]));
+      // The handler gets the values as they were checked (`?limit=2` is the number 2 for v.number()), not the text: the arguments
+      // (@Param, @Query) are read from the request after the interceptors run. Fields the contract doesn't name stay as they came.
+      const convert = (fields: PropertyValidators, given: Record<string, unknown>, path: string) => {
+        const values = fromText(fields, given as Record<string, string | string[] | undefined>);
+        validateFields(fields, values, path);
+        for (const [k, v] of Object.entries(values)) if (v !== undefined) given[k] = v;
+      };
       try {
-        if (spec.params) validateFields(spec.params, fromText(spec.params, req.params), "params");
-        if (spec.query) validateFields(spec.query, fromText(spec.query, req.query), "query");
+        if (spec.params) convert(spec.params, req.params, "params");
+        if (spec.query) convert(spec.query, req.query, "query");
         if (spec.body) validate(spec.body, req.body, "body");
       } catch (e) {
         if (e instanceof ValidationError) throw new BadRequestException(e.message);
@@ -693,6 +700,7 @@ class ForgeRequest extends EventEmitter {
   readonly hostname: string;
   readonly protocol: string;
   readonly headers: Record<string, string>;
+  /** As the URL gave them; on a route with a `@Contract`, the fields it names hold their checked values (`?limit=2` is the number 2). */
   readonly query: Record<string, string | string[]>;
   readonly cookies: Record<string, string>;
   /** Node's connection, as engine.io reads it; the engine's server knows the address, which isn't passed on. */
@@ -703,6 +711,7 @@ class ForgeRequest extends EventEmitter {
     this.encoding = encoding;
     return this;
   }
+  /** The path's parameters as text; on a route with a `@Contract`, the ones it names hold their checked values. */
   params: Record<string, string> = {};
   [FORGE_CTX]: ActionCtx;
 
