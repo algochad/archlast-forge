@@ -169,6 +169,71 @@ test("add service, again and again: ports, the list the main app mounts, contrac
   expect(prettierCheck(root, "apps/api/forge/_services.ts", "packages")).toBe(0);
 });
 
+test("the apps' stacks find each other in Docker: compose.override.yaml puts them on one network with its addresses, and follows add and remove", () => {
+  const root = fresh("stacks");
+  scaffoldMonorepo({ dir: root, mode: "framework", services: ["postgres"], microservices: ["orders"] });
+  const override = (app: string) => read(root, "apps", app, "compose.override.yaml");
+  const has = (app: string) => existsSync(join(root, "apps", app, "compose.override.yaml"));
+  expect(override("web")).toContain("name: stacks-apps");
+  expect(override("web")).toContain("aliases: [web]");
+  expect(override("web")).toContain('ORDERS_RPC_URL: "${ORDERS_RPC_URL:-http://orders:4001}"'); // .env can still point it elsewhere
+  expect(override("web")).toContain('MICROSERVICES: "orders=http://orders:3000"');
+  expect(override("web")).toContain('FORGE_RPC_TOKEN: "${FORGE_RPC_TOKEN:?missing');
+  expect(override("orders")).toContain('DASHBOARD_URL: "http://web:3000"');
+  expect(override("orders")).toContain('DASHBOARD_TOKEN: "${DASHBOARD_TOKEN:?missing');
+  expect(override("orders")).toContain("aliases: [orders]");
+  expect(read(root, "apps", "web", ".env")).toContain("MICROSERVICES=orders=http://localhost:3001"); // development keeps its own
+  expect(read(root, "README.md")).toContain("(cd apps/orders && bun run up)");
+  expect(prettierCheck(root, "apps/web/compose.override.yaml", "apps/orders/compose.override.yaml")).toBe(0);
+
+  // Docker Compose takes the merged files: the network, the alias and the variables, with .env's values filled in.
+  if (Bun.spawnSync(["docker", "compose", "version"], { stdout: "ignore", stderr: "ignore" }).exitCode === 0) {
+    const config = Bun.spawnSync(["docker", "compose", "config", "--format", "json"], { cwd: join(root, "apps", "web"), stdout: "pipe", stderr: "pipe" });
+    expect(config.stderr.toString()).not.toContain("error");
+    const merged = JSON.parse(config.stdout.toString());
+    expect(merged.networks.apps.name).toBe("stacks-apps");
+    expect(merged.services.app.networks.apps.aliases).toEqual(["web"]);
+    expect(merged.services.app.environment.FORGE_RPC_TOKEN).toBe(/^FORGE_RPC_TOKEN=(\w+)$/m.exec(read(root, "apps", "web", ".env"))![1]);
+    expect(merged.services.app.environment.ORDERS_RPC_URL).toBe("http://orders:4001");
+    expect(merged.services.postgres.networks).toEqual({ default: null }); // only the app joins the monorepo's network
+  }
+
+  rmSync(join(root, "apps", "web", "compose.override.yaml")); // a monorepo from before these files: sync writes them
+  syncWorkspace(root);
+  expect(override("web")).toContain('MICROSERVICES: "orders=http://orders:3000"');
+
+  addService(root, "billing");
+  expect(override("web")).toContain('MICROSERVICES: "orders=http://orders:3000,billing=http://billing:3000"');
+  expect(override("web")).toContain('BILLING_RPC_URL: "${BILLING_RPC_URL:-http://billing:4002}"');
+  expect(override("billing")).toContain("aliases: [billing]");
+  addApp(root, "admin", { mode: "backend" });
+  expect(override("admin")).toContain("aliases: [admin]"); // another app can call the services too
+
+  // A file of yours (no header line) is left alone, and you are told.
+  writeFileSync(join(root, "apps", "orders", "compose.override.yaml"), "services:\n  app:\n    environment:\n      MINE: \"1\"\n");
+  const removed = removeApp(root, "billing");
+  expect(override("orders")).toContain("MINE");
+  expect(removed.notes.join("\n")).toContain("apps/orders/compose.override.yaml is yours");
+  expect(override("web")).not.toContain("billing");
+  expect(has("billing")).toBe(false);
+
+  removeApp(root, "orders"); // no services: nothing to connect, so the files that are ours go
+  expect(has("web")).toBe(false);
+  expect(has("admin")).toBe(false);
+});
+
+test("TCP and Redis stacks: the callers get the service's host and port, and a shared broker is required", () => {
+  const tcp = fresh("stackstcp");
+  scaffoldMonorepo({ dir: tcp, mode: "backend", services: [], microservices: ["orders"], transport: "tcp" });
+  const web = read(tcp, "apps", "api", "compose.override.yaml");
+  expect(web).toContain('ORDERS_HOST: "${ORDERS_HOST:-orders}"');
+  expect(web).toContain('ORDERS_PORT: "${ORDERS_PORT:-4001}"');
+  expect(web).not.toContain("FORGE_RPC_TOKEN");
+  const redis = fresh("stacksredis");
+  scaffoldMonorepo({ dir: redis, mode: "backend", services: [], microservices: ["orders"], transport: "redis" });
+  for (const app of ["api", "orders"]) expect(read(redis, "apps", app, "compose.override.yaml")).toContain('MICROSERVICES_REDIS_URL: "${MICROSERVICES_REDIS_URL:?missing');
+});
+
 test("add service with TCP or Redis: the client package, and no contracts", () => {
   const root = fresh("tcpredis");
   scaffoldMonorepo({ dir: root, mode: "backend", services: [], microservices: ["orders"], transport: "redis" });

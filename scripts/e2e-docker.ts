@@ -1,10 +1,10 @@
 #!/usr/bin/env bun
 // End to end in Docker: scaffolds both kinds of project from the packed tarballs, brings each stack up with `archlast-forge up`,
 // and checks what a user would: pages, the API, the database, Redis, uploads, a restart, and `down`.
-//   bun scripts/pack.ts && bun scripts/e2e-docker.ts [plain|framework|backend|nest|caddy]
+//   bun scripts/pack.ts && bun scripts/e2e-docker.ts [plain|framework|backend|nest|monorepo|caddy]
 //   bun scripts/e2e-docker.ts nest --no-docker   (the NestJS checks on SQLite, served by `start --no-docker`, where there is no Docker)
 // Needs Docker and the engine image (`bun packages/cli/src/index.ts engine build`).
-import { call, check, createProject, json, sh, signUp } from "./lib/e2e";
+import { call, check, createMonorepo, createProject, json, sh, signUp, type MonorepoApp } from "./lib/e2e";
 
 /** A full-stack app with `--services none`, so SQLite on a volume. */
 async function plain() {
@@ -288,12 +288,42 @@ const c = ClientProxyFactory.create({ transport: Transport.TCP, options: { host:
   }
 }
 
+/** A monorepo, built and started as its README says: `up` in each app, whose stacks find each other on the monorepo's Docker network. */
+async function monorepo() {
+  console.log("\nMonorepo: a full-stack app on PostgreSQL calling a service over Forge RPC, each in its own stack");
+  const m = createMonorepo("e2e-shop", "framework", ["postgres"], ["orders"], { web: 3105, orders: 3106 });
+  const { web, orders } = m.apps as Record<"web" | "orders", MonorepoApp>;
+  try {
+    const build = orders.cli("build", "--tag", "e2e-shop-orders:latest");
+    check("`build` installs forge/'s dependencies on a fresh clone and builds the service", build.ok, build.err || build.out);
+    for (const [name, app] of [["orders", orders], ["web", web]] as const) {
+      const up = app.cli("up");
+      check(`\`archlast-forge up\` in apps/${name} starts its stack`, up.ok, up.err || up.out);
+    }
+    const hello = await fetch(`${web.base}/http/orders/hello`, { method: "POST", headers: { "content-type": "application/json", origin: web.base }, body: JSON.stringify({ from: "web" }) }).then(json);
+    check("the main app's controller calls the service across the stacks", hello.service === "orders" && hello.calls === 1, hello);
+    const action = await call(web.base, "orders:hello", { from: "an action" });
+    check("and so does its action, through the same class", action.result?.calls === 2, action);
+    const admin = (path: string) => fetch(`${web.base}/_admin/${path}`, { headers: { "x-admin-key": web.env("ADMIN_KEY")! } }).then(json);
+    const listed = await admin("microservices");
+    check("the main app's dashboard lists the service at its address on the network", JSON.stringify(listed.services) === JSON.stringify([{ name: "orders", url: "http://orders:3000" }]), listed);
+    const server = await admin("server?target=orders");
+    check("and reaches its admin API, where the service reports to the main app", server.dashboardUrl === "http://web:3000" && server.telemetry === false, server);
+    const refused = sh(["docker", "exec", sh(["docker", "compose", "ps", "-q", "app"], web.dir).out, "wget", "-qO-", "--post-data", "{}", "http://orders:4001/orders.hello"], web.dir);
+    check("the service refuses a call without the token", !refused.ok && /401/.test(refused.err), refused.err);
+  } finally {
+    for (const app of [web, orders]) app.cli("down", "--volumes");
+    sh(["docker", "network", "rm", "e2e-shop-apps"], m.root);
+  }
+}
+
 const which = process.argv[2];
 try {
   if (!which || which === "plain") await plain();
   if (!which || which === "framework") await framework();
   if (!which || which === "backend") await backend();
   if (!which || which === "nest") await nest();
+  if (!which || which === "monorepo") await monorepo();
   if (which === "caddy") await caddy();
   console.log(process.argv.includes("--no-docker") ? "\n✓ End-to-end passed without Docker" : "\n✓ Docker end-to-end passed");
 } catch (e) {
