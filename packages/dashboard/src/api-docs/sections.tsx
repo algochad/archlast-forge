@@ -1,25 +1,15 @@
 // The page's sections around the operations: the introduction, authentication, a tag's heading, webhooks, models and guides.
-import { lazy, Suspense, useMemo, type ComponentType, type ReactNode } from "react";
+import { lazy, Suspense, useMemo, type ComponentType } from "react";
 import { Attribute, Body } from "./attributes";
 import { CodeBox, Json, Pre } from "./code";
+import { ContentBoundary, Heading } from "./components";
 import { useDoc, useT, type Guide } from "./context";
 import { absoluteUrl } from "./credentials";
 import { Inline, Markdown } from "./markdown";
 import { deref, pickMedia, scopesOf, serverUrlOf, type ModelEntry, type OAuthFlow, type SecurityScheme, type TagSection, type WebhookEntry } from "./openapi";
 import { describe, mediaExample } from "./schema";
 import { PLACEHOLDERS } from "./samples";
-
-const Heading = ({ level, id, children }: { level: 2 | 3; id: string; children: ReactNode }) => {
-  const H = `h${level}` as "h2";
-  return (
-    <H id={`${id}~h`} className={`fd-h${level}`}>
-      {children}
-      <a className="fd-anchor" href={`#${id}`} aria-hidden="true" tabIndex={-1}>
-        #
-      </a>
-    </H>
-  );
-};
+import { Method } from "./nav";
 
 export function Intro() {
   const { doc, t, config } = useDoc();
@@ -32,15 +22,17 @@ export function Intro() {
     info.license && [info.license.name, info.license.url],
   ].filter(Boolean) as [string, string | undefined][];
   return (
-    <section className="fd-section fd-intro" id="/introduction" data-spy aria-labelledby="/introduction~h">
-      <h1 id="/introduction~h" className="fd-title">
+    <section className="fd-section fd-intro" data-part="overview" aria-labelledby="overview">
+      <h1 id="overview" className="fd-title">
         {config.title ?? info.title} <span className="fd-version">{info.version}</span>
       </h1>
       {info.summary && <p className="fd-lead">{info.summary}</p>}
       <Markdown text={info.description} headings={3} />
       {servers.length > 0 && (
         <div className="fd-servers">
-          <h3>{t("baseUrl", { n: servers.length })}</h3>
+          <Heading level={2} id="base-url">
+            {t("baseUrl", { n: servers.length })}
+          </Heading>
           <ul>
             {servers.map((s, i) => (
               <li key={i}>
@@ -161,7 +153,7 @@ function tokenRequest(url: string, scopes: string[], extra: Record<string, strin
 }
 
 export function Authentication() {
-  const { doc, model, t, authorize } = useDoc();
+  const { doc, model, t, authorize, site, config } = useDoc();
   const used = useMemo(() => {
     const m = new Map<string, number>();
     for (const o of model.ops) for (const s of scopesOf(doc, o.op)) m.set(s, (m.get(s) ?? 0) + 1);
@@ -169,18 +161,20 @@ export function Authentication() {
   }, [doc, model]);
   if (!model.schemes.length) return null;
   return (
-    <section className="fd-section" id="/authentication" data-spy aria-labelledby="/authentication~h">
-      <Heading level={2} id="/authentication">
+    <section className="fd-section" data-spy={site.authentication!.anchor} data-part="authentication" aria-labelledby={site.authentication!.anchor}>
+      <Heading level={2} id={site.authentication!.anchor} className="fd-h2">
         {t("authentication")}
       </Heading>
       {model.schemes.map(([name, s]) => (
         <SchemeView key={name} name={name} scheme={s} used={used} />
       ))}
-      <p>
-        <button type="button" className="fd-btn fd-btn-primary" onClick={authorize}>
-          {t("authorize")}
-        </button>
-      </p>
+      {config.controls?.authorize !== false && (
+        <p>
+          <button type="button" className="fd-btn fd-btn-primary" onClick={authorize}>
+            {t("authorize")}
+          </button>
+        </p>
+      )}
     </section>
   );
 }
@@ -192,9 +186,9 @@ function SchemeView({ name, scheme, used }: { name: string; scheme: SecuritySche
   const flows = scheme.flows ?? {};
   return (
     <div className="fd-scheme">
-      <h3>
+      <Heading level={3} id={`scheme-${name}`} label={name}>
         <code>{name}</code> <span className="fd-type">{kind}</span>
-      </h3>
+      </Heading>
       <Markdown text={scheme.description} />
       {scheme.type === "http" && scheme.scheme?.toLowerCase() === "bearer" && (
         <p>
@@ -227,13 +221,19 @@ function SchemeView({ name, scheme, used }: { name: string; scheme: SecuritySche
   );
 }
 
-export function TagHeader({ section }: { section: TagSection }) {
-  const { t } = useDoc();
+/** A tag's title and description: the top of its page, or of its part of the single page. */
+export function TagHeader({ section, asTitle }: { section: TagSection; asTitle?: boolean }) {
+  const { t, site } = useDoc();
+  const anchor = site.tag.get(section)?.anchor;
   return (
     <>
-      <Heading level={2} id={section.id}>
-        {section.title}
-      </Heading>
+      {asTitle ? (
+        <h1 className="fd-title">{section.title}</h1>
+      ) : (
+        <Heading level={2} id={anchor || undefined} className="fd-h2">
+          {section.title}
+        </Heading>
+      )}
       <Markdown text={section.description} headings={3} />
       {section.externalDocs?.url && (
         <p>
@@ -277,7 +277,9 @@ function WebhookSigning() {
   const waits = Array.from({ length: Math.max(0, Math.min(s.retry.attempts - 1, 20)) }, (_, i) => Math.min(s.retry.maxDelayMs, s.retry.delayMs * s.retry.factor ** i));
   return (
     <div className="fd-signing">
-      <h3>{t("webhookEnvelope")}</h3>
+      <Heading level={3} id="envelope">
+        {t("webhookEnvelope")}
+      </Heading>
       <p>{t("webhookEnvelopeText")}</p>
       <ul className="fd-attrs">
         {(["type", "timestamp", "data"] as const).map((k) => (
@@ -292,7 +294,9 @@ function WebhookSigning() {
           </li>
         ))}
       </ul>
-      <h3>{t("webhookHeaders")}</h3>
+      <Heading level={3} id="headers">
+        {t("webhookHeaders")}
+      </Heading>
       <div className="fd-table">
         <table className="fd-codes">
           <tbody>
@@ -317,14 +321,18 @@ function WebhookSigning() {
           </tbody>
         </table>
       </div>
-      <h3>{t("webhookVerify")}</h3>
+      <Heading level={3} id="verify">
+        {t("webhookVerify")}
+      </Heading>
       <ol className="fd-steps">
         <li>{t("verifyStep1")}</li>
         <li>{t("verifyStep2")}</li>
         <li>{t("verifyStep3", { age: formatMs(s.toleranceMs) })}</li>
       </ol>
       <CodeBox label="Node.js" title="Node.js" tabs={[{ id: "node", label: "Node.js", text: VERIFY, content: <Pre>{VERIFY}</Pre> }]} />
-      <h3>{t("webhookRetries")}</h3>
+      <Heading level={3} id="retries">
+        {t("webhookRetries")}
+      </Heading>
       <p>{t("webhookRetriesText", { attempts: s.retry.attempts, timeout: formatMs(s.retry.timeoutMs) })}</p>
       <div className="fd-table">
         <table className="fd-codes">
@@ -352,21 +360,42 @@ function WebhookSigning() {
   );
 }
 
+/** A tag's page when every operation has a page of its own: what it is, then its operations. */
+export function TagIndex({ section }: { section: TagSection }) {
+  const { site, href, t } = useDoc();
+  return (
+    <div className="fd-endpoints" data-part="tag-endpoints">
+      <Heading level={2} id="endpoints">
+        {t("endpoints")}
+      </Heading>
+      <ul>
+        {section.ops.map((o) => (
+          <li key={o.id}>
+            <a href={href(site.op.get(o))} data-part="endpoint-link">
+              <Method method={o.method} />
+              <span className="fd-endpoints-title">{o.op.summary ?? o.operationId}</span>
+              <code>{o.path}</code>
+            </a>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+
 function WebhookEvent({ event }: { event: WebhookEntry }) {
-  const { doc, t } = useDoc();
+  const { doc, t, site } = useDoc();
+  const anchor = site.webhook.get(event)!.anchor;
   const body = deref(doc, event.op.requestBody);
   const media = pickMedia(body?.content);
   const example = media ? mediaExample(doc, media[1], "response") : undefined;
   const text = example === undefined ? undefined : JSON.stringify(example, null, 2);
   return (
-    <article className="fd-event" id={event.id} data-spy>
-      <h3 className="fd-op-title">
+    <article className="fd-event" data-spy={anchor} data-part="webhook">
+      <Heading level={3} id={anchor} className="fd-op-title">
         <code>{event.name}</code>
         {event.op.deprecated && <span className="fd-flag fd-flag-warn">{t("deprecated")}</span>}
-        <a className="fd-anchor" href={`#${event.id}`} aria-label={t("linkToEvent")}>
-          #
-        </a>
-      </h3>
+      </Heading>
       {event.op.summary && (
         <p className="fd-lead">
           <Inline text={event.op.summary} />
@@ -390,17 +419,24 @@ function WebhookEvent({ event }: { event: WebhookEntry }) {
   );
 }
 
-export function Webhooks({ events }: { events: WebhookEntry[] }) {
-  const { t, doc } = useDoc();
+export function Webhooks({ events, asTitle }: { events: WebhookEntry[]; asTitle?: boolean }) {
+  const { t, doc, site } = useDoc();
   if (!events.length) return null;
+  const anchor = site.webhooks?.anchor;
   return (
-    <section className="fd-section" id="/webhooks" data-spy aria-labelledby="/webhooks~h">
-      <Heading level={2} id="/webhooks">
-        {t("webhooks")}
-      </Heading>
+    <section className="fd-section" data-spy={anchor || undefined} data-part="webhooks">
+      {asTitle ? (
+        <h1 className="fd-title">{t("webhooks")}</h1>
+      ) : (
+        <Heading level={2} id={anchor || undefined} className="fd-h2">
+          {t("webhooks")}
+        </Heading>
+      )}
       <p>{t("webhooksIntro", { name: doc.info.title })}</p>
       <WebhookSigning />
-      <h3>{t("events")}</h3>
+      <Heading level={2} id={anchor ? `${anchor}/events` : "events"}>
+        {t("events")}
+      </Heading>
       {events.map((e) => (
         <WebhookEvent key={e.id} event={e} />
       ))}
@@ -408,26 +444,29 @@ export function Webhooks({ events }: { events: WebhookEntry[] }) {
   );
 }
 
-export function Models({ models }: { models: ModelEntry[] }) {
-  const { t, doc } = useDoc();
+export function Models({ models, asTitle }: { models: ModelEntry[]; asTitle?: boolean }) {
+  const { t, doc, site } = useDoc();
   if (!models.length) return null;
+  const anchor = site.models?.anchor;
   return (
-    <section className="fd-section" id="/models" data-spy aria-labelledby="/models~h">
-      <Heading level={2} id="/models">
-        {t("models")}
-      </Heading>
+    <section className="fd-section" data-spy={anchor || undefined} data-part="models">
+      {asTitle ? (
+        <h1 className="fd-title">{t("models")}</h1>
+      ) : (
+        <Heading level={2} id={anchor || undefined} className="fd-h2">
+          {t("models")}
+        </Heading>
+      )}
       {models.map((m) => {
         const info = describe(doc, { $ref: `#/components/schemas/${encodeURIComponent(m.name)}` });
         const example = mediaExample(doc, { schema: { $ref: `#/components/schemas/${encodeURIComponent(m.name)}` } }, "response");
         const text = example === undefined ? undefined : JSON.stringify(example, null, 2);
+        const at = site.model.get(m)!.anchor;
         return (
-          <article className="fd-model" id={m.id} data-spy key={m.id}>
-            <h3 className="fd-op-title">
+          <article className="fd-model" data-spy={at} key={m.id} data-part="model">
+            <Heading level={3} id={at} className="fd-op-title">
               <code>{m.name}</code> <span className="fd-type">{info.type === m.name ? "object" : info.type}</span>
-              <a className="fd-anchor" href={`#${m.id}`} aria-label={t("linkToModel")}>
-                #
-              </a>
-            </h3>
+            </Heading>
             <div className="fd-op-grid">
               <div className="fd-op-doc">
                 <Markdown text={info.description} />
@@ -444,21 +483,22 @@ export function Models({ models }: { models: ModelEntry[] }) {
   );
 }
 
-/** An MDX guide's headings sit one level down: the page's title and the sections are above them. */
-const down = (Tag: "h2" | "h3" | "h4" | "h5") => (props: React.ComponentProps<"h2">) => <Tag {...props} />;
-const GUIDE_COMPONENTS = { h1: down("h2"), h2: down("h3"), h3: down("h4"), h4: down("h5") };
+/** A guide's own `# Title` is its page's title. */
+const PageTitle = ({ children }: { children?: React.ReactNode }) => <h1 className="fd-title">{children}</h1>;
 
-/** One guide: its MDX loads after the page is up; the section keeps its place in the page meanwhile. */
-export function GuideView({ guide }: { guide: Guide }) {
-  const t = useT();
+/** One guide, a page of its own (or its part of the single page): its MDX, with the components it can use and a boundary around it. */
+export function GuideView({ guide, asPage }: { guide: Guide; asPage?: boolean }) {
+  const { t, mdx, dev, site } = useDoc();
   const Content = useMemo(() => (guide.content ?? lazy(guide.load!)) as ComponentType<{ components?: object }>, [guide]);
-  const id = `/g/${guide.slug}`;
+  const anchor = site.guide.get(guide.slug)?.anchor;
   return (
-    <section className="fd-section fd-guide" id={id} data-spy aria-label={guide.title}>
-      <div className="fd-prose">
-        <Suspense fallback={<p className="fd-note">{t("loading")}</p>}>
-          <Content components={GUIDE_COMPONENTS} />
-        </Suspense>
+    <section className="fd-section fd-guide" data-spy={anchor || undefined} id={anchor || undefined} aria-label={guide.title} data-part="guide">
+      <div className="fd-prose" data-page={asPage ? "" : undefined}>
+        <ContentBoundary file={guide.file ?? `forge/docs/${guide.slug}.mdx`} dev={dev}>
+          <Suspense fallback={<p className="fd-note">{t("loading")}</p>}>
+            <Content components={asPage ? { ...mdx, h1: PageTitle } : mdx} />
+          </Suspense>
+        </ContentBoundary>
       </div>
     </section>
   );

@@ -82,10 +82,50 @@ export interface WebhookEventDoc {
 }
 
 /** The page's look and behaviour. Mirrors DocsPageConfig in @archlast/forge-dashboard's api-docs/contract.ts, which the page reads. */
+type DocsToken = "bg" | "surface" | "text" | "muted" | "faint" | "border" | "borderStrong" | "accent" | "accentFill" | "codeBg" | "inlineCodeBg" | "ok" | "warn" | "err" | "synKey" | "synStr" | "synNum" | "synLit";
+type DocsLink = { label: string; href: string };
+
 export interface ApiDocsPageConfig {
   title?: string;
-  logo?: { url: string; alt?: string; href?: string };
-  theme?: { mode?: "auto" | "light" | "dark"; accent?: string; font?: string; monoFont?: string; radius?: string };
+  /** `url` on light, `dark` on dark; `title: false` shows the mark without the name. */
+  logo?: { url: string; dark?: string; alt?: string; href?: string; title?: boolean };
+  theme?: {
+    preset?: "default" | "minimal" | "dark";
+    mode?: "auto" | "light" | "dark";
+    accent?: string;
+    font?: string;
+    monoFont?: string;
+    radius?: string;
+    /** The page's colours (`--fd-<name>`), one value or one per mode. */
+    tokens?: Partial<Record<DocsToken, string | { light: string; dark: string }>>;
+    code?: "auto" | "light" | "dark";
+    pills?: "outline" | "tinted";
+    sidebarWidth?: string;
+    density?: "comfortable" | "compact";
+  };
+  layout?: {
+    shell?: "sidebar" | "header";
+    pages?: "operation" | "tag" | "single";
+    referencePath?: string;
+    toc?: boolean;
+    pageActions?: false | ("copy" | "markdown")[];
+    pagination?: boolean;
+    breadcrumbs?: boolean;
+  };
+  nav?: {
+    tabs?: ({ label: string; section: "guides" | "reference" } | DocsLink)[];
+    footer?: DocsLink[];
+    groups?: { collapsible?: boolean; case?: "sentence" | "upper" };
+  };
+  controls?: {
+    authorize?: "header" | "sidebar" | "operation" | false;
+    themeToggle?: false | "icon" | "text" | { style?: "icon" | "text"; place?: "header" | "sidebar" };
+    devSwitch?: boolean;
+    download?: "header" | "sidebar" | false;
+  };
+  content?: { responseHeaders?: "collapsed" | "open" };
+  /** CSS for the page, or a file under forge/docs (`"theme.css"`), in a layer after the page's. */
+  css?: string;
   codeSamples?: { languages?: ("curl" | "node" | "python" | "go" | "php" | "ruby" | "java" | "csharp")[] };
   explorer?:
     | false

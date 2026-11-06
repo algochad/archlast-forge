@@ -35,6 +35,29 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 - **Better Auth's plugins come with the engine.** `@archlast/forge-runtime/auth` has everything `better-auth/plugins` exports (organization, two-factor, admin, JWT, bearer, magic link, email OTP, generic OAuth, username, phone number, …) and `oauthProvider`; Better Auth's separately published plugins are subpaths, loaded only when imported: `/auth/oauth-provider`, `/auth/api-key`, `/auth/passkey`, `/auth/sso`, `/auth/scim`, `/auth/i18n`. Nothing to install, all at the engine's Better Auth version, and none runs unless `plugins` lists it. Stripe, Expo and Electron, which need SDKs of yours, are still installed in `forge/`. See [Plugins](auth.html#plugins).
 - **Better Auth plugins' tables are declared by the engine.** For every plugin in `defineAuth({ plugins })` the engine derives the tables it needs from the plugin itself (`members`, `organizations`, `jwkss`, `oauthClients`, …, following its options), and `archlast-forge codegen` writes their types to `forge/_generated/authTables.ts`, so `ctx.db.query("members")` is typed. Declare none of them in `schema.ts`, and drop the table-generator script; a table you already declared there under the same name is kept as you wrote it. See [Plugin tables](auth.html#plugin-tables).
 
+- **The API docs page is a site of pages, in the layout readers know** (#31). With no configuration:
+  - **Layout:** a navigation that runs the page's height, with the logo and search (`⌘K`) at its top, groups in sentence case that fold, and links and the light/dark icon at its foot.
+  - **Pages:** a page per topic at its own address (`/docs/products/create-product`, `/docs/guides/quickstart`) instead of `#/products/CheckoutsController_create`.
+  - **On each page:** "On this page" on wide screens, the section above the title, Copy page and View as Markdown, previous and next, and an endpoint bar with the method, the URL and Try it.
+  - **Server rendering:** pages are rendered on the server, and the browser moves between them without reloading.
+  - **Guides and the overview:** guides are pages of their own, and the overview is the description, the base URL and authentication.
+  - **Operations:** "Scopes:" shows each scope's meaning on hover, and response headers start folded.
+
+  Old `#/…` links move to their page.
+- **The page can be made to look like another docs site without CSS** (#31). See [API docs](api-docs.html#look):
+  - **Layout:** `page.layout` (the shell; pages per operation, per tag or one page; "On this page"; page actions; previous and next).
+  - **Navigation:** `page.nav` (tabs, footer links, group case).
+  - **Controls:** `page.controls` (where Authorize goes, an icon or text theme switch, the dev switch, the openapi.json link).
+  - **Theme:** `page.theme` (a `minimal` or `dark` preset, every colour as a token for light and dark, light or dark code panels, tinted method labels, density, the sidebar width).
+  - **Logo:** a dark variant, and the mark alone.
+  - **CSS:** `page.css` (text or a file in `forge/docs`, in a layer after the page's).
+  - **Stable selectors:** `data-part` attributes to target.
+- **Guides have components:** `<Callout>` (and `<Note>`, `<Tip>`, `<Warning>`, …), `<Tabs>`, `<Steps>`, `<Cards>`, `<CodeGroup>`, `<Accordion>` and titled code blocks, with no imports. Your own components go in `forge/docs/_components/`.
+- **Every docs page is also Markdown** (`<page>.md`, `index.md`), and `/docs/llms.txt` lists them.
+- **A guide, slot or component that doesn't compile no longer takes the docs page down.** It is logged with its file and line, shown in its place in development and left out in production. It used to answer 500 with nothing in the log.
+- **Routes with a summary and no `operationId` get one from the summary** ("Create a product" is `createAProduct`, unique in the document). Before, the id was the controller and method (`CheckoutsController_create`) or `http_<METHOD>_<path>`. The page's addresses and generated clients' method names follow it. Set `operationId` on a route to keep an id you already publish.
+- To keep the 0.19 page: `page.layout: { pages: "single", shell: "header" }`, `nav: { groups: { case: "upper" } }`, `content: { responseHeaders: "open" }`.
+
 ## 0.19.0
 
 ### Changed
