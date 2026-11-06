@@ -1,6 +1,10 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { join } from "node:path";
-import { jwt, oauthProvider, organization } from "../src/auth-plugins";
+import { deviceAuthorization, jwt, oauthProvider, organization, twoFactor } from "../src/auth-plugins";
+import { apiKey } from "../src/auth-plugins/api-key";
+import { passkey } from "../src/auth-plugins/passkey";
+import { scim } from "../src/auth-plugins/scim";
+import { sso } from "../src/auth-plugins/sso";
 import { pluginTables } from "../src/server/auth-tables";
 import { loadProject } from "../src/server/project";
 import { startServer, type RunningServer } from "../src/server/server";
@@ -12,7 +16,7 @@ const fixture = join(import.meta.dir, "fixture-auth-plugins");
 describe("the tables of the plugins an app uses", () => {
   test("come from the plugins themselves, as the document adapter stores them", async () => {
     const { tables } = await loadProject(fixture);
-    for (const t of ["organizations", "members", "invitations", "jwkss", "oauthClients", "oauthResources", "oauthClientResources", "oauthRefreshTokens", "oauthAccessTokens", "oauthConsents", "oauthClientAssertions"])
+    for (const t of ["organizations", "members", "invitations", "twoFactors", "apikeys", "jwkss", "oauthClients", "oauthResources", "oauthClientResources", "oauthRefreshTokens", "oauthAccessTokens", "oauthConsents", "oauthClientAssertions"])
       expect(Object.keys(tables)).toContain(t);
     expect(tables.notes).toBeDefined(); // the app's own
     expect(tables.members!.indexes).toMatchObject({ by_organizationId: ["organizationId"], by_userId: ["userId"] });
@@ -27,6 +31,16 @@ describe("the tables of the plugins an app uses", () => {
     const mine = pluginTables({ plugins: [organization()] }, ["members"]);
     expect(Object.keys(mine)).not.toContain("members");
     expect(Object.keys(pluginTables({ plugins: [jwt(), oauthProvider({ loginPage: "/a", consentPage: "/b" })] }))).toContain("jwkss");
+  });
+
+  test("every plugin that comes with the engine and has tables of its own gets them", () => {
+    const tablesOf = (plugin: unknown) => Object.keys(pluginTables({ plugins: [plugin] as never }));
+    expect(tablesOf(twoFactor())).toEqual(["twoFactors"]);
+    expect(tablesOf(deviceAuthorization())).toEqual(["deviceCodes"]);
+    expect(tablesOf(apiKey())).toEqual(["apikeys"]);
+    expect(tablesOf(passkey())).toEqual(["passkeys"]);
+    expect(tablesOf(sso())).toEqual(["ssoProviders"]);
+    expect(tablesOf(scim({ connections: [], managedConnections: { credentialHashSecret: "s".repeat(32) } } as never))).toContain("scimUsers");
   });
 
   test("an app that uses none gets none", async () => {
@@ -67,6 +81,11 @@ describe("in a running engine", () => {
     const client = await auth("/oauth2/create-client", { body: { redirect_uris: ["https://partner.example/callback"], client_name: "Partner" }, cookie });
     expect(client.status).toBe(201);
     expect(((await client.json()) as any).client_id).toBeString();
+    // An API key, in the apikeys table.
+    const key = await auth("/api-key/create", { body: { name: "ci" }, cookie });
+    expect(key.status).toBe(200);
+    expect(((await key.json()) as any).key).toBeString();
+    expect(((await (await auth("/api-key/list", { cookie })).json()) as { apiKeys: { name: string }[] }).apiKeys.map((k) => k.name)).toEqual(["ci"]);
     const keys = (await (await auth("/jwks")).json()) as { keys: unknown[] };
     expect(keys.keys.length).toBeGreaterThan(0); // signing keys, kept in jwkss
   });

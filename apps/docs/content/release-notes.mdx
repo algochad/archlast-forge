@@ -6,7 +6,7 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ### Changed
 
-- **The organization and OAuth provider plugins come with the engine.** `import { organization, oauthProvider, jwt } from "@archlast/forge-runtime/auth"` in `forge/auth.ts`, with nothing to install: they are Better Auth's own plugins at the engine's Better Auth version (`@better-auth/oauth-provider` is now a dependency of the runtime). They do nothing unless `plugins` lists them.
+- **Better Auth's plugins come with the engine.** `@archlast/forge-runtime/auth` has everything `better-auth/plugins` exports (organization, two-factor, admin, JWT, bearer, magic link, email OTP, generic OAuth, username, phone number, …) and `oauthProvider`; Better Auth's separately published plugins are subpaths, loaded only when imported: `/auth/oauth-provider`, `/auth/api-key`, `/auth/passkey`, `/auth/sso`, `/auth/scim`, `/auth/i18n`. Nothing to install, all at the engine's Better Auth version, and none runs unless `plugins` lists it. Stripe, Expo and Electron, which need SDKs of yours, are still installed in `forge/`. See [Plugins](auth.html#plugins).
 - **Better Auth plugins' tables are declared by the engine.** For every plugin in `defineAuth({ plugins })` the engine derives the tables it needs from the plugin itself (`members`, `organizations`, `jwkss`, `oauthClients`, …, following its options), and `archlast-forge codegen` writes their types to `forge/_generated/authTables.ts`, so `ctx.db.query("members")` is typed. Declare none of them in `schema.ts`, and drop the table-generator script; a table you already declared there under the same name is kept as you wrote it. See [Plugin tables](auth.html#plugin-tables).
 
 ## 0.19.0

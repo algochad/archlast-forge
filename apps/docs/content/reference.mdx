@@ -348,12 +348,17 @@ const defineAuth: (options: AuthOptions) => AuthOptions;
 
 Default-export from `forge/auth.ts`. Without that file, `{ emailAndPassword: { enabled: true } }` is used. Guide: [Authentication](auth.html).
 
-`@archlast/forge-runtime/auth` has Better Auth plugins that come with the engine, at its Better Auth version (nothing to install, nothing runs unless `plugins` lists them):
+Better Auth's plugins come with the engine, at its Better Auth version (nothing to install, nothing runs unless `plugins` lists them):
 
-```ts
-export { oauthProvider } from "@better-auth/oauth-provider"; // OAuth 2.1 / OpenID Connect provider; needs jwt() beside it
-export { organization, jwt } from "better-auth/plugins";      // organizations, members, invitations (teams); signing keys
-```
+| Import | Contents |
+|---|---|
+| `@archlast/forge-runtime/auth` | everything `better-auth/plugins` exports (`organization`, `twoFactor`, `admin`, `jwt`, `bearer`, `magicLink`, `emailOTP`, `genericOAuth`, `username`, `phoneNumber`, …), and `oauthProvider` |
+| `@archlast/forge-runtime/auth/oauth-provider` | everything `@better-auth/oauth-provider` exports |
+| `@archlast/forge-runtime/auth/api-key` | everything `@better-auth/api-key` exports (`apiKey`) |
+| `@archlast/forge-runtime/auth/passkey` | everything `@better-auth/passkey` exports (`passkey`) |
+| `@archlast/forge-runtime/auth/sso` | everything `@better-auth/sso` exports (`sso`) |
+| `@archlast/forge-runtime/auth/scim` | everything `@better-auth/scim` exports (`scim`) |
+| `@archlast/forge-runtime/auth/i18n` | everything `@better-auth/i18n` exports (`i18n`) |
 
 The tables of every plugin in `plugins` are declared by the engine ([Plugin tables](auth.html#plugin-tables)); `codegen` writes their types to `forge/_generated/authTables.ts`.
 
