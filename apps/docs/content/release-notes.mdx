@@ -4,6 +4,10 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+### Changed
+
+- **Fixed: a Nest handler got its `@Contract`'s query and path values as text.** `@Contract` converted them to check them (`?limit=2` against `v.number()`), then gave the handler the original strings, so the feature blueprint's `numItems: q.limit ?? 20` sent `"2"` to a paginated query, which refused it. The handler now gets the values as they were checked: numbers for `v.number()`, booleans for `v.boolean()`, a literal's value. **A handler that compared or parsed them as text needs a change**: `@Query("express") express === "true"` is now `express === true`, and `Number(q.limit)` still works. Values the contract doesn't name, and routes without one, are unchanged. See [Contract](nest.html#contract-validators-and-the-openapi-document).
+
 ## 0.19.0
 
 ### Changed
