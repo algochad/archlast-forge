@@ -3,6 +3,7 @@ export { startServer, type ApiDocsHost, type AppEnv, type AppHost, type RunningS
 export { loadConfig, ConfigError, type Config } from "./config";
 export * as ops from "./cli-ops";
 export { compileDecorators, listModules } from "./project";
+export { pluginTablesSource } from "./auth-tables";
 export { createSqliteDb } from "./db/sqlite";
 export { createPostgresDb } from "./db/postgres";
 export type { Db, DbTx, Dialect, TableSpec } from "./db/types";

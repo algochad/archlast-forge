@@ -7,6 +7,7 @@ import { join, relative } from "node:path";
 import type { AuthOptions, CronJob, FunctionKind, HttpRoute, RegisteredFunction } from "../functions";
 import type { SchemaDefinition } from "../schema";
 import type { TablesSpec } from "./docstore";
+import { pluginTables } from "./auth-tables";
 import { reservedPathOf } from "./config";
 
 const SPECIAL = new Set(["schema", "auth", "crons", "http"]);
@@ -119,6 +120,9 @@ export async function loadProject(forgeDir: string): Promise<Project> {
   const optional = async (name: string) =>
     existsSync(join(forgeDir, `${name}.ts`)) ? (await importUserModule(join(forgeDir, `${name}.ts`), forgeDir)).default : undefined;
   const authOptions: AuthOptions = (await optional("auth")) ?? { emailAndPassword: { enabled: true } };
+  // The tables of the Better Auth plugins forge/auth.ts uses (organization, the OAuth provider, …), unless schema.ts declares them itself.
+  for (const [name, t] of Object.entries(pluginTables(authOptions, Object.keys(tables))))
+    tables[name] = { fields: t.fields, indexes: t.indexes, searchIndexes: t.searchIndexes ?? {}, strict: t.strict };
   const crons: CronJob[] = (await optional("crons"))?.jobs ?? [];
   for (const job of crons) {
     const fn = functions.get(job.fn);
