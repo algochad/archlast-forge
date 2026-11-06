@@ -256,7 +256,7 @@ Installs server dependencies if changed, writes `forge/_generated/api.ts` and `d
 archlast-forge build [--tag <image>] [--no-docker]
 ```
 
-Runs codegen, then:
+Installs `forge/package.json` if it changed (in a monorepo nothing else does) and runs codegen, then:
 
 - **Docker** (default): builds the app image from the project's `Dockerfile` on the engine image (`--build-arg ENGINE_IMAGE=...`), tag `--tag` or `<project>-<hash>:latest`; builds or pulls the engine image if missing. A project with no `Dockerfile` gets a generated one around `forge/`. Ends `✓ built <tag>`. Failures: `Engine image build failed`, `App image build failed`.
 - **`--no-docker`, full-stack**: production bundles into `.forge/build` (browser and server), prints first-load sizes. Build errors print file/line/column, exit 1.

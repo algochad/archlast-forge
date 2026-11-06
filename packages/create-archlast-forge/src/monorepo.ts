@@ -374,6 +374,70 @@ export function ensureDashboard(c: Ctx) {
   for (const f of files) setEnv(f, "DASHBOARD_TOKEN", token, "The secret the main app and its services share for the dashboard", true);
 }
 
+const OVERRIDE = "compose.override.yaml";
+const OVERRIDE_HEADER = "# Written by archlast-forge for the monorepo";
+
+/**
+ * Each app's compose.override.yaml, which Docker Compose merges into its compose.yaml (and `archlast-forge up` passes too): every app of the
+ * monorepo joins one Docker network, `<monorepo>-apps`, under its own name, so on one machine the stacks reach each other as `http://<app>:3000`
+ * and each service's transport port. It passes on what .env has for that (the tokens) and sets the addresses as they are on that network;
+ * .env keeps the development ones. Written again whenever the apps change; one without the header is the user's, and is left alone.
+ */
+export function ensureStacks(c: Ctx) {
+  const { ws } = c;
+  const services = servicesOf(ws).map(([name]) => name);
+  const req = (key: string, why: string) => `\${${key}:?missing: ${why}}`;
+  for (const app of backendsOf(ws)) {
+    const dir = join(c.root, "apps", app);
+    const file = join(dir, OVERRIDE);
+    const ours = !existsSync(file) || readFileSync(file, "utf8").startsWith(OVERRIDE_HEADER);
+    if (!existsSync(join(dir, "compose.yaml"))) continue;
+    if (!services.length) {
+      if (existsSync(file) && ours) rmSync(file);
+      continue;
+    }
+    if (!ours) {
+      c.notes.push(`apps/${app}/${OVERRIDE} is yours (no "${OVERRIDE_HEADER}" line), so it is unchanged: check its addresses and secrets against the monorepo's apps (the README's "Deploying").`);
+      continue;
+    }
+    const vars: [string, string][] = [];
+    if (ws.transport === "forge-rpc") vars.push(["FORGE_RPC_TOKEN", req("FORGE_RPC_TOKEN", "the apps' shared Forge RPC secret: `archlast-forge workspace sync` writes it into .env")]);
+    if (ws.transport === "redis") vars.push(["MICROSERVICES_REDIS_URL", req("MICROSERVICES_REDIS_URL", "set it in .env to the Redis server the apps share")]);
+    if (ws.transport === "nats") vars.push(["MICROSERVICES_NATS_URL", req("MICROSERVICES_NATS_URL", "set it in .env to the NATS server the apps share")]);
+    vars.push(["DASHBOARD_TOKEN", req("DASHBOARD_TOKEN", "the secret the main app and its services share: `archlast-forge workspace sync` writes it into .env")]);
+    if (app === ws.main) {
+      for (const svc of services) {
+        const { rpcPort = 4001 } = ws.apps[svc]!;
+        if (ws.transport === "forge-rpc") vars.push([`${env(svc)}_RPC_URL`, `\${${env(svc)}_RPC_URL:-http://${svc}:${rpcPort}}`]);
+        if (ws.transport === "tcp") vars.push([`${env(svc)}_HOST`, `\${${env(svc)}_HOST:-${svc}}`], [`${env(svc)}_PORT`, `\${${env(svc)}_PORT:-${rpcPort}}`]);
+      }
+      const named = (svc: string) => envValue(join(c.root, "apps", svc, ".env"), "OTEL_SERVICE_NAME") ?? svc;
+      vars.push(["MICROSERVICES", services.map((svc) => `${named(svc)}=http://${svc}:3000`).join(",")]);
+    } else if (ws.apps[app]!.kind === "service") vars.push(["DASHBOARD_URL", `http://${ws.main}:3000`]);
+    put(
+      c,
+      `apps/${app}/${OVERRIDE}`,
+      `${OVERRIDE_HEADER} ${c.name}; \`add\`, \`remove\` and \`workspace sync\` write it again. Delete this line to make it yours (it is then left alone).
+# Docker Compose merges it into compose.yaml, and its values win. Every app of the monorepo joins the network ${c.name}-apps under its name, so
+# the stacks reach each other on this machine as http://<app>:3000 and each service's transport port. The secrets come from .env; the
+# addresses are the ones on that network (.env keeps the development ones). Apps on separate machines: make the file yours and put theirs here.
+services:
+  app:
+    environment:
+${vars.map(([k, v]) => `      ${k}: "${v}"`).join("\n")}
+    networks:
+      default: {}
+      apps:
+        aliases: [${app}]
+
+networks:
+  apps:
+    name: ${c.name}-apps
+`,
+    );
+  }
+}
+
 /** A backend main app has to run on this machine in development when it calls services, or its code can't reach their ports. */
 export function ensureMainOnHost(c: Ctx) {
   if (modeOf(c.root, c.ws.main) !== "backend" || !servicesOf(c.ws).length) return;
@@ -391,6 +455,7 @@ export function finishServices(c: Ctx, added: string[]) {
   writeShared(c);
   ensureToken(c);
   ensureDashboard(c);
+  ensureStacks(c);
   ensureMainOnHost(c);
 }
 
@@ -581,11 +646,21 @@ curl -X POST localhost:3000/rpc/${camel(services[0]!)}:hello -H 'content-type: a
 curl -X POST localhost:3000/http/${services[0]}/hello -H 'content-type: application/json' -d '{"from":"${main}"}'  # the controller
 # {"service":"${services[0]}","greeting":"Hello, ${main}","calls":2}
 \`\`\`
-${transport === "forge-rpc" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the services' ports are reachable, and the apps share \`FORGE_RPC_TOKEN\` from their \`.env\`. In production, give every app the same \`FORGE_RPC_TOKEN\`, the callers \`<SERVICE>_RPC_URL\`, and expose each service's Forge RPC port to them (one network for the stacks).` : transport === "tcp" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the TCP ports are reachable. In production, set \`<SERVICE>_HOST\` and \`<SERVICE>_PORT\` for the callers, and expose each service's TCP port to them (one network for the stacks).` : `\nStart a ${transport === "redis" ? "Redis" : "NATS"} server first, and point every app at it with \`${transport === "redis" ? "MICROSERVICES_REDIS_URL" : "MICROSERVICES_NATS_URL"}\` in production.`}
+${transport === "forge-rpc" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the services' ports are reachable, and the apps share \`FORGE_RPC_TOKEN\` from their \`.env\`. Deployed, the same token and the services' addresses come from each app's \`compose.override.yaml\` (see Deploying).` : transport === "tcp" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the TCP ports are reachable. Deployed, the callers' \`<SERVICE>_HOST\` and \`<SERVICE>_PORT\` come from each app's \`compose.override.yaml\` (see Deploying).` : `\nStart a ${transport === "redis" ? "Redis" : "NATS"} server first, and point every app at it with \`${transport === "redis" ? "MICROSERVICES_REDIS_URL" : "MICROSERVICES_NATS_URL"}\` in production.`}
 
 ## One dashboard
 
-The main app's dashboard (http://localhost:3000/_dashboard) shows every service: their requests, traces, errors, logs, nodes and Nest classes beside the main app's, and, with a service picked at the top, its data, schema and functions. Each service sends its telemetry to the main app (\`DASHBOARD_URL\` and \`OTEL_SERVICE_NAME\` in its \`.env\`) and serves no dashboard of its own; the main app lists the services (\`MICROSERVICES\`), and they share \`DASHBOARD_TOKEN\`. In production set the same with the addresses the apps reach each other at.
+The main app's dashboard (http://localhost:3000/_dashboard) shows every service: their requests, traces, errors, logs, nodes and Nest classes beside the main app's, and, with a service picked at the top, its data, schema and functions. Each service sends its telemetry to the main app (\`DASHBOARD_URL\` and \`OTEL_SERVICE_NAME\` in its \`.env\`) and serves no dashboard of its own; the main app lists the services (\`MICROSERVICES\`), and they share \`DASHBOARD_TOKEN\`. Deployed, the addresses come from each app's \`compose.override.yaml\` (see Deploying).
+
+## Deploying
+
+Each app has its own stack (\`compose.yaml\`, \`Dockerfile\`, \`.env\`), and \`bun run up\` in its folder builds the app's image and starts it:
+
+\`\`\`bash
+${[...services, main].map((s) => `(cd apps/${s} && bun run up)`).join("\n")}
+\`\`\`
+
+On one machine the stacks find each other. Each app's \`compose.override.yaml\`, which \`archlast-forge\` writes and Docker Compose merges into its \`compose.yaml\`, puts the app on the Docker network \`${name}-apps\` under its own name. It gives the app the addresses on that network (${transport === "forge-rpc" ? `\`${env(services[0]!)}_RPC_URL=http://${services[0]}:${ws.apps[services[0]!]!.rpcPort ?? 4001}\`, ` : transport === "tcp" ? `\`${env(services[0]!)}_HOST=${services[0]}\`, ` : ""}\`MICROSERVICES=${services[0]}=http://${services[0]}:3000\` on the main app, \`DASHBOARD_URL=http://${main}:3000\` on the services) and passes on the secrets they share from \`.env\`${transport === "redis" || transport === "nats" ? ` (and \`${transport === "redis" ? "MICROSERVICES_REDIS_URL" : "MICROSERVICES_NATS_URL"}\`, which you set in each \`.env\` to the server the apps share; \`up\` stops without it)` : ""}. \`.env\` keeps the development addresses. \`add\`, \`remove\` and \`workspace sync\` write the file again, and its values win over \`compose.yaml\`'s. To change them, delete its first line, which makes the file yours (it is then left alone). For apps on several machines, do that and put the addresses they reach each other at in it, and expose each service's transport port to its callers only; on another orchestrator, set the same variables there.
 `
     : ""
 }`;

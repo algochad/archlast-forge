@@ -197,7 +197,7 @@ Stack traces, SQL and unexpected messages never leave the service; look for `[fo
 | `<SERVICE>_RPC_PORT` | the service                    | listen port (4001, 4002, … in the scaffold)                       |
 | `<SERVICE>_RPC_URL`  | each caller                    | `http://<host>:<port>` of the service                             |
 
-- `bun run dev` at the monorepo root runs every app with `--no-docker`, so `http://127.0.0.1:4001` works. In production each app is its own stack: put stacks on one Docker network and set `ORDERS_RPC_URL=http://orders-app:4001`; publish the port only if something outside the stack connects. Rotate the token in all apps together.
+- `bun run dev` at the monorepo root runs every app with `--no-docker`, so `http://127.0.0.1:4001` works. Deployed, each app is its own stack (`bun run up` in `apps/<app>`), and each app's generated `compose.override.yaml` puts it on the Docker network `<monorepo>-apps` under its name and sets `ORDERS_RPC_URL=http://orders:4001`, `MICROSERVICES` and `DASHBOARD_URL` for that network. Never publish the RPC port. Apps on separate machines: remove the file's first line (it is then yours) and set the real addresses there. Rotate the token in all apps together.
 - Services send telemetry to the main app's dashboard (`DASHBOARD_URL`, `DASHBOARD_TOKEN`, `MICROSERVICES`): a call to the main app and its calls to services are one trace (`traceparent` is forwarded).
 
 ## 7. Moving from Nest TCP

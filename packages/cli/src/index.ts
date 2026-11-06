@@ -415,7 +415,9 @@ const commands: Record<string, () => Promise<unknown>> = {
   async build() {
     const dir = findForgeDir(values.dir);
     const cfg = loadProjectConfig(dir);
-    await generate(dir);
+    // As `up` and `codegen` do: in a monorepo nothing else installs forge/package.json, and codegen loads the Forge RPC routers.
+    await ensureDeps(dir).catch((e) => fail(e.message));
+    await generate(dir).catch((e) => fail(e.message));
     if (!useDocker()) {
       if (cfg?.mode !== "framework") return console.log("Nothing to build without Docker: a backend runs straight from forge/ (`archlast-forge start --no-docker`).");
       await buildFramework(projectRoot(dir));

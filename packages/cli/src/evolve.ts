@@ -8,6 +8,7 @@ import {
   addMobile,
   ensureAppNames,
   ensureDashboard,
+  ensureStacks,
   ensureToken,
   finishServices,
   newCtx,
@@ -115,6 +116,7 @@ export function addApp(dir: string, name: string, o: AddAppOptions = {}): Change
   writeShared(c); // packages/api gains it
   ensureToken(c); // a backend of the monorepo can call its services
   ensureAppNames(c); // its name: on the dashboard and in its Redis keys
+  ensureStacks(c); // on the monorepo's Docker network with the others
   return done(
     c,
     [
@@ -204,6 +206,7 @@ export function syncWorkspace(dir: string): Change {
   writeBarrel(c);
   writeShared(c);
   ensureDashboard(c);
+  ensureStacks(c);
   summary.push(
     "packages/api" + (ws.transport === "forge-rpc" && servicesOf(ws).length ? ", packages/contracts" : "") + " and the main app's list of services: written from the apps in apps/",
   );

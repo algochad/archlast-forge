@@ -3,7 +3,7 @@ import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, w
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { PassThrough } from "node:stream";
-import { Cancelled, gather } from "../src/cli";
+import { Cancelled, gather, nextSteps } from "../src/cli";
 import { addPrettier, scaffold } from "../src/scaffold";
 import { parseFlags } from "../src/options";
 import { BASE_COLORS } from "../src/shadcn";
@@ -316,4 +316,13 @@ test("the command itself runs end to end (the entry point, not just its parts)",
   expect(await new Response(bad.stderr).text()).toContain("already has files");
   const help = Bun.spawn(["bun", join(import.meta.dir, "../src/index.ts"), "--help"], { stdin: "ignore", stdout: "pipe" });
   expect(await new Response(help.stdout).text()).toContain("--mode <framework|backend>");
+});
+
+test("the next steps say where to deploy: the project's root, or each app of a monorepo, which has no stack at its root", () => {
+  const base = { dir: "shop", mode: "framework" as const, services: [], install: true, git: false };
+  expect(nextSteps(base, true)).toContain("To deploy: bun run up   (builds the image");
+  const services = nextSteps({ ...base, monorepo: { microservices: ["orders"], transport: "forge-rpc" } }, true);
+  expect(services).toContain("(cd apps/orders && bun run up)\n  (cd apps/web && bun run up)");
+  expect(services).not.toContain("To deploy: bun run up   ");
+  expect(nextSteps({ ...base, mode: "backend", monorepo: { microservices: [], transport: "forge-rpc" } }, true)).toContain("To deploy: cd apps/api && bun run up");
 });

@@ -162,7 +162,14 @@ export function nextSteps(a: Answers, installed: boolean): string {
     : a.mode === "framework"
       ? "Your app: http://localhost:3000"
       : "Your backend: http://localhost:3000";
-  return `${lines.join("\n")}\n\n${where}\nDashboard: http://localhost:3000/_dashboard\n\nTo deploy: bun run up   (builds the image and starts the stack in compose.yaml)`;
+  const main = a.mode === "framework" ? "web" : "api";
+  // A monorepo has no stack at its root: each app has its own, and on one machine they find each other on the monorepo's Docker network.
+  const deploy = a.monorepo?.microservices.length
+    ? `To deploy: bun run up in each app (their stacks find each other on one Docker network):\n  ${[...a.monorepo.microservices, main].map((s) => `(cd apps/${s} && bun run up)`).join("\n  ")}`
+    : a.monorepo
+      ? `To deploy: cd apps/${main} && bun run up   (builds the image and starts the stack in its compose.yaml)`
+      : "To deploy: bun run up   (builds the image and starts the stack in compose.yaml)";
+  return `${lines.join("\n")}\n\n${where}\nDashboard: http://localhost:3000/_dashboard\n\n${deploy}`;
 }
 
 export async function main(argv: string[], io: Io = {}): Promise<void> {

@@ -311,7 +311,7 @@ Commit `forge/_generated`; `forge/_generated/.depshash` (a stamp used to skip re
 archlast-forge build [--tag <image>] [--no-docker]
 ```
 
-Regenerates types first. Then:
+Installs `forge/package.json`'s dependencies if they changed (as `up`, `codegen` and `dev` do; in a monorepo nothing else installs them), and regenerates types. Then:
 
 - **With Docker** (the default): builds the app image from the project's `Dockerfile` on the engine image (`--build-arg ENGINE_IMAGE=<the CLI's engine image>`), tagged `--tag` or `<project>-<hash>:latest`. If the engine image isn't local it is built (in a checkout of this repository) or pulled. A project from before `init` has no `Dockerfile`, so a generated one around `forge/` is used. It ends with `✓ built <tag>` and hints for `up`, `start --image <tag>` and `docker run -p 3000:3000 -v data:/data --env-file .env <tag>`. Failures: `Engine image build failed`, `App image build failed` (exit 1, with Docker's output above).
 - **With `--no-docker`, a full-stack app**: builds the production bundles into `.forge/build` and prints what the browser downloads:
