@@ -15,6 +15,7 @@ const srv = await startServer({
     BETTER_AUTH_SECRET: "s".repeat(32),
     ALLOW_INSECURE_HTTP: "1",
     RATE_LIMIT_PER_MINUTE: process.env.RATE_LIMIT_PER_MINUTE ?? "0",
+    MAX_CONNECTIONS_PER_IP: process.env.MAX_CONNECTIONS_PER_IP ?? "0", // fan-out opens thousands of sockets from one machine
     LOG_FORMAT: "json",
     SCHEMA_CHECK: "off",
     ADMIN_KEY: "bench-admin-key-0123456789abcdef0123",

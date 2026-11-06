@@ -378,6 +378,7 @@ Checked by the engine whatever your code does. Defaults, variable, what the call
 | Document size                   | 1 MiB                 | `MAX_DOCUMENT_BYTES`               | 400 validation error: keep blobs in storage                                                   |
 | Requests per client IP          | 1200/min (off in dev) | `RATE_LIMIT_PER_MINUTE`            | 429 `{"message":"Too many requests"}` + `Retry-After`; sockets close with 1008                |
 | Subscriptions per socket        | 200                   | `MAX_SUBSCRIPTIONS_PER_CONNECTION` | extra one refused (query once per list, not per row)                                          |
+| WebSockets per client IP        | 256                   | `MAX_CONNECTIONS_PER_IP`           | handshake 429 (needs `TRUST_PROXY` behind a proxy)                                            |
 | `subscribe` message size        | 64 KiB (1 MiB/socket) | `MAX_SUBSCRIPTION_BYTES`           | refused `PAYLOAD_TOO_LARGE`: pass ids, not large args                                         |
 | Waiting calls per runtime       | 1000                  | `MAX_PENDING_CALLS`                | 503 `Server is busy, try again`, `Retry-After: 1`; retry with jitter (the function never ran) |
 | Documents scanned by `filter`   | 100,000               | none                               | query fails: add `withIndex`                                                                  |

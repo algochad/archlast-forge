@@ -143,6 +143,7 @@ These are explained one by one, with what happens when each is hit, in [Limits a
 | `MAX_REQUEST_BYTES` | `8388608` (8 MiB) | 1 | An HTTP request body and a WebSocket message. |
 | `RATE_LIMIT_PER_MINUTE` | `1200` (off in dev) | 0 | Requests per client IP per minute. `0` turns rate limiting off. |
 | `MAX_SUBSCRIPTIONS_PER_CONNECTION` | `200` | 1 | Live queries one WebSocket may hold. |
+| `MAX_CONNECTIONS_PER_IP` | `256` | 0 | WebSockets one client IP (an IPv6 `/64`) may hold open on one server; past it the handshake gets `429`. `0` turns it off. Behind a proxy it needs `TRUST_PROXY`, or every visitor counts as the proxy. |
 | `MAX_SUBSCRIPTION_BYTES` | `65536` (64 KiB) | 1 | The JSON size of one `subscribe` message, its arguments included. The live queries of one WebSocket may hold 16 times this together. |
 | `MAX_PENDING_CALLS` | `1000` | 1 | Calls waiting for the function runtime before new ones get `503`. Queries are also refused earlier, once their estimated wait passes `FUNCTION_TIMEOUT_MS` (see [limits](limits.html#overload)). |
 | `TRUST_PROXY` | off | | Take the client IP from `X-Forwarded-For` for rate limiting. Only behind a proxy that overwrites that header. |

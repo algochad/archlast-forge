@@ -731,6 +731,18 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     }
   };
 
+  /**
+   * WebSockets open per client (MAX_CONNECTIONS_PER_IP): each holds its subscriptions and their arguments, so the per-connection bounds would
+   * otherwise multiply with the sockets one client opens. Undefined when the client may open another, else the answer to refuse it with.
+   */
+  const openSockets = new Map<string, number>();
+  const socketSlot = (req: Request, srv: Server<SocketData>): { slot?: string; refuse?: Response } => {
+    const max = config.limits.maxConnectionsPerIp;
+    if (!max) return {};
+    const slot = rateKeyOf(clientIp(req, srv));
+    if ((openSockets.get(slot) ?? 0) >= max) return { refuse: Response.json({ message: `At most ${max} WebSockets per client (MAX_CONNECTIONS_PER_IP)` }, { status: 429, headers: { "retry-after": "10" } }) };
+    return { slot };
+  };
   const clientIp = (req: Request, srv: Server<SocketData>) => (config.trustProxy && lastForwarded(req.headers.get("x-forwarded-for"))) || srv.requestIP(req)?.address || "unknown";
   /** Seconds to wait when this client is over its rate limit; with no limit configured, null at once and the client's address is never looked up. */
   const limited = (req: Request, srv: Server<SocketData>, prefix = ""): Promise<number | null> | null => {
@@ -1045,8 +1057,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (!originAllowed(req)) return new Response("Origin not allowed. Add it to TRUSTED_ORIGINS.", { status: 403 });
         const retry = await limited(req, srv);
         if (retry) return tooMany(retry);
+        const { slot, refuse } = socketSlot(req, srv);
+        if (refuse) return refuse;
         const ip = config.limits.rateLimitPerMinute ? clientIp(req, srv) : undefined;
-        const data: SocketData = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, traceparent: req.headers.get("traceparent") ?? undefined, ip, live: new Map() };
+        const data: SocketData = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, traceparent: req.headers.get("traceparent") ?? undefined, ip, live: new Map(), slot };
         if (srv.upgrade(req, { data })) return;
         return new Response("WebSocket upgrade failed", { status: 400 });
       }
@@ -1062,9 +1076,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           const retry = await limited(req, srv);
           if (retry) return tooMany(retry);
           await loading;
+          const { slot, refuse } = socketSlot(req, srv);
+          if (refuse) return refuse;
           const ip = config.limits.rateLimitPerMinute ? clientIp(req, srv) : undefined;
           const gateway = { sid: crypto.randomUUID(), path: routed.pathname + routed.search, headers: [...req.headers] as [string, string][] };
-          const data: ServerSocket = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, ip, live: new Map(), gateway };
+          const data: ServerSocket = { headers: pickAuthHeaders((n) => req.headers.get(n)), requestId, ip, live: new Map(), gateway, slot };
           if (srv.upgrade(req, { data, headers: subprotocol(req) })) return;
           return new Response("WebSocket upgrade failed", { status: 400 });
         }
@@ -1289,6 +1305,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       open(ws) {
         connections++;
         sockets.add(ws);
+        if (ws.data.slot) openSockets.set(ws.data.slot, (openSockets.get(ws.data.slot) ?? 0) + 1);
         const g = ws.data.gateway;
         if (!g) return;
         gatewaySockets.set(g.sid, ws);
@@ -1308,6 +1325,12 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       close(ws, code, reason) {
         connections--;
         sockets.delete(ws);
+        const slot = ws.data.slot;
+        if (slot) {
+          const n = (openSockets.get(slot) ?? 1) - 1;
+          if (n > 0) openSockets.set(slot, n);
+          else openSockets.delete(slot);
+        }
         const g = ws.data.gateway;
         if (!g) return rpc.close(ws);
         gatewaySockets.delete(g.sid);

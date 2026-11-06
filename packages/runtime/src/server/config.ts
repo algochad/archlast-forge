@@ -64,6 +64,8 @@ export interface Limits {
   maxSubscriptionsPerConnection: number;
   /** The JSON size of one subscribe message; one connection's live queries together may hold 16 times this. */
   maxSubscriptionBytes: number;
+  /** WebSockets one client IP (an IPv6 /64) may hold open on this server. 0 disables. */
+  maxConnectionsPerIp: number;
   /** Calls waiting for one function runtime process; past this, new calls are refused with 503 instead of queueing. */
   maxPendingCalls: number;
 }
@@ -297,6 +299,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
       rateLimitPerMinute: int("RATE_LIMIT_PER_MINUTE", dev ? 0 : 1200),
       maxSubscriptionsPerConnection: int("MAX_SUBSCRIPTIONS_PER_CONNECTION", 200, 1),
       maxSubscriptionBytes: int("MAX_SUBSCRIPTION_BYTES", 64 * 1024, 1),
+      maxConnectionsPerIp: int("MAX_CONNECTIONS_PER_IP", 256, 0),
       maxPendingCalls: int("MAX_PENDING_CALLS", 1000, 1),
     },
     waf,

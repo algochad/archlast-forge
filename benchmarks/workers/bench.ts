@@ -20,6 +20,7 @@ const env = (extra: Record<string, string>) => ({
   DASHBOARD: "on",
   CACHE_TTL_MS: "0",
   RATE_LIMIT_PER_MINUTE: "0",
+  MAX_CONNECTIONS_PER_IP: "0",
   ...extra,
 });
 

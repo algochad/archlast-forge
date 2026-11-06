@@ -122,6 +122,8 @@ export interface SocketData extends Context {
   live: Map<string, AbortController>;
   /** The JSON size of each live subscription's subscribe message, by id: what the connection holds for them. */
   held?: Map<string, number>;
+  /** Whose connection count this socket is in (MAX_CONNECTIONS_PER_IP). */
+  slot?: string;
 }
 
 export interface RpcOptions {

@@ -19,7 +19,7 @@ describe.each([
   let srv: RunningServer;
 
   beforeAll(async () => {
-    srv = await startServer({ forgeDir: fixture, dev, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret-for-tests", MAX_SUBSCRIPTION_BYTES: "4096", ...extra } });
+    srv = await startServer({ forgeDir: fixture, dev, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret-for-tests", MAX_SUBSCRIPTION_BYTES: "4096", MAX_CONNECTIONS_PER_IP: "4", ...extra } });
   });
   afterAll(() => srv.stop({ graceful: false }));
 
@@ -34,6 +34,27 @@ describe.each([
   const createList = async (name: string) =>
     ((await (await fetch(`${srv.url}/rpc/todos:createList`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) })).json()) as any).result;
   const live = async () => ((await (await fetch(`${srv.url}/_admin/subscriptions`, { headers: { "x-admin-key": "secret-for-tests" } })).json()) as unknown[]).length;
+
+  test("one client holds at most MAX_CONNECTIONS_PER_IP sockets; closing one makes room", async () => {
+    const open = () =>
+      new Promise<{ ws?: WebSocket; status?: number }>((resolve) => {
+        const ws = new WebSocket(`${srv.url.replace("http", "ws")}/rpc`);
+        ws.addEventListener("open", () => resolve({ ws }));
+        ws.addEventListener("error", () => resolve({}));
+      });
+    const held = [];
+    for (let i = 0; i < 4; i++) held.push((await open()).ws);
+    expect(held.every(Boolean)).toBe(true);
+    expect((await open()).ws).toBeUndefined(); // the fifth is refused
+    const refused = await fetch(`${srv.url}/rpc`, { headers: { upgrade: "websocket", connection: "upgrade", "sec-websocket-key": "dGhlIHNhbXBsZSBub25jZQ==", "sec-websocket-version": "13" } });
+    expect(refused.status).toBe(429);
+    held[0]!.close();
+    await Bun.sleep(50);
+    const again = await open();
+    expect(again.ws).toBeDefined();
+    for (const ws of [...held.slice(1), again.ws]) ws!.close();
+    await Bun.sleep(50);
+  });
 
   test("POST /rpc takes the application/json media type only, compared whole", async () => {
     const call = (type: string) => fetch(`${srv.url}/rpc/todos:createList`, { method: "POST", headers: { "content-type": type }, body: '{"name":"csrf"}' });
