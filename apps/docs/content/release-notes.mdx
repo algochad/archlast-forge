@@ -4,6 +4,8 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+Better Auth's plugins built into the engine, an API docs site in the layout readers know, an engine image less than half the size, monorepos that deploy with `bun run up` in each app, commands for the agent skill, and security hardening across the server, GraphQL and the image.
+
 ### Security
 
 - **Live queries hold bounded arguments.** A `subscribe` message is at most `MAX_SUBSCRIPTION_BYTES` (new, 64 KiB), and one WebSocket's live queries hold at most 16 times that; past either the subscription is refused with `PAYLOAD_TOO_LARGE`. A subscription whose arguments fail validation now ends with a `BAD_REQUEST` error message instead of an error update that stayed open: before, anyone could open subscriptions with large invalid arguments and make the server hold many times their size until the socket closed (20 messages of 4 MB held about 2 GB). See [limits](limits.html#subscriptions).
@@ -12,13 +14,6 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 - **`POST /rpc` compares the media type whole.** `text/plain; x=application/json`, which a cross-site page may send without a preflight, was accepted as JSON.
 - **Webhooks connect to the addresses they checked.** The host is resolved once per attempt and the request goes to those addresses (the host still names TLS and `Host`), so a DNS answer that changes in between can't send it elsewhere; a host that can't be resolved isn't called (the attempt fails and is retried); `::` and NAT64 addresses of private or metadata IPv4 are blocked, and `fec0::/10` is private.
 - **The firewall skips only what the engine or the app's files answer.** A static-looking path (`/posts/x.png?q=…`) that a loader or a route answers is inspected, and so are `/_dashboard`, `/_storage`, `/_csp` and `/_telemetry` where the engine doesn't serve them (dashboard off, S3 storage, a `GET`). App hosts can say which paths are their files (`AppHost.serves`; the framework does).
-- `ALLOW_CUSTOM_FUNCTIONS` can only be set in the environment, no longer from the dashboard.
-- `ADMIN_KEY` must be at least 16 characters outside dev, and wrong `x-admin-key` guesses count against the sign-in rate limit. A dashboard session signed in with the key ends when the key changes, and setting an admin's password again signs that account out everywhere.
-- Alert webhooks go only to public addresses, without following redirects, and **Send a test** no longer reports network errors.
-- `/ready` no longer includes the load error outside dev.
-- Rate limits count an IPv6 client by its `/64`, and on Redis a counter that lost its expiry gets one instead of locking the client out.
-- MongoDB: an operator object in a pagination cursor or a `v.any()` argument is compared as a value instead of being part of the filter.
-- The dashboard hides Better Auth plugin secrets (JWKS private keys, 2FA secrets, OAuth client secrets and tokens, API keys) and shows source lines only from `forge/` and `app/`; Nest's query objects count only their own keys; backup archives with oversized PAX headers are refused.
 - **GraphQL through `nest()` no longer has graphql-yoga's open defaults.** Yoga answered any `Origin` with itself and `Access-Control-Allow-Credentials: true` (so any site could read a signed-in visitor's answers), ran mutations sent as a form (a cross-site `POST` that needs no preflight), and served GraphiQL and introspection in production. Now:
   - CORS covers only `TRUSTED_ORIGINS` and `BETTER_AUTH_URL`'s origin, and with `nest()`'s own `cors`, that configuration answers for GraphQL too.
   - Operations are accepted only as `application/json`; a form or multipart body gets `415`.
@@ -27,23 +22,19 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
   To restore the old behavior, use `yoga: { cors: true }`, `jsonOnly: false` (multipart uploads need it), `yoga: { graphiql: true }` and `introspection: true` in `GraphQLModule.forRoot()`. See [NestJS](nest.html).
 - **The engine image runs as the `bun` user (uid 1000), not root.** `archlast-forge dev` and `start` hand the volumes an older image made over to it by themselves. A `compose.yaml` deployment's `/data` volume needs it once before the new image starts, or the engine stops at start and prints the command: `docker compose run --rm --user root --entrypoint chown app -R 1000:1000 /data`.
 - **New projects' `compose.yaml` pins `rustfs/rustfs:1.0.4` and `amazon/aws-cli:2.39.3`** instead of `:latest` and an untagged image, and lets only the app's origin use the storage from a browser (`RUSTFS_CORS_ALLOWED_ORIGINS` was `*`). Existing projects can make the same edits ([backend](backend.html)).
+- `ALLOW_CUSTOM_FUNCTIONS` can only be set in the environment, no longer from the dashboard.
+- `ADMIN_KEY` must be at least 16 characters outside dev, and wrong `x-admin-key` guesses count against the sign-in rate limit. A dashboard session signed in with the key ends when the key changes, and setting an admin's password again signs that account out everywhere.
+- Alert webhooks go only to public addresses, without following redirects, and **Send a test** no longer reports network errors.
+- `/ready` no longer includes the load error outside dev.
+- Rate limits count an IPv6 client by its `/64`, and on Redis a counter that lost its expiry gets one instead of locking the client out.
+- MongoDB: an operator object in a pagination cursor or a `v.any()` argument is compared as a value instead of being part of the filter.
+- The dashboard hides Better Auth plugin secrets (JWKS private keys, 2FA secrets, OAuth client secrets and tokens, API keys) and shows source lines only from `forge/` and `app/`; Nest's query objects count only their own keys; backup archives with oversized PAX headers are refused.
 - The release workflows' actions are pinned to commit SHAs.
-- The docs now say that S3 uploads have no size limit from the engine (`MAX_UPLOAD_MB` is the built-in storage's): set one at the bucket.
 
-### Changed
+### Added
 
 - **Better Auth's plugins come with the engine.** `@archlast/forge-runtime/auth` has everything `better-auth/plugins` exports (organization, two-factor, admin, JWT, bearer, magic link, email OTP, generic OAuth, username, phone number, …) and `oauthProvider`; Better Auth's separately published plugins are subpaths, loaded only when imported: `/auth/oauth-provider`, `/auth/api-key`, `/auth/passkey`, `/auth/sso`, `/auth/scim`, `/auth/i18n`. Nothing to install, all at the engine's Better Auth version, and none runs unless `plugins` lists it. Stripe, Expo and Electron, which need SDKs of yours, are still installed in `forge/`. See [Plugins](auth.html#plugins).
 - **Better Auth plugins' tables are declared by the engine.** For every plugin in `defineAuth({ plugins })` the engine derives the tables it needs from the plugin itself (`members`, `organizations`, `jwkss`, `oauthClients`, …, following its options), and `archlast-forge codegen` writes their types to `forge/_generated/authTables.ts`, so `ctx.db.query("members")` is typed. Declare none of them in `schema.ts`, and drop the table-generator script; a table you already declared there under the same name is kept as you wrote it. See [Plugin tables](auth.html#plugin-tables).
-
-- **The API docs page is a site of pages, in the layout readers know** (#31). With no configuration:
-  - **Layout:** a navigation that runs the page's height, with the logo and search (`⌘K`) at its top, groups in sentence case that fold, and links and the light/dark icon at its foot.
-  - **Pages:** a page per topic at its own address (`/docs/products/create-product`, `/docs/guides/quickstart`) instead of `#/products/CheckoutsController_create`.
-  - **On each page:** "On this page" on wide screens, the section above the title, Copy page and View as Markdown, previous and next, and an endpoint bar with the method, the URL and Try it.
-  - **Server rendering:** pages are rendered on the server, and the browser moves between them without reloading.
-  - **Guides and the overview:** guides are pages of their own, and the overview is the description, the base URL and authentication.
-  - **Operations:** "Scopes:" shows each scope's meaning on hover, and response headers start folded.
-
-  Old `#/…` links move to their page.
 - **The page can be made to look like another docs site without CSS** (#31). See [API docs](api-docs.html#look):
   - **Layout:** `page.layout` (the shell; pages per operation, per tag or one page; "On this page"; page actions; previous and next).
   - **Navigation:** `page.nav` (tabs, footer links, group case).
@@ -54,19 +45,36 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
   - **Stable selectors:** `data-part` attributes to target.
 - **Guides have components:** `<Callout>` (and `<Note>`, `<Tip>`, `<Warning>`, …), `<Tabs>`, `<Steps>`, `<Cards>`, `<CodeGroup>`, `<Accordion>` and titled code blocks, with no imports. Your own components go in `forge/docs/_components/`.
 - **Every docs page is also Markdown** (`<page>.md`, `index.md`), and `/docs/llms.txt` lists them.
-- **A guide, slot or component that doesn't compile no longer takes the docs page down.** It is logged with its file and line, shown in its place in development and left out in production. It used to answer 500 with nothing in the log.
-- **Routes with a summary and no `operationId` get one from the summary** ("Create a product" is `createAProduct`, unique in the document). Before, the id was the controller and method (`CheckoutsController_create`) or `http_<METHOD>_<path>`. The page's addresses and generated clients' method names follow it. Set `operationId` on a route to keep an id you already publish.
-- To keep the 0.19 page: `page.layout: { pages: "single", shell: "header" }`, `nav: { groups: { case: "upper" } }`, `content: { responseHeaders: "open" }`.
-
-- **The engine image is less than half the size**: about 300 MB on disk and a 75 MB download, down from 860 MB and 190 MB. It holds only the engine's packages and their runtime dependencies (no dev tools, type declarations or source maps) on Bun's distroless image, with BusyBox for the shell. **It no longer has `apt-get`**: a project `Dockerfile` that installs system packages on top of the engine image needs to copy the program in from another image instead (see [What the image contains](deployment.html#the-image-on-its-own)). Paths, the entry point, the healthcheck and `engine prepare` are unchanged.
-
 - **A monorepo's stacks find each other in Docker.** Every app of a monorepo with services gets a `compose.override.yaml`, written by `init --monorepo`, `add`, `remove` and `workspace sync`. It puts the app on the Docker network `<monorepo>-apps` under its name and sets what the apps need to reach each other there: the services' addresses (`ORDERS_RPC_URL=http://orders:4001`, or the TCP host and port), `MICROSERVICES` and `DASHBOARD_URL` for the one dashboard, and the shared `FORGE_RPC_TOKEN` and `DASHBOARD_TOKEN` from `.env`. So `bun run up` in each app is a working deployment on one machine. Before, the apps' `compose.yaml` passed none of these, so the deployed main app couldn't call its services or show them on its dashboard. `.env` keeps the development addresses. `archlast-forge up`, `down` and the data commands read the override file, as `docker compose` does. Delete its first line to keep your own version. Existing monorepos get the file from `archlast-forge workspace sync`. See [Deploying a monorepo](monorepo.html#deploying).
-- **Fixed: `archlast-forge build` on a fresh monorepo clone failed** with "Cannot find module '@archlast/forge-runtime/nest/rpc'" until `dev` had run once. `build` now installs `forge/package.json`'s dependencies first, as `up` and `codegen` do; a monorepo's root install doesn't include them.
-- **Fixed: a new monorepo said "To deploy: bun run up"** at a root that has no stack. It now names the command for each app.
-
-- **Fixed: a Nest handler got its `@Contract`'s query and path values as text.** `@Contract` converted them to check them (`?limit=2` against `v.number()`), then gave the handler the original strings, so the feature blueprint's `numItems: q.limit ?? 20` sent `"2"` to a paginated query, which refused it. The handler now gets the values as they were checked: numbers for `v.number()`, booleans for `v.boolean()`, a literal's value. **A handler that compared or parsed them as text needs a change**: `@Query("express") express === "true"` is now `express === true`, and `Number(q.limit)` still works. Values the contract doesn't name, and routes without one, are unchanged. See [Contract](nest.html#contract-validators-and-the-openapi-document).
-
 - **The agent skill has commands**: twelve workflows that run a whole task through to its checks and a report. In Claude Code they are `/archlast-forge <command>`; in any agent, asking for the same in words runs them. Build: `feature`, `page`, `service`, `auth`, `webhooks`, `api-docs`. Quality: `review` (an audit against the house rules, as file:line findings with fixes), `adopt` (old code into the blueprint, the API unchanged), `test`. Operate: `deploy` (a production preflight, a backup, the deploy after a yes, live checks), `upgrade` (with the release notes in between applied), `doctor` (a diagnosis that stops at the cause). Update the skill with `npx skills update`. See [Agent skill](agent-skill.html#commands).
+
+### Changed
+
+- **The API docs page is a site of pages, in the layout readers know** (#31). With no configuration:
+  - **Layout:** a navigation that runs the page's height, with the logo and search (`⌘K`) at its top, groups in sentence case that fold, and links and the light/dark icon at its foot.
+  - **Pages:** a page per topic at its own address (`/docs/products/create-product`, `/docs/guides/quickstart`) instead of `#/products/CheckoutsController_create`.
+  - **On each page:** "On this page" on wide screens, the section above the title, Copy page and View as Markdown, previous and next, and an endpoint bar with the method, the URL and Try it.
+  - **Server rendering:** pages are rendered on the server, and the browser moves between them without reloading.
+  - **Guides and the overview:** guides are pages of their own, and the overview is the description, the base URL and authentication.
+  - **Operations:** "Scopes:" shows each scope's meaning on hover, and response headers start folded.
+  - **Upgrading:** old `#/…` links move to their page. To keep the 0.19 page, set `page.layout: { pages: "single", shell: "header" }`, `nav: { groups: { case: "upper" } }` and `content: { responseHeaders: "open" }`.
+- **Routes with a summary and no `operationId` get one from the summary** ("Create a product" is `createAProduct`, unique in the document). Before, the id was the controller and method (`CheckoutsController_create`) or `http_<METHOD>_<path>`. The page's addresses and generated clients' method names follow it.
+  - **Upgrading:** set `operationId` on a route to keep an id you already publish.
+- **The engine image is less than half the size**: about 300 MB on disk and a 75 MB download, down from 860 MB and 190 MB. It holds only the engine's packages and their runtime dependencies (no dev tools, type declarations or source maps) on Bun's distroless image, with BusyBox for the shell. Paths, the entry point, the healthcheck and `engine prepare` are unchanged.
+  - **Upgrading:** the image no longer has `apt-get`. A project `Dockerfile` that installs system packages on top of it copies the program in from another image instead (see [What the image contains](deployment.html#the-image-on-its-own)).
+
+### Fixed
+
+- **A Nest handler got its `@Contract`'s query and path values as text.** `@Contract` converted them to check them (`?limit=2` against `v.number()`), then gave the handler the original strings, so the feature blueprint's `numItems: q.limit ?? 20` sent `"2"` to a paginated query, which refused it. The handler now gets the values as they were checked: numbers for `v.number()`, booleans for `v.boolean()`, a literal's value. Values the contract doesn't name, and routes without one, are unchanged.
+  - **Upgrading:** a handler that compared or parsed them as text needs a change: `@Query("express") express === "true"` is now `express === true`; `Number(q.limit)` still works. See [Contract](nest.html#contract-validators-and-the-openapi-document).
+- **A guide, slot or component that doesn't compile no longer takes the docs page down.** It is logged with its file and line, shown in its place in development and left out in production. It used to answer 500 with nothing in the log.
+- **`archlast-forge build` on a fresh monorepo clone failed** with "Cannot find module '@archlast/forge-runtime/nest/rpc'" until `dev` had run once. `build` now installs `forge/package.json`'s dependencies first, as `up` and `codegen` do; a monorepo's root install doesn't include them.
+- **A new monorepo said "To deploy: bun run up"** at a root that has no stack. It now names the command for each app.
+- **An empty `BETTER_AUTH_URL` counts as unset** (the server's own address in development), as `KEY=` in an env file means. It was taken as the address itself, which the dashboard's origin check couldn't parse, so the dashboard's API refused calls from the browser.
+
+### Documentation
+
+- The docs now say that S3 uploads have no size limit from the engine (`MAX_UPLOAD_MB` is the built-in storage's): set one at the bucket.
 
 ## 0.19.0
 
