@@ -246,6 +246,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if ((dashboardUrl || Object.keys(microservices).length) && !dashboardToken)
     fail(`${dashboardUrl ? "DASHBOARD_URL" : "MICROSERVICES"} needs DASHBOARD_TOKEN: the secret the main app and its microservices share`);
   if (dashboardToken && dashboardToken.length < 16) fail("DASHBOARD_TOKEN must be at least 16 characters");
+  // It signs in as the owner, from anywhere that reaches /_admin: outside dev it can't be a word someone could guess.
+  if (!dev && env.ADMIN_KEY && env.ADMIN_KEY.length < 16) fail("ADMIN_KEY must be at least 16 characters outside dev (`openssl rand -hex 24` makes one)");
   // Its telemetry joins the main app's under this name, which the main app's MICROSERVICES uses too; two engines both named archlast-forge would merge.
   if (dashboardUrl && !env.OTEL_SERVICE_NAME) fail("DASHBOARD_URL needs OTEL_SERVICE_NAME: this microservice's name, as the main app's MICROSERVICES lists it");
   const sqliteSynchronous = (env.SQLITE_SYNCHRONOUS || "FULL").toUpperCase() as Config["sqliteSynchronous"];

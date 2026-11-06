@@ -7,7 +7,7 @@ let srv: RunningServer;
 beforeAll(async () => {
   srv = await startServer({
     forgeDir: join(import.meta.dir, "fixture-auth"),
-    env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json", ADMIN_KEY: "root-key", DASHBOARD: "on" },
+    env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json", ADMIN_KEY: "root-key-for-tests", DASHBOARD: "on" },
   });
 });
 afterAll(() => srv.stop({ graceful: false }));
@@ -35,8 +35,8 @@ test("a forgotten password can be reset, and only the new one works", async () =
 
 const admin = async (op: string, input: unknown, write = false) => {
   const res = write
-    ? await fetch(`${srv.url}/_admin/${op}`, { method: "POST", headers: { "x-admin-key": "root-key", "x-forge-admin": "1", "content-type": "application/json" }, body: JSON.stringify(input) })
-    : await fetch(`${srv.url}/_admin/${op}?input=${encodeURIComponent(JSON.stringify(input))}`, { headers: { "x-admin-key": "root-key" } });
+    ? await fetch(`${srv.url}/_admin/${op}`, { method: "POST", headers: { "x-admin-key": "root-key-for-tests", "x-forge-admin": "1", "content-type": "application/json" }, body: JSON.stringify(input) })
+    : await fetch(`${srv.url}/_admin/${op}?input=${encodeURIComponent(JSON.stringify(input))}`, { headers: { "x-admin-key": "root-key-for-tests" } });
   return (await res.json()) as any;
 };
 

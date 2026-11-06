@@ -79,6 +79,7 @@ export const SETTINGS: SettingDef[] = [
     type: "bool",
     default: "on in dev, off otherwise",
     doc: "Let owners run code typed into the dashboard, with the function runtime's privileges.",
+    envOnly: "It lets a dashboard session run any code on the server, so only whoever deploys it may turn it on.",
   },
   // -- database and cache --
   { name: "DATA_DIR", group: "Database", type: "string", default: "./data (/data in the image)", doc: "Where the SQLite database, telemetry and the built-in storage live.", envOnly: BOOT },

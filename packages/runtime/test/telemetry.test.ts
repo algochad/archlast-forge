@@ -622,6 +622,8 @@ describe("the engine", () => {
     const source = await get("obs.source", { file: frame[1], line: Number(frame[2]) });
     expect(source.lines.join("\n")).toContain("secret internal detail");
     expect(await get("obs.source", { file: "/etc/passwd", line: 1 })).toBeNull();
+    // Only forge/ (here the fixture) and app/: another file of the project, such as a script, isn't shown.
+    expect(await get("obs.source", { file: frame[1].replace(/fixture\/todos\.ts$/, "helpers.ts"), line: 1 })).toBeNull();
     // The request id a caller sees in "Server error (request …)" finds its trace.
     await fetch(`${srv.url}/rpc/todos:crash`, { method: "POST", headers: { "content-type": "application/json", "x-request-id": "find-me-123" }, body: "{}" });
     const found = await eventually(

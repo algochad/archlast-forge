@@ -920,7 +920,7 @@ Everything the engine answers on its one port.
 | Path | Purpose |
 |---|---|
 | `GET /health` | Liveness: `200 {"ok":true}` while the process is up. |
-| `GET /ready` | Readiness: `200 {"ready":true}` once the functions are loaded; `503 {"ready":false,"error":...}` while loading, after a load error, or during shutdown. |
+| `GET /ready` | Readiness: `200 {"ready":true}` once the functions are loaded; `503 {"ready":false}` while loading, after a load error, or during shutdown; in dev also `"error"`, the load error. |
 | `GET /metrics` | Prometheus text. See below. |
 | `POST /rpc/<name>`, `GET /rpc/<name>?args=` | Function calls (above). |
 | `WS /rpc` | Live queries (above). |

@@ -32,6 +32,9 @@ export async function addAdmin(db: Db, email: string, password: string, role: Ad
     `INSERT INTO "_admins" ("_id", "email", "passwordHash", "role", "createdAt") VALUES (?, ?, ?, ?, ?) ON CONFLICT ("email") DO UPDATE SET "passwordHash" = excluded."passwordHash", "role" = excluded."role"`,
     [newId("_admins"), email.toLowerCase(), hash, role, Date.now()],
   );
+  // A new password (or role) for an existing account signs it out everywhere: whoever had the old password keeps no session.
+  const [admin] = await db.query<{ _id: string }>(`SELECT "_id" FROM "_admins" WHERE "email" = ?`, [email.toLowerCase()]);
+  if (admin) await db.execute(`DELETE FROM "_admin_sessions" WHERE "adminId" = ?`, [admin._id]);
 }
 
 export const listAdmins = (db: Db) => db.query<{ email: string; role: AdminRole; createdAt: number }>(`SELECT "email", "role", "createdAt" FROM "_admins" ORDER BY "email"`);
@@ -51,7 +54,19 @@ async function createSession(db: Db, adminId: string) {
 }
 
 /** Credentials the dashboard never shows, by table: an admin has no need to read them, and a viewer is meant to be read-only. */
-const SECRET_FIELDS: Record<string, string[]> = { accounts: ["password", "accessToken", "refreshToken", "idToken"], sessions: ["token"], verifications: ["value"] };
+const SECRET_FIELDS: Record<string, string[]> = {
+  accounts: ["password", "accessToken", "refreshToken", "idToken"],
+  sessions: ["token"],
+  verifications: ["value"],
+  // Better Auth's plugins (their tables, as the engine names them): signing keys, second factors, OAuth clients and tokens, API keys.
+  jwkss: ["privateKey"],
+  twoFactors: ["secret", "backupCodes"],
+  oauthClients: ["clientSecret"],
+  oauthApplications: ["clientSecret"],
+  oauthAccessTokens: ["token", "accessToken", "refreshToken"],
+  oauthRefreshTokens: ["token"],
+  apikeys: ["key"],
+};
 const HIDDEN = "[hidden]";
 
 /** A document as the dashboard may see it. */
@@ -143,12 +158,15 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
         if (!a || !ok) throw new ValidationError("Invalid email or password");
         return { token: await createSession(db, a._id), admin: { email: a.email, role: a.role } };
       }
+      // A session signed in with ADMIN_KEY belongs to that key (`key` is a fingerprint of it, from the server): a new key ends it.
       case "keySession":
-        return { token: await createSession(db, KEY_ADMIN.id), admin: { email: KEY_ADMIN.email, role: KEY_ADMIN.role } };
+        if (!args.key) throw new ValidationError("A key session needs the key's fingerprint");
+        return { token: await createSession(db, `${KEY_ADMIN.id}:${args.key}`), admin: { email: KEY_ADMIN.email, role: KEY_ADMIN.role } };
       case "session": {
         const [s] = await db.query<{ adminId: string }>(`SELECT "adminId" FROM "_admin_sessions" WHERE "_id" = ? AND "expiresAt" > ?`, [sha256(String(args.token)), Date.now()]);
         if (!s) return null;
-        if (s.adminId === KEY_ADMIN.id) return { email: KEY_ADMIN.email, role: KEY_ADMIN.role };
+        if (s.adminId === KEY_ADMIN.id || s.adminId.startsWith(`${KEY_ADMIN.id}:`))
+          return args.key && s.adminId === `${KEY_ADMIN.id}:${args.key}` ? { email: KEY_ADMIN.email, role: KEY_ADMIN.role } : null;
         const [a] = await db.query<AdminInfo>(`SELECT "email", "role" FROM "_admins" WHERE "_id" = ?`, [s.adminId]);
         return a ?? null;
       }

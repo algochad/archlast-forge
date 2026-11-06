@@ -3,7 +3,7 @@ import { brotliCompressSync } from "node:zlib";
 import { timingSafeEqual } from "node:crypto";
 import { mkdirSync, rmSync } from "node:fs";
 import { availableParallelism, hostname } from "node:os";
-import { extname, join, relative, resolve } from "node:path";
+import { basename, extname, join, relative, resolve } from "node:path";
 import { buildAdminApi } from "./admin-api";
 import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
@@ -24,7 +24,7 @@ import { log, setLogFormat } from "./logger";
 import { Metrics, type LoopDelays } from "./metrics";
 import type { Manifest } from "./project";
 import { toPublicError } from "./public-error";
-import { MemoryRateLimiter, RedisRateLimiter, type RateLimiter } from "./ratelimit";
+import { MemoryRateLimiter, rateKeyOf, RedisRateLimiter, type RateLimiter } from "./ratelimit";
 import { buildRpc, errorResponse, HttpError, readBytes, readText, type Rpc, type SocketData } from "./rpc";
 import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager, type QueryObserver } from "./subscriptions";
@@ -178,14 +178,15 @@ const lastForwarded = (header: string | null | undefined) => header?.split(",").
 const SOURCE_FILES = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
 
 /**
- * Lines around `line` of a source file named in a stack trace, for the dashboard's error view. Only the project's own code: files under
- * the directory that holds forge/ (so a full-stack app's app/ too), not dependencies, and only source files.
+ * Lines around `line` of a source file named in a stack trace, for the dashboard's error view. Only the code that runs in the engine:
+ * source files in forge/ and a full-stack app's app/, not dependencies, and nothing else in the project (scripts, configuration).
  */
 async function sourceContext(forgeDir: string, file: string, line: number, around = 6) {
   const root = resolve(forgeDir, "..");
   const path = resolve(root, file.replace(/^file:\/\//, ""));
   const rel = relative(root, path);
-  if (rel.startsWith("..") || rel.split(/[\\/]/).includes("node_modules") || !SOURCE_FILES.has(extname(path))) return null;
+  const parts = rel.split(/[\\/]/);
+  if (rel.startsWith("..") || ![basename(forgeDir), "app"].includes(parts[0]!) || parts.includes("node_modules") || !SOURCE_FILES.has(extname(path))) return null;
   const f = Bun.file(path);
   if (!(await f.exists()) || f.size > 2_000_000) return null;
   const lines = (await f.text()).split("\n");
@@ -621,13 +622,16 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (!runtime.manifest) return Response.json({ message: runtime.loadError ?? "The function runtime is not running" }, { status: 503 });
     // The complete document lists what the public one leaves out: development only.
     const audience = dev && new URL(req.url).searchParams.get("audience") === "all" ? "all" : "public";
-    let cached = openApi.get(audience);
+    // Without BETTER_AUTH_URL the document names the address that was asked, so one asked through another Host header is a document of its own.
+    const key = env.BETTER_AUTH_URL ? audience : `${audience} ${new URL(req.url).origin}`;
+    let cached = openApi.get(key);
     if (cached?.manifest !== runtime.manifest) {
       const manifest = runtime.manifest;
       const doc = await runtime.admin<Record<string, unknown>>("openapi", { audience }, "system");
       // Calls go to the servers the app names, else the address browsers use: BETTER_AUTH_URL when it is set (a proxy in front may hide it from the request), else the one asked.
       const json = JSON.stringify(doc.servers ? doc : { ...doc, servers: [{ url: env.BETTER_AUTH_URL ? config.authUrl : new URL(req.url).origin }] });
-      openApi.set(audience, (cached = { manifest, json, etag: `"${Bun.hash(json).toString(36)}"` }));
+      if (openApi.size >= 32) openApi.clear();
+      openApi.set(key, (cached = { manifest, json, etag: `"${Bun.hash(json).toString(36)}"` }));
     }
     if (req.headers.get("if-none-match") === cached.etag) return new Response(null, { status: 304, headers: { etag: cached.etag } });
     return compressed(req, cached.json, { "content-type": "application/json", etag: cached.etag, "cache-control": "no-cache", "x-content-type-options": "nosniff" });
@@ -690,11 +694,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (!token) return null;
     const cached = adminSessions.get(token);
     if (cached && Date.now() - cached.at < 10_000) return cached.admin;
-    const found = await runtime.admin<AdminInfo | null>("session", { token }, "system").catch(() => null);
+    const found = await runtime.admin<AdminInfo | null>("session", { token, key: keyFingerprint }, "system").catch(() => null);
     adminSessions.set(token, { admin: found, at: Date.now() });
     if (adminSessions.size > 1000) adminSessions.clear();
     return found;
   }
+  /** Names the current ADMIN_KEY without revealing it: the sessions it signed in hold it, so rotating the key ends them. */
+  const keyFingerprint = config.adminKey ? new Bun.CryptoHasher("sha256").update(`archlast-forge admin key\n${config.adminKey}`).digest("hex").slice(0, 32) : undefined;
   const adminCookie = (token: string, maxAge: number) => `afx_admin=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=${maxAge}${config.authUrl.startsWith("https://") ? "; Secure" : ""}`;
 
   const cors = (req: Request, res: Response) => {
@@ -730,7 +736,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const limited = (req: Request, srv: Server<SocketData>, prefix = ""): Promise<number | null> | null => {
     const max = config.limits.rateLimitPerMinute;
     if (!max) return null;
-    return limiter.consume(prefix + clientIp(req, srv), { window: 60, max }).then((r) => (r.allowed ? null : (r.retryAfter ?? 60)));
+    return limiter.consume(prefix + rateKeyOf(clientIp(req, srv)), { window: 60, max }).then((r) => (r.allowed ? null : (r.retryAfter ?? 60)));
   };
   const tooMany = (retryAfter: number) => Response.json({ message: "Too many requests" }, { status: 429, headers: { "retry-after": String(retryAfter) } });
 
@@ -745,7 +751,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const out =
           body.key !== undefined
             ? config.adminKey && sameSecret(body.key, config.adminKey)
-              ? await runtime.admin<{ token: string; admin: AdminInfo }>("keySession", {}, "system")
+              ? await runtime.admin<{ token: string; admin: AdminInfo }>("keySession", { key: keyFingerprint }, "system")
               : null
             : await runtime.admin<{ token: string; admin: AdminInfo }>("login", { email: body.email, password: body.password }, "system");
         if (!out) return Response.json({ message: "Invalid admin key" }, { status: 401 });
@@ -910,7 +916,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (path === "/health") return Response.json({ ok: true });
       if (path === "/ready")
         return Response.json(
-          { ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, error: runtime.loadError },
+          // Why the code didn't load is for the logs (and the dev overlay): it can name files, hosts and data, and anyone may ask /ready.
+          { ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, ...(dev && { error: runtime.loadError }) },
           { status: !shuttingDown && runtime.manifest && !runtime.loadError ? 200 : 503 },
         );
       // Content-Security-Policy violation reports from browsers (the app's pages and the dashboard), for the dashboard's Security page.
@@ -1173,7 +1180,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       if (path.startsWith("/_admin/")) {
         if (!adminApi) return new Response("Not found", { status: 404 });
-        if (path === "/_admin/login") {
+        // Sign-ins and wrong admin keys share a budget per client, so neither a password nor the key can be guessed at full speed.
+        const key = req.headers.get("x-admin-key");
+        if (path === "/_admin/login" || (key !== null && !(config.adminKey && sameSecret(key, config.adminKey)))) {
           const retry = await limited(req, srv, "admin:");
           if (retry) return withId(tooMany(retry));
         }
@@ -1287,7 +1296,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       },
       async message(ws, msg) {
         if (config.limits.rateLimitPerMinute) {
-          const r = await limiter.consume(ws.data.ip ?? "unknown", { window: 60, max: config.limits.rateLimitPerMinute });
+          const r = await limiter.consume(rateKeyOf(ws.data.ip ?? "unknown"), { window: 60, max: config.limits.rateLimitPerMinute });
           if (!r.allowed) return ws.close(1008, "Too many requests");
         }
         await loading; // a socket can connect before the function runtime has loaded, as an HTTP request can

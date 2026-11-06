@@ -2,6 +2,23 @@ import type { RedisClient } from "bun";
 import { answered } from "./bus";
 import { log } from "./logger";
 
+import { isIP } from "node:net";
+
+/**
+ * Whose budget a request counts against: an IPv4 address, or an IPv6 address's /64, which one host or home usually gets whole (counting
+ * each address would give it 2^64 budgets). An IPv4 address written as IPv6 (`::ffff:a.b.c.d`) is that IPv4 address.
+ */
+export function rateKeyOf(ip: string): string {
+  const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/i.exec(ip);
+  if (mapped) return mapped[1]!;
+  if (isIP(ip) !== 6) return ip;
+  const [head = "", tail = ""] = ip.toLowerCase().split("::");
+  const left = head ? head.split(":") : [];
+  const right = tail ? tail.split(":") : [];
+  const groups = ip.includes("::") ? [...left, ...Array(8 - left.length - right.length).fill("0"), ...right] : left;
+  return `${groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, "")).join(":")}::/64`;
+}
+
 export type RateLimitResult = { allowed: boolean; retryAfter: number | null };
 
 /** Fixed-window counter: at most `max` hits per `windowSec` per key. */
@@ -58,6 +75,8 @@ export class RedisRateLimiter implements RateLimiter {
     if (count === 1) await this.redis.send("EXPIRE", [k, String(window)]);
     if (count <= max) return { allowed: true, retryAfter: null };
     const ttl = Number(await this.redis.send("TTL", [k]));
+    // No expiry (the EXPIRE after the first INCR was lost with the connection): the count would never reset and the client stay locked out.
+    if (ttl === -1) await this.redis.send("EXPIRE", [k, String(window)]);
     return { allowed: false, retryAfter: ttl > 0 ? ttl : window };
   }
 }

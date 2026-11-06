@@ -82,7 +82,7 @@ Each live query is re-run when a write touches something it read, so cost grows 
 
 ### Rate limiting
 
-The limiter is a **fixed window**: at most `RATE_LIMIT_PER_MINUTE` hits per key per 60-second window, per client IP. A client over its budget is answered at once, and the counter resets when the window ends. It is off in dev (`0` turns it off anywhere).
+The limiter is a **fixed window**: at most `RATE_LIMIT_PER_MINUTE` hits per key per 60-second window, per client IP. An IPv6 client counts by its `/64` (a host usually has the whole range, so each address can't be a budget of its own), and an IPv4 address written as IPv6 (`::ffff:192.0.2.7`) as that IPv4 address. A client over its budget is answered at once, and the counter resets when the window ends. It is off in dev (`0` turns it off anywhere).
 
 What counts as a hit:
 

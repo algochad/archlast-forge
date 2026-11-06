@@ -14,7 +14,7 @@ const prodEnv = (extra: Record<string, string> = {}) => ({
   DATA_DIR: dataDir,
   BETTER_AUTH_SECRET: "s".repeat(32),
   ALLOW_INSECURE_HTTP: "1",
-  ADMIN_KEY: "root-key",
+  ADMIN_KEY: "root-key-for-tests",
   DASHBOARD: "on",
   FUNCTION_TIMEOUT_MS: "300",
   MAX_SUBSCRIPTIONS_PER_CONNECTION: "2",

@@ -48,6 +48,11 @@ const PREDICATE = Symbol("predicate");
 type Predicate = { [PREDICATE]: true; sql: string; params: unknown[]; mongo: MongoFilter };
 /** Where MongoDB keeps a field: `_id` and `_creationTime` beside `doc`, the document's own fields inside it. */
 const mpath = (f: string) => (f === "_id" || f === "_creationTime" ? f : `doc.${f}`);
+/**
+ * An equality in a MongoDB filter. The value is wrapped in `$eq`: bare, an object such as `{ "$ne": null }` (from a pagination cursor, or
+ * arguments typed `v.any()`) would be an operator. `$eq` matches what the bare value does, null (also a missing field) and arrays included.
+ */
+const meq = (value: unknown) => (value === undefined || value === null ? null : { $eq: value });
 /** A filter nothing matches. */
 const NOTHING: MongoFilter = { _id: { $in: [] } };
 const isPredicate = (p: unknown): p is Predicate => typeof p === "object" && p !== null && PREDICATE in p;
@@ -223,9 +228,9 @@ export class DocStore {
       eq: (f: string, value: unknown) => {
         const name = this.fieldName(table, f, "eq");
         if (value === undefined || value === null) return pred(`${this.col(name).expr} IS NULL`, [], { [mpath(name)]: null });
-        if (name === "_id" || name === "_creationTime") return pred(`"${name}" = ?`, [value], { [name]: value });
+        if (name === "_id" || name === "_creationTime") return pred(`"${name}" = ?`, [value], { [name]: meq(value) });
         const c = this.dialect.fieldEquals(name, value);
-        return pred(c.sql, c.params, { [mpath(name)]: value });
+        return pred(c.sql, c.params, { [mpath(name)]: meq(value) });
       },
       /** Not equal, which a document without the field is. */
       neq: (f: string, value: unknown) => {
@@ -269,7 +274,7 @@ export class DocStore {
   /** Rows after `after` in the order of `key`: one row-value comparison when every key goes the same way (an index serves it), else (a > ?) OR (a = ? AND b < ?) …. */
   private keyset(key: { expr: string; param: string; encode: (x: unknown) => unknown; desc: boolean; f: string }[], after: unknown[]) {
     // MongoDB has no row-value comparison: (a, b) > (x, y) is a > x, or a = x and b > y, which is also how mixed directions are written.
-    const mongo: MongoFilter = { $or: key.map((k, i) => ({ ...Object.fromEntries(key.slice(0, i).map((p, j) => [mpath(p.f), after[j]])), [mpath(k.f)]: { [k.desc ? "$lt" : "$gt"]: after[i] } })) };
+    const mongo: MongoFilter = { $or: key.map((k, i) => ({ ...Object.fromEntries(key.slice(0, i).map((p, j) => [mpath(p.f), meq(after[j])])), [mpath(k.f)]: { [k.desc ? "$lt" : "$gt"]: after[i] } })) };
     if (key.every((k) => k.desc === key[0]!.desc))
       return { mongo, sql: `(${key.map((k) => k.expr).join(", ")}) ${key[0]!.desc ? "<" : ">"} (${key.map((k) => k.param).join(", ")})`, params: key.map((k, i) => k.encode(after[i])) };
     const parts: string[] = [];
@@ -343,7 +348,7 @@ export class DocStore {
         throw new ValidationError(`Index "${table}.${index}": a range must be on "${fields[eqs.length]}", the field after the equalities`);
       const conds: { sql: string; params: unknown[]; mongo: MongoFilter }[] = eqs.map(([f, value]) => ({
         ...(f === "_creationTime" ? { sql: `"_creationTime" = ?`, params: [value] } : this.dialect.fieldEquals(f, value)),
-        mongo: { [mpath(f)]: value === undefined ? null : value },
+        mongo: { [mpath(f)]: meq(value) },
       }));
       if (bounds.length) {
         const c = this.col(boundField!);
@@ -684,7 +689,7 @@ export class DocStore {
         const rows = await this.mongo.search(table, {
           field: mongoSearchField(name),
           terms,
-          filter: eqs.length ? { $and: eqs.map(([f, value]) => ({ [mpath(f)]: value === undefined ? null : value })) } : {},
+          filter: eqs.length ? { $and: eqs.map(([f, value]) => ({ [mpath(f)]: meq(value) })) } : {},
           limit: Math.min(limit, MAX_SEARCH),
         });
         const docs = rows.map((r) => this.toDoc(r));

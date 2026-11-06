@@ -170,7 +170,7 @@ describe("in production, with functions inline in the server", () => {
   beforeAll(async () => {
     prod = await startServer({
       forgeDir: fixture,
-      env: { ...process.env, NODE_ENV: "production", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", ADMIN_KEY: "k", RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json" },
+      env: { ...process.env, NODE_ENV: "production", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", ADMIN_KEY: "k".repeat(16), RATE_LIMIT_PER_MINUTE: "100000", LOG_FORMAT: "json" },
     });
   });
   afterAll(() => prod.stop({ graceful: false }));

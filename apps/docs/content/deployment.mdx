@@ -204,7 +204,7 @@ Bad combinations fail at startup with a message, rather than running half config
 | Endpoint | Answer |
 |---|---|
 | `GET /health` | `200 {"ok":true}` whenever the process is serving. Use it for liveness. |
-| `GET /ready` | `200 {"ready":true}` once your functions are loaded; `503 {"ready":false,"error":…}` while starting, when loading failed, and while shutting down. Use it for readiness and load balancers. |
+| `GET /ready` | `200 {"ready":true}` once your functions are loaded; `503 {"ready":false}` while starting, when loading failed, and while shutting down (in development with `"error"`, the load error; in production that is in the logs only). Use it for readiness and load balancers. |
 
 During development a broken module in `forge/` shows up here: `503` with `{"ready":false,"error":"Failed to load forge/messages.ts: 2 errors building …"}`, and the engine keeps retrying (with a delay) until the file is fixed, then returns to `200`. In production a function module that fails to load at startup stops the process, so the container exits and your restart policy shows the error in the logs.
 

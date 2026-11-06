@@ -16,7 +16,7 @@ const env = (extra: Record<string, string>) => ({
   BETTER_AUTH_SECRET: "x".repeat(32),
   BETTER_AUTH_URL: "http://localhost",
   ALLOW_INSECURE_HTTP: "1",
-  ADMIN_KEY: "secret",
+  ADMIN_KEY: "secret-bench-admin-key",
   DASHBOARD: "on",
   CACHE_TTL_MS: "0",
   RATE_LIMIT_PER_MINUTE: "0",
@@ -41,7 +41,7 @@ async function load(url: string, seconds: number, during?: () => Promise<void>) 
   return { perSecond: Math.round(ok / seconds), failed };
 }
 
-const admin = { "x-admin-key": "secret", "x-forge-admin": "1", "content-type": "application/json" };
+const admin = { "x-admin-key": "secret-bench-admin-key", "x-forge-admin": "1", "content-type": "application/json" };
 const resize = (url: string, n: number | null) =>
   fetch(`${url}/_admin/saveSetting`, { method: "POST", headers: admin, body: JSON.stringify({ name: "RUNTIME_WORKERS", value: n === null ? null : String(n) }) }).then((r) => r.json());
 
