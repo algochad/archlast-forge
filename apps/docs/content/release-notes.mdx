@@ -4,6 +4,10 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+### Changed
+
+- **The engine image is less than half the size**: about 300 MB on disk and a 75 MB download, down from 860 MB and 190 MB. It holds only the engine's packages and their runtime dependencies (no dev tools, type declarations or source maps) on Bun's distroless image, with BusyBox for the shell. **It no longer has `apt-get`**: a project `Dockerfile` that installs system packages on top of the engine image needs to copy the program in from another image instead (see [What the image contains](deployment.html#the-image-on-its-own)). Paths, the entry point, the healthcheck and `engine prepare` are unchanged.
+
 ## 0.19.0
 
 ### Changed
