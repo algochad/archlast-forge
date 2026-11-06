@@ -58,6 +58,8 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 - **Routes with a summary and no `operationId` get one from the summary** ("Create a product" is `createAProduct`, unique in the document). Before, the id was the controller and method (`CheckoutsController_create`) or `http_<METHOD>_<path>`. The page's addresses and generated clients' method names follow it. Set `operationId` on a route to keep an id you already publish.
 - To keep the 0.19 page: `page.layout: { pages: "single", shell: "header" }`, `nav: { groups: { case: "upper" } }`, `content: { responseHeaders: "open" }`.
 
+- **The engine image is less than half the size**: about 300 MB on disk and a 75 MB download, down from 860 MB and 190 MB. It holds only the engine's packages and their runtime dependencies (no dev tools, type declarations or source maps) on Bun's distroless image, with BusyBox for the shell. **It no longer has `apt-get`**: a project `Dockerfile` that installs system packages on top of the engine image needs to copy the program in from another image instead (see [What the image contains](deployment.html#the-image-on-its-own)). Paths, the entry point, the healthcheck and `engine prepare` are unchanged.
+
 ## 0.19.0
 
 ### Changed
