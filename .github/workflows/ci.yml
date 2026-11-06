@@ -78,6 +78,12 @@ jobs:
         run: docker build -f docker/engine.Dockerfile -t archlast-forge/engine:ci .
       - name: Engine CLI starts
         run: docker run --rm archlast-forge/engine:ci --help | grep -q "archlast-forge"
+      # Its files unpacked, measured inside it (docker's own size figures differ between storage drivers). 0.19.0 was 632 MB; this one is about 220.
+      - name: The engine image stays small
+        run: |
+          MB=$(docker run --rm --entrypoint du archlast-forge/engine:ci -sxm / | cut -f1)
+          echo "engine image: ${MB} MB unpacked"
+          [ "$MB" -le 260 ] || { echo "::error::The engine image is ${MB} MB unpacked, over 260: a new runtime dependency, or something docker/engine.Dockerfile should leave out"; exit 1; }
 
   # Pull requests into master come from staging only, and from this repository: a fork's branch called staging doesn't count.
   source-branch:

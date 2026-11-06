@@ -47,6 +47,13 @@ What the image contains and expects:
 - `NODE_ENV=production`, so the engine starts in production mode: it refuses to start without `BETTER_AUTH_SECRET`, and without an `https://` `BETTER_AUTH_URL` unless `ALLOW_INSECURE_HTTP=1`.
 - It has a Docker `HEALTHCHECK` on `GET /health` (every 10 s, 3 s timeout, 30 s start period). That reports the process is alive. Use `/ready` for load balancers (below).
 - It does not contain `.env` files (the project's `.dockerignore` excludes them), so every secret arrives at run time.
+- It is Bun on a distroless base: glibc and CA certificates, with BusyBox for `/bin/sh` and the usual commands, but no package manager (no `apt-get`). The engine image is about 300 MB on disk and a 75 MB download. To add a program your actions run, copy a static build of it from another image in your `Dockerfile`, after `FROM ${ENGINE_IMAGE}`:
+
+  ```dockerfile
+  COPY --from=<an image with the program> /path/to/program /usr/local/bin/program
+  ```
+
+  A program that needs shared libraries needs them copied too; when that gets long, build your image `FROM` a Debian one and copy the engine in (`COPY --from=${ENGINE_IMAGE} /engine /engine`, plus `/usr/local/bin/bun`, with the same `ENV`, `ENTRYPOINT` and `CMD`, and a user with uid 1000 that owns `/app` and `/data`, as the engine image has).
 
 A minimal production environment file:
 
