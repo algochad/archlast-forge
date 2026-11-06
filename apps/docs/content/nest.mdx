@@ -369,7 +369,11 @@ export class NotesResolver {
 - `ForgeGraphQLDriver` serves the schema with [GraphQL Yoga](https://the-guild.dev/graphql/yoga-server), on `POST` and `GET` at `path` (default `/graphql`, so `/http/graphql`). The schema is built by `@nestjs/graphql` before the driver sees it, so code-first (`autoSchemaFile: true`, what the tests cover) and schema-first (`typePaths`) go through it the same way.
 - Subscriptions run over WebSockets at the same path with the `graphql-transport-ws` protocol, so a `graphql-ws` client connects to `ws://host/http/graphql`.
 - `@Ctx()` in a resolver is the caller's `ActionCtx`; `@Context()` is the whole context, with `req` (the `NestRequest`, or for a subscription the socket).
-- `yoga` passes more options to Yoga, such as `graphiql`, `maskedErrors` and `plugins`. GraphiQL is on unless you turn it off.
+- `yoga` passes more options to Yoga, such as `graphiql`, `maskedErrors`, `plugins` and `cors`.
+- **Safe defaults.** Yoga's own defaults let any site read a signed-in visitor's answers and run mutations from a form. The engine's are:
+  - CORS only for the engine's trusted origins (`BETTER_AUTH_URL`'s and `TRUSTED_ORIGINS`), with credentials; another origin gets no CORS headers. With `nest(http, { cors })` that configuration answers for GraphQL too, and `yoga: { cors }` replaces both.
+  - Operations only as `application/json`: a form-encoded or multipart `POST` (which a cross-site page can send without a preflight) gets `415`, and mutations over `GET` are refused as Yoga always does. `jsonOnly: false` takes form and multipart bodies again (multipart file uploads need it).
+  - GraphiQL and introspection in development only. `yoga: { graphiql: true }` and `introspection: true` turn them on in production.
 - `createPubSub<{ topic: Payload }>()` is the engine's: `publish(topic, payload)` from a resolver, a controller or anywhere in the function runtime, and `subscribe(topic)` returns the async iterator a subscription resolver returns (`on(topic, listener)` listens without one). With `RUNTIME_WORKERS > 1` an event reaches subscribers in every process. Payloads must be structured-cloneable.
 
 ## Microservices

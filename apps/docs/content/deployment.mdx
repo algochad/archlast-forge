@@ -43,7 +43,7 @@ docker run -d --name my-app --restart unless-stopped \
 
 What the image contains and expects:
 
-- It listens on `PORT` (3000), writes SQLite and local state under `DATA_DIR` (`/data`, declared as a volume), and runs as root.
+- It listens on `PORT` (3000), writes SQLite and local state under `DATA_DIR` (`/data`, declared as a volume), and runs as the image's `bun` user (uid 1000), not root: a bind mount or volume on `/data` must be writable by uid 1000.
 - `NODE_ENV=production`, so the engine starts in production mode: it refuses to start without `BETTER_AUTH_SECRET`, and without an `https://` `BETTER_AUTH_URL` unless `ALLOW_INSECURE_HTTP=1`.
 - It has a Docker `HEALTHCHECK` on `GET /health` (every 10 s, 3 s timeout, 30 s start period). That reports the process is alive. Use `/ready` for load balancers (below).
 - It does not contain `.env` files (the project's `.dockerignore` excludes them), so every secret arrives at run time.
