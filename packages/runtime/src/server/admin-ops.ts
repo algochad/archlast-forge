@@ -63,6 +63,14 @@ function redact<T extends { _id: string }>(doc: T): T {
   return out as T;
 }
 const redactOrNull = (doc: { _id: string } | null | undefined) => (doc ? redact(doc) : null);
+/** A file's link for the dashboard, or null for a row whose key storage refuses (one written before keys were checked). */
+const urlOf = (storage: Storage | undefined, key: string) => {
+  try {
+    return storage?.getPresignedUrl(key, { expiresIn: 600 }) ?? null;
+  } catch {
+    return null;
+  }
+};
 /** An edit that sends the placeholder back must not overwrite the real value. */
 const withoutHidden = (value: any) => Object.fromEntries(Object.entries(value ?? {}).filter(([, v]) => v !== HIDDEN));
 const restoreHidden = (value: any, existing: any) =>
@@ -268,7 +276,7 @@ export async function adminOp(d: AdminDeps, op: string, args: any, actor: string
                     .then((s) => s.size)
                     .catch(() => null)
                 : null,
-              url: storage?.getPresignedUrl(f.key, { expiresIn: 600 }) ?? null,
+              url: urlOf(storage, f.key),
             })),
           ),
         };

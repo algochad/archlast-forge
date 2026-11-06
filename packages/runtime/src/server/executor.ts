@@ -401,9 +401,11 @@ export class Executor {
   }
 
   storage(store: DocStore, after?: AfterCommit) {
+    // Only a file's id: another table's document with a `key` field isn't a file, and its id isn't one to delete here.
+    const file = (id: string) => (typeof id === "string" && id.startsWith("_storage:") ? store.get(id) : null);
     return {
       getUrl: async (id: string) => {
-        const doc = await store.get(id);
+        const doc = await file(id);
         return doc ? this.s3().getPresignedUrl(doc.key) : null;
       },
       generateUploadUrl: async ({ contentType }: { contentType?: string } = {}) => {
@@ -413,7 +415,7 @@ export class Executor {
         return { uploadUrl, storageId };
       },
       delete: async (id: string) => {
-        const doc = await store.get(id);
+        const doc = await file(id);
         if (!doc) return;
         await store.delete(id);
         // Object deletion is I/O, so it waits until the metadata delete commits.

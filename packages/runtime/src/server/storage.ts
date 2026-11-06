@@ -15,6 +15,19 @@ export interface Storage {
   write(key: string, data: Blob, contentType?: string): Promise<void>;
 }
 
+/** Object names storage accepts: what `generateUploadUrl` makes (UUIDs), and nothing that could leave its directory. */
+const KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
+export const validKey = (key: string) => KEY.test(key);
+
+/**
+ * A file's key, checked: a `_storage` row names its object, and a key with a slash could name one the engine keeps beside the files, such as a
+ * backup under `_backups/`.
+ */
+const fileKey = (key: string) => {
+  if (!validKey(key)) throw new Error(`Not a storage key: ${JSON.stringify(key)}`);
+  return key;
+};
+
 /** S3-compatible storage (AWS, RustFS, MinIO). Presigning is local, so it's safe inside queries. */
 export class S3Storage implements Storage {
   private s3: S3Client;
@@ -28,33 +41,29 @@ export class S3Storage implements Storage {
   }
 
   putPresignedUrl(key: string, { contentType, expiresIn = 3600 }: { contentType?: string; expiresIn?: number } = {}) {
-    return this.publicS3.presign(key, { method: "PUT", expiresIn, type: contentType });
+    return this.publicS3.presign(fileKey(key), { method: "PUT", expiresIn, type: contentType });
   }
 
   getPresignedUrl(key: string, { expiresIn = 3600 } = {}) {
-    return this.publicS3.presign(key, { method: "GET", expiresIn });
+    return this.publicS3.presign(fileKey(key), { method: "GET", expiresIn });
   }
 
   async delete(key: string) {
-    await this.s3.delete(key);
+    await this.s3.delete(fileKey(key));
   }
 
-  stat(key: string) {
-    return this.s3.file(key).stat();
+  async stat(key: string) {
+    return this.s3.file(fileKey(key)).stat();
   }
 
   read(key: string): Blob {
-    return this.s3.file(key);
+    return this.s3.file(fileKey(key));
   }
 
   async write(key: string, data: Blob, contentType?: string) {
-    await this.s3.write(key, data, contentType ? { type: contentType } : {});
+    await this.s3.write(fileKey(key), data, contentType ? { type: contentType } : {});
   }
 }
-
-/** Object names the built-in storage accepts: what `generateUploadUrl` makes (UUIDs), and nothing that could leave its directory. */
-const KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$/;
-export const validKey = (key: string) => KEY.test(key);
 
 /**
  * Storage on the engine's own disk, for development and single-server deployments without S3. Objects are files in `dir/objects`, their
