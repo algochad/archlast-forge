@@ -309,8 +309,11 @@ async function monorepo() {
     check("the main app's dashboard lists the service at its address on the network", JSON.stringify(listed.services) === JSON.stringify([{ name: "orders", url: "http://orders:3000" }]), listed);
     const server = await admin("server?target=orders");
     check("and reaches its admin API, where the service reports to the main app", server.dashboardUrl === "http://web:3000" && server.telemetry === false, server);
-    const refused = sh(["docker", "exec", sh(["docker", "compose", "ps", "-q", "app"], web.dir).out, "wget", "-qO-", "--post-data", "{}", "http://orders:4001/orders.hello"], web.dir);
-    check("the service refuses a call without the token", !refused.ok && /401/.test(refused.err), refused.err);
+    // From inside the main app's container, with the engine's own Bun (the image has no curl, and its shell tools vary by base).
+    const container = sh(["docker", "compose", "ps", "-q", "app"], web.dir).out;
+    const probe = `const r = await fetch("http://orders:4001/orders.hello?batch=1", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }); console.log(r.status)`;
+    const refused = sh(["docker", "exec", container, "bun", "-e", probe], web.dir);
+    check("the service refuses a call without the token", refused.out === "401", refused.out || refused.err);
   } finally {
     for (const app of [web, orders]) app.cli("down", "--volumes");
     sh(["docker", "network", "rm", "e2e-shop-apps"], m.root);
