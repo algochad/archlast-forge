@@ -71,7 +71,7 @@ const SERVICES = {
   },
   redis: { image: "redis:7-alpine", env: {}, volume: "/data", port: 6379, provides: (address: string) => ({ REDIS_URL: `redis://${address}` }) },
   s3: {
-    image: "rustfs/rustfs:latest",
+    image: "rustfs/rustfs:1.0.4",
     env: { RUSTFS_ACCESS_KEY: "forgeadmin", RUSTFS_SECRET_KEY: "forgeadmin", RUSTFS_CORS_ALLOWED_ORIGINS: "*" },
     volume: "/data",
     cmd: ["/data"],
@@ -154,7 +154,7 @@ export function startServices(name: string, services: Service[], opts: { host?: 
   if (services.includes("s3")) {
     // The bucket must exist before the first upload.
     for (let i = 0; i < 30; i++) {
-      const mb = docker(["run", "--rm", "--network", name, "-e", "AWS_ACCESS_KEY_ID=forgeadmin", "-e", "AWS_SECRET_ACCESS_KEY=forgeadmin", "-e", "AWS_DEFAULT_REGION=us-east-1", "amazon/aws-cli", "--endpoint-url", `http://${name}-s3:9000`, "s3", "mb", "s3://forge"]);
+      const mb = docker(["run", "--rm", "--network", name, "-e", "AWS_ACCESS_KEY_ID=forgeadmin", "-e", "AWS_SECRET_ACCESS_KEY=forgeadmin", "-e", "AWS_DEFAULT_REGION=us-east-1", "amazon/aws-cli:2.39.3", "--endpoint-url", `http://${name}-s3:9000`, "s3", "mb", "s3://forge"]);
       if (mb.ok || /BucketAlready/.test(mb.err)) break;
       Bun.sleepSync(1000);
     }

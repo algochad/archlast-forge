@@ -38,6 +38,10 @@ describe("compose.yaml", () => {
     expect(Object.keys(c.volumes)).toEqual(["app-data", "postgres-data", "redis-data", "rustfs-data"]);
     expect(c.services.rustfs["init"]).toBeUndefined();
     expect(c.services["rustfs-init"].entrypoint.join("\n")).toContain("$(seq 1 60)".replace("$", "$$")); // escaped for compose
+    // Pinned images (tags that move would change a deployment under it), and browser access to storage for the app's own pages only.
+    expect(c.services.rustfs.image).toBe("rustfs/rustfs:1.0.4");
+    expect(c.services["rustfs-init"].image).toBe("amazon/aws-cli:2.39.3");
+    expect(c.services.rustfs.environment.RUSTFS_CORS_ALLOWED_ORIGINS).toBe("${BETTER_AUTH_URL:-http://localhost:${PORT:-3000}}");
   });
 
   test("behind Caddy only Caddy is published, and the app trusts its forwarded addresses", () => {
@@ -47,6 +51,7 @@ describe("compose.yaml", () => {
     expect(c.services.caddy.ports).toEqual(["80:80", "443:443", "443:443/udp"]);
     expect(c.services.app.environment.TRUST_PROXY).toBe("1");
     expect(c.services.caddy.depends_on).toEqual(["app"]);
+    expect(c.services.rustfs.environment.RUSTFS_CORS_ALLOWED_ORIGINS).toBe("https://${DOMAIN:-localhost}");
     expect(renderCaddyfile(["s3", "caddy"])).toContain("s3.{$DOMAIN:localhost}");
     expect(renderCaddyfile(["caddy"])).not.toContain("rustfs");
   });

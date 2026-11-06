@@ -391,8 +391,8 @@ Everything else the engine reads (cache size, timeouts, `RUNTIME_WORKERS`, `REPL
 |---|---|---|
 | `postgres` | `postgres:17-alpine` | the database. User, database and name `forge`; password from `.env`. Volume `postgres-data`. Health check `pg_isready`. Not published. |
 | `redis` | `redis:7-alpine` | cross-server reactivity, the query cache, rate limits. Runs `redis-server --appendonly yes`, volume `redis-data`. No password, not published; keep it that way. It holds only cache, pub/sub and counters. |
-| `rustfs` | `rustfs/rustfs:latest` | S3-compatible file storage on volume `rustfs-data`, root credentials from `.env`, CORS `*`. Without Caddy it publishes `${S3_PORT:-9000}:9000`, because browsers upload and download directly through presigned URLs. |
-| `rustfs-init` | `amazon/aws-cli` | runs once: creates the `forge` bucket (retrying for 60 s while RustFS starts; "BucketAlready" counts as success), then exits. `app` waits for it. |
+| `rustfs` | `rustfs/rustfs:1.0.4` | S3-compatible file storage on volume `rustfs-data`, root credentials from `.env`, CORS for the app's own origin only (`https://${DOMAIN}` behind Caddy, else `BETTER_AUTH_URL`). Without Caddy it publishes `${S3_PORT:-9000}:9000`, because browsers upload and download directly through presigned URLs. |
+| `rustfs-init` | `amazon/aws-cli:2.39.3` | runs once: creates the `forge` bucket (retrying for 60 s while RustFS starts; "BucketAlready" counts as success), then exits. `app` waits for it. |
 | `caddy` | `caddy:2-alpine` | HTTPS with certificates that renew themselves, compression, ports 80, 443 and 443/udp, config from `./Caddyfile`, state in `caddy-data` and `caddy-config`. |
 
 The Caddyfile is short:
@@ -560,7 +560,7 @@ Test a restore into a scratch copy of the stack (`docker compose -p restore-test
 
 To build on another engine image, set `ARCHLAST_ENGINE_IMAGE` for the CLI, or `ENGINE_IMAGE` in the environment of `docker compose`. Plain `docker compose up --build` uses the default written in `compose.yaml` and the `Dockerfile`, which `upgrade` keeps on the release the packages are on; set `ENGINE_IMAGE` in `.env` to build on another one.
 
-Pin the third-party images in `compose.yaml` to versions you have tested: `postgres:17-alpine` follows 17.x, but `rustfs/rustfs:latest` and `amazon/aws-cli` move without you. A major PostgreSQL upgrade needs a dump and restore; do not just change the tag.
+Pin the third-party images in `compose.yaml` to versions you have tested. `rustfs` and `aws-cli` come pinned (projects made by earlier releases have `rustfs/rustfs:latest` and `amazon/aws-cli`, which move without you: pin them, and set `RUSTFS_CORS_ALLOWED_ORIGINS` to your app's origin instead of `*`). `postgres:17-alpine`, `redis:7-alpine` and `caddy:2-alpine` follow their major version, so they get patch releases; pin a patch release (`postgres:17.2-alpine`) if you'd rather choose when. A major PostgreSQL upgrade needs a dump and restore; do not just change the tag.
 
 ## Rotating secrets
 

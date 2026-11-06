@@ -197,19 +197,20 @@ ${env.map(quoted).join("\n")}
 
   if (has("s3"))
     parts.push(`  rustfs:
-    image: rustfs/rustfs:latest
+    image: rustfs/rustfs:1.0.4
     restart: unless-stopped
     command: ["/data"]
     environment:
       RUSTFS_ACCESS_KEY: "\${S3_ACCESS_KEY:?missing: run \`archlast-forge up\`, which creates .env}"
       RUSTFS_SECRET_KEY: "\${S3_SECRET_KEY:?missing: run \`archlast-forge up\`, which creates .env}"
-      RUSTFS_CORS_ALLOWED_ORIGINS: "*"
+      # Only the app's pages may upload and download from a browser.
+      RUSTFS_CORS_ALLOWED_ORIGINS: "${proxied ? "https://\${DOMAIN:-localhost}" : "\${BETTER_AUTH_URL:-http://localhost:\${PORT:-3000}}"}"
 ${proxied ? "" : `    ports:\n      - "\${S3_PORT:-9000}:9000"   # browsers upload and download here, through presigned URLs\n`}    volumes:
       - rustfs-data:/data
 
   # Creates the bucket once, then exits.
   rustfs-init:
-    image: amazon/aws-cli
+    image: amazon/aws-cli:2.39.3
     depends_on:
       - rustfs
     restart: "no"
