@@ -107,9 +107,13 @@ export const readJson = async (req: Request, param: string, url: URL, max = Infi
 
 const encoder = new TextEncoder();
 
-/** A cross-site form can send a POST without a preflight, but not one with a JSON content type. */
+/**
+ * A cross-site form or fetch can send a POST without a preflight, but not one with a JSON content type. The media type is compared whole:
+ * `text/plain; x=application/json` is a type a page may send without one.
+ */
 export const requireJson = (req: Request) => {
-  if (req.method === "POST" && !req.headers.get("content-type")?.includes("application/json")) throw new HttpError("UNSUPPORTED_MEDIA_TYPE", "Send application/json");
+  if (req.method === "POST" && req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() !== "application/json")
+    throw new HttpError("UNSUPPORTED_MEDIA_TYPE", "Send application/json");
 };
 
 export interface SocketData extends Context {

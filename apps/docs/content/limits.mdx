@@ -136,7 +136,7 @@ The main risks the engine does not remove are the ones only your code can: who i
 **Origin checks and CSRF.**
 
 - Better Auth rejects a state-changing request whose `Origin` is not the app's own address or in `TRUSTED_ORIGINS`: `403 {"message":"Invalid origin","code":"INVALID_ORIGIN"}`.
-- `POST /rpc/<function>` requires `Content-Type: application/json` and answers `415` otherwise. A cross-site HTML form can send a `POST` with no preflight, but cannot send that content type. Reads over `GET` are only for queries.
+- `POST /rpc/<function>` requires the media type `application/json` (parameters such as `; charset=utf-8` may follow) and answers `415` otherwise. A cross-site HTML form or `fetch` can send a `POST` with no preflight, but not with that media type. The type is compared whole, so `text/plain; x=application/json`, which a page may send without a preflight, is refused. Reads over `GET` are only for queries.
 - CORS headers (`Access-Control-Allow-Origin` with credentials) are sent only for origins in `TRUSTED_ORIGINS`. Other origins get no CORS headers, so browsers will not let their scripts read responses.
 - The admin API needs the custom header `x-forge-admin: 1` on every non-`GET` request (`403 Missing x-forge-admin header` otherwise). A header like that cannot be sent cross-site without a preflight, which the admin API never grants. The admin cookie `afx_admin` is `HttpOnly; SameSite=Strict; Path=/` and `Secure` under https.
 - Admin keys and bearer tokens are compared in constant time.

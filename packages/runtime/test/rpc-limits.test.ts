@@ -35,6 +35,15 @@ describe.each([
     ((await (await fetch(`${srv.url}/rpc/todos:createList`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) })).json()) as any).result;
   const live = async () => ((await (await fetch(`${srv.url}/_admin/subscriptions`, { headers: { "x-admin-key": "secret" } })).json()) as unknown[]).length;
 
+  test("POST /rpc takes the application/json media type only, compared whole", async () => {
+    const call = (type: string) => fetch(`${srv.url}/rpc/todos:createList`, { method: "POST", headers: { "content-type": type }, body: '{"name":"csrf"}' });
+    // CORS-safelisted types a cross-site page can send without a preflight, with the JSON type hidden in a parameter.
+    for (const type of ["text/plain; x=application/json", "text/plain;application/json", "application/x-www-form-urlencoded; a=application/json", "multipart/form-data; boundary=application/json"])
+      expect((await call(type)).status).toBe(415);
+    expect((await call("application/jsonp")).status).toBe(415);
+    for (const type of ["application/json", "application/json; charset=utf-8", "Application/JSON;charset=UTF-8"]) expect((await call(type)).status).toBe(200);
+  });
+
   test("a subscription whose arguments fail validation ends with the error instead of waiting with them", async () => {
     const before = await live();
     const s = await socket();
