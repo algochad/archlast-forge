@@ -148,6 +148,15 @@ describe("controllers in the OpenAPI document", () => {
     expect(bad.status).toBe(400);
     expect(await bad.json()).toEqual({ message: 'body.qty must be a finite number, got "two"', error: "Bad Request", statusCode: 400 });
   });
+
+  test("the handler gets the contract's params and query converted, as they were checked; other query values stay text", async () => {
+    const page = await http("/orders/page/3?limit=2&all=true&tags=a&tags=b&other=7");
+    expect(page.status).toBe(200);
+    expect(await page.json()).toEqual({ n: 3, limit: 2, all: true, tags: ["a", "b"], other: "7", types: ["number", "number", "boolean", "string"] });
+    const none = await http("/orders/page/4");
+    expect(await none.json()).toEqual({ n: 4, types: ["number", "undefined", "undefined", "undefined"] });
+    expect((await http("/orders/page/4?limit=two")).status).toBe(400); // still checked first
+  });
 });
 
 describe("services in functions", () => {
