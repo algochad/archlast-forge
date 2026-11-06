@@ -1,3 +1,37 @@
 # Changelog
 
 No front matter here: the title is this heading and the page sorts by its file name.
+
+<Tip>Breaking changes are announced a month ahead.</Tip>
+
+<Tabs>
+  <Tab title="Node">Run `npm i @midas/sdk@2`.</Tab>
+  <Tab title="Python">Run `pip install midas==2`.</Tab>
+</Tabs>
+
+<Steps>
+  <Step title="Upgrade">Install the new version.</Step>
+  <Step title="Migrate">Rename `charge` to `payment`.</Step>
+</Steps>
+
+<Cards>
+  <Card title="Payments" href="/docs/payments">What changed.</Card>
+  <Card title="Refunds">Unchanged.</Card>
+</Cards>
+
+<CodeGroup>
+```ts title="server.ts"
+const midas = new Midas({ version: 2 });
+```
+```py title="server.py"
+midas = Midas(version=2)
+```
+</CodeGroup>
+
+```bash title="install.sh"
+npm i @midas/sdk@2
+```
+
+<Accordion title="Why version?">So an upgrade never surprises you.</Accordion>
+
+<Badge>beta</Badge>

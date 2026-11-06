@@ -129,7 +129,17 @@ export interface ServerOptions {
 export interface ApiDocsHost {
   serve(
     req: Request,
-    opts: { base: string; publicBase: string; openapiUrl: string; explorerPath: string | null; dev: boolean; forgeDir: string; page: ApiDocsPageConfig },
+    opts: {
+      base: string;
+      publicBase: string;
+      openapiUrl: string;
+      explorerPath: string | null;
+      dev: boolean;
+      forgeDir: string;
+      page: ApiDocsPageConfig;
+      /** The OpenAPI document the page describes (the complete one only in development), for pages rendered on the server; null while the code isn't loaded. */
+      document?: (audience?: "public" | "all") => Promise<unknown>;
+    },
   ): Promise<Response | null>;
   paths?(opts: { base: string; explorerPath: string | null }): { exact: string[]; prefixes: string[] };
 }
@@ -616,12 +626,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     },
   });
   /** The OpenAPI documents (the public one, and in dev the complete one), made once per load of the code (a reload brings a new manifest), minified. */
-  const openApi = new Map<string, { manifest: unknown; json: string; etag: string }>();
-  async function openApiResponse(req: Request) {
+  const openApi = new Map<string, { manifest: unknown; json: string; etag: string; doc?: unknown }>();
+  /** The document for this request (the public one, or in development the complete one when it asks), made once per load of the code. */
+  async function openApiDocument(req: Request, audience = dev && new URL(req.url).searchParams.get("audience") === "all" ? "all" : "public") {
     await loading;
-    if (!runtime.manifest) return Response.json({ message: runtime.loadError ?? "The function runtime is not running" }, { status: 503 });
-    // The complete document lists what the public one leaves out: development only.
-    const audience = dev && new URL(req.url).searchParams.get("audience") === "all" ? "all" : "public";
+    if (!runtime.manifest) return null;
     // Without BETTER_AUTH_URL the document names the address that was asked, so one asked through another Host header is a document of its own.
     const key = env.BETTER_AUTH_URL ? audience : `${audience} ${new URL(req.url).origin}`;
     let cached = openApi.get(key);
@@ -633,6 +642,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (openApi.size >= 32) openApi.clear();
       openApi.set(key, (cached = { manifest, json, etag: `"${Bun.hash(json).toString(36)}"` }));
     }
+    return cached;
+  }
+  async function openApiResponse(req: Request) {
+    const cached = await openApiDocument(req);
+    if (!cached) return Response.json({ message: runtime.loadError ?? "The function runtime is not running" }, { status: 503 });
     if (req.headers.get("if-none-match") === cached.etag) return new Response(null, { status: 304, headers: { etag: cached.etag } });
     return compressed(req, cached.json, { "content-type": "application/json", etag: cached.etag, "cache-control": "no-cache", "x-content-type-options": "nosniff" });
   }
@@ -662,6 +676,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     const claimed = (p: string) => !clashes.has(p) && !(p.startsWith(`${at.path}/_docs/`) && clashes.has(`${at.path}/_docs/`));
     return (path === at.openapi || page) && claimed(path.replace(/\/$/, "") || path);
   }
+  /** A path below the docs' own that they may answer (a page of theirs), when no page of the app or root route takes it. */
+  function docsMayServe({ at }: { at: ApiDocsRouting }, path: string, method: string) {
+    if ((method !== "GET" && method !== "HEAD") || !path.startsWith(`${at.path}/`)) return false;
+    if (opts.app?.matches?.(path)) return false;
+    return !runtimeManifestRootRoute(path);
+  }
+  const runtimeManifestRootRoute = (path: string) => runtime.manifest?.rootRoutes?.some((r) => r.path === path || (r.pathPrefix !== undefined && r.pathPrefix !== "/" && path.startsWith(r.pathPrefix)));
   /** The docs' own paths that one of the app's routes (a page, or a root-mounted HTTP route) also takes. Unsettled while the app isn't built. */
   function docsClashes(manifest: Manifest | undefined, at: ApiDocsRouting) {
     const clashes = new Set<string>();
@@ -1027,8 +1048,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (outcome.kind === "error" && outcome.refuse) return cors(req, withId(errorResponse({ message: "The web application firewall is unavailable", code: "SERVICE_UNAVAILABLE", requestId })));
       }
 
-      // The API docs own a few exact paths and their assets' prefix; anything else below their path is the app's (its own pages under /docs).
-      if (docs && docsClaim(docs, path)) {
+      // The API docs own a few exact paths and their assets' prefix, and may answer a page of theirs below their path (an operation, a guide,
+      // its Markdown) unless the app has a page or a root route there; anything they don't answer is the app's (its own pages under /docs).
+      if (docs && (docsClaim(docs, path) || (opts.apiDocs && docsMayServe(docs, path, req.method)))) {
         const { at } = docs;
         const retry = await limited(req, srv);
         if (retry) return withId(tooMany(retry));
@@ -1041,6 +1063,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           dev,
           forgeDir: resolve(opts.forgeDir),
           page: at.page,
+          document: async (audience) => {
+            const cached = await openApiDocument(req, audience === "all" && dev ? "all" : "public");
+            return cached ? (cached.doc ??= JSON.parse(cached.json)) : null;
+          },
         });
         if (served) return withId(served);
         if (path === at.path && !opts.apiDocs)

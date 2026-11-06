@@ -2,11 +2,13 @@
 // visitor's language, the responses' examples, and the "Try it" button.
 import { memo, Suspense, useEffect, useMemo, useState, type ReactNode } from "react";
 import { Attribute, Body, HeaderRows } from "./attributes";
-import { CodeBox, Json, Pre, type Tab } from "./code";
+import { CodeBox, CopyButton, Json, Pre, type Tab } from "./code";
+import { ContentBoundary, Heading } from "./components";
 import type { CodeSampleLanguage } from "./contract";
 import { useDoc, useStore, useT } from "./context";
 import { Inline, Markdown } from "./markdown";
-import { deref, parametersOf, pickMedia, securityOf, type OpEntry, type Parameter, type ResponseObject } from "./openapi";
+import { Method } from "./nav";
+import { deref, parametersOf, pickMedia, scopesOf, securityOf, serverUrlOf, type OpEntry, type Parameter, type ResponseObject } from "./openapi";
 import { mediaExample } from "./schema";
 import { buildRequest, curl, LANGUAGE_LABELS, type SampleRequest } from "./samples";
 
@@ -25,7 +27,7 @@ function useSample(lang: CodeSampleLanguage | undefined, req: SampleRequest): st
 }
 
 function Samples({ entry }: { entry: OpEntry }) {
-  const { doc, origin, languages: langs, lang: store, tryIt, t } = useDoc();
+  const { doc, origin, languages: langs, lang: store, t } = useDoc();
   const picked = useStore(store);
   const req = useMemo(() => buildRequest(doc, entry, origin), [doc, entry, origin]);
   const custom = entry.op["x-codeSamples"] ?? [];
@@ -45,13 +47,6 @@ function Samples({ entry }: { entry: OpEntry }) {
       tabs={tabs}
       active={active}
       onTab={store.set}
-      actions={
-        tryIt.enabled && (
-          <button type="button" className="fd-btn fd-btn-primary fd-try" onClick={(e) => tryIt.open(entry, e.currentTarget)} onPointerEnter={tryIt.prefetch} onFocus={tryIt.prefetch}>
-            {t("tryIt")}
-          </button>
-        )
-      }
     />
   );
 }
@@ -86,38 +81,62 @@ function ResponseExamples({ entry }: { entry: OpEntry }) {
   return <CodeBox label={t("responseExamples")} title={t("response")} tabs={tabs} active={status ?? first} onTab={setStatus} />;
 }
 
-function Security({ entry }: { entry: OpEntry }) {
-  const { doc, model, t } = useDoc();
+/** Where an operation's sections are: one id each on its own page, prefixed by its anchor where several operations share a page. */
+type Ids = { of: (name: string) => string; toc: boolean };
+
+/** What the operation needs: its security schemes and the scopes, each scope's meaning on hover. */
+function Authorizations({ entry, ids }: { entry: OpEntry; ids: Ids }) {
+  const { doc, model, t, href, site, config, authorize } = useDoc();
   if (!model.schemes.length) return null;
   const required = securityOf(doc, entry.op);
   const explicit = entry.op.security !== undefined;
   if (!required.length) return explicit ? <p className="fd-security">{t("noAuth")}</p> : null;
   const optional = required.some((r) => !Object.keys(r).length);
+  const alternatives = required.filter((r) => Object.keys(r).length);
+  const scopes = scopesOf(doc, entry.op);
+  const meaning = (scope: string) => {
+    for (const [, s] of model.schemes) for (const flow of Object.values(s.flows ?? {})) if (flow?.scopes?.[scope]) return flow.scopes[scope];
+    return undefined;
+  };
   return (
-    <div className="fd-security">
-      <span className="fd-chip-label">{t("requires")}</span>
-      {required
-        .filter((r) => Object.keys(r).length)
-        .map((r, i) => (
+    <div className="fd-authorizations" data-part="authorizations">
+      <Heading level={3} id={ids.of("authorizations")} toc={ids.toc}>
+        {t("authorizations")}
+      </Heading>
+      <div className="fd-security">
+        {alternatives.map((r, i) => (
           <span className="fd-chip fd-chip-auth" key={i}>
-            {Object.entries(r).map(([scheme, scopes]) => (
-              <span key={scheme}>
-                <a href="#/authentication">{scheme}</a>
-                {scopes.map((s) => (
-                  <code key={s}>{s}</code>
-                ))}
-              </span>
+            {Object.keys(r).map((scheme) => (
+              <a key={scheme} href={href(site.authentication)}>
+                {scheme}
+              </a>
             ))}
           </span>
         ))}
-      {optional && <span className="fd-note">{t("authOptional")}</span>}
+        {optional && <span className="fd-note">{t("authOptional")}</span>}
+        {config.controls?.authorize === "operation" && (
+          <button type="button" className="fd-btn fd-btn-ghost" onClick={authorize}>
+            {t("authorize")}
+          </button>
+        )}
+      </div>
+      {scopes.length > 0 && (
+        <p className="fd-scopes-line" data-part="scopes">
+          <span className="fd-chip-label">{t("scopesLabel")}</span>{" "}
+          {scopes.map((s) => (
+            <code key={s} title={meaning(s)}>
+              {s}
+            </code>
+          ))}
+        </p>
+      )}
     </div>
   );
 }
 
 const LOCATIONS = ["path", "query", "header", "cookie"] as const;
 
-function Parameters({ entry }: { entry: OpEntry }) {
+function Parameters({ entry, ids }: { entry: OpEntry; ids: Ids }) {
   const { doc, t } = useDoc();
   const params = parametersOf(doc, entry);
   if (!params.length) return null;
@@ -129,7 +148,9 @@ function Parameters({ entry }: { entry: OpEntry }) {
         if (!list.length) return null;
         return (
           <div key={where}>
-            <h4>{titles[where]}</h4>
+            <Heading level={3} id={ids.of(`${where}-parameters`)} toc={ids.toc}>
+              {titles[where]}
+            </Heading>
             <ul className="fd-attrs">
               {list.map((p: Parameter) => (
                 <Attribute key={p.name} doc={doc} name={p.name} schema={p.schema ?? pickMedia(p.content)?.[1].schema} required={p.required || where === "path"} description={p.description} example={p.example} deprecated={p.deprecated} />
@@ -142,7 +163,7 @@ function Parameters({ entry }: { entry: OpEntry }) {
   );
 }
 
-function RequestBody({ entry }: { entry: OpEntry }) {
+function RequestBody({ entry, ids }: { entry: OpEntry; ids: Ids }) {
   const { doc, t } = useDoc();
   const body = deref(doc, entry.op.requestBody);
   const media = pickMedia(body?.content);
@@ -150,10 +171,10 @@ function RequestBody({ entry }: { entry: OpEntry }) {
   const others = Object.keys(body.content ?? {}).filter((c) => c !== media[0]);
   return (
     <div>
-      <h4>
+      <Heading level={3} id={ids.of("body")} toc={ids.toc} label={t("requestBody")}>
         {t("requestBody")} <code className="fd-ctype">{media[0]}</code>
         {body.required ? <span className="fd-flag fd-flag-req">{t("required")}</span> : <span className="fd-flag">{t("optional")}</span>}
-      </h4>
+      </Heading>
       <Markdown text={body.description} />
       <Body doc={doc} schema={media[1].schema} />
       {others.length > 0 && (
@@ -165,8 +186,9 @@ function RequestBody({ entry }: { entry: OpEntry }) {
   );
 }
 
-function Responses({ entry }: { entry: OpEntry }) {
-  const { doc, t } = useDoc();
+function Responses({ entry, ids }: { entry: OpEntry; ids: Ids }) {
+  const { doc, t, config } = useDoc();
+  const headersOpen = config.content?.responseHeaders === "open";
   const responses = Object.entries(entry.op.responses ?? {});
   const codes = entry.op["x-error-codes"] ?? [];
   const shown = new Set(responses.map(([s]) => s));
@@ -174,7 +196,9 @@ function Responses({ entry }: { entry: OpEntry }) {
   if (!responses.length && !codes.length) return null;
   return (
     <div>
-      <h4>{t("responses")}</h4>
+      <Heading level={3} id={ids.of("responses")} toc={ids.toc}>
+        {t("responses")}
+      </Heading>
       {responses.map(([status, raw]) => {
         const r: ResponseObject = deref(doc, raw) ?? {};
         const media = pickMedia(r.content);
@@ -190,7 +214,7 @@ function Responses({ entry }: { entry: OpEntry }) {
               {media && <code className="fd-ctype">{media[0]}</code>}
             </div>
             {r.headers && Object.keys(r.headers).length > 0 && (
-              <details className="fd-nested" open={ok}>
+              <details className="fd-nested" open={headersOpen && ok}>
                 <summary>{t("responseHeaders", { n: Object.keys(r.headers).length })}</summary>
                 <HeaderRows doc={doc} headers={r.headers} />
               </details>
@@ -240,44 +264,74 @@ function ErrorCodes({ codes, withStatus }: { codes: { status: string; code: stri
   );
 }
 
-export const OperationView = memo(function OperationView({ entry }: { entry: OpEntry }) {
-  const { slots, t } = useDoc();
+/** The method, the full address and "Try it", in one row. */
+function EndpointBar({ entry }: { entry: OpEntry }) {
+  const { doc, origin, tryIt, t } = useDoc();
+  const url = `${serverUrlOf(doc, entry, origin)}${entry.path}`;
+  return (
+    <div className="fd-endpoint" data-part="endpoint-bar">
+      <Method method={entry.method} />
+      <code className="fd-endpoint-url" title={url}>
+        <span className="fd-endpoint-server">{serverUrlOf(doc, entry, origin)}</span>
+        <span className="fd-endpoint-path">{entry.path}</span>
+      </code>
+      <span className="fd-endpoint-actions">
+        <CopyButton text={url} />
+        {tryIt.enabled && (
+          <button type="button" className="fd-btn fd-btn-primary fd-try" onClick={(e) => tryIt.open(entry, e.currentTarget)} onPointerEnter={tryIt.prefetch} onFocus={tryIt.prefetch} data-part="try-it">
+            {t("tryIt")}
+          </button>
+        )}
+      </span>
+    </div>
+  );
+}
+
+export const OperationView = memo(function OperationView({ entry, asPage }: { entry: OpEntry; asPage?: boolean }) {
+  const { slots, t, site, dev } = useDoc();
+  const anchor = site.op.get(entry)?.anchor ?? "";
+  const ids: Ids = { of: (name) => (anchor ? `${anchor}/${name}` : name), toc: !!asPage };
   const Before = slots["operation-before"];
   const After = slots["operation-after"];
   const slotProps = { operation: entry.op, path: entry.path, method: entry.method, tag: entry.tag };
-  const slot = (S: typeof Before): ReactNode =>
+  const slot = (S: typeof Before, name: string): ReactNode =>
     S && (
-      <div className="fd-slot">
-        <Suspense fallback={null}>
-          <S {...slotProps} />
-        </Suspense>
+      <div className="fd-slot" data-part={`slot-${name}`}>
+        <ContentBoundary file={`forge/docs/_slots/${name}.mdx`} dev={dev}>
+          <Suspense fallback={null}>
+            <S {...slotProps} />
+          </Suspense>
+        </ContentBoundary>
       </div>
     );
+  const title = (
+    <>
+      {entry.op.summary ?? entry.operationId}
+      {entry.op.deprecated && <span className="fd-flag fd-flag-warn">{t("deprecated")}</span>}
+      {entry.internal && <span className="fd-flag fd-flag-internal">{t("internal")}</span>}
+    </>
+  );
   return (
-    <section className="fd-op" id={entry.id} data-spy aria-labelledby={`${entry.id}~h`}>
+    <section className="fd-op" id={asPage ? undefined : anchor || undefined} data-spy={anchor || undefined} data-part="operation" data-method={entry.method}>
       <div className="fd-op-grid">
         <div className="fd-op-doc">
-          <h3 id={`${entry.id}~h`} className="fd-op-title">
-            {entry.op.summary ?? entry.operationId}
-            {entry.op.deprecated && <span className="fd-flag fd-flag-warn">{t("deprecated")}</span>}
-            {entry.internal && <span className="fd-flag fd-flag-internal">{t("internal")}</span>}
-            <a className="fd-anchor" href={`#${entry.id}`} aria-label={t("linkToOperation")}>
-              #
-            </a>
-          </h3>
-          <p className="fd-endpoint">
-            <span className={`fd-method fd-m-${entry.method}`}>{entry.method.toUpperCase()}</span>
-            <code>{entry.path}</code>
-          </p>
+          {asPage ? (
+            <h1 className="fd-title fd-op-title">{title}</h1>
+          ) : (
+            <Heading level={2} id={anchor ? `${anchor}~h` : undefined} className="fd-op-title">
+              {title}
+            </Heading>
+          )}
+          <EndpointBar entry={entry} />
           <Markdown text={entry.op.description} />
-          {slot(Before)}
-          <Security entry={entry} />
-          <Parameters entry={entry} />
-          <RequestBody entry={entry} />
-          <Responses entry={entry} />
-          {slot(After)}
+          {slot(Before, "operation-before")}
+          <Authorizations entry={entry} ids={ids} />
+          <Parameters entry={entry} ids={ids} />
+          <RequestBody entry={entry} ids={ids} />
+          <Responses entry={entry} ids={ids} />
+          {slot(After, "operation-after")}
         </div>
-        <div className="fd-op-code">
+        <div className="fd-op-code" data-part="code-panel">
           <Samples entry={entry} />
           <ResponseExamples entry={entry} />
         </div>

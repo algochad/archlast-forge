@@ -1,18 +1,26 @@
-// The left navigation and the search over everything the page holds.
+// The left navigation and the search over everything the page holds. Links are the site's addresses (site.ts): a page of its own, or an
+// anchor on one, so they work the same with JavaScript off and when opened in a new tab.
+import { useState } from "react";
 import type { Guide } from "./context";
 import { plainText } from "./markdown";
 import type { Arranged } from "./openapi";
+import { guideGroups, hrefOf, type DocPage, type Site, type Target } from "./site";
 import type { Translate } from "./strings";
 
+export { guideGroups };
+
 export interface NavItem {
-  id: string;
+  key: string;
   label: string;
+  target: Target;
+  area: DocPage["area"];
   method?: string;
   internal?: boolean;
   children?: NavItem[];
 }
 export interface NavGroup {
   title?: string;
+  area: DocPage["area"];
   items: NavItem[];
 }
 
@@ -21,33 +29,37 @@ export interface Hidden {
   webhooks?: boolean;
 }
 
-/** Guides in their order, grouped by their `group` in order of first appearance; those with none are under "Guides". */
-export function guideGroups(guides: Guide[], fallback: string): { title: string; guides: Guide[] }[] {
-  const sorted = guides.map((g, i) => [g, i] as const).sort(([a, i], [b, j]) => (a.order ?? Infinity) - (b.order ?? Infinity) || i - j).map(([g]) => g);
-  const out = new Map<string, Guide[]>();
-  for (const g of sorted) out.set(g.group ?? fallback, [...(out.get(g.group ?? fallback) ?? []), g]);
-  return [...out].map(([title, list]) => ({ title, guides: list }));
-}
-
-export function buildNav(model: Arranged, guides: Guide[], hide: Hidden, t: Translate): NavGroup[] {
+export function buildNav(site: Site, model: Arranged, guides: Guide[], hide: Hidden, t: Translate): NavGroup[] {
   const nav: NavGroup[] = [];
-  nav.push({ items: [{ id: "/introduction", label: t("overview") }] });
-  for (const g of guideGroups(guides, t("guides"))) nav.push({ title: g.title, items: g.guides.map((x) => ({ id: `/g/${x.slug}`, label: x.title })) });
-  if (model.schemes.length) nav.push({ items: [{ id: "/authentication", label: t("authentication") }] });
+  const top: NavItem[] = [{ key: "overview", label: t("overview"), target: site.overview, area: "reference" }];
+  if (site.authentication) top.push({ key: "authentication", label: t("authentication"), target: site.authentication, area: "reference" });
+  nav.push({ area: "reference", items: top });
+  for (const g of guideGroups(guides, t("guides")))
+    nav.push({ title: g.title, area: "guides", items: g.guides.map((x) => ({ key: `g:${x.slug}`, label: x.title, target: site.guide.get(x.slug)!, area: "guides" as const })) });
   for (const g of model.groups)
     nav.push({
       title: g.name ?? t("api"),
-      items: g.tags.map((s) => ({ id: s.id, label: s.title, children: s.ops.map((o) => ({ id: o.id, label: o.op.summary ?? o.operationId, method: o.method, internal: o.internal })) })),
+      area: "reference",
+      items: g.tags.map((s) => ({
+        key: `t:${s.id}`,
+        label: s.title,
+        target: site.tag.get(s)!,
+        area: "reference" as const,
+        children: s.ops.map((o) => ({ key: `o:${o.id}`, label: o.op.summary ?? o.operationId, target: site.op.get(o)!, area: "reference" as const, method: o.method, internal: o.internal })),
+      })),
     });
   const extra: NavItem[] = [];
-  if (model.webhooks.length && !hide.webhooks) extra.push({ id: "/webhooks", label: t("webhooks"), children: model.webhooks.map((w) => ({ id: w.id, label: w.name })) });
-  if (model.models.length && !hide.models) extra.push({ id: "/models", label: t("models"), children: model.models.map((m) => ({ id: m.id, label: m.name })) });
-  if (extra.length) nav.push({ items: extra });
+  if (site.webhooks && !hide.webhooks)
+    extra.push({ key: "webhooks", label: t("webhooks"), target: site.webhooks, area: "reference", children: model.webhooks.map((w) => ({ key: `w:${w.id}`, label: w.name, target: site.webhook.get(w)!, area: "reference" as const })) });
+  if (site.models && !hide.models)
+    extra.push({ key: "models", label: t("models"), target: site.models, area: "reference", children: model.models.map((m) => ({ key: `m:${m.id}`, label: m.name, target: site.model.get(m)!, area: "reference" as const })) });
+  if (extra.length) nav.push({ area: "reference", items: extra });
   return nav;
 }
 
 export interface SearchItem {
-  id: string;
+  key: string;
+  target: Target;
   kind: "operation" | "guide" | "webhook" | "model" | "section";
   title: string;
   sub: string;
@@ -57,15 +69,24 @@ export interface SearchItem {
   titleHay: string;
 }
 
-const item = (id: string, kind: SearchItem["kind"], title: string, sub: string, text: string, method?: string): SearchItem => ({ id, kind, title, sub, method, hay: `${sub} ${text}`.toLowerCase(), titleHay: title.toLowerCase() });
+const item = (key: string, target: Target, kind: SearchItem["kind"], title: string, sub: string, text: string, method?: string): SearchItem => ({
+  key,
+  target,
+  kind,
+  title,
+  sub,
+  method,
+  hay: `${sub} ${text}`.toLowerCase(),
+  titleHay: title.toLowerCase(),
+});
 
-export function buildIndex(model: Arranged, guides: Guide[], hide: Hidden, t: Translate): SearchItem[] {
+export function buildIndex(site: Site, model: Arranged, guides: Guide[], hide: Hidden, t: Translate): SearchItem[] {
   const out: SearchItem[] = [];
-  for (const g of guides) out.push(item(`/g/${g.slug}`, "guide", g.title, g.group ?? t("guides"), g.text ?? ""));
-  for (const s of model.tags) out.push(item(s.id, "section", s.title, t("section"), plainText(s.description ?? "")));
-  for (const o of model.ops) out.push(item(o.id, "operation", o.op.summary ?? o.operationId, `${o.method.toUpperCase()} ${o.path}`, `${o.operationId} ${o.tag} ${plainText(o.op.description ?? "")}`, o.method));
-  if (!hide.webhooks) for (const w of model.webhooks) out.push(item(w.id, "webhook", w.name, t("webhooks"), `${w.op.summary ?? ""} ${plainText(w.op.description ?? "")}`));
-  if (!hide.models) for (const m of model.models) out.push(item(m.id, "model", m.name, t("models"), plainText(m.schema.description ?? "")));
+  for (const g of guides) out.push(item(`g:${g.slug}`, site.guide.get(g.slug)!, "guide", g.title, g.group ?? t("guides"), g.text ?? ""));
+  for (const s of model.tags) out.push(item(`t:${s.id}`, site.tag.get(s)!, "section", s.title, t("section"), plainText(s.description ?? "")));
+  for (const o of model.ops) out.push(item(`o:${o.id}`, site.op.get(o)!, "operation", o.op.summary ?? o.operationId, `${o.method.toUpperCase()} ${o.path}`, `${o.operationId} ${o.tag} ${plainText(o.op.description ?? "")}`, o.method));
+  if (!hide.webhooks) for (const w of model.webhooks) if (site.webhook.get(w)) out.push(item(`w:${w.id}`, site.webhook.get(w)!, "webhook", w.name, t("webhooks"), `${w.op.summary ?? ""} ${plainText(w.op.description ?? "")}`));
+  if (!hide.models) for (const m of model.models) if (site.model.get(m)) out.push(item(`m:${m.id}`, site.model.get(m)!, "model", m.name, t("models"), plainText(m.schema.description ?? "")));
   return out;
 }
 
@@ -91,58 +112,108 @@ export function search(index: SearchItem[], query: string, limit = 40): SearchIt
   return scored.sort((a, b) => b[0] - a[0]).slice(0, limit).map(([, it]) => it);
 }
 
-function Method({ method }: { method: string }) {
-  return <span className={`fd-method fd-m-${method}`}>{method === "delete" ? "DEL" : method.toUpperCase()}</span>;
+export function Method({ method }: { method: string }) {
+  return (
+    <span className={`fd-method fd-m-${method}`} data-part="method" data-method={method}>
+      {method === "delete" ? "DEL" : method.toUpperCase()}
+    </span>
+  );
 }
 
-export function Nav({ groups, active, t, onNavigate }: { groups: NavGroup[]; active: string | null; t: Translate; onNavigate: () => void }) {
+/** Where the visitor is: the page and, on a page with several sections, the one in view. */
+export interface Here {
+  page: string;
+  anchor: string | null;
+}
+const isAt = (t: Target, here: Here) => t.page === here.page && (t.anchor ? t.anchor === here.anchor : !here.anchor || here.anchor === "");
+/** An item is open when the visitor is on it or on one of its children. */
+const isWithin = (it: NavItem, here: Here): boolean =>
+  isAt(it.target, here) ||
+  (it.target.anchor === "" ? it.target.page === here.page : !!here.anchor && it.target.page === here.page && (here.anchor === it.target.anchor || here.anchor.startsWith(`${it.target.anchor}/`))) ||
+  !!it.children?.some((c) => isAt(c.target, here) || (c.target.anchor === "" && c.target.page === here.page));
+
+export function Nav({
+  groups,
+  here,
+  publicBase,
+  t,
+  onNavigate,
+  collapsible,
+  upper,
+}: {
+  groups: NavGroup[];
+  here: Here;
+  publicBase: string;
+  t: Translate;
+  onNavigate: () => void;
+  collapsible: boolean;
+  upper: boolean;
+}) {
+  const [closed, setClosed] = useState<Set<number>>(() => new Set());
+  const toggle = (i: number) => setClosed((c) => (c.has(i) ? new Set([...c].filter((x) => x !== i)) : new Set([...c, i])));
   return (
-    <nav className="fd-nav" aria-label={t("navigation")}>
-      {groups.map((g, gi) => (
-        <div className="fd-nav-group" key={gi}>
-          {g.title && <h2 className="fd-nav-title">{g.title}</h2>}
-          <ul>
-            {g.items.map((it) => {
-              const here = active === it.id;
-              const within = !!active && (here || active.startsWith(`${it.id}/`));
-              return (
-                <li key={it.id}>
-                  <a href={`#${it.id}`} aria-current={here ? "location" : undefined} data-within={within || undefined} onClick={onNavigate}>
-                    {it.label}
-                  </a>
-                  {within && it.children && (
-                    <ul className="fd-nav-children">
-                      {it.children.map((c) => (
-                        <li key={c.id}>
-                          <a href={`#${c.id}`} aria-current={active === c.id ? "location" : undefined} onClick={onNavigate} title={c.label}>
-                            {c.method && <Method method={c.method} />}
-                            <span>{c.label}</span>
-                            {c.internal && <span className="fd-flag fd-flag-internal">{t("internal")}</span>}
-                          </a>
-                        </li>
-                      ))}
-                    </ul>
-                  )}
-                </li>
-              );
-            })}
-          </ul>
-        </div>
-      ))}
+    <nav className="fd-nav" aria-label={t("navigation")} data-part="nav" data-case={upper ? "upper" : "sentence"}>
+      {groups.map((g, gi) => {
+        const folded = collapsible && closed.has(gi);
+        const listId = `fd-nav-group-${gi}`;
+        return (
+          <div className="fd-nav-group" key={gi} data-part="nav-group">
+            {g.title &&
+              (collapsible ? (
+                <h2 className="fd-nav-title">
+                  <button type="button" className="fd-nav-fold" aria-expanded={!folded} aria-controls={listId} onClick={() => toggle(gi)} title={t("toggleGroup", { name: g.title })}>
+                    <span>{g.title}</span>
+                    <svg className="fd-icon" viewBox="0 0 16 16" aria-hidden="true">
+                      <path d="M4 6l4 4 4-4" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" />
+                    </svg>
+                  </button>
+                </h2>
+              ) : (
+                <h2 className="fd-nav-title">{g.title}</h2>
+              ))}
+            <ul id={listId} hidden={folded}>
+              {g.items.map((it) => {
+                const here_ = isAt(it.target, here);
+                const within = isWithin(it, here);
+                return (
+                  <li key={it.key}>
+                    <a href={hrefOf(publicBase, it.target)} aria-current={here_ ? "page" : undefined} data-within={within || undefined} onClick={onNavigate} data-part="nav-item">
+                      {it.label}
+                    </a>
+                    {within && it.children && it.children.length > 0 && (
+                      <ul className="fd-nav-children">
+                        {it.children.map((c) => (
+                          <li key={c.key}>
+                            <a href={hrefOf(publicBase, c.target)} aria-current={isAt(c.target, here) ? "page" : undefined} onClick={onNavigate} title={c.label} data-part="nav-item">
+                              {c.method && <Method method={c.method} />}
+                              <span>{c.label}</span>
+                              {c.internal && <span className="fd-flag fd-flag-internal">{t("internal")}</span>}
+                            </a>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          </div>
+        );
+      })}
     </nav>
   );
 }
 
-export function SearchResults({ results, query, t, onNavigate }: { results: SearchItem[]; query: string; t: Translate; onNavigate: () => void }) {
+export function SearchResults({ results, query, publicBase, t, onNavigate }: { results: SearchItem[]; query: string; publicBase: string; t: Translate; onNavigate: () => void }) {
   return (
-    <div className="fd-results" aria-label={t("searchResults")} role="region">
+    <div className="fd-results" aria-label={t("searchResults")} role="region" data-part="search-results">
       <p className="fd-note" role="status">
         {results.length === 1 ? t("resultsOne") : results.length ? t("resultsCount", { n: results.length }) : t("searchNone", { q: query })}
       </p>
       <ul>
         {results.map((r) => (
-          <li key={r.id}>
-            <a href={`#${r.id}`} onClick={onNavigate}>
+          <li key={r.key}>
+            <a href={hrefOf(publicBase, r.target)} onClick={onNavigate}>
               {r.method && <Method method={r.method} />}
               <span className="fd-result-title">{r.title}</span>
               <span className="fd-result-sub">{r.sub}</span>
