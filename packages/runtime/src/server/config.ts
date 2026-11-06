@@ -232,7 +232,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   const apiDocsPath = env.API_DOCS_PATH ? env.API_DOCS_PATH.replace(/\/+$/, "") : undefined;
   if (apiDocsPath !== undefined && !/^\/[A-Za-z0-9._~\/-]+$/.test(apiDocsPath)) fail(`API_DOCS_PATH must be a path like "/_api", got "${env.API_DOCS_PATH}"`);
   if (apiDocsPath && reservedPathOf(apiDocsPath)) fail(`API_DOCS_PATH can't be under ${reservedPathOf(apiDocsPath)}, which the engine serves`);
-  const authUrl = env.BETTER_AUTH_URL ?? `http://localhost:${port}`;
+  // Empty is unset, as everywhere else that reads it: an origin is parsed from it (CORS, trusted origins), and "" isn't a URL.
+  const authUrl = env.BETTER_AUTH_URL || `http://localhost:${port}`;
   // Over http, Better Auth's cookies aren't marked Secure; behind a TLS proxy that silently weakens sessions.
   if (!dev && !authUrl.startsWith("https://") && !bool(env.ALLOW_INSECURE_HTTP, false))
     fail(`BETTER_AUTH_URL must be https:// outside dev (got "${authUrl}"). Set ALLOW_INSECURE_HTTP=1 only for local testing.`);
