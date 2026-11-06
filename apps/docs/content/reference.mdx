@@ -442,9 +442,13 @@ type QueryCtx, MutationCtx, ActionCtx; // re-exported from @archlast/forge-runti
 ```ts
 class ForgeGraphQLDriver; // GraphQLModule.forRoot({ driver: ForgeGraphQLDriver, ... })
 interface ForgeGraphQLOptions extends GqlModuleOptions {
-  yoga?: YogaServerOptions; // more options for Yoga: graphiql, maskedErrors, plugins (not schema, graphqlEndpoint or context)
+  yoga?: YogaServerOptions; // more options for Yoga: graphiql, maskedErrors, plugins, cors (not schema, graphqlEndpoint or context)
+  introspection?: boolean; // answer introspection queries; default: in development only
+  jsonOnly?: boolean; // take operations only as application/json (default true); false also takes form-encoded and multipart bodies
 }
 ```
+
+The defaults differ from Yoga's: `cors` allows only the engine's trusted origins (`BETTER_AUTH_URL`'s and `TRUSTED_ORIGINS`) with credentials, and adds nothing when `nest()` has its own `cors`; `graphiql` is on in development only.
 
 `@archlast/forge-runtime/nest/microservices` exports everything `@nestjs/microservices` does (`Transport`, `MessagePattern`, `EventPattern`, `Payload`, `ClientsModule`, `ClientProxyFactory`, ...), except that `Ctx` is the engine's (above) and Nest's transport context decorator is `TransportCtx`.
 

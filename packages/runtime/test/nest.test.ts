@@ -276,6 +276,36 @@ describe("WebSocket gateways", () => {
 describe("GraphQL", () => {
   const gql = async (query: string) => (await (await http("/graphql", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query }) })).json()) as any;
 
+  test("with nest()'s own cors, GraphQL answers CORS as the app's controllers do, and never reflects another origin", async () => {
+    const evil = await http("/graphql?query=%7Bnotes%7Btext%7D%7D", { headers: { origin: "https://evil.example" } });
+    expect(evil.headers.get("access-control-allow-origin")).toBe("https://app.example"); // the cors package's answer, alone
+    const app = await http("/graphql?query=%7Bnotes%7Btext%7D%7D", { headers: { origin: "https://app.example" } });
+    expect(app.headers.get("access-control-allow-origin")).toBe("https://app.example");
+    expect(app.headers.get("access-control-allow-credentials")).toBe("true");
+  });
+
+  test("GraphQL takes operations only as JSON: a form or multipart POST, or a mutation over GET, is refused and not run", async () => {
+    const marker = `csrf-${crypto.randomUUID()}`;
+    const mutation = `mutation { addNote(text: "${marker}") }`;
+    const form = await http("/graphql", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ query: mutation }).toString() });
+    expect(form.status).toBeGreaterThanOrEqual(400);
+    const multipart = new FormData();
+    multipart.set("operations", JSON.stringify({ query: mutation }));
+    multipart.set("map", "{}");
+    expect((await http("/graphql", { method: "POST", body: multipart })).status).toBeGreaterThanOrEqual(400);
+    expect((await http(`/graphql?query=${encodeURIComponent(mutation)}`)).status).toBeGreaterThanOrEqual(400);
+    expect(((await gql("{ notes { text } }")).data.notes as any[]).map((n) => n.text)).not.toContain(marker);
+    // JSON, with or without a charset, and asking for the GraphQL-over-HTTP response type, still works.
+    for (const [type, accept] of [["application/json", "application/json"], ["application/json; charset=utf-8", "application/json"], ["application/json", "application/graphql-response+json"]])
+      expect(((await (await http("/graphql", { method: "POST", headers: { "content-type": type!, accept: accept! }, body: JSON.stringify({ query: "{ notes { text } }" }) })).json()) as any).data.notes).toBeArray();
+  });
+
+  test("introspection is off in production", async () => {
+    const res = await gql("{ __schema { types { name } } }");
+    expect(res.data?.__schema).toBeUndefined();
+    expect(res.errors?.[0]?.message).toMatch(/introspection/i);
+  });
+
   test("queries and mutations run through the ctx, and subscriptions arrive over graphql-ws", async () => {
     const { createClient } = await import("graphql-ws");
     const client = createClient({ url: `${srv.url.replace(/^http/, "ws")}/http/graphql`, webSocketImpl: WebSocket, retryAttempts: 0 });
@@ -558,8 +588,39 @@ describe("Socket.IO gateways", () => {
 
 describe("schema-first GraphQL, mounted as nest(http, AppModule)", () => {
   let sdl: RunningServer;
-  beforeAll(async () => (sdl = await startFixture("fixture-nest-sdl")));
+  beforeAll(async () => (sdl = await startFixture("fixture-nest-sdl", { TRUSTED_ORIGINS: "https://trusted.example" })));
   afterAll(() => sdl.stop({ graceful: false }));
+
+  test("GraphQL answers cross-origin only to the engine's trusted origins, with credentials only for them", async () => {
+    const ask = (origin: string) => http0(sdl, "/graphql?query=%7Bnotes%7Btext%7D%7D", { headers: { origin } });
+    const evil = await ask("https://evil.example");
+    expect(evil.headers.get("access-control-allow-origin")).toBeNull();
+    expect(evil.headers.get("access-control-allow-credentials")).toBeNull();
+    const preflight = await http0(sdl, "/graphql", { method: "OPTIONS", headers: { origin: "https://evil.example", "access-control-request-method": "POST", "access-control-request-headers": "content-type" } });
+    expect(preflight.headers.get("access-control-allow-origin")).toBeNull();
+    // TRUSTED_ORIGINS, and the engine's own address (BETTER_AUTH_URL; here the server's).
+    for (const origin of ["https://trusted.example", sdl.url]) {
+      const ok = await ask(origin);
+      expect(ok.headers.get("access-control-allow-origin")).toBe(origin);
+      expect(ok.headers.get("access-control-allow-credentials")).toBe("true");
+    }
+  });
+
+  test("GraphiQL isn't served in production unless the app asks for it", async () => {
+    const page = await http0(sdl, "/graphql", { headers: { accept: "text/html" } });
+    expect(await page.text()).not.toContain("GraphiQL");
+  });
+
+  test("in development GraphiQL and introspection are on", async () => {
+    const dev = await startServer({ forgeDir: join(import.meta.dir, "fixture-nest-sdl"), dev: true, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), LOG_FORMAT: "json" } });
+    try {
+      expect(await (await http0(dev, "/graphql", { headers: { accept: "text/html" } })).text()).toContain("GraphiQL");
+      const res = (await (await http0(dev, "/graphql", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query: "{ __schema { queryType { name } } }" }) })).json()) as any;
+      expect(res.data.__schema.queryType.name).toBe("Query");
+    } finally {
+      await dev.stop({ graceful: false });
+    }
+  }, 30_000);
 
   test("the resolvers named in notes.graphql answer", async () => {
     const gql = async (query: string) => (await (await http0(sdl, "/graphql", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query }) })).json()) as any;

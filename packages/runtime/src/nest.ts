@@ -78,6 +78,9 @@ interface EngineHost {
   wsClose(sid: string, code?: number, reason?: string): void;
   /** Sends a PubSub event to every function runtime process (this one too). */
   relay(topic: string, payload: unknown): void;
+  /** Development mode, and the browser origins the engine trusts (BETTER_AUTH_URL's, TRUSTED_ORIGINS); an older engine doesn't say. */
+  dev?: boolean;
+  trustedOrigins?: string[];
 }
 const hostOf = () => (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.host")] as EngineHost | undefined;
 
@@ -986,6 +989,8 @@ const METHOD_NAMES: Partial<Record<RequestMethod, string>> = {
 /** Nest's HTTP adapter for archlast-forge. Nest registers its routes here at `init()`, and the engine's /http routing calls `handle()`. */
 class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeResponse> {
   private notFound?: Handler;
+  /** Whether the app answers CORS itself (nest()'s `cors`, `app.enableCors()`): then what it mounts, such as GraphQL, adds none of its own. */
+  corsEnabled = false;
   private readonly router: Router;
 
   constructor(private readonly prefix: string) {
@@ -1112,6 +1117,7 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
   }
   /** `app.enableCors()` and the `cors` option of nest(): the `cors` package, ahead of every route, so preflight requests get their answer. */
   enableCors(options?: Parameters<typeof cors>[0]) {
+    this.corsEnabled = true;
     const run = cors(options);
     this.router.first((req, res, next) => run(req as never, res as never, next));
   }

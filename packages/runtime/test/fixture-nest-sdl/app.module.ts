@@ -18,7 +18,7 @@ export class NotesResolver {
 }
 
 @Module({
-  imports: [GraphQLModule.forRoot<ForgeGraphQLOptions>({ driver: ForgeGraphQLDriver, typePaths: [join(import.meta.dir, "*.graphql")], yoga: { graphiql: false } })],
+  imports: [GraphQLModule.forRoot<ForgeGraphQLOptions>({ driver: ForgeGraphQLDriver, typePaths: [join(import.meta.dir, "*.graphql")]})],
   providers: [NotesResolver],
 })
 export class AppModule {}
