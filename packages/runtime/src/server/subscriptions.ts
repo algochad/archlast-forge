@@ -3,7 +3,7 @@ import type { Bus } from "./bus";
 import { MemoryCache, type Cache } from "./cache";
 import type { CallHeaders } from "./executor";
 import { log } from "./logger";
-import type { FunctionRuntime } from "./runtime";
+import { RuntimeCallError, type FunctionRuntime } from "./runtime";
 import type { CallTelemetry, TraceParent } from "./telemetry/context";
 import { failureOf } from "./telemetry/outcome";
 import { lazyValue } from "./wire";
@@ -319,7 +319,7 @@ export class QueryRunner {
 
 interface Subscription {
   name: string;
-  args: unknown;
+  args: Args;
   topics: string[];
   since: number;
   rerun(): void;
@@ -344,8 +344,11 @@ export class SubscriptionManager {
     private telemetry?: Telemetry,
   ) {}
 
-  /** Yields the result, then a new result after each relevant write. Unchanged results aren't re-sent. */
-  async *subscribe(name: string, args: unknown, headers: CallHeaders, signal?: AbortSignal, requestId?: string): AsyncGenerator<QueryUpdate & { json?: string }> {
+  /**
+   * Yields the result, then a new result after each relevant write. Unchanged results aren't re-sent. `raw`, the arguments' JSON, keys the cache.
+   * Arguments that fail validation end it with the error: no write can make them pass, and a subscription that waited would keep them.
+   */
+  async *subscribe(name: string, args: Args, headers: CallHeaders, signal?: AbortSignal, requestId?: string, raw?: string): AsyncGenerator<QueryUpdate & { json?: string }> {
     let dirty = true;
     let wake: (() => void) | undefined;
     const unsubs = new Map<string, () => void>();
@@ -388,7 +391,7 @@ export class SubscriptionManager {
         let recorded = !root;
         first = false;
         try {
-          const r = await this.queries.run(name, args, headers, requestId, undefined, obs);
+          const r = await this.queries.run(name, args, headers, requestId, raw, obs);
           if (root) this.telemetry!.end(root, { status: 200, telemetry: obs.telemetry, cache: obs.cache, user: obs.user });
           recorded = true;
           // The read set can change with the data, so re-record topics on every run. A query with `access` also watches what its check read for this caller.
@@ -410,6 +413,8 @@ export class SubscriptionManager {
           hash = ((r as { hash?: string }).hash ??= String(Bun.hash(json)));
         } catch (e) {
           if (!recorded) this.telemetry!.end(root!, failureOf(e));
+          // Only the arguments ("args.x must be …"): a `returns` failure depends on the data, and a write can fix it.
+          if (e instanceof RuntimeCallError && e.kind === "validation" && /^args[.[ ]/.test(e.message)) throw e;
           update = this.describeError(e, requestId);
           hash = String(Bun.hash(JSON.stringify(update)));
         }
@@ -431,7 +436,7 @@ export class SubscriptionManager {
   }
 
   list() {
-    return [...this.subs].map(({ name, args, topics, since }) => ({ name, args, topics, since }));
+    return [...this.subs].map(({ name, args, topics, since }) => ({ name, args: argsOf(args), topics, since }));
   }
 
   get size() {

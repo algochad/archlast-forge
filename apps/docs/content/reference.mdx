@@ -898,9 +898,9 @@ Connect to `/rpc` (`ws://` or `wss://`). The handshake carries the cookies and `
 | server to client | `{ "type": "data", "id": "<id>", "data": <QueryUpdate> }` |
 | server to client | `{ "type": "error", "id": "<id>", "error": { "message", "code", "data"?, "requestId" } }` |
 
-`QueryUpdate` is `{ "value": <result> }` when the query ran, or `{ "error": "<message>", "data"?, "requestId" }` when it failed (argument validation, a thrown `ForgeError`, a server error). A failed update does not end the subscription: it re-runs on the next write. The first `data` message is the query's current result, then one follows each relevant write; an update identical to the previous one is not sent again, and writes close together are batched into one re-run (50 ms).
+`QueryUpdate` is `{ "value": <result> }` when the query ran, or `{ "error": "<message>", "data"?, "requestId" }` when it failed (a thrown `ForgeError`, a server error, a result that fails `returns`). A failed update does not end the subscription: it re-runs on the next write. The first `data` message is the query's current result, then one follows each relevant write; an update identical to the previous one is not sent again, and writes close together are batched into one re-run (50 ms).
 
-A `type: "error"` message ends that subscription and means the subscribe request itself was refused: `NOT_FOUND` (`No query "<name>"`; also for mutations, actions and internal functions), `BAD_REQUEST` (`Subscription <id> already exists`), or `TOO_MANY_REQUESTS` (`At most 200 subscriptions per connection`, `MAX_SUBSCRIPTIONS_PER_CONNECTION`).
+A `type: "error"` message ends that subscription and means the subscribe request itself was refused: `NOT_FOUND` (`No query "<name>"`; also for mutations, actions and internal functions), `BAD_REQUEST` (`Subscription <id> already exists`, or arguments that fail validation, with the validation message), `PAYLOAD_TOO_LARGE` (a message over `MAX_SUBSCRIPTION_BYTES`, 64 KiB, or a connection whose live queries would hold more than 16 times that), or `TOO_MANY_REQUESTS` (`At most 200 subscriptions per connection`, `MAX_SUBSCRIPTIONS_PER_CONNECTION`).
 
 The server closes the socket for:
 

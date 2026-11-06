@@ -17,6 +17,7 @@ Defaults here are the ones in the engine's configuration; [Configuration](config
 | Request body, WebSocket message | 8 MiB | `MAX_REQUEST_BYTES` | `413`; the socket is closed. |
 | Requests per client IP | 1200 per minute | `RATE_LIMIT_PER_MINUTE` | `429` with `Retry-After`; a socket is closed with 1008. |
 | Subscriptions per connection | 200 | `MAX_SUBSCRIPTIONS_PER_CONNECTION` | The extra subscription is refused. |
+| `subscribe` message | 64 KiB; 1 MiB for one connection's live queries | `MAX_SUBSCRIPTION_BYTES` (the connection's is 16 times it) | The subscription is refused with `PAYLOAD_TOO_LARGE`. |
 | Slow WebSocket reader | 4 MiB buffered | none | The socket is dropped; the client reconnects. |
 | Documents scanned by `filter` | 100,000 | none | The query fails. |
 | Idle keep-alive connection | 75 s | `IDLE_TIMEOUT_SECONDS` | The connection is closed. |
@@ -74,6 +75,8 @@ During shutdown (after `SIGTERM`) new requests get `503` with `Server is shuttin
 ### Subscriptions
 
 One connection may hold `MAX_SUBSCRIPTIONS_PER_CONNECTION` (200) live queries. The 201st is refused with a message on the socket, `{"type":"error","id":"…","error":{"code":"TOO_MANY_REQUESTS", "message":"At most 200 subscriptions per connection"}}`, and the others keep working. The client deduplicates identical subscriptions, so 200 is rarely reached by accident; if a list renders one `useQuery` per row, query once for the whole list instead.
+
+A live query keeps its arguments for as long as it lives, so they are bounded: a `subscribe` message is at most `MAX_SUBSCRIPTION_BYTES` (64 KiB), and the live queries of one connection hold at most 16 times that (1 MiB) of them. A subscription past either is refused with `PAYLOAD_TOO_LARGE` and the others keep working; pass an id and look the rest up in the query instead of sending large arguments. A subscription whose arguments fail validation is refused the same way, with `BAD_REQUEST` and the validation message, instead of staying open: no write can make them pass.
 
 Each live query is re-run when a write touches something it read, so cost grows with subscribers times write rate. The query cache lets identical queries share one run. See [Reactivity](reactivity.html) and [Caching](caching.html).
 

@@ -349,7 +349,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     subs.rerunAll();
   });
 
-  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
+  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
   const maxBody = config.limits.maxRequestBytes;
   // Files kept on this server's disk are served here; uploads to them, and backups uploaded to the dashboard, may be larger than other requests.
   const localFiles = config.storage === "local" ? (createStorage(config) as LocalStorage) : undefined;
