@@ -490,7 +490,7 @@ archlast-forge import data.jsonl [--replace]        # validated against the sche
 - **Bound everything**: `take(n)`, `paginate`, `count()`; `collect()` only on ranges you know are small. Do not grow an unbounded array inside one document (1 MiB cap): make it a table with an index on the parent.
 - **Counters**: read-modify-write inside one mutation is race-free; "how many X" is cheaper as `.withIndex(...).count()` than a stored counter. One hot row limits write rate.
 - **Soft delete**: use a `done`/`deleted` boolean that is part of the index (`["ownerId", "deleted"]`) and make every query state which it wants.
-- **Status fields** are `v.string()` checked in the handler (there is no literal validator); move a record through steps with a compare-and-set mutation (`if (row.status !== from) return false`) so a repeated step does nothing.
+- **Status fields** are `v.enum("draft", "sent", "paid")` (or a union of `v.literal`s), so the validator refuses anything else; move a record through steps with a compare-and-set mutation (`if (row.status !== from) return false`) so a repeated step does nothing.
 - **Share code with plain functions** that take `ctx` (`QueryCtx`, `MutationCtx`, `ActionCtx`; a `MutationCtx` works where a `QueryCtx` is expected), kept in `forge/_lib/`.
 - **Public vs internal**: anything a client must not trigger (cron targets, scheduled steps, migrations, admin chores) is `internal*`.
 
