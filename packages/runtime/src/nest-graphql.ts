@@ -53,10 +53,10 @@ const jsonOnly = (): Plugin => ({
   },
 });
 
-/** No introspection: graphql-js's own rule, at validation. */
-const noIntrospection = (): Plugin => ({
+/** No introspection unless `allowed()`: graphql-js's own rule, at validation. */
+const noIntrospection = (allowed: () => boolean): Plugin => ({
   onValidate({ addValidationRule }) {
-    addValidationRule(NoSchemaIntrospectionCustomRule);
+    if (!allowed()) addValidationRule(NoSchemaIntrospectionCustomRule);
   },
 });
 
@@ -67,9 +67,10 @@ export class ForgeGraphQLDriver extends AbstractGraphQLDriver<ForgeGraphQLOption
     const { schema, path = "/graphql" } = options;
     // A resolver's context has `req` (for `@Ctx()`, the caller's ActionCtx is on it), plus what `context` adds.
     const context = async (init: Record<string, unknown>) => ({ ...init, ...(typeof options.context === "function" ? await options.context(init) : options.context) });
-    const host = engine();
-    const dev = host?.dev ?? false;
-    const trusted = host?.trustedOrigins ?? [];
+    // Read for each request, not here: the Nest app starts while forge/http.ts loads, before the engine says what it is (runtime-core sets
+    // the host after its migrations), so a driver that read it at start could see nothing: no GraphiQL in development, no trusted origin.
+    const dev = () => engine()?.dev ?? false;
+    const trusted = () => engine()?.trustedOrigins ?? [];
     // Yoga's own default reflects any Origin with credentials: any site could read a signed-in visitor's answers.
     const cors =
       options.yoga?.cors !== undefined
@@ -78,10 +79,11 @@ export class ForgeGraphQLDriver extends AbstractGraphQLDriver<ForgeGraphQLOption
           ? false
           : (request: Request) => {
               const origin = request.headers.get("origin");
-              return origin && trusted.includes(origin) ? { origin: [origin], credentials: true } : false;
+              return origin && trusted().includes(origin) ? { origin: [origin], credentials: true } : false;
             };
-    const plugins = [...(options.jsonOnly === false ? [] : [jsonOnly()]), ...((options.introspection ?? dev) ? [] : [noIntrospection()]), ...(options.yoga?.plugins ?? [])];
-    const yoga = (this.yoga = createYoga({ ...options.yoga, graphiql: options.yoga?.graphiql ?? dev, cors, plugins, schema, graphqlEndpoint: path, context }));
+    const introspection = options.introspection;
+    const plugins = [...(options.jsonOnly === false ? [] : [jsonOnly()]), ...(introspection === true ? [] : [noIntrospection(() => introspection ?? dev())]), ...(options.yoga?.plugins ?? [])];
+    const yoga = (this.yoga = createYoga({ ...options.yoga, graphiql: options.yoga?.graphiql ?? (() => dev()), cors, plugins, schema, graphqlEndpoint: path, context }));
 
     const serve = async (req: NestRequest, res: NestResponse) => {
       // The engine already read the body (to parse it for controllers), so yoga gets it again from rawBody, on the path Nest sees.
