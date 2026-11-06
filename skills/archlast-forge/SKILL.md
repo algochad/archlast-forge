@@ -1,6 +1,6 @@
 ---
 name: archlast-forge
-description: Build applications with archlast-forge, a self-hosted reactive TypeScript backend on Bun (schema, queries, mutations, actions, live queries, Better Auth, NestJS services and controllers, Forge RPC). Use whenever you create, change or review code in a project that has archlast-forge.json, a forge/ folder with schema.ts, or @archlast/forge-* dependencies, or when asked to create a full-stack app, backend, monorepo or microservices with archlast-forge. Its conventions are mandatory, not suggestions - every feature uses the blueprint (a Nest module, services and controller in forge/_modules/<feature>/, thin function files, registration in _modules/index.ts and http.ts) and the built-in systems (pagination, live queries, auth, uploads, validation, errors, scheduling, webhooks, API docs, security headers, the web application firewall) and Better Auth's plugins (OAuth provider, organizations for multi-tenant SaaS) instead of custom code or wrappers.
+description: Build applications with archlast-forge, a self-hosted reactive TypeScript backend on Bun (live queries, Better Auth, NestJS, Forge RPC). Use whenever you create, change or review code in a project with archlast-forge.json, a forge/ folder with schema.ts, or @archlast/forge-* dependencies, or when asked to create a full-stack app, backend, monorepo or microservices with archlast-forge. Its conventions are mandatory, not suggestions - every feature uses the blueprint (a Nest module, services and controller in forge/_modules/<feature>/, thin function files, registration in _modules/index.ts and http.ts) and the built-in systems (pagination, live queries, auth, uploads, validation, errors, scheduling, webhooks, API docs, security headers, the WAF) and Better Auth's plugins (OAuth provider, organizations) instead of custom code or wrappers. Commands: `/archlast-forge feature|page|service|auth|webhooks|api-docs|review|adopt|test|deploy|upgrade|doctor`, or the same asked in words ("review my code", "deploy this").
 ---
 
 # archlast-forge
@@ -15,6 +15,25 @@ archlast-forge is a Convex-style backend you self-host: you declare a schema and
 - **Existing code:** follow the project's own `_modules/` conventions (naming, shared modules). Do not copy code that breaks the blueprint (the scaffold's starter `forge/messages.ts` is a demo written as plain functions, not the pattern): new features use the blueprint whatever the old ones do. Tell the user when old code does not follow it and offer to move it.
 - **The user's explicit instructions win** over this file. When this file does not cover a case, ask, or follow the closest documented pattern; never invent a structure.
 - If a reference and the project's code or the library disagree, trust the code and tell the user.
+
+## 0b. Commands
+
+Twelve workflows the user can name. In Claude Code they are `/archlast-forge <command> [arguments]` (the words after the skill's name); in any agent, a request that matches one ("review my forge code", "set up 2FA", "why won't it start") runs it too. **When a request names or matches a command, read its file and follow it step by step**, through its checks to its report. A command orders the work; the house rules below still apply to every line it writes. With no command, or one not listed, show this table and ask which.
+
+| Command                                    | Does                                                                                                | File                                                   |
+| ------------------------------------------ | --------------------------------------------------------------------------------------------------- | ------------------------------------------------------ |
+| `feature <name> [what]`                    | a whole feature by the blueprint: table, `_modules/<name>/`, thin functions, registration, a test    | [feature.md](references/commands/feature.md)           |
+| `page <route> [what]`                      | a full-stack page: loader, live data, forms and errors, hydration-safe                              | [page.md](references/commands/page.md)                 |
+| `service <name> [what it owns]`           | a monorepo microservice with its data, its Forge RPC router and the main app's typed caller          | [service.md](references/commands/service.md)           |
+| `auth <plugin>`                            | a Better Auth plugin end to end: 2FA, passkeys, organizations, OAuth provider or client, social     | [auth.md](references/commands/auth.md)                 |
+| `webhooks <send\|receive\|both>`           | webhooks on the engine's module: signed, retried, logged out; verified, once-only in                | [webhooks.md](references/commands/webhooks.md)         |
+| `api-docs [public]`                        | a documented public REST reference: `http.docs()`, route docs, validator constraints, guides         | [api-docs.md](references/commands/api-docs.md)         |
+| `review [path\|changed\|all]`              | an audit against the house rules: findings as file:line with the rule and the fix; changes nothing  | [review.md](references/commands/review.md)             |
+| `adopt <file\|feature>`                    | old code moved into the blueprint with the API unchanged, behavior pinned by tests first             | [adopt.md](references/commands/adopt.md)               |
+| `test <feature>`                           | `createTestBackend` tests: main path, who may, validation, errors, pagination, side effects         | [test.md](references/commands/test.md)                 |
+| `deploy [check]`                           | a production preflight, a backup, the deploy (after a yes) and live checks                           | [deploy.md](references/commands/deploy.md)             |
+| `upgrade [version]`                        | `archlast-forge upgrade` with the release notes in between applied, then every check               | [upgrade.md](references/commands/upgrade.md)           |
+| `doctor [symptom]`                         | a diagnosis in order (tools, versions, dependencies, codegen, types, the engine), stopping at the cause | [doctor.md](references/commands/doctor.md)         |
 
 ## 1. House rules (every one, every time)
 

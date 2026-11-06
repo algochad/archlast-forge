@@ -168,10 +168,11 @@ export class TasksController {
     query: { cursor: v.optional(v.string()), limit: v.optional(v.number({ int: true, min: 1, max: 100 })) }, // a record of validators
     summary: "My tasks, newest first, a page at a time",
   })
-  list(@Ctx() ctx: ActionCtx, @Query() q: { cursor?: string; limit?: number }) {
+  list(@Ctx() ctx: ActionCtx, @Query() q: { cursor?: string; limit?: string }) {
     // The same paginated query the app uses: pass `continueCursor` back as `cursor` for the next page.
+    // @Contract checked `limit` as a number, but the handler gets the query string's text: convert it.
     return ctx.runQuery(api.tasks.list, {
-      paginationOpts: { numItems: q.limit ?? 20, cursor: q.cursor ?? null },
+      paginationOpts: { numItems: Number(q.limit ?? 20), cursor: q.cursor ?? null },
     });
   }
 
@@ -349,7 +350,7 @@ test("tasks page through the built-in pagination, newest first, and stay private
 find forge -path forge/node_modules -prune -o -path forge/_modules -prune -o \( -name "*.module.ts" -o -name "*.service.ts" -o -name "*.controller.ts" -o -name "*.gateway.ts" -o -name "*.resolver.ts" \) -print
 # 2. Function files that do not inject a service: must print nothing (a monorepo main app: the CLI's <service>.ts; a new project: the starter's
 #    messages.ts until you move it into _modules/messages)
-grep -L "inject(" forge/[!_]*.ts | grep -vE "/(schema|auth|crons|http)\.ts$|\.router\.ts$"
+find forge -path forge/node_modules -prune -o -name "*.ts" -not -path "*/_*" -print | grep -vE "^forge/(schema|auth|crons|http|webhooks)\.ts$|\.router\.ts$" | xargs -r grep -L "inject("
 # 3. Hand-made pagination in services: must print nothing
 grep -rnE "\.skip\(|\.slice\(|offset" forge/_modules --include=*.service.ts
 bun run codegen && bun run typecheck && bun test
