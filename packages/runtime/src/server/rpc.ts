@@ -107,20 +107,30 @@ export const readJson = async (req: Request, param: string, url: URL, max = Infi
 
 const encoder = new TextEncoder();
 
-/** A cross-site form can send a POST without a preflight, but not one with a JSON content type. */
+/**
+ * A cross-site form or fetch can send a POST without a preflight, but not one with a JSON content type. The media type is compared whole:
+ * `text/plain; x=application/json` is a type a page may send without one.
+ */
 export const requireJson = (req: Request) => {
-  if (req.method === "POST" && !req.headers.get("content-type")?.includes("application/json")) throw new HttpError("UNSUPPORTED_MEDIA_TYPE", "Send application/json");
+  if (req.method === "POST" && req.headers.get("content-type")?.split(";")[0]!.trim().toLowerCase() !== "application/json")
+    throw new HttpError("UNSUPPORTED_MEDIA_TYPE", "Send application/json");
 };
 
 export interface SocketData extends Context {
   ip?: string;
   /** Live subscriptions on this connection, by the client's id. */
   live: Map<string, AbortController>;
+  /** The JSON size of each live subscription's subscribe message, by id: what the connection holds for them. */
+  held?: Map<string, number>;
+  /** Whose connection count this socket is in (MAX_CONNECTIONS_PER_IP). */
+  slot?: string;
 }
 
 export interface RpcOptions {
   dev: boolean;
   maxSubscriptionsPerConnection: number;
+  /** The JSON size of one subscribe message; the live subscriptions of one connection may hold 16 times this. */
+  maxSubscriptionBytes?: number;
   maxRequestBytes?: number;
   telemetry?: Telemetry;
 }
@@ -182,26 +192,35 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
         return ws.close(1003, "Messages are JSON");
       }
       const { live, requestId } = ws.data;
+      const held = (ws.data.held ??= new Map());
       const id = m.id;
       if (typeof id !== "string" || id.length > 64) return ws.close(1008, "Messages need a string id");
-      if (m.type === "unsubscribe") return void (live.get(id)?.abort(), live.delete(id));
+      if (m.type === "unsubscribe") return void (live.get(id)?.abort(), live.delete(id), held.delete(id));
       if (m.type !== "subscribe") return ws.close(1008, "Unknown message type");
       const name = String(m.name);
       const refuse = (code: ErrorCode, message: string) => send(ws, { type: "error", id, error: { message, code, requestId } satisfies ErrorBody });
       if (live.has(id)) return refuse("BAD_REQUEST", `Subscription ${id} already exists`);
       if (kinds.get(name) !== "query") return refuse("NOT_FOUND", `No query "${name}"`);
       if (live.size >= opts.maxSubscriptionsPerConnection) return refuse("TOO_MANY_REQUESTS", `At most ${opts.maxSubscriptionsPerConnection} subscriptions per connection`);
+      // A subscription keeps its arguments for as long as it lives, so they are bounded, and kept as their JSON text: parsed, a small message can take many times its size in memory.
+      const max = opts.maxSubscriptionBytes ?? 64 * 1024;
+      if (raw.length > max) return refuse("PAYLOAD_TOO_LARGE", `A subscribe message is at most ${max} bytes (MAX_SUBSCRIPTION_BYTES)`);
+      let holding = raw.length;
+      for (const n of held.values()) holding += n;
+      if (holding > max * 16) return refuse("PAYLOAD_TOO_LARGE", `The live queries of one connection hold at most ${max * 16} bytes of arguments (16 × MAX_SUBSCRIPTION_BYTES)`);
+      const args = JSON.stringify(m.args ?? {});
       const stop = new AbortController();
       live.set(id, stop);
+      held.set(id, raw.length);
       void (async () => {
         try {
           // A value comes with its JSON, built once for every subscriber of the query, so a fan-out to many sockets serializes it once.
-          for await (const { json, ...data } of subs.subscribe(name, m.args ?? {}, ws.data.headers, stop.signal, requestId))
+          for await (const { json, ...data } of subs.subscribe(name, () => JSON.parse(args), ws.data.headers, stop.signal, requestId, args))
             json === undefined ? send(ws, { type: "data", id, data }) : void ws.send(`{"type":"data","id":${JSON.stringify(id)},"data":{"value":${json}}}`);
         } catch (e) {
           if (!stop.signal.aborted) send(ws, { type: "error", id, error: toPublicError(e, requestId, opts.dev, { function: name }) });
         } finally {
-          if (live.get(id) === stop) live.delete(id);
+          if (live.get(id) === stop) (live.delete(id), held.delete(id));
         }
       })();
     },
@@ -209,6 +228,7 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
     close(ws: ServerWebSocket<SocketData>) {
       for (const stop of ws.data.live.values()) stop.abort();
       ws.data.live.clear();
+      ws.data.held?.clear();
     },
   };
 }

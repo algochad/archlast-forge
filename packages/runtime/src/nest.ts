@@ -675,9 +675,10 @@ const bytes = (chunk: unknown, encoding?: BufferEncoding) =>
 /** "json" → application/json, as Express's `res.type()` does. */
 const mime = (type: string) => (type.includes("/") ? type : Bun.file(`x.${type.replace(/^\./, "")}`).type);
 
+/** Query or form fields; a repeated name is an array. Only the object's own keys count (`?toString=x` is a field), and `__proto__` is dropped, as `qs` does. */
 const toObject = (params: URLSearchParams) => {
   const out: Record<string, string | string[]> = {};
-  for (const [k, v] of params) out[k] = k in out ? [...[out[k]!].flat(), v] : v;
+  for (const [k, v] of params) if (k !== "__proto__") out[k] = Object.hasOwn(out, k) ? [...[out[k]!].flat(), v] : v;
   return out;
 };
 

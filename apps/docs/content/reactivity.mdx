@@ -119,6 +119,7 @@ Startup refuses `REPLICAS > 1` without Redis and Postgres. See [Deployment](depl
 | Limit | Default | When it's hit |
 |---|---|---|
 | Subscriptions per connection (`MAX_SUBSCRIPTIONS_PER_CONNECTION`) | 200 | the extra `subscribe` gets an `error` message |
+| `subscribe` message size (`MAX_SUBSCRIPTION_BYTES`) | 64 KiB, and 1 MiB for all of one connection's live queries | the `subscribe` gets a `PAYLOAD_TOO_LARGE` `error` message |
 | Result size (`MAX_RESULT_BYTES`) | 8 MiB | the query fails with an error update |
 | WebSocket message size (`MAX_REQUEST_BYTES`) | 8 MiB | rejected |
 | Requests per IP (`RATE_LIMIT_PER_MINUTE`) | 1200 | counted per WebSocket message (every `subscribe` and `unsubscribe`) as well as per HTTP call; over the limit, the socket closes with 1008 |

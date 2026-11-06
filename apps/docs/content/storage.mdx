@@ -79,7 +79,7 @@ profiles: defineTable({ userId: v.id("users"), avatarId: v.optional(v.id("_stora
 const url = await ctx.storage.getUrl(profile.avatarId); // string | null
 ```
 
-`getUrl` returns a presigned GET URL, or `null` when no `_storage` row has that id. It does not check that the object exists in the bucket: a row whose upload never happened gives a URL that answers 404.
+`getUrl` returns a presigned GET URL, or `null` when no `_storage` row has that id (an id of another table is `null` too). It does not check that the object exists in the bucket: a row whose upload never happened gives a URL that answers 404.
 
 - **Every URL is signed and expires after one hour** (3600 s). The expiry isn't configurable from `ctx.storage`.
 - **There is no public mode.** The engine always signs. Anyone holding the URL can read the file until it expires, whether or not they are signed in, so the signature, not your auth, is the access control. Check access in the function that hands out the URL: only return it to people who may see the file.
@@ -93,9 +93,11 @@ const url = await ctx.storage.getUrl(profile.avatarId); // string | null
 await ctx.storage.delete(storageId);
 ```
 
-Deleting removes the `_storage` row **inside your transaction** and deletes the object from the bucket **after the transaction commits**, so a mutation that fails afterwards keeps both. Deleting an id that doesn't exist does nothing. The document that referenced the file keeps a dangling id unless you clear it too.
+Deleting removes the `_storage` row **inside your transaction** and deletes the object from the bucket **after the transaction commits**, so a mutation that fails afterwards keeps both. Deleting an id that doesn't exist, or that isn't a `_storage` id, does nothing. The document that referenced the file keeps a dangling id unless you clear it too.
 
 The reverse isn't automatic: deleting the document that points at a file does not delete the file. Do both in the same mutation (see the avatar example). Deleting a `_storage` document from the dashboard's Data page does delete the object as well, the same as the Files page's **Delete**.
+
+A `_storage` row's `key` is the object's name as `generateUploadUrl` made it: letters, digits, `.`, `_` and `-`, at most 200 characters, never a path. A write that sets another `key` (from code or the dashboard's Data page) fails validation, and storage refuses to sign, read or delete such a key, so a row can't name an object outside the files, such as a backup under `_backups/` in the same bucket.
 
 ## `S3_PUBLIC_ENDPOINT`
 

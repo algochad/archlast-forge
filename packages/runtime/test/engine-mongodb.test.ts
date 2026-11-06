@@ -305,7 +305,7 @@ describe.if(Boolean(url))("accounts and the CLI on MongoDB", () => {
         BETTER_AUTH_SECRET: "s".repeat(32),
         ALLOW_INSECURE_HTTP: "1",
         RATE_LIMIT_PER_MINUTE: "100000",
-        ADMIN_KEY: "root-key",
+        ADMIN_KEY: "root-key-for-tests",
         DASHBOARD: "on",
       },
     });
@@ -358,7 +358,7 @@ describe.if(Boolean(url))("accounts and the CLI on MongoDB", () => {
       const accounts = (await (
         await fetch(
           `${srv.url}/_admin/docs?input=${encodeURIComponent(JSON.stringify({ table: "accounts" }))}`,
-          { headers: { "x-admin-key": "root-key" } },
+          { headers: { "x-admin-key": "root-key-for-tests" } },
         )
       ).json()) as any;
       expect(accounts.page.find((a: any) => a.accountId).password).toBe(

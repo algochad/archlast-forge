@@ -172,6 +172,15 @@ for (const [label, make] of dbAdapters) {
       const second: any = await read((s) => s.query("notes").withIndex("by_tag_n", (q: any) => q.eq("tag", "odd")).paginate({ numItems: 2, cursor: first.continueCursor }));
       expect(ns(second.page)).toEqual([5, 7]);
       await expect(read((s) => s.query("notes").paginate({ numItems: 2, cursor: "garbage" }))).rejects.toThrow("Invalid pagination cursor");
+      if (db.dialect.name === "mongodb") {
+        // A cursor comes from the client: an operator in it is a value to compare with, not part of the filter ({ "$ne": null } matched every row).
+        const forged = JSON.parse(Buffer.from(first.continueCursor, "base64url").toString());
+        forged[0] = { $ne: null };
+        forged[1] = 0;
+        const cursor = Buffer.from(JSON.stringify(forged)).toString("base64url");
+        const page: any = await read((s) => s.query("notes").withIndex("by_tag_n", (q: any) => q.eq("tag", "odd")).paginate({ numItems: 10, cursor }));
+        expect(ns(page.page)).toEqual([]);
+      }
     });
 
     test("skip: numbered pages, skipped in the database unless a filter has to see them", async () => {

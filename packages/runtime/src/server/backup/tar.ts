@@ -184,6 +184,8 @@ export async function* readTarGz(source: ReadableStream<Uint8Array>): AsyncGener
     const type = String.fromCharCode(h[156]!);
     const pad = (BLOCK - (size % BLOCK)) % BLOCK;
     if (type === "x" || type === "L") {
+      // A name, and the extended header that carries one: a header that claims more would have this hold all of it in memory.
+      if (size > 64 * 1024) throw new Error(`A ${type === "x" ? "PAX" : "GNU long-name"} header of ${size} bytes: not a backup archive`);
       const body = (await pull.take(size)) ?? new Uint8Array(0);
       const text = decoder.decode(type === "L" ? body.subarray(0, body.indexOf(0) < 0 ? size : body.indexOf(0)) : body);
       longName = type === "L" ? text : /(?:^|\n)\d+ path=([^\n]*)\n/.exec(text)?.[1];

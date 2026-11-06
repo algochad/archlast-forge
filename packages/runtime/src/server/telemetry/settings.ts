@@ -3,6 +3,7 @@
 import type { Db } from "../db/types";
 import { countUnder, merge, quantile, type Histogram } from "./histogram";
 import { TABLES as T } from "./store";
+import { destinationOf, sendTo } from "../../webhook-destination";
 
 const id = (prefix: string) => `${prefix}_${crypto.randomUUID().replaceAll("-", "").slice(0, 20)}`;
 const sha256 = (s: string) => new Bun.CryptoHasher("sha256").update(s).digest("hex");
@@ -93,15 +94,23 @@ export async function sloStatus(db: Db, slo: Record<string, any>, now = Date.now
   };
 }
 
+/** Where alert notifications may go: a public address, over http or https. */
+const ALERT_DESTINATIONS = { allowHttp: true, allowPrivateNetworks: false, allowedAddresses: [] };
+
 export function buildSettings(db: Db, opts: { deliver?: (url: string, body: object) => Promise<string> } = {}) {
   const deliver =
     opts.deliver ??
     (async (url: string, body: object) => {
+      // As the outgoing webhooks are sent: no private, loopback or link-local address, to the address that was checked, no redirects. What
+      // comes back says no more than that, so "Send a test" can't map the network behind the engine.
+      const to = await destinationOf(url, ALERT_DESTINATIONS);
+      if ("blocked" in to) return "failed: the address isn't allowed (private, loopback or link-local)";
+      if ("error" in to) return "failed: the host couldn't be resolved";
       try {
-        const res = await fetch(url, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), signal: AbortSignal.timeout(10_000) });
+        const res = await sendTo(to, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body), redirect: "manual", signal: AbortSignal.timeout(10_000) });
         return res.ok ? "delivered" : `failed: HTTP ${res.status}`;
-      } catch (e) {
-        return `failed: ${(e as Error).message}`;
+      } catch {
+        return "failed: no answer";
       }
     });
 

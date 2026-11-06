@@ -90,7 +90,8 @@ export const authTables = {
 };
 
 export const systemTables = {
-  _storage: defineTable({ key: v.string(), contentType: v.optional(v.string()) }),
+  // `key` names the object in storage: what generateUploadUrl makes (a UUID), never a path (the KEY of server/storage.ts).
+  _storage: defineTable({ key: v.string({ pattern: "^[A-Za-z0-9][A-Za-z0-9._-]{0,199}$" }), contentType: v.optional(v.string()) }),
 };
 
 export type BuiltinTables = typeof authTables & typeof systemTables;
