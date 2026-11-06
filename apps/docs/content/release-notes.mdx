@@ -4,6 +4,21 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+### Security
+
+- **Live queries hold bounded arguments.** A `subscribe` message is at most `MAX_SUBSCRIPTION_BYTES` (new, 64 KiB), and one WebSocket's live queries hold at most 16 times that; past either the subscription is refused with `PAYLOAD_TOO_LARGE`. A subscription whose arguments fail validation now ends with a `BAD_REQUEST` error message instead of an error update that stayed open: before, anyone could open subscriptions with large invalid arguments and make the server hold many times their size until the socket closed (20 messages of 4 MB held about 2 GB). See [limits](limits.html#subscriptions).
+- **A `_storage` row can't name an object outside the files.** Its `key` must have the shape `generateUploadUrl` makes, and S3 storage refuses to sign, read or delete any other key. An admin could write a row naming a backup under `_backups/` in the same bucket (owner-only everywhere else, and it holds the variables and settings), then download or delete it from the Files page. `ctx.storage.getUrl` and `delete` take only `_storage` ids.
+- **`POST /rpc` compares the media type whole.** `text/plain; x=application/json`, which a cross-site page may send without a preflight, was accepted as JSON.
+- **Webhooks connect to the addresses they checked.** The host is resolved once per attempt and the request goes to those addresses (the host still names TLS and `Host`), so a DNS answer that changes in between can't send it elsewhere; a host that can't be resolved isn't called (the attempt fails and is retried); `::` and NAT64 addresses of private or metadata IPv4 are blocked, and `fec0::/10` is private.
+- **The firewall skips only what the engine or the app's files answer.** A static-looking path (`/posts/x.png?q=…`) that a loader or a route answers is inspected, and so are `/_dashboard`, `/_storage`, `/_csp` and `/_telemetry` where the engine doesn't serve them (dashboard off, S3 storage, a `GET`). App hosts can say which paths are their files (`AppHost.serves`; the framework does).
+- `ALLOW_CUSTOM_FUNCTIONS` can only be set in the environment, no longer from the dashboard.
+- `ADMIN_KEY` must be at least 16 characters outside dev, and wrong `x-admin-key` guesses count against the sign-in rate limit. A dashboard session signed in with the key ends when the key changes, and setting an admin's password again signs that account out everywhere.
+- Alert webhooks go only to public addresses, without following redirects, and **Send a test** no longer reports network errors.
+- `/ready` no longer includes the load error outside dev.
+- Rate limits count an IPv6 client by its `/64`, and on Redis a counter that lost its expiry gets one instead of locking the client out.
+- MongoDB: an operator object in a pagination cursor or a `v.any()` argument is compared as a value instead of being part of the filter.
+- The dashboard hides Better Auth plugin secrets (JWKS private keys, 2FA secrets, OAuth client secrets and tokens, API keys) and shows source lines only from `forge/` and `app/`; Nest's query objects count only their own keys; backup archives with oversized PAX headers are refused.
+
 ## 0.19.0
 
 ### Changed
