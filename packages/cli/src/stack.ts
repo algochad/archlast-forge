@@ -9,6 +9,8 @@ import { banner, c, ok, task, warn } from "./ui";
 const DOCKER = process.env.DOCKER ?? "docker";
 
 const composeFile = (root: string) => join(root, "compose.yaml");
+/** compose.yaml, and compose.override.yaml when there is one (a monorepo's apps have one), as `docker compose` alone would read them. */
+const composeFiles = (root: string) => ["-f", composeFile(root), ...(existsSync(join(root, "compose.override.yaml")) ? ["-f", join(root, "compose.override.yaml")] : [])];
 
 function requireStack(root: string) {
   if (!dockerAvailable()) fail("Docker isn't available. Install it and make sure it is running; the stack runs in containers.");
@@ -18,7 +20,7 @@ function requireStack(root: string) {
 
 /** Runs `docker compose` for the project without blocking the spinner. */
 async function compose(root: string, args: string[], opts: { inherit?: boolean } = {}) {
-  const proc = Bun.spawn([DOCKER, "compose", "--project-directory", root, "-f", composeFile(root), ...args], {
+  const proc = Bun.spawn([DOCKER, "compose", "--project-directory", root, ...composeFiles(root), ...args], {
     env: { ...process.env, ENGINE_IMAGE: process.env.ENGINE_IMAGE ?? engineImage() },
     stdin: "ignore",
     stdout: opts.inherit ? "inherit" : "pipe",
@@ -44,7 +46,7 @@ const envValue = (root: string, key: string) => rawEnvValue(root, key)?.replace(
 /** The running app container of the project's compose stack, for commands that have to run inside it. */
 export function appContainer(root: string): string | undefined {
   if (!existsSync(composeFile(root)) || !dockerAvailable()) return undefined;
-  const p = Bun.spawnSync([DOCKER, "compose", "--project-directory", root, "-f", composeFile(root), "ps", "-q", "app"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...process.env, ENGINE_IMAGE: process.env.ENGINE_IMAGE ?? engineImage() } });
+  const p = Bun.spawnSync([DOCKER, "compose", "--project-directory", root, ...composeFiles(root), "ps", "-q", "app"], { stdout: "pipe", stderr: "ignore", stdin: "ignore", env: { ...process.env, ENGINE_IMAGE: process.env.ENGINE_IMAGE ?? engineImage() } });
   return p.exitCode === 0 ? p.stdout.toString().trim().split("\n")[0] || undefined : undefined;
 }
 
