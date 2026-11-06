@@ -173,11 +173,23 @@ export interface RunOptions {
   envFile?: string;
 }
 
+/** The user the engine image runs as: the base image's `bun`. */
+const ENGINE_UID = "1000:1000";
+
+/**
+ * Engine images before the engine stopped running as root made their volumes root's: hand one that is to the engine's user, once (a
+ * container of the same image, as root, that only does that).
+ */
+function ownVolume(image: string, volume: string) {
+  docker(["run", "--rm", "--user", "root", "--entrypoint", "sh", "-v", `${volume}:/v`, image, "-c", `[ "$(stat -c %u:%g /v)" = "${ENGINE_UID}" ] || chown -R ${ENGINE_UID} /v`]);
+}
+
 /** Runs the engine container. In dev, forge/ is mounted read-only and the engine watches it. */
 export function runEngine(o: RunOptions) {
   const name = containerName(o.forgeDir, o.dev);
   const image = o.image ?? ensureEngineImage();
   docker(["rm", "-f", name]);
+  for (const volume of [`${name}-data`, ...(o.dev ? [`${name}-modules`] : [])]) ownVolume(image, volume);
   const serviceEnv = startServices(name, o.services ?? []).env;
   const env = { PORT: "3000", DATA_DIR: "/data", ...serviceEnv, ...o.env };
   const envFile = o.envFile ?? join(o.forgeDir, ".env");
