@@ -43,6 +43,27 @@ The skill is a short `SKILL.md` that the agent loads when the task is about arch
 
 It is written against the code, the starters and these docs, and it repeats the rules that the engine enforces: `src/` and `app/` import only `forge/_generated`, queries and mutations do no I/O, a service class never reaches the database with a ctx it wasn't given, and Forge RPC is backend to backend only. The layout it asks for is the one in [Folder layout](nest.html#folder-layout).
 
+## Commands
+
+The skill also has twelve commands: workflows that run a whole task the same way every time, through to their checks and a report. In Claude Code, type the skill's name and the command, `/archlast-forge review` or `/archlast-forge feature invoices "customers' invoices, paid or not"`. In any agent, asking for the same in words runs it too ("review my forge code", "set up two-factor sign-in", "why won't it start").
+
+| Command | What it does |
+|---|---|
+| `feature <name> [what]` | builds a whole feature by the blueprint: the table and indexes, `forge/_modules/<name>/`, the thin function file, the registration and a test |
+| `page <route> [what]` | builds a full-stack page: the loader, live data with the built-in hooks, forms and errors, nothing that breaks hydration |
+| `service <name> [what it owns]` | adds a microservice to a monorepo with `add service`, gives it its data and a Forge RPC router, and wires the main app's typed caller |
+| `auth <plugin>` | sets up a Better Auth plugin end to end: two-factor, passkeys, organizations for multi-tenant apps, the OAuth provider, signing in with another app, social sign-in |
+| `webhooks <send\|receive\|both>` | sends signed, retried webhooks from the mutation that makes the change, or receives them verified and applied once, on the engine's module |
+| `api-docs [public]` | makes the REST API a documented public reference: `http.docs()`, every route's summary and errors, constraints in the validators, guides |
+| `review [path\|changed\|all]` | audits code against the house rules and reports each problem as file:line with the rule and the fix, changing nothing until you pick what to fix |
+| `adopt <file\|feature>` | moves old code (the starter's `messages.ts`, controllers in the wrong place) into the blueprint, with tests written first so the API and behavior stay the same |
+| `test <feature>` | writes the tests a feature needs with `createTestBackend`: the main path, who may, validation, the errors callers see, pagination, scheduled work |
+| `deploy [check]` | checks every production setting, takes a backup, deploys once you say yes, and checks the live app; `check` stops after the preflight |
+| `upgrade [version]` | runs `archlast-forge upgrade`, reads the release notes in between and applies what they call for, then runs every check |
+| `doctor [symptom]` | diagnoses a broken project in order (tools, versions, dependencies, codegen, types, the engine) and stops at the cause with its fix |
+
+The commands that change deployed systems or data (`deploy`, `upgrade`'s backup, `doctor`'s fixes that touch data) ask before they do it. Each command is a file in the skill's `references/commands/`.
+
 ## Reading the docs as Markdown
 
 An agent that needs more than a reference file holds should read the page itself. The docs are built for that:

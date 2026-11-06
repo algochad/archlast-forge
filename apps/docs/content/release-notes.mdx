@@ -66,6 +66,8 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 - **Fixed: a Nest handler got its `@Contract`'s query and path values as text.** `@Contract` converted them to check them (`?limit=2` against `v.number()`), then gave the handler the original strings, so the feature blueprint's `numItems: q.limit ?? 20` sent `"2"` to a paginated query, which refused it. The handler now gets the values as they were checked: numbers for `v.number()`, booleans for `v.boolean()`, a literal's value. **A handler that compared or parsed them as text needs a change**: `@Query("express") express === "true"` is now `express === true`, and `Number(q.limit)` still works. Values the contract doesn't name, and routes without one, are unchanged. See [Contract](nest.html#contract-validators-and-the-openapi-document).
 
+- **The agent skill has commands**: twelve workflows that run a whole task through to its checks and a report. In Claude Code they are `/archlast-forge <command>`; in any agent, asking for the same in words runs them. Build: `feature`, `page`, `service`, `auth`, `webhooks`, `api-docs`. Quality: `review` (an audit against the house rules, as file:line findings with fixes), `adopt` (old code into the blueprint, the API unchanged), `test`. Operate: `deploy` (a production preflight, a backup, the deploy after a yes, live checks), `upgrade` (with the release notes in between applied), `doctor` (a diagnosis that stops at the cause). Update the skill with `npx skills update`. See [Agent skill](agent-skill.html#commands).
+
 ## 0.19.0
 
 ### Changed
