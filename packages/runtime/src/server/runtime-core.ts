@@ -244,6 +244,9 @@ export async function startCore(opts: {
     wsClose: (sid: string, code?: number, reason?: string) => send({ t: "ws", op: "close", sid, code, reason }),
     relay: (topic: string, payload: unknown) => send({ t: "relay", topic, payload }),
     worker,
+    // What the engine's own routes allow, for what nest-graphql serves: development tools, and the origins that may call with credentials.
+    dev: config.dev,
+    trustedOrigins: [new URL(config.authUrl).origin, ...config.trustedOrigins],
   };
   const auth = createAuth(exec, project.tables, project.authOptions, config);
   // One scheduler per server: in a runtime pool only the first process polls.

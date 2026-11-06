@@ -34,16 +34,16 @@ jobs:
       TEST_REDIS_URL: redis://localhost:56379
       TEST_S3_ENDPOINT: http://localhost:59000
     steps:
-      - uses: actions/checkout@v4
-      - uses: oven-sh/setup-bun@v2
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
       - name: Start RustFS and create the test bucket
         run: |
-          docker run -d --name rustfs -p 59000:9000 -e RUSTFS_ACCESS_KEY=forgeadmin -e RUSTFS_SECRET_KEY=forgeadmin -e RUSTFS_CORS_ALLOWED_ORIGINS='*' rustfs/rustfs:latest /data
+          docker run -d --name rustfs -p 59000:9000 -e RUSTFS_ACCESS_KEY=forgeadmin -e RUSTFS_SECRET_KEY=forgeadmin -e RUSTFS_CORS_ALLOWED_ORIGINS='*' rustfs/rustfs:1.0.4 /data
           for i in $(seq 1 30); do
             docker run --rm --network host -e AWS_ACCESS_KEY_ID=forgeadmin -e AWS_SECRET_ACCESS_KEY=forgeadmin -e AWS_DEFAULT_REGION=us-east-1 \
-              amazon/aws-cli --endpoint-url http://localhost:59000 s3 mb s3://forge && break
+              amazon/aws-cli:2.39.3 --endpoint-url http://localhost:59000 s3 mb s3://forge && break
             sleep 1
           done
       - run: bun install --frozen-lockfile
@@ -73,7 +73,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
       - name: Build the engine image
         run: docker build -f docker/engine.Dockerfile -t archlast-forge/engine:ci .
       - name: Engine CLI starts
@@ -112,10 +112,10 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
         with:
           fetch-depth: 0
-      - uses: oven-sh/setup-bun@v2
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
       - run: git fetch origin master

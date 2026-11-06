@@ -132,7 +132,7 @@ aws s3api put-bucket-cors --bucket my-bucket --cors-configuration '{
 }'
 ```
 
-The RustFS setups that `dev --with s3` and the backend stack create set `RUSTFS_CORS_ALLOWED_ORIGINS` to `*`. Narrow it to your origins in production by editing `compose.yaml`. For other servers, look for their CORS setting. A missing rule shows up in the browser console as a blocked request to the storage host, and `useUploadFile` rejects with a network error.
+The backend stack's `compose.yaml` sets `RUSTFS_CORS_ALLOWED_ORIGINS` to the app's origin (`https://${DOMAIN}` behind Caddy, else `BETTER_AUTH_URL`); add origins there, comma-separated, if other pages upload. `dev --with s3`, which runs on your machine only, allows `*`. For other servers, look for their CORS setting. A missing rule shows up in the browser console as a blocked request to the storage host, and `useUploadFile` rejects with a network error.
 
 ## Size, type and expiry limits
 
@@ -140,7 +140,7 @@ The RustFS setups that `dev --with s3` and the backend stack create set `RUSTFS_
 |---|---|
 | Upload URL lifetime | 1 hour, fixed |
 | Download URL lifetime | 1 hour, fixed (the dashboard's Files page opens 10-minute links) |
-| File size | **Not limited by the engine.** The bytes don't go through it, so `MAX_REQUEST_BYTES` doesn't apply. The server's own limits do (S3 allows 5 GB in a single PUT). |
+| File size | **Not limited by the engine.** The bytes don't go through it, so neither `MAX_REQUEST_BYTES` nor `MAX_UPLOAD_MB` (the built-in storage's limit) applies. A presigned `PUT` can't carry a size condition (only an S3 `POST` policy's `content-length-range` can, which Bun's S3 client doesn't sign), so the server's own limits are the only ones (S3 allows 5 GB in a single PUT). |
 | File type | **Not enforced.** The signature covers the URL and the `host` header only, not the content type or the length. |
 | Resumable or multipart uploads | Not supported. One PUT per file. |
 
