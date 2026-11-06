@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from "bun:test";
 import { Validator as OpenApiValidator } from "@seriousme/openapi-schema-validator";
 import { join } from "node:path";
 import { docsRouting } from "../src/api-docs";
-import { httpRouter } from "../src/functions";
+import { httpAction, httpRouter } from "../src/functions";
 import { queryValue } from "../src/server/http";
 import { buildOpenApi, toJsonSchema } from "../src/server/openapi";
 import { startServer, type ApiDocsHost, type AppHost, type RunningServer } from "../src/server/server";
@@ -224,6 +224,22 @@ describe("the document an app configures", () => {
     expect((all.paths["/api/v1/payments"]!.get as any)["x-internal"]).toBeUndefined();
   });
 
+  test("an operation without an id gets one from its summary, unique in the document; one written in the code is kept", () => {
+    const r = httpRouter();
+    const h = httpAction(async () => new Response("ok"));
+    r.route({ method: "POST", path: "/products", summary: "Create a product", handler: h });
+    r.route({ method: "PUT", path: "/products/{id}", summary: "Create a product", handler: h }); // the same summary twice
+    r.route({ method: "GET", path: "/a", summary: "Create a product", operationId: "createAProduct2", handler: h }); // taken by the code
+    r.route({ method: "GET", path: "/b", summary: "2nd report: déjà vu!", handler: h });
+    r.route({ method: "GET", path: "/c", handler: h }); // no summary: as before
+    const d = buildOpenApi({ title: "t", version: "1", functions: [], http: r.routes, httpRoot: true, nest: [], docs: {} }) as { paths: Record<string, Record<string, { operationId: string }>> };
+    expect(d.paths["/products"]!.post!.operationId).toBe("createAProduct");
+    expect(d.paths["/products/{id}"]!.put!.operationId).toBe("createAProduct3");
+    expect(d.paths["/a"]!.get!.operationId).toBe("createAProduct2");
+    expect(d.paths["/b"]!.get!.operationId).toBe("op2ndReportDejaVu");
+    expect(d.paths["/c"]!.get!.operationId).toBe("http_GET_c");
+  });
+
   test("mistakes in the configuration fail where they are written", () => {
     const router = httpRouter();
     expect(() => router.docs({ path: "/" })).toThrow(/path can't be "\/"/);
@@ -288,6 +304,33 @@ describe("serving the docs", () => {
     expect(bad.status).toBe(400);
     expect(((await bad.json()) as { error: { message: string } }).error.message).toBe(`query.type must be one of "one_time" | "subscription", got "monthly"`);
     expect(await text(srv, "/api/v1/payments?type=subscription")).toBe(`200 {"type":"subscription","page":[],"isDone":true}`);
+  });
+
+  test("the docs' own pages below their path (an operation, a guide, its Markdown) go to the docs with the document, unless the app has a page there", async () => {
+    const pages: Record<string, string> = { "/docs/payments/create-payment": "the operation's page", "/docs/llms.txt": "llms" };
+    const docsHost: ApiDocsHost = {
+      async serve(req, o) {
+        const path = new URL(req.url).pathname;
+        if (path === o.base) return new Response("the docs page");
+        if (!pages[path]) return null;
+        const d = (await o.document?.()) as { info: { title: string } } | null;
+        return new Response(`${pages[path]} of ${d?.info.title}`);
+      },
+    };
+    const srv = await startServer({
+      forgeDir: fixture,
+      apiDocs: docsHost,
+      app: app(["/docs/blog"]),
+      env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", LOG_FORMAT: "json", RATE_LIMIT_PER_MINUTE: "100000" },
+    });
+    started.push(srv);
+    expect(await text(srv, "/docs/payments/create-payment")).toBe("200 the operation's page of Midas API");
+    expect(await text(srv, "/docs/llms.txt")).toBe("200 llms of Midas API");
+    // What the docs don't answer, and the app's own pages below the same path, are the app's.
+    expect(await text(srv, "/docs/blog")).toBe("200 app page /docs/blog");
+    expect((await fetch(`${srv.url}/docs/nothing-here`)).status).toBe(404);
+    // Only reads.
+    expect((await fetch(`${srv.url}/docs/payments/create-payment`, { method: "POST" })).status).toBe(404);
   });
 
   test("API_DOCS and API_DOCS_PATH win over the code, and basePath reaches the page's URLs", async () => {
