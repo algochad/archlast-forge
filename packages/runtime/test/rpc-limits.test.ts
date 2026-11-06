@@ -19,7 +19,7 @@ describe.each([
   let srv: RunningServer;
 
   beforeAll(async () => {
-    srv = await startServer({ forgeDir: fixture, dev, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret", MAX_SUBSCRIPTION_BYTES: "4096", ...extra } });
+    srv = await startServer({ forgeDir: fixture, dev, env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), ADMIN_KEY: "secret-for-tests", MAX_SUBSCRIPTION_BYTES: "4096", ...extra } });
   });
   afterAll(() => srv.stop({ graceful: false }));
 
@@ -33,7 +33,7 @@ describe.each([
 
   const createList = async (name: string) =>
     ((await (await fetch(`${srv.url}/rpc/todos:createList`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ name }) })).json()) as any).result;
-  const live = async () => ((await (await fetch(`${srv.url}/_admin/subscriptions`, { headers: { "x-admin-key": "secret" } })).json()) as unknown[]).length;
+  const live = async () => ((await (await fetch(`${srv.url}/_admin/subscriptions`, { headers: { "x-admin-key": "secret-for-tests" } })).json()) as unknown[]).length;
 
   test("POST /rpc takes the application/json media type only, compared whole", async () => {
     const call = (type: string) => fetch(`${srv.url}/rpc/todos:createList`, { method: "POST", headers: { "content-type": type }, body: '{"name":"csrf"}' });

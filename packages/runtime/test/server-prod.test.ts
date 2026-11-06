@@ -60,7 +60,7 @@ test("health, readiness and metrics", async () => {
   expect((await get("/health")).status).toBe(200);
   expect(((await (await get("/ready")).json()) as any).ready).toBe(true);
   expect((await get("/metrics")).status).toBe(404);
-  const metrics = await (await get("/metrics", undefined, { authorization: "Bearer root-key" })).text();
+  const metrics = await (await get("/metrics", undefined, { authorization: "Bearer root-key-for-tests" })).text();
   expect(metrics).toContain('forge_function_calls_total{function="todos:crash"}');
   expect(metrics).toContain("forge_subscriptions");
   // A latency histogram per function, fine enough below a millisecond for its p50 and p90: buckets ascend, and the counts are cumulative.
