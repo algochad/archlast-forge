@@ -189,6 +189,7 @@
       "name": "@archlast/forge-runtime",
       "version": "0.17.0",
       "dependencies": {
+        "@better-auth/oauth-provider": "1.7.12",
         "@coraza/core": "0.1.0-preview.3",
         "@grpc/grpc-js": "1.14.7",
         "@grpc/proto-loader": "0.8.1",
@@ -219,7 +220,6 @@
         "zod": "4.6.7",
       },
       "devDependencies": {
-        "@better-auth/oauth-provider": "1.7.12",
         "@seriousme/openapi-schema-validator": "2.11.0",
         "@trpc/client": "11.19.0",
         "@trpc/server": "11.19.0",

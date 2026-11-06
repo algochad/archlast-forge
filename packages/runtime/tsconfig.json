@@ -2,5 +2,5 @@
   "extends": "../../tsconfig.base.json",
   "compilerOptions": { "types": ["bun"] },
   "include": ["src", "test"],
-  "exclude": ["test/fixture-nest", "test/fixture-nest-io", "test/fixture-nest-sdl", "test/fixture-webhooks", "test/fixture-root", "test/fixture-helmet"]
+  "exclude": ["test/fixture-nest", "test/fixture-nest-io", "test/fixture-nest-sdl", "test/fixture-webhooks", "test/fixture-root", "test/fixture-helmet", "test/fixture-auth-plugins"]
 }

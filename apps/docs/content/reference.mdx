@@ -348,6 +348,15 @@ const defineAuth: (options: AuthOptions) => AuthOptions;
 
 Default-export from `forge/auth.ts`. Without that file, `{ emailAndPassword: { enabled: true } }` is used. Guide: [Authentication](auth.html).
 
+`@archlast/forge-runtime/auth` has Better Auth plugins that come with the engine, at its Better Auth version (nothing to install, nothing runs unless `plugins` lists them):
+
+```ts
+export { oauthProvider } from "@better-auth/oauth-provider"; // OAuth 2.1 / OpenID Connect provider; needs jwt() beside it
+export { organization, jwt } from "better-auth/plugins";      // organizations, members, invitations (teams); signing keys
+```
+
+The tables of every plugin in `plugins` are declared by the engine ([Plugin tables](auth.html#plugin-tables)); `codegen` writes their types to `forge/_generated/authTables.ts`.
+
 ### Data migrations
 
 ```ts
