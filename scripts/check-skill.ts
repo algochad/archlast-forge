@@ -71,11 +71,15 @@ for (const name of readdirSync(SKILLS)) {
   const front = /^---\n([\s\S]*?)\n---\n/.exec(text)?.[1];
   if (!front) fail(skillFile, "no front matter");
   else {
+    // A real YAML parse: a ": " in an unquoted value breaks the skill loaders.
+    let meta: Record<string, unknown> = {};
+    try {
+      meta = Bun.YAML.parse(front) as Record<string, unknown>;
+    } catch (e) {
+      fail(skillFile, `front matter is not valid YAML: ${(e as Error).message}`);
+    }
     const field = (key: string) =>
-      new RegExp(`^${key}:\\s*(.+)$`, "m")
-        .exec(front)?.[1]
-        ?.trim()
-        .replace(/^["']|["']$/g, "");
+      typeof meta[key] === "string" ? (meta[key] as string).trim() : undefined;
     const skillName = field("name");
     const description = field("description");
     if (skillName !== name)
