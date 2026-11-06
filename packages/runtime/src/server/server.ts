@@ -75,6 +75,11 @@ export interface AppHost {
   dispose?(): void | Promise<void>;
   /** Whether one of the app's own routes takes this path (a page, not a catch-all); undefined while the app isn't built yet. The engine checks the API docs' paths against it. */
   matches?(path: string): boolean | undefined;
+  /**
+   * Whether a GET of this path is answered with one of the app's files (its built assets, a file in public/) and no app code. The web
+   * application firewall leaves those alone; anything else, a static-looking path included, is inspected.
+   */
+  serves?(path: string): boolean | Promise<boolean>;
 }
 
 /** What an app host may do for one request. */
@@ -866,10 +871,20 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   // The WAF starts before the server listens: a configuration that can't work (the rules, the module) stops the engine here, not after it is up and unguarded.
   // It is there when it is off too, so the dashboard can switch it on.
-  // The WAF leaves the API docs' pages alone; where they are is known once the request handler has asked (docsAt, before the WAF's check).
-  const firewall = new Firewall(WAF_WORKER, (path) => {
+  // The WAF leaves alone what the engine answers itself, and only where it does: a path it doesn't serve (no dashboard, S3 storage, a file
+  // that isn't there) goes to the app's code and is inspected. Where the API docs are is known once the request handler has asked (docsAt,
+  // before the WAF's check).
+  const firewall = new Firewall(WAF_WORKER, async (method, path) => {
+    const under = (p: string) => path === p || path.startsWith(`${p}/`);
+    if (dashboardPage && under("/_dashboard")) return "/_dashboard is the engine's own";
+    if (path.startsWith("/_admin/")) return "/_admin is the engine's own";
+    if (localFiles && path.startsWith("/_storage/")) return "/_storage is the engine's own";
+    if (method === "POST" && path === "/_telemetry") return "/_telemetry is the engine's own";
+    if (method === "POST" && path === CSP_REPORT_PATH) return `${CSP_REPORT_PATH} is the engine's own`;
     const plan = docsPlan;
-    return plan?.at ? docsClaim({ at: plan.at, clashes: plan.clashes }, path) : false;
+    if (plan?.at && docsClaim({ at: plan.at, clashes: plan.clashes }, path)) return "the API docs are the engine's own";
+    if ((method === "GET" || method === "HEAD") && (await opts.app?.serves?.(path))) return "the app's files aren't inspected";
+    return undefined;
   });
   await firewall.apply(config.waf);
   metrics.waf = () => (firewall.enabled ? { ...firewall.stats.counters, rules: firewall.stats.ruleCounts() } : undefined);

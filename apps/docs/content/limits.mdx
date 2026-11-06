@@ -186,7 +186,7 @@ The numbers are the server's own and start at zero with it, so the log and `/met
 What it looks at, and what it doesn't:
 
 - **Inspected:** function calls (`/rpc`), sign-in and the rest of `/api/auth`, your HTTP routes, the pages of a full-stack app, and WebSocket handshakes. The URL, the headers and the body: JSON, form, multipart and XML bodies are parsed, so a field of a JSON argument is checked on its own.
-- **Not inspected:** the dashboard and its API, built-in storage (`/_storage`, which takes file uploads), the app's built files (`/_app`, and static files such as images and scripts), the API docs, the browsers' policy-violation reports (`/_csp`, which quote the script they blocked), and the engine's own routes (`/health`, `/ready`, `/metrics`, `/_cli`, OTLP ingest).
+- **Not inspected:** the dashboard and its API, built-in storage (`/_storage`, which takes file uploads), a full-stack app's files (its built assets under `/_app`, and files that are in `public/`), the API docs, the browsers' policy-violation reports (`POST /_csp`, which quote the script they blocked), and the engine's own routes (`/health`, `/ready`, `/metrics`, `/_cli`, OTLP ingest). Each only where the engine serves it: with the dashboard off, S3 storage, or no such file, the request goes to your code and is inspected like the rest, whatever its path looks like (`/posts/x.png?q=…` answered by a loader or a Nest route is inspected).
 - **Request bodies only up to `WAF_MAX_BODY_KB`.** A client can pad a body past the limit to skip its inspection, so the limit is not a defence on its own against a determined attacker; it keeps the cost of the firewall bounded. `MAX_REQUEST_BYTES` still applies to every body.
 - **Responses aren't inspected**, only requests.
 
