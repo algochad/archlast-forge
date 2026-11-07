@@ -275,6 +275,33 @@ An action is for work with the outside world: calling an API, sending email, run
 - **Side effects are yours to make safe.** Because nothing retries, the usual hazard is a call that succeeded externally and then failed locally. Record intent first with a mutation (`status: "sending"`), do the I/O, then record the outcome with a second mutation.
 - You can use `fetch`, `process.env` (set values with `archlast-forge env`, see [Configuration](configuration.html)) and any package from `forge/package.json`.
 
+### CPU-heavy work in an action
+
+A function runs on one thread, so a long calculation (hashing a large file, resizing an image, parsing a big document) stalls the other calls on it. `computePool` from `@archlast/forge-runtime/pool` runs it on worker threads, and the action awaits the answer like any async call. The pool is [knitting](https://js.knitting.run); `task`, `createPool` and `importTask` are re-exported from the same entry. Its threads start with the first call, and there is one fewer than the cores the process may use (a container's CPU quota counts) unless you pass `{ threads }`.
+
+```ts
+// forge/_work/hash.ts: a module of its own, with few imports, because every worker imports it again
+import { task } from "@archlast/forge-runtime/pool";
+
+export const digest = task({ f: (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex") });
+```
+
+```ts
+// forge/files.ts
+import { action, v } from "@archlast/forge-runtime";
+import { computePool } from "@archlast/forge-runtime/pool";
+import * as hash from "./_work/hash";
+
+const work = computePool(hash);
+
+export const checksum = action({
+  args: { url: v.string() },
+  handler: async (ctx, { url }) => work.call.digest(new Uint8Array(await (await fetch(url)).arrayBuffer())),
+});
+```
+
+A task takes one value and returns one, both plain data. It cannot use `ctx`, a transaction or the database: they belong to the thread that called, and a read made on a worker is not part of the call's snapshot and records no topics, so live queries would not see it. Do the work in the task and write from the action (`action → pool → ctx.runMutation`). Don't wait on the pool inside a mutation, which would hold the writer (SQLite) or a transaction (Postgres) meanwhile. A task's `timeout` bounds the wait, not the work.
+
 ## Internal functions
 
 `internalQuery`, `internalMutation` and `internalAction` can be called only from other functions (`ctx.runQuery(internal.x.y)`), from the scheduler and crons, from [migrations](migrations.html), and from the dashboard. Clients cannot reach them: codegen leaves them out of `api` (and out of the client's router), and the server answers `POST /rpc/<name>` for an internal function with `404 No function "<name>"`, the same answer as for a name that does not exist.

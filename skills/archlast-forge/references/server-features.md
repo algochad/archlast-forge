@@ -435,6 +435,23 @@ export const checkout = action({
 - Outside the engine (`createTestBackend`, a browser) spans just run `fn` and metrics do nothing. `console.log` in functions is stored with its trace. `TELEMETRY=off` disables recording.
 - Reading the results (Spans, Hotspots, Errors, request ids, alerts) is in [dashboard-and-observability.md](dashboard-and-observability.md).
 
+## CPU-heavy work (`@archlast/forge-runtime/pool`)
+
+A long calculation in a function stalls the other calls on its thread. `computePool(tasks, { threads? })` runs `task({ f })` functions on worker threads (knitting; `task`, `createPool`, `importTask` are re-exported) and `await work.call.name(arg)` answers like any async call. Put tasks in a module of their own with few imports (each worker imports it again), define each with `task({ f })`, give each one plain-data argument and result.
+
+```ts
+// forge/_work/hash.ts
+import { task } from "@archlast/forge-runtime/pool";
+export const digest = task({ f: (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex") });
+
+// forge/files.ts
+import { computePool } from "@archlast/forge-runtime/pool";
+import * as hash from "./_work/hash";
+const work = computePool(hash); // threads start at the first call: cores - 1 by default
+```
+
+Tasks must not touch `ctx`, a transaction or the database (a read on a worker is outside the snapshot and records no topics). Do the work in a task, then write with `ctx.runMutation` from the action. Never await the pool inside a mutation.
+
 ## Common mistakes
 
 - Creating `forge/auth.ts` without `emailAndPassword: { enabled: true }` (sign-up dies with `EMAIL_PASSWORD_SIGN_UP_DISABLED`).
