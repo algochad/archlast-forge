@@ -4,6 +4,7 @@ import { cpSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { type CompatServer, serveCompat } from "../src/compat.ts";
+import { stylesheetsOf } from "../src/bundle.ts";
 import type { BackendName } from "../src/index.ts";
 import page from "./fixtures/site/index.html";
 import other from "./fixtures/site/other.html";
@@ -159,6 +160,47 @@ for (const backend of ["bun-ffi", "napi"] as BackendName[]) {
             }
         }, 20_000);
 
+        test("development: a stylesheet-only edit swaps the stylesheet (no reload); a script edit reloads", async () => {
+            const dir = mkdtempSync(join(tmpdir(), "archlast-site-"));
+            try {
+                cpSync(join(import.meta.dir, "fixtures/site"), dir, { recursive: true });
+                const live = (await import(join(dir, "index.html"))).default;
+                const s = start({ backend, development: { hmr: true }, routes: { "/": live } });
+                const cssLinks = async () => stylesheetsOf(await (await get(s, "/")).text());
+                const [before] = await cssLinks();
+                expect(before).toMatch(/\.css$/);
+                const ws = new WebSocket(`ws://127.0.0.1:${s.port}/_archlast/dev`);
+                const msgs: any[] = [];
+                ws.onmessage = (e) => msgs.push(JSON.parse(String(e.data)));
+                await new Promise<void>((res, rej) => { ws.onopen = () => res(); ws.onerror = () => rej(new Error("dev socket failed")); });
+                const next = async (pred: (m: any) => boolean) => {
+                    for (let i = 0; i < 100; i++) {
+                        const hit = msgs.find(pred);
+                        if (hit) return hit;
+                        await new Promise((r) => setTimeout(r, 50));
+                    }
+                    throw new Error("no matching message; got " + JSON.stringify(msgs));
+                };
+
+                writeFileSync(join(dir, "style.css"), "body { background: #654321; }");
+                const swap = await next((m) => m.t === "css");
+                const [after] = await cssLinks();
+                expect(after).not.toBe(before);
+                expect(swap.swap[before!]).toBe(after);
+                expect(await (await get(s, after!)).text()).toContain("#654321");
+                expect(msgs.some((m) => m.t === "reload")).toBe(false);
+
+                msgs.length = 0;
+                writeFileSync(join(dir, "lib.ts"), "export const greet = (n: string) => `edited ${n}`;");
+                await next((m) => m.t === "reload");
+                expect(msgs.some((m) => m.t === "css")).toBe(false);
+                ws.close();
+            } finally {
+                servers.forEach((x) => void x.stop(true));
+                rmSync(dir, { recursive: true, force: true });
+            }
+        }, 20_000);
+
         test("development: console messages from the page are printed by the server", async () => {
             const s = start({ backend, development: { console: true }, routes: { "/": page } });
             const seen: string[] = [];
@@ -213,4 +255,48 @@ describe.skipIf(!chromium)("HTML bundles in a real browser", () => {
             }
         }, 60000);
     }
+});
+
+const browserAvailable = chromium !== null && (await import("playwright-core").then(() => true, () => false));
+describe.skipIf(!browserAvailable)("dev server hot updates in a real browser", () => {
+    test("a stylesheet edit keeps the page's state; a script edit reloads and restores fields, focus and scroll", async () => {
+        const { chromium: pw } = await import("playwright-core");
+        const dir = mkdtempSync(join(tmpdir(), "archlast-site-"));
+        const browser = await pw.launch({ executablePath: spawnSync("which", [chromium!], { encoding: "utf8" }).stdout.trim(), args: ["--no-sandbox"] });
+        try {
+            cpSync(join(import.meta.dir, "fixtures/site"), dir, { recursive: true });
+            writeFileSync(
+                join(dir, "index.html"),
+                `<!doctype html><html><head><title>s</title><link rel="stylesheet" href="./style.css"></head><body style="height:3000px">
+<input id="name"><input id="agree" type="checkbox"><script type="module" src="./app.ts"></script></body></html>`,
+            );
+            const live = (await import(join(dir, "index.html"))).default;
+            const s = start({ development: { hmr: true }, routes: { "/": live } });
+            const page = await browser.newPage();
+            await page.goto(`http://127.0.0.1:${s.port}/`);
+            await page.waitForFunction(() => document.querySelector("link[rel=stylesheet]"));
+            await page.fill("#name", "typed by hand");
+            await page.check("#agree");
+            await page.evaluate(() => ((window as any).marker = "same document"));
+
+            writeFileSync(join(dir, "style.css"), "body { background: rgb(1, 2, 3); }");
+            await page.waitForFunction(() => getComputedStyle(document.body).backgroundColor === "rgb(1, 2, 3)", null, { timeout: 10_000 });
+            expect(await page.evaluate(() => (window as any).marker)).toBe("same document"); // not reloaded
+            expect(await page.inputValue("#name")).toBe("typed by hand");
+            expect(await page.locator("link[rel=stylesheet]").count()).toBe(1); // the old one was removed
+
+            await page.focus("#name");
+            await page.evaluate(() => scrollTo(0, 700));
+            writeFileSync(join(dir, "lib.ts"), "export const greet = (n: string) => `edited ${n}`;");
+            await page.waitForFunction(() => (window as any).marker === undefined, null, { timeout: 10_000 }); // a new document
+            await page.waitForFunction(() => (document.querySelector("#name") as HTMLInputElement).value === "typed by hand", null, { timeout: 10_000 });
+            expect(await page.isChecked("#agree")).toBe(true);
+            expect(await page.evaluate(() => document.activeElement?.id)).toBe("name");
+            expect(await page.evaluate(() => Math.round(scrollY))).toBe(700);
+        } finally {
+            await browser.close();
+            servers.forEach((x) => void x.stop(true));
+            rmSync(dir, { recursive: true, force: true });
+        }
+    }, 60_000);
 });

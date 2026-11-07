@@ -9,8 +9,15 @@
  * Development (`development: true`, or the default outside `NODE_ENV=production`): the source folders are
  * watched, a change rebuilds, and every open page is told to reload over the engine's own WebSocket. `console: true`
  * forwards the browser's console output to the server's. Errors from a failed rebuild are shown in the page, which
- * keeps its last good build. This is live reload: it does not hot-swap modules or keep component state, which is
- * what Bun's own dev server does internally.
+ * keeps its last good build.
+ *
+ * What an edit does to an open page:
+ *  - a stylesheet-only change swaps the `<link>`s in place: no reload, the page keeps its state;
+ *  - any other change reloads the page, which restores its scroll position, the values of its form fields and the focused one;
+ *  - a failed build shows the error over the page and changes nothing else.
+ * Module-level hot swap (React Fast Refresh) is not done: `Bun.build` bundles into one flat scope and its `reactFastRefresh` option
+ * only adds the `$RefreshReg$`/`$RefreshSig$` calls, with no module registry to re-run a single module, which is what Bun's own dev
+ * server has inside.
  */
 import { type FSWatcher, watch } from "node:fs";
 import { dirname, resolve } from "node:path";
@@ -149,6 +156,7 @@ export class BundleHost {
 
     private async buildAll(): Promise<void> {
         const rebuilt = this.assets.size > 0 || [...this.pages.values()].some((p) => p.entry);
+        const before = { assets: this.assets, html: new Map([...this.pages].map(([k, p]) => [k, p.entry] as const)) };
         const assets = new Map<string, Entry>();
         const watchDirs = new Set<string>();
         let failure: string | null = null;
@@ -172,7 +180,8 @@ export class BundleHost {
             this.watch(watchDirs);
         }
         if (rebuilt && this.hmr) {
-            this.events.publish(DEV_TOPIC, JSON.stringify(failure === null ? { t: "reload" } : { t: "error", message: failure }));
+            const message = failure === null ? changeOf(before, this.assets, this.pages) : { t: "error", message: failure };
+            if (message) this.events.publish(DEV_TOPIC, JSON.stringify(message));
         }
     }
 
@@ -224,6 +233,57 @@ export class BundleHost {
     }
 }
 
+const STYLESHEET_HREFS = /<link\b[^>]*>/gi;
+
+/** The stylesheet URLs a page's HTML links, in order. */
+export function stylesheetsOf(html: string): string[] {
+    const hrefs: string[] = [];
+    for (const tag of html.match(STYLESHEET_HREFS) ?? []) {
+        if (!/\brel\s*=\s*["']?stylesheet/i.test(tag)) continue;
+        const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
+        const url = href?.[1] ?? href?.[2] ?? href?.[3];
+        if (url) hrefs.push(url);
+    }
+    return hrefs;
+}
+
+const isCss = (path: string) => path.endsWith(".css");
+
+/**
+ * What a finished rebuild means for open pages: nothing (`null`), swap stylesheets (`css`: old URL to new URL), or reload. Only a
+ * change confined to stylesheets can be swapped: every script is the same file with the same bytes, and each page's HTML is the same
+ * apart from the stylesheet URLs (their names carry a hash, so a changed stylesheet changes its page's HTML too).
+ */
+export function changeOf(before: { assets: Map<string, Entry>; html: Map<string, Entry | null> }, assets: Map<string, Entry>, pages: Map<string, Page>): { t: "reload" } | { t: "css"; swap: Record<string, string> } | null {
+    const dec = new TextDecoder();
+    const scripts = (m: Map<string, Entry>) => [...m].filter(([k]) => !isCss(k)).map(([k, v]) => `${k}=${v.etag}`).sort().join("\n");
+    const swap: Record<string, string> = {};
+    let htmlSame = true;
+    let anyChange = scripts(before.assets) !== scripts(assets);
+    if (anyChange) return { t: "reload" };
+    for (const [pattern, page] of pages) {
+        const old = before.html.get(pattern);
+        if (!old || !page.entry) return { t: "reload" };
+        if (old === page.entry) continue;
+        const [a, b] = [dec.decode(old.body), dec.decode(page.entry.body)];
+        const [la, lb] = [stylesheetsOf(a), stylesheetsOf(b)];
+        if (la.length !== lb.length) return { t: "reload" };
+        // The same HTML once the stylesheet URLs are taken out?
+        let [ta, tb] = [a, b];
+        la.forEach((u, i) => {
+            ta = ta.replace(u, "\0");
+            tb = tb.replace(lb[i]!, "\0");
+            if (u !== lb[i]) swap[u] = lb[i]!;
+        });
+        if (ta !== tb) htmlSame = false;
+    }
+    if (!htmlSame) return { t: "reload" };
+    // A stylesheet that changed under the same name (no hash) is swapped by the page re-requesting it.
+    for (const [k, v] of assets) if (isCss(k) && before.assets.get(k)?.etag !== v.etag && !Object.values(swap).includes(k)) swap[k] = k;
+    anyChange = Object.keys(swap).length > 0;
+    return anyChange ? { t: "css", swap } : null;
+}
+
 /** Build errors as readable text: message, then file:line:column and the offending line when the bundler gave them. */
 function describe(e: unknown): string {
     const list = e instanceof AggregateError && e.errors.length > 0 ? e.errors : [e];
@@ -272,12 +332,51 @@ function devClientSource(forwardConsole: boolean): string {
     }
     overlay.textContent = message;
   };
+  const KEY = "archlast:state:" + location.pathname + location.search;
+  const fields = () => [...document.querySelectorAll("input,textarea,select")];
+  const saveState = () => {
+    try {
+      const f = fields();
+      sessionStorage.setItem(KEY, JSON.stringify({
+        x: scrollX, y: scrollY, active: f.indexOf(document.activeElement),
+        fields: f.map((e) => [e.tagName, e.type, e.type === "checkbox" || e.type === "radio" ? e.checked : e.value]),
+      }));
+    } catch {}
+  };
+  const restoreState = () => {
+    let s; try { s = JSON.parse(sessionStorage.getItem(KEY) || "null"); sessionStorage.removeItem(KEY); } catch {}
+    if (!s) return;
+    const f = fields();
+    if (f.length === s.fields.length) f.forEach((e, i) => {
+      const [tag, type, v] = s.fields[i];
+      if (e.tagName !== tag || e.type !== type) return;
+      if (type === "checkbox" || type === "radio") e.checked = v; else if (type !== "file" && type !== "password") e.value = v;
+    });
+    if (s.active >= 0 && f[s.active]) f[s.active].focus();
+    scrollTo(s.x, s.y);
+  };
+  // After the page has run its scripts: a framework renders the fields after DOMContentLoaded.
+  const afterLoad = () => requestAnimationFrame(() => requestAnimationFrame(restoreState));
+  if (document.readyState === "complete") afterLoad(); else addEventListener("load", afterLoad);
+  const swapCss = (swap) => {
+    for (const link of document.querySelectorAll('link[rel~="stylesheet"]')) {
+      const old = link.getAttribute("href");
+      const to = swap[old] ?? swap[new URL(link.href).pathname];
+      if (!to) continue;
+      const next = link.cloneNode();
+      next.href = to + (to === old ? (to.includes("?") ? "&" : "?") + "t=" + Date.now() : "");
+      next.onload = () => link.remove();
+      next.onerror = () => next.remove();
+      link.after(next);
+    }
+  };
   const connect = () => {
     ws = new WebSocket(url);
     ws.onopen = () => { for (const q of queue.splice(0)) ws.send(q); };
     ws.onmessage = (e) => {
       let m; try { m = JSON.parse(e.data); } catch { return; }
-      if (m.t === "reload") location.reload();
+      if (m.t === "reload") { saveState(); location.reload(); }
+      else if (m.t === "css") swapCss(m.swap);
       else if (m.t === "error") show("Build failed\\n\\n" + m.message);
     };
     ws.onclose = () => setTimeout(connect, 500);

@@ -121,7 +121,7 @@ Build: `./build.sh` (Linux). Test: `bun test`. Typecheck: `bun run typecheck`. L
 
 Linux only · HTTP/2 only over TLS (no h2c, no WebSocket over HTTP/2) · encrypted private keys (`passphrase`) and `{dir}`
 directory routes are not supported · HTML-bundle routes and `development` exist in the `serveCompat` facade only, and give live
-reload rather than module-level hot swap · the facade runs handlers on one JS thread (`App` can use `workers` for stateless
+stylesheet swaps and state-keeping reloads, not module-level hot swap · the facade runs handlers on one JS thread (`App` can use `workers` for stateless
 handlers) · static routes take strings, objects, bytes or `Reply` (the facade also takes `Response` and `Bun.file`).
 
 ## Tuning / debugging knobs (environment)

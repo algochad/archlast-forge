@@ -43,7 +43,7 @@ function rawGet(port: number, opts: { servername?: string; cert?: string; key?: 
             const cn = String((cert.subject as { CN?: string } | undefined)?.CN ?? "");
             s.write(`GET ${opts.path ?? "/"} HTTP/1.1\r\nhost: x\r\nconnection: close\r\n\r\n`);
             let data = "";
-            s.on("data", (d) => (data += d));
+            s.on("data", (d: Buffer) => (data += d));
             s.on("close", () => resolve({ cn, status: data.split("\r\n")[0] ?? "", body: data.split("\r\n\r\n")[1] ?? "" }));
         });
         s.on("error", reject);

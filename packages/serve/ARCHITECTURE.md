@@ -176,5 +176,5 @@ src
 
 Linux only. HTTP/2 only over TLS (no h2c, no WebSocket over HTTP/2). The `serveCompat` facade runs handlers on one JS thread;
 `App` can use `workers` for stateless handlers. Encrypted private keys (`passphrase`) and `{dir}` directory routes are not
-supported; HTML bundles in development get live reload, not Bun's module-level hot swap. Hot-path cost with Web `Request` and
+supported; HTML bundles in development swap stylesheets in place and reload on script edits (keeping fields, focus and scroll), without module-level hot swap. Hot-path cost with Web `Request` and
 `Response` objects is about 1.4 times Bun's CPU per request; returning `Reply` closes most of that (see the README).
