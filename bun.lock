@@ -235,6 +235,13 @@
         "socket.io-client": "^4.8.4",
       },
     },
+    "packages/serve": {
+      "name": "@archlast/forge-serve",
+      "version": "0.17.0",
+      "devDependencies": {
+        "@types/bun": "1.4.4",
+      },
+    },
     "packages/svelte": {
       "name": "@archlast/forge-svelte",
       "version": "0.17.0",
@@ -287,6 +294,8 @@
     "@archlast/forge-react": ["@archlast/forge-react@workspace:packages/react"],
 
     "@archlast/forge-runtime": ["@archlast/forge-runtime@workspace:packages/runtime"],
+
+    "@archlast/forge-serve": ["@archlast/forge-serve@workspace:packages/serve"],
 
     "@archlast/forge-svelte": ["@archlast/forge-svelte@workspace:packages/svelte"],
 

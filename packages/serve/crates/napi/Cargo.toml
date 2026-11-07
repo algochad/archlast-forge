@@ -1,0 +1,21 @@
+[package]
+name = "archlast-serve-napi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+archlast-serve-core = { path = "../core" }
+napi = { version = "3", default-features = false, features = ["napi4"] }
+napi-derive = "3"
+mimalloc = { version = "0.1", default-features = false, optional = true }
+
+[build-dependencies]
+napi-build = "2"
+
+[features]
+default = []
+mimalloc = ["dep:mimalloc"]
+profile = ["archlast-serve-core/profile"]

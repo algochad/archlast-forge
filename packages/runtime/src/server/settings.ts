@@ -32,6 +32,15 @@ export const SETTINGS: SettingDef[] = [
   { name: "PORT", group: "Server", type: "int", min: 0, default: "3000", doc: "The port to listen on.", envOnly: "The container's port mapping and health check depend on it." },
   { name: "HOST", group: "Server", type: "string", default: "0.0.0.0", doc: "The interface to bind.", envOnly: "The container's port mapping depends on it." },
   { name: "IDLE_TIMEOUT_SECONDS", group: "Server", type: "int", min: 1, default: "75", doc: "How long an idle keep-alive connection stays open (capped at 255)." },
+  {
+    name: "HTTP_ENGINE",
+    group: "Server",
+    type: "enum",
+    options: ["auto", "bun", "archlast"],
+    default: "auto",
+    doc: "Which HTTP server answers: the native engine (Rust I/O threads, handlers on Bun) or Bun.serve. `auto` uses the native engine on 4 or more CPU cores when it is available (the engine image has it), else Bun.serve.",
+    envOnly: "The server is chosen before the engine can read its stored settings.",
+  },
   { name: "TRUST_PROXY", group: "Server", type: "bool", default: "off", doc: "Take the client IP from X-Forwarded-For for rate limiting. Only behind a proxy that overwrites that header." },
   { name: "TRUSTED_ORIGINS", group: "Server", type: "list", default: "none", doc: "Browser origins other than BETTER_AUTH_URL that may call the engine (comma-separated)." },
   {

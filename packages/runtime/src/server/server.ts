@@ -9,6 +9,7 @@ import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
 import { claimPrefix, connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
+import { startHttpServer } from "./engine";
 import { docsRouting, type ApiDocsPageConfig, type ApiDocsRouting } from "../api-docs";
 import { ConfigError, loadConfig, redisOwnerOf, reservedPathOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
 import { matchRoute } from "./http";
@@ -929,7 +930,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   metrics.waf = () => (firewall.enabled ? { ...firewall.stats.counters, rules: firewall.stats.ruleCounts() } : undefined);
 
   dashboardPage?.warm(); // built while the server starts, so the first visit doesn't wait
-  const server = Bun.serve<ServerSocket>({
+  const {
+    server,
+    engine: httpEngine,
+    why: httpEngineWhy,
+  } = await startHttpServer<ServerSocket>(config.httpEngine, dev, {
     port: config.port,
     hostname: config.hostname,
     maxRequestBodySize: takesUploads ? Math.max(config.limits.maxRequestBytes, config.maxUploadBytes) : config.limits.maxRequestBytes,
@@ -1365,6 +1370,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     },
   });
 
+  log("info", `http engine: ${httpEngine} (${httpEngineWhy})`);
   // Bound to every interface, the local URL is the useful one (Better Auth's default origin, logs).
   const url = ["0.0.0.0", "::"].includes(config.hostname) ? `http://localhost:${server.port}` : server.url.href.replace(/\/$/, "");
   runtimeEnv.BETTER_AUTH_URL ??= url;

@@ -132,6 +132,8 @@ export interface Config {
   idleTimeoutSeconds: number;
   /** Memory the in-process cache may use; Redis applies its own limits. */
   cacheMaxBytes: number;
+  /** HTTP_ENGINE: which server answers requests. `auto`: the native engine on 4 or more cores when it is built, else Bun.serve. */
+  httpEngine: "auto" | "bun" | "archlast";
   /** Function runtime processes per server. */
   runtimeWorkers: number;
   /** `process`: functions run in child processes, restarted alone on code changes or a hang. `inline`: in the server process, fastest. */
@@ -216,6 +218,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   // Inline is the default outside dev: no IPC hop per call, about twice the throughput on one core. Dev keeps the child process, so code
   // changes reload without dropping connections, and so does a pool of runtime processes.
   const { workers: runtimeWorkers } = runtimeWorkersFor(env);
+  const httpEngine = (env.HTTP_ENGINE || "auto") as Config["httpEngine"];
+  if (httpEngine !== "auto" && httpEngine !== "bun" && httpEngine !== "archlast") fail(`HTTP_ENGINE must be "auto", "bun" or "archlast", got "${env.HTTP_ENGINE}"`);
   const runtimeMode = (env.RUNTIME_MODE || (dev || runtimeWorkers > 1 ? "process" : "inline")) as Config["runtimeMode"];
   if (runtimeMode !== "process" && runtimeMode !== "inline") fail(`RUNTIME_MODE must be "process" or "inline", got "${env.RUNTIME_MODE}"`);
   if (runtimeMode === "inline" && dev) fail("RUNTIME_MODE=inline can't reload code when it changes; use it outside dev");
@@ -291,6 +295,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     idleTimeoutSeconds: int("IDLE_TIMEOUT_SECONDS", 75, 1),
     runtimeWorkers,
     runtimeMode,
+    httpEngine,
     limits: {
       functionTimeoutMs: int("FUNCTION_TIMEOUT_MS", 10_000, 1),
       actionTimeoutMs: int("ACTION_TIMEOUT_MS", 600_000, 1),
