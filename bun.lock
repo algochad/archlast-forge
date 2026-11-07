@@ -215,6 +215,7 @@
         "helmet": "8.3.0",
         "ioredis": "6.0.0",
         "kafkajs": "2.2.4",
+        "knitting": "0.1.77",
         "mongodb": "7.8.0",
         "mqtt": "5.16.1",
         "nats": "2.29.3",
@@ -939,6 +940,8 @@
     "json-schema-traverse": ["json-schema-traverse@1.0.0", "", {}, "sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug=="],
 
     "kafkajs": ["kafkajs@2.2.4", "", {}, "sha512-j/YeapB1vfPT2iOIUn/vxdyKEuhuY2PxMBvf5JWux6iSaukAccrMtXEY/Lb7OvavDhOWME589bpLrEdnVHjfjA=="],
+
+    "knitting": ["knitting@0.1.77", "", {}, "sha512-NVCR8l24iEwSvB80vliRhYEP6c6PbS/tXypllt3eWfGH7iuvLpSmvwHuPyE4XFlMGL+KhkBuFp+AxK/dumxRBw=="],
 
     "kysely": ["kysely@0.29.7", "", {}, "sha512-fmIq+7kv4WbFm2tcfznRzikqB4cuNpgZ40PSU2fAJ2/OO5XhojqnTPrmgrCjYSRJVwBln03XcRXJGnw9H099IQ=="],
 

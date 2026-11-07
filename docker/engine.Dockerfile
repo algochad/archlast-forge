@@ -16,6 +16,15 @@ RUN cd node_modules/.bun \
   && find . -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' -o -iname 'readme*' -o -iname 'changelog*' -o -iname 'history.md' \) -delete \
   && cd /engine && find node_modules packages -xtype l -delete
 
+# The native HTTP engine (packages/serve: Rust I/O threads, HTTP_ENGINE=archlast). Built on Debian 12 like the image below, so the library
+# links the glibc it runs on. It is only the .node file that is carried over: no compiler reaches the image.
+FROM rust:1.90-bookworm AS native
+WORKDIR /serve
+COPY packages/serve/Cargo.toml packages/serve/Cargo.lock ./
+COPY packages/serve/crates crates
+RUN cargo build --release --locked -p archlast-serve-napi \
+  && mkdir native && cp target/release/libarchlast_serve_napi.so native/archlast_serve.node
+
 # The image: Bun on distroless (glibc, CA certificates, no package manager), BusyBox for /bin/sh and the usual commands
 # (projects' Dockerfiles RUN through a shell, and packages' install scripts need one), the engine's packages as source
 # (projects run /engine/packages/cli/src/index.ts) and those dependencies.
@@ -32,6 +41,10 @@ COPY --from=install /engine/packages/framework packages/framework
 COPY --from=install /engine/packages/client packages/client
 COPY --from=install /engine/packages/react packages/react
 COPY --from=install /engine/packages/create-archlast-forge packages/create-archlast-forge
+# The native engine: its TypeScript, and the library built above (the runtime picks it from HTTP_ENGINE=auto on 4 or more cores).
+COPY --from=install /engine/packages/serve/package.json /engine/packages/serve/tsconfig.json packages/serve/
+COPY --from=install /engine/packages/serve/src packages/serve/src
+COPY --from=native /serve/native packages/serve/native
 # The user the engine runs as (below): distroless has no `bun` user, so it is added here, uid 1000 like the slim image's, with a home
 # for bun's install cache (`engine prepare` and the dev engine run `bun install`). It owns /app and /data; /engine stays root's.
 RUN ["/bin/sh", "-c", "echo 'bun:x:1000:1000:bun:/home/bun:/bin/sh' >> /etc/passwd && echo 'bun:x:1000:' >> /etc/group && mkdir -p /home/bun /app/forge/node_modules /data && chown -R 1000:1000 /home/bun /app /data"]

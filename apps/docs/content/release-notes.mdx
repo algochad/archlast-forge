@@ -4,6 +4,14 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+### Added
+
+- **A native HTTP engine, `HTTP_ENGINE`.** The server can answer through archlast-serve instead of `Bun.serve`: sockets, TLS, HTTP/1.1 and HTTP/2, WebSocket framing and pub/sub fan-out run on Rust threads, and functions still run on Bun. `auto` (the default) picks it in production on 4 or more CPU cores and when its library is there (the engine image has it); development and one- or two-core machines keep `Bun.serve`. `bun` and `archlast` force one. Forge RPC's own server follows the same choice. See [configuration](configuration.html#server).
+
+### Changed
+
+- **Faster calls on the native engine.** `/rpc/<function>` and Forge RPC answer with the engine's own response type, which skips the Web `Response` (a cached query on 4 cores: 88k req/s on `Bun.serve`, about 100k on the engine; Forge RPC's echo: 49k and 97k).
+
 ## 0.20.0
 
 Better Auth's plugins built into the engine, an API docs site in the layout readers know, an engine image less than half the size, monorepos that deploy with `bun run up` in each app, commands for the agent skill, and security hardening across the server, GraphQL and the image.

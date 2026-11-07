@@ -10,3 +10,7 @@ docker-compose.yml
 **/test
 **/test-types
 .pack
+packages/serve/target
+packages/serve/native
+packages/serve/bench/client/target
+packages/serve/bench/container/forge
