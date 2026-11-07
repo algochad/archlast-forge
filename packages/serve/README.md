@@ -29,7 +29,7 @@ const server = app.listen({ port: 3000, workers: 4 }); // 4 JS threads sharing o
 ```
 
 `serve({ routes, ws, fetch })` offers a `Bun.serve`-shaped alternative, and `archlast-serve/compat` exports `serveCompat`, a
-full `Bun.serve`-shaped facade (`fetch`, `routes`, `error`, `websocket`, `reload`, TLS, HTML bundles).
+full `Bun.serve`-shaped facade (`fetch`, `routes` including `{ dir }` directory routes, `error`, `websocket`, `reload`, TLS, HTML bundles).
 
 ## How it works
 
@@ -55,7 +55,7 @@ paths, the wire protocol and the reasons behind each choice.
 | `entry` | `Bun.main` | script the workers re-run |
 | `maxRequestBodySize` | 128 MiB | larger bodies get a 413 |
 | `spinMicros` | 30 | latency mode: after work, poll this long (JS thread between event-loop turns, I/O threads between non-blocking socket polls) before sleeping. A lone request/response pair skips the sleep/wake cycles: in the container, single-connection WebSocket goes 48k to 78k msg/s (Bun 81k; p50 20 to 12 µs) and HTTP 24k to 34k req/s, at about 1.2 more cores while traffic flows. Only used while at most `spinMaxConnections` (4) connections are open; 0 turns it off |
-| `tls` | off | PEM `key`/`cert` (string, Buffer or `Bun.file`), optional `ca`, `serverName` (SNI, `*.` wildcards), `requestCert` / `rejectUnauthorized` (mutual TLS); an array adds more certificates, the first is the default. Encrypted keys (`passphrase`) are rejected: decrypt to PEM first |
+| `tls` | off | PEM `key`/`cert` (string, Buffer or `Bun.file`), optional `ca`, `serverName` (SNI, `*.` wildcards), `requestCert` / `rejectUnauthorized` (mutual TLS); an array adds more certificates, the first is the default. An encrypted key is decrypted at start with `passphrase` |
 | `http2` | true | offer HTTP/2 (ALPN `h2`) on HTTPS connections; HTTP/1.1 clients are still served. Cleartext stays HTTP/1.1 |
 | `wsPerMessageDeflate` | off | WebSocket compression (RFC 7692): `true` (each message on its own), `{ compress: "dedicated" \| "3KB"…"256KB" }` (context per socket). Messages under 64 bytes are never compressed; the `compress` argument of `send` is accepted and ignored. Incoming compressed messages are inflated with a size cap (1009) |
 | `unix` | off | listen on a unix-domain socket path instead of TCP (stale socket file replaced, removed on stop) |
@@ -119,8 +119,7 @@ Build: `./build.sh` (Linux). Test: `bun test`. Typecheck: `bun run typecheck`. L
 
 ## Limits
 
-Linux only · HTTP/2 only over TLS (no h2c, no WebSocket over HTTP/2) · encrypted private keys (`passphrase`) and `{dir}`
-directory routes are not supported · HTML-bundle routes and `development` exist in the `serveCompat` facade only, and give
+Linux only · HTTP/2 only over TLS (no h2c, no WebSocket over HTTP/2) · HTML-bundle routes and `development` exist in the `serveCompat` facade only, and give
 stylesheet swaps and state-keeping reloads, not module-level hot swap · the facade runs handlers on one JS thread (`App` can use `workers` for stateless
 handlers) · static routes take strings, objects, bytes or `Reply` (the facade also takes `Response` and `Bun.file`).
 

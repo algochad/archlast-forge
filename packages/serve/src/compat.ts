@@ -10,6 +10,7 @@
  */
 import type { BackendName } from "./backend.ts";
 import { type RawRequest } from "./codec.ts";
+import { directoryHandler, isDirectoryRoute, type DirectoryRoute } from "./dir.ts";
 import { FileReply } from "./file.ts";
 import { type ListenOptions, listen } from "./index.ts";
 import { Router, toWebRequest } from "./router.ts";
@@ -58,7 +59,7 @@ export interface CompatWebSocketHandler<D> {
 export type BunRequest = Request & { readonly params: Record<string, string>; readonly cookies: Bun.CookieMap };
 type Handler<D> = (req: BunRequest, server: CompatServer<D>) => Response | undefined | void | Promise<Response | undefined | void>;
 type MethodMap<D> = Partial<Record<string, Handler<D> | Response | Blob | false>>;
-export type CompatRoutes<D> = Record<string, Response | Blob | false | Handler<D> | MethodMap<D> | Bun.HTMLBundle>;
+export type CompatRoutes<D> = Record<string, Response | Blob | false | Handler<D> | MethodMap<D> | Bun.HTMLBundle | DirectoryRoute>;
 
 export interface CompatOptions<D = undefined> {
     port?: number;
@@ -173,7 +174,7 @@ function compileRoutes<D>(routes: CompatRoutes<D>, bundleHandler: (pattern: stri
         const c: CompiledRoute<D> = { pattern, segments: null, wildcardPrefix: null, methods: null, any: null, skip: raw === false };
         if (raw !== false) {
             // An HTML bundle is answered by the engine's bundler; the route only has to match.
-            const value = isHtmlBundle(raw) ? bundleHandler(pattern) : raw;
+            const value = isHtmlBundle(raw) ? bundleHandler(pattern) : isDirectoryRoute(raw) ? (directoryHandler(pattern, raw) as unknown as Handler<D>) : raw;
             const isMap = typeof value === "object" && !(value instanceof Response) && !(value instanceof Blob) && value !== null;
             if (isMap) {
                 c.methods = new Map();

@@ -219,8 +219,17 @@ for (const backend of ["bun-ffi", "napi"] as BackendName[]) {
             expect(() => new App().get("/", "x").listen({ port: 0, backend, tls: { ...main, minVersion: "TLSv1.3", maxVersion: "TLSv1.2" } })).toThrow(/protocol version/);
         });
 
-        test("an encrypted private key is rejected with a clear error", () => {
-            expect(() => new App().get("/", "x").listen({ port: 0, backend, tls: { ...main, passphrase: "pw" } })).toThrow(/passphrase/);
+        test("an encrypted private key is decrypted with the passphrase; a wrong one is refused at listen()", async () => {
+            sh("pkcs8", "-topk8", "-in", "main.key", "-out", "main.enc.key", "-passout", "pass:s3cret", "-v2", "aes-256-cbc");
+            const encrypted = pem("main.enc.key");
+            expect(encrypted).toContain("ENCRYPTED PRIVATE KEY");
+            const s = track(new App().get("/", "ok").listen({ port: 0, backend, tls: { cert: main.cert, key: encrypted, passphrase: "s3cret" } }));
+            expect((await rawGet(s.port)).status).toContain("200");
+            expect(() => new App().get("/", "x").listen({ port: 0, backend, tls: { cert: main.cert, key: encrypted, passphrase: "wrong" } })).toThrow(/passphrase.*could not be decrypted/);
+            expect(() => new App().get("/", "x").listen({ port: 0, backend, tls: { cert: main.cert, key: encrypted } })).toThrow();
+            // an unencrypted key with a passphrase set is used as it is (Bun does the same)
+            const plain = track(new App().get("/", "ok").listen({ port: 0, backend, tls: { ...main, passphrase: "unused" } }));
+            expect((await rawGet(plain.port)).status).toContain("200");
         });
 
         test("a bad certificate is reported at listen()", () => {
