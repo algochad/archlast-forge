@@ -9,7 +9,7 @@ import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
 import { claimPrefix, connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
-import { startHttpServer } from "./engine";
+import { nativeEngine, startHttpServer } from "./engine";
 import { docsRouting, type ApiDocsPageConfig, type ApiDocsRouting } from "../api-docs";
 import { ConfigError, loadConfig, redisOwnerOf, reservedPathOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
 import { matchRoute } from "./http";
@@ -26,7 +26,7 @@ import { Metrics, type LoopDelays } from "./metrics";
 import type { Manifest } from "./project";
 import { toPublicError } from "./public-error";
 import { MemoryRateLimiter, rateKeyOf, RedisRateLimiter, type RateLimiter } from "./ratelimit";
-import { buildRpc, errorResponse, HttpError, readBytes, readText, type Rpc, type SocketData } from "./rpc";
+import { buildRpc, errorResponse, HttpError, readBytes, readText, type Rpc, type RpcOptions, type SocketData } from "./rpc";
 import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager, type QueryObserver } from "./subscriptions";
 import { TelemetryClient } from "./telemetry/client";
@@ -366,7 +366,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     subs.rerunAll();
   });
 
-  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
+  const rpcOpts: RpcOptions = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
   const maxBody = config.limits.maxRequestBytes;
   // Files kept on this server's disk are served here; uploads to them, and backups uploaded to the dashboard, may be larger than other requests.
   const localFiles = config.storage === "local" ? (createStorage(config) as LocalStorage) : undefined;
@@ -1184,7 +1184,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           return cors(req, withId(errorResponse({ message: "Malformed function name", code: "BAD_REQUEST", requestId })));
         }
         const headers = pickAuthHeaders((n) => req.headers.get(n));
-        return cors(req, await rpc.call(name, req, url, { headers, requestId, traceparent: req.headers.get("traceparent") ?? undefined })); // sets x-request-id itself
+        // The engine's Reply has no Headers to add to: when `rpcOpts.reply` is set, the answer comes with the CORS headers already on it.
+        const origin = req.headers.get("origin");
+        const corsHeaders = rpcOpts.reply && origin && config.trustedOrigins.includes(origin) ? { "access-control-allow-origin": origin, "access-control-allow-credentials": "true", vary: "origin" } : undefined;
+        const answer = await rpc.call(name, req, url, { headers, requestId, traceparent: req.headers.get("traceparent") ?? undefined, cors: corsHeaders }); // sets x-request-id itself
+        return answer instanceof Response ? cors(req, answer) : answer;
       }
       if (authPath.startsWith("/api/auth")) {
         let body: string | undefined;
@@ -1369,6 +1373,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       },
     },
   });
+  // On the native engine a successful /rpc call is answered with its Reply, which skips the Web Response (a request before this gets a Response).
+  if (httpEngine === "archlast") {
+    const Reply = (await nativeEngine())!.Reply;
+    rpcOpts.reply = (body, headers) => new Reply(body, { headers }) as unknown as Response;
+  }
 
   log("info", `http engine: ${httpEngine} (${httpEngineWhy})`);
   // Bound to every interface, the local URL is the useful one (Better Auth's default origin, logs).
