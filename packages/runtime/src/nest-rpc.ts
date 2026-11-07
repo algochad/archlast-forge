@@ -4,7 +4,7 @@
 // what they serve to forge/_generated/rpc.ts, and a caller types createForgeRpcClient<Rpc>() with it. Calls go through Nest's ClientProxy.
 import { createHash, timingSafeEqual } from "node:crypto";
 import { isForgeError, ForgeError } from "./errors";
-import { startHttpServer } from "./server/engine";
+import { nativeEngine, startHttpServer, type NativeEngine } from "./server/engine";
 // By the package's own name, so the build keeps it external and its own (minified) file: see "build" in package.json.
 import { createCaller, createRpc, RpcFailure, type Procedure } from "@archlast/forge-runtime/forge-rpc";
 // By the packages' own names, as the other Nest entries do: the build keeps them entries of their own.
@@ -191,8 +191,11 @@ export class ForgeRpcServer extends Server implements CustomTransportStrategy {
       // before it compares anything, so how far a wrong guess matches is not something timing can show.
       const accepted = new Set<string>();
       const maxBody = Number(process.env.MAX_REQUEST_BYTES) || 8 * 1024 * 1024;
+      // Set once the engine is up, when it is archlast-serve: its Reply skips the Web Response (about 2.6 us of a call's 12).
+      let EngineReply: NativeEngine["Reply"] | undefined;
       const rpc = createRpc({
         maxPayload: maxBody,
+        respond: (body, status, headers) => (EngineReply ? (new EngineReply(body, { status, headers }) as unknown as Response) : new Response(body, { status, headers })),
         procedures: this.procedures(),
         authorized: (header) => {
           if (header === null) return false;
@@ -211,8 +214,9 @@ export class ForgeRpcServer extends Server implements CustomTransportStrategy {
         fetch: (req: Request, server: any) => rpc.fetch(req, server),
         websocket: rpc.websocket,
       }).then(
-        ({ server }) => {
+        async ({ server, engine }) => {
           this.server = server;
+          if (engine === "archlast") EngineReply = (await nativeEngine())?.Reply;
           callback();
         },
         (e) => {
