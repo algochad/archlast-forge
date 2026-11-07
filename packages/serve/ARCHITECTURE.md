@@ -55,11 +55,11 @@ that crossing cheap.
 
 Which thread does what:
 
-| thread | runs | never runs |
-|---|---|---|
-| **I/O threads** (`archlast-io-N`, default 2) | accept, TLS, HTTP parsing, WebSocket framing, file serving, static routes, pub/sub fan-out, idle timers, socket writes | your JavaScript |
-| **JS lane 0** (Bun's main thread) | your handlers, the pump, `Request`/`Response` objects | socket I/O |
-| **JS lanes 1..n** (optional `workers`, Bun `Worker`s) | the same script again, for stateless handlers | socket I/O |
+| thread                                                | runs                                                                                                                   | never runs      |
+| ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------- |
+| **I/O threads** (`archlast-io-N`, default 2)          | accept, TLS, HTTP parsing, WebSocket framing, file serving, static routes, pub/sub fan-out, idle timers, socket writes | your JavaScript |
+| **JS lane 0** (Bun's main thread)                     | your handlers, the pump, `Request`/`Response` objects                                                                  | socket I/O      |
+| **JS lanes 1..n** (optional `workers`, Bun `Worker`s) | the same script again, for stateless handlers                                                                          | socket I/O      |
 
 A connection never changes I/O thread, and a WebSocket never changes lane. That keeps connection state single-threaded
 (no locks on the hot path) and makes per-socket handler order trivial.
@@ -86,16 +86,16 @@ A connection never changes I/O thread, and a WebSocket never changes lane. That 
 
 Points that matter for speed:
 
-* **Batching.** A busy lane loops `drain → handle all → one command`, and the I/O side sends it no wake-ups while it is
+- **Batching.** A busy lane loops `drain → handle all → one command`, and the I/O side sends it no wake-ups while it is
   awake. Under load the cost of the thread boundary is paid per batch, not per request.
-* **Only the first wake costs.** A parked lane is woken through a coalesced thread-safe callback. The most recently parked lane is
+- **Only the first wake costs.** A parked lane is woken through a coalesced thread-safe callback. The most recently parked lane is
   woken first, so light load stays on one or two hot threads.
-* **Bodies.** Up to 256 KiB travel inside the request record. A bigger body arrives as chunk events with credit-based flow
+- **Bodies.** Up to 256 KiB travel inside the request record. A bigger body arrives as chunk events with credit-based flow
   control (2 MiB window), so a slow handler pushes back on the client instead of filling memory. A body over the limit is
   answered 413.
-* **Responses** are copied once into a command buffer. A stream (SSE, a `ReadableStream`) gets chunk commands and
+- **Responses** are copied once into a command buffer. A stream (SSE, a `ReadableStream`) gets chunk commands and
   consumed-bytes acks back, so a slow client holds the producer back (about a 1 MiB window).
-* **Latency mode.** After handling work, the JS thread and the I/O threads poll for a few microseconds (`spinMicros`, 30)
+- **Latency mode.** After handling work, the JS thread and the I/O threads poll for a few microseconds (`spinMicros`, 30)
   instead of sleeping, so a lone request skips two sleep/wake cycles. It applies only while at most 4 connections are open;
   with more, threads are busy anyway.
 
@@ -117,21 +117,21 @@ Points that matter for speed:
  client ◄──frames────┘
 ```
 
-* Framing is **uWebSockets' protocol layer** (Bun's copy, `crates/core/vendor/uws`), compiled through a small C++ shim.
+- Framing is **uWebSockets' protocol layer** (Bun's copy, `crates/core/vendor/uws`), compiled through a small C++ shim.
   Everything around it — accepting, TLS, timers — stays on tokio. See `wsconn.rs` for the connection loop, which follows
   Bun's `WebSocketContext`.
-* **Pub/sub** (`ws.subscribe`, `ws.publish`, `server.publish`) lives in Rust: a publish is looked up and queued on every
+- **Pub/sub** (`ws.subscribe`, `ws.publish`, `server.publish`) lives in Rust: a publish is looked up and queued on every
   subscriber's I/O thread without entering JS again.
-* **Backpressure.** Bytes queued per socket are counted. Past the limit the socket is closed, or (Bun's default) `send`
+- **Backpressure.** Bytes queued per socket are counted. Past the limit the socket is closed, or (Bun's default) `send`
   returns -1 and a `drain` event follows. A paused socket is not read at all, so TCP pushes back on the sender.
 
 ## 4. The wire protocol between the two sides
 
 Two buffers per lane, both little-endian, documented at the top of `src/codec.ts`:
 
-* **events** (Rust → JS, filled by `drain`): `[count] event*`, each event starts with a kind byte — request, WebSocket
+- **events** (Rust → JS, filled by `drain`): `[count] event*`, each event starts with a kind byte — request, WebSocket
   open/message/close/ping/pong/drain, stream closed/ack, request-body chunk/end/error/too-large, aborted.
-* **commands** (JS → Rust, sent by `command`): `[count] command*` — respond, stream start/chunk/end/error, WebSocket
+- **commands** (JS → Rust, sent by `command`): `[count] command*` — respond, stream start/chunk/end/error, WebSocket
   send/close/ping/pong/terminate/pause/resume, subscribe/unsubscribe/publish, file, timeout, upgrade accept, body ack/cancel.
 
 Startup is one **options blob** (ports, TLS entries, WebSocket limits, static routes, spin settings), parsed once in
@@ -162,15 +162,15 @@ src
 
 ## 6. Choices and their reasons
 
-| choice | why |
-|---|---|
-| Rust I/O threads, JS handlers on Bun's thread | the handler is the part that cannot leave the JS thread; everything else can leave it |
-| thread-per-core, no work stealing for connections | no cross-thread task wake-ups; connection state needs no locks |
-| batches, not calls per request | the thread boundary is the expensive part; batching amortizes it |
-| two bindings (napi and `bun:ffi`) over one Rust core | the same code runs through either; napi is the default, `ARCHLAST_BACKEND` switches |
-| uWebSockets for WebSocket framing, hyper/tokio for HTTP | Bun's own WebSocket implementation is uWebSockets; hyper gives HTTP/1.1, HTTP/2 and rustls TLS |
-| the Bun.serve-shaped facade in `compat.ts` | lets a project that calls `Bun.serve` switch engines with little change; `Reply` skips the Web-object cost on hot paths |
-| latency mode only for few connections | polling helps a lone client and just burns CPU when many are connected |
+| choice                                                  | why                                                                                                                     |
+| ------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------- |
+| Rust I/O threads, JS handlers on Bun's thread           | the handler is the part that cannot leave the JS thread; everything else can leave it                                   |
+| thread-per-core, no work stealing for connections       | no cross-thread task wake-ups; connection state needs no locks                                                          |
+| batches, not calls per request                          | the thread boundary is the expensive part; batching amortizes it                                                        |
+| two bindings (napi and `bun:ffi`) over one Rust core    | the same code runs through either; napi is the default, `ARCHLAST_BACKEND` switches                                     |
+| uWebSockets for WebSocket framing, hyper/tokio for HTTP | Bun's own WebSocket implementation is uWebSockets; hyper gives HTTP/1.1, HTTP/2 and rustls TLS                          |
+| the Bun.serve-shaped facade in `compat.ts`              | lets a project that calls `Bun.serve` switch engines with little change; `Reply` skips the Web-object cost on hot paths |
+| latency mode only for few connections                   | polling helps a lone client and just burns CPU when many are connected                                                  |
 
 ## 7. Limits
 

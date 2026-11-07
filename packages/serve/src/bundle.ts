@@ -27,9 +27,13 @@ export type DevelopmentOption = boolean | { hmr?: boolean; console?: boolean };
 
 /** `import x from "./page.html"`: a native `HTMLBundle`, or the `{ index, files }` manifest of a compiled executable. */
 export function isHtmlBundle(v: unknown): boolean {
-    if (typeof v !== "object" || v === null) return false;
-    if (Object.prototype.toString.call(v) === "[object HTMLBundle]") return true;
-    return "index" in v && "files" in v && Array.isArray((v as { files: unknown }).files);
+  if (typeof v !== "object" || v === null) return false;
+  if (Object.prototype.toString.call(v) === "[object HTMLBundle]") return true;
+  return (
+    "index" in v &&
+    "files" in v &&
+    Array.isArray((v as { files: unknown }).files)
+  );
 }
 
 /** Where the dev client connects, and the topic its sockets share. */
@@ -40,211 +44,270 @@ export const DEV_TOPIC = "archlast:dev";
 export const DEV = Symbol("archlast.dev-socket");
 
 interface Entry {
-    status: number;
-    headers: [string, string][];
-    body: Uint8Array;
-    etag: string;
+  status: number;
+  headers: [string, string][];
+  body: Uint8Array;
+  etag: string;
 }
 
 interface Page {
-    index: string;
-    entry: Entry | null;
-    error: string | null;
+  index: string;
+  entry: Entry | null;
+  error: string | null;
 }
 
 export interface BundleEvents {
-    /** A rebuild finished (`ok`) or failed (`message`): tell the open pages. */
-    publish(topic: string, data: string): void;
+  /** A rebuild finished (`ok`) or failed (`message`): tell the open pages. */
+  publish(topic: string, data: string): void;
 }
 
 const encoder = new TextEncoder();
 
 export class BundleHost {
-    private pages = new Map<string, Page>(); // by route pattern
-    private assets = new Map<string, Entry>(); // by URL path
-    private watchers: FSWatcher[] = [];
-    private timer: ReturnType<typeof setTimeout> | null = null;
-    private building: Promise<void> | null = null;
-    private queued = false;
-    private stopped = false;
-    readonly dev: boolean;
-    readonly hmr: boolean;
-    readonly console: boolean;
-    /** The dev client (and its socket) is needed for live reload or for console forwarding. */
-    readonly live: boolean;
-    private devClient: Entry;
+  private pages = new Map<string, Page>(); // by route pattern
+  private assets = new Map<string, Entry>(); // by URL path
+  private watchers: FSWatcher[] = [];
+  private timer: ReturnType<typeof setTimeout> | null = null;
+  private building: Promise<void> | null = null;
+  private queued = false;
+  private stopped = false;
+  readonly dev: boolean;
+  readonly hmr: boolean;
+  readonly console: boolean;
+  /** The dev client (and its socket) is needed for live reload or for console forwarding. */
+  readonly live: boolean;
+  private devClient: Entry;
 
-    constructor(development: DevelopmentOption | undefined, private events: BundleEvents) {
-        this.dev = development === undefined ? process.env.NODE_ENV !== "production" : !!development;
-        const o = typeof development === "object" && development !== null ? development : {};
-        this.hmr = this.dev && o.hmr !== false;
-        this.console = this.dev && o.console === true;
-        this.live = this.hmr || this.console;
-        this.devClient = entry(200, "text/javascript;charset=utf-8", encoder.encode(devClientSource(this.console)), "no-cache");
+  constructor(
+    development: DevelopmentOption | undefined,
+    private events: BundleEvents,
+  ) {
+    this.dev =
+      development === undefined
+        ? process.env.NODE_ENV !== "production"
+        : !!development;
+    const o =
+      typeof development === "object" && development !== null
+        ? development
+        : {};
+    this.hmr = this.dev && o.hmr !== false;
+    this.console = this.dev && o.console === true;
+    this.live = this.hmr || this.console;
+    this.devClient = entry(
+      200,
+      "text/javascript;charset=utf-8",
+      encoder.encode(devClientSource(this.console)),
+      "no-cache",
+    );
+  }
+
+  get active(): boolean {
+    return this.pages.size > 0;
+  }
+
+  /** Resolves when the first (or latest) build is done. Cheap to await when nothing is building. */
+  get pending(): Promise<void> | null {
+    return this.building;
+  }
+
+  /** (Re)defines the bundle routes by pattern and builds them. */
+  setRoutes(routes: Record<string, unknown>): void {
+    for (const w of this.watchers.splice(0)) w.close();
+    this.pages.clear();
+    this.assets.clear();
+    for (const [pattern, bundle] of Object.entries(routes)) {
+      const index = (bundle as { index?: string }).index;
+      if (typeof index !== "string")
+        throw new Error(
+          `route ${pattern}: this HTML bundle does not name its source file`,
+        );
+      this.pages.set(pattern, {
+        index: resolve(index),
+        entry: null,
+        error: null,
+      });
     }
+    if (this.pages.size > 0) this.start(); // building from this very call, so a request right after listen() waits for it
+  }
 
-    get active(): boolean {
-        return this.pages.size > 0;
+  stop(): void {
+    this.stopped = true;
+    if (this.timer) clearTimeout(this.timer);
+    for (const w of this.watchers.splice(0)) w.close();
+    this.pages.clear();
+    this.assets.clear();
+  }
+
+  /** The answer for a bundle route. */
+  page(pattern: string, req: Request): Response | Reply {
+    const p = this.pages.get(pattern);
+    if (!p) return new Reply("Not Found", { status: 404 });
+    if (!p.entry)
+      return new Reply(p.error ?? "The page is not built yet", { status: 500 });
+    return respond(p.entry, req);
+  }
+
+  /** A bundled asset or the dev client script, when `pathname` is one. */
+  asset(pathname: string, req: Request): Response | Reply | undefined {
+    if (this.live && pathname === DEV_CLIENT)
+      return respond(this.devClient, req);
+    const e = this.assets.get(pathname);
+    return e ? respond(e, req) : undefined;
+  }
+
+  isDevSocket(pathname: string): boolean {
+    return this.live && pathname === DEV_SOCKET;
+  }
+
+  // ---------- building ----------
+
+  private schedule(delay: number): void {
+    if (this.stopped) return;
+    if (this.timer) clearTimeout(this.timer);
+    this.timer = setTimeout(() => {
+      this.timer = null;
+      if (this.building)
+        this.queued = true; // a change arrived during a build: build again when it ends
+      else this.start();
+    }, delay);
+  }
+
+  private start(): void {
+    this.building = this.buildAll().finally(() => {
+      this.building = null;
+      if (this.queued && !this.stopped) {
+        this.queued = false;
+        this.schedule(0);
+      }
+    });
+  }
+
+  private async buildAll(): Promise<void> {
+    const rebuilt =
+      this.assets.size > 0 || [...this.pages.values()].some((p) => p.entry);
+    const before = {
+      assets: this.assets,
+      html: new Map([...this.pages].map(([k, p]) => [k, p.entry] as const)),
+    };
+    const assets = new Map<string, Entry>();
+    const watchDirs = new Set<string>();
+    let failure: string | null = null;
+    for (const [pattern, page] of this.pages) {
+      try {
+        const out = await this.buildOne(page.index, assets, watchDirs);
+        page.entry = out;
+        page.error = null;
+      } catch (e) {
+        failure = describe(e);
+        page.error = failure;
+        console.error(
+          `[archlast-serve] building ${page.index} failed:\n${failure}`,
+        );
+      }
     }
-
-    /** Resolves when the first (or latest) build is done. Cheap to await when nothing is building. */
-    get pending(): Promise<void> | null {
-        return this.building;
+    if (this.stopped) return;
+    if (failure === null) this.assets = assets;
+    else for (const [k, v] of assets) this.assets.set(k, v); // keep serving the last good page; add what did build
+    if (this.dev) {
+      // A failed build lists no inputs: keep watching what was watched so the fix is noticed.
+      if (failure !== null) for (const d of this.watched) watchDirs.add(d);
+      this.watch(watchDirs);
     }
-
-    /** (Re)defines the bundle routes by pattern and builds them. */
-    setRoutes(routes: Record<string, unknown>): void {
-        for (const w of this.watchers.splice(0)) w.close();
-        this.pages.clear();
-        this.assets.clear();
-        for (const [pattern, bundle] of Object.entries(routes)) {
-            const index = (bundle as { index?: string }).index;
-            if (typeof index !== "string") throw new Error(`route ${pattern}: this HTML bundle does not name its source file`);
-            this.pages.set(pattern, { index: resolve(index), entry: null, error: null });
-        }
-        if (this.pages.size > 0) this.start(); // building from this very call, so a request right after listen() waits for it
+    if (rebuilt && this.hmr) {
+      const message =
+        failure === null
+          ? changeOf(before, this.assets, this.pages)
+          : { t: "error", message: failure };
+      if (message) this.events.publish(DEV_TOPIC, JSON.stringify(message));
     }
+  }
 
-    stop(): void {
-        this.stopped = true;
-        if (this.timer) clearTimeout(this.timer);
-        for (const w of this.watchers.splice(0)) w.close();
-        this.pages.clear();
-        this.assets.clear();
+  private async buildOne(
+    index: string,
+    assets: Map<string, Entry>,
+    watchDirs: Set<string>,
+  ): Promise<Entry> {
+    const result = (await Bun.build({
+      entrypoints: [index],
+      publicPath: "/",
+      target: "browser",
+      minify: !this.dev,
+      sourcemap: this.dev ? "inline" : "none",
+      define: {
+        "process.env.NODE_ENV": JSON.stringify(
+          this.dev ? "development" : "production",
+        ),
+      },
+      metafile: true,
+    } as Bun.BuildConfig & { metafile: boolean })) as Bun.BuildOutput & {
+      metafile?: { inputs?: Record<string, unknown> };
+    };
+    if (!result.success)
+      throw new AggregateError(
+        result.logs,
+        result.logs.map((l) => String(l)).join("\n"),
+      );
+
+    let html: Entry | null = null;
+    const cache = this.dev ? "no-cache" : "public, max-age=31536000, immutable";
+    for (const o of result.outputs) {
+      const body = new Uint8Array(await o.arrayBuffer());
+      const isHtml = o.type.startsWith("text/html");
+      const e = entry(
+        200,
+        o.type,
+        body,
+        isHtml ? "no-cache" : cache,
+        o.hash ?? undefined,
+      );
+      if (isHtml) html = this.live ? withDevClient(e) : e;
+      else assets.set("/" + o.path.replace(/^\.\//, ""), e);
     }
-
-    /** The answer for a bundle route. */
-    page(pattern: string, req: Request): Response | Reply {
-        const p = this.pages.get(pattern);
-        if (!p) return new Reply("Not Found", { status: 404 });
-        if (!p.entry) return new Reply(p.error ?? "The page is not built yet", { status: 500 });
-        return respond(p.entry, req);
+    if (!html) throw new Error(`building ${index} produced no HTML`);
+    for (const key of Object.keys(result.metafile?.inputs ?? {})) {
+      if (key.includes("node_modules")) continue;
+      watchDirs.add(
+        dirname(
+          resolve(key.startsWith("/") ? key : resolve(dirname(index), key)),
+        ),
+      );
     }
+    watchDirs.add(dirname(index));
+    return html;
+  }
 
-    /** A bundled asset or the dev client script, when `pathname` is one. */
-    asset(pathname: string, req: Request): Response | Reply | undefined {
-        if (this.live && pathname === DEV_CLIENT) return respond(this.devClient, req);
-        const e = this.assets.get(pathname);
-        return e ? respond(e, req) : undefined;
+  private watched = new Set<string>();
+
+  private watch(dirs: Set<string>): void {
+    for (const w of this.watchers.splice(0)) w.close();
+    this.watched = dirs;
+    for (const dir of dirs) {
+      try {
+        this.watchers.push(
+          watch(dir, { persistent: false }, (_event, name) => {
+            if (name && /(^|\/)(\.|node_modules)/.test(name)) return;
+            this.schedule(40);
+          }),
+        );
+      } catch {
+        // a folder that vanished or cannot be watched: the next successful build lists the current ones
+      }
     }
-
-    isDevSocket(pathname: string): boolean {
-        return this.live && pathname === DEV_SOCKET;
-    }
-
-    // ---------- building ----------
-
-    private schedule(delay: number): void {
-        if (this.stopped) return;
-        if (this.timer) clearTimeout(this.timer);
-        this.timer = setTimeout(() => {
-            this.timer = null;
-            if (this.building) this.queued = true; // a change arrived during a build: build again when it ends
-            else this.start();
-        }, delay);
-    }
-
-    private start(): void {
-        this.building = this.buildAll().finally(() => {
-            this.building = null;
-            if (this.queued && !this.stopped) {
-                this.queued = false;
-                this.schedule(0);
-            }
-        });
-    }
-
-    private async buildAll(): Promise<void> {
-        const rebuilt = this.assets.size > 0 || [...this.pages.values()].some((p) => p.entry);
-        const before = { assets: this.assets, html: new Map([...this.pages].map(([k, p]) => [k, p.entry] as const)) };
-        const assets = new Map<string, Entry>();
-        const watchDirs = new Set<string>();
-        let failure: string | null = null;
-        for (const [pattern, page] of this.pages) {
-            try {
-                const out = await this.buildOne(page.index, assets, watchDirs);
-                page.entry = out;
-                page.error = null;
-            } catch (e) {
-                failure = describe(e);
-                page.error = failure;
-                console.error(`[archlast-serve] building ${page.index} failed:\n${failure}`);
-            }
-        }
-        if (this.stopped) return;
-        if (failure === null) this.assets = assets;
-        else for (const [k, v] of assets) this.assets.set(k, v); // keep serving the last good page; add what did build
-        if (this.dev) {
-            // A failed build lists no inputs: keep watching what was watched so the fix is noticed.
-            if (failure !== null) for (const d of this.watched) watchDirs.add(d);
-            this.watch(watchDirs);
-        }
-        if (rebuilt && this.hmr) {
-            const message = failure === null ? changeOf(before, this.assets, this.pages) : { t: "error", message: failure };
-            if (message) this.events.publish(DEV_TOPIC, JSON.stringify(message));
-        }
-    }
-
-    private async buildOne(index: string, assets: Map<string, Entry>, watchDirs: Set<string>): Promise<Entry> {
-        const result = (await Bun.build({
-            entrypoints: [index],
-            publicPath: "/",
-            target: "browser",
-            minify: !this.dev,
-            sourcemap: this.dev ? "inline" : "none",
-            define: { "process.env.NODE_ENV": JSON.stringify(this.dev ? "development" : "production") },
-            metafile: true,
-        } as Bun.BuildConfig & { metafile: boolean })) as Bun.BuildOutput & { metafile?: { inputs?: Record<string, unknown> } };
-        if (!result.success) throw new AggregateError(result.logs, result.logs.map((l) => String(l)).join("\n"));
-
-        let html: Entry | null = null;
-        const cache = this.dev ? "no-cache" : "public, max-age=31536000, immutable";
-        for (const o of result.outputs) {
-            const body = new Uint8Array(await o.arrayBuffer());
-            const isHtml = o.type.startsWith("text/html");
-            const e = entry(200, o.type, body, isHtml ? "no-cache" : cache, o.hash ?? undefined);
-            if (isHtml) html = this.live ? withDevClient(e) : e;
-            else assets.set("/" + o.path.replace(/^\.\//, ""), e);
-        }
-        if (!html) throw new Error(`building ${index} produced no HTML`);
-        for (const key of Object.keys(result.metafile?.inputs ?? {})) {
-            if (key.includes("node_modules")) continue;
-            watchDirs.add(dirname(resolve(key.startsWith("/") ? key : resolve(dirname(index), key))));
-        }
-        watchDirs.add(dirname(index));
-        return html;
-    }
-
-    private watched = new Set<string>();
-
-    private watch(dirs: Set<string>): void {
-        for (const w of this.watchers.splice(0)) w.close();
-        this.watched = dirs;
-        for (const dir of dirs) {
-            try {
-                this.watchers.push(watch(dir, { persistent: false }, (_event, name) => {
-                    if (name && /(^|\/)(\.|node_modules)/.test(name)) return;
-                    this.schedule(40);
-                }));
-            } catch {
-                // a folder that vanished or cannot be watched: the next successful build lists the current ones
-            }
-        }
-    }
+  }
 }
 
 const STYLESHEET_HREFS = /<link\b[^>]*>/gi;
 
 /** The stylesheet URLs a page's HTML links, in order. */
 export function stylesheetsOf(html: string): string[] {
-    const hrefs: string[] = [];
-    for (const tag of html.match(STYLESHEET_HREFS) ?? []) {
-        if (!/\brel\s*=\s*["']?stylesheet/i.test(tag)) continue;
-        const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
-        const url = href?.[1] ?? href?.[2] ?? href?.[3];
-        if (url) hrefs.push(url);
-    }
-    return hrefs;
+  const hrefs: string[] = [];
+  for (const tag of html.match(STYLESHEET_HREFS) ?? []) {
+    if (!/\brel\s*=\s*["']?stylesheet/i.test(tag)) continue;
+    const href = /\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i.exec(tag);
+    const url = href?.[1] ?? href?.[2] ?? href?.[3];
+    if (url) hrefs.push(url);
+  }
+  return hrefs;
 }
 
 const isCss = (path: string) => path.endsWith(".css");
@@ -254,72 +317,125 @@ const isCss = (path: string) => path.endsWith(".css");
  * change confined to stylesheets can be swapped: every script is the same file with the same bytes, and each page's HTML is the same
  * apart from the stylesheet URLs (their names carry a hash, so a changed stylesheet changes its page's HTML too).
  */
-export function changeOf(before: { assets: Map<string, Entry>; html: Map<string, Entry | null> }, assets: Map<string, Entry>, pages: Map<string, Page>): { t: "reload" } | { t: "css"; swap: Record<string, string> } | null {
-    const dec = new TextDecoder();
-    const scripts = (m: Map<string, Entry>) => [...m].filter(([k]) => !isCss(k)).map(([k, v]) => `${k}=${v.etag}`).sort().join("\n");
-    const swap: Record<string, string> = {};
-    let htmlSame = true;
-    let anyChange = scripts(before.assets) !== scripts(assets);
-    if (anyChange) return { t: "reload" };
-    for (const [pattern, page] of pages) {
-        const old = before.html.get(pattern);
-        if (!old || !page.entry) return { t: "reload" };
-        if (old === page.entry) continue;
-        const [a, b] = [dec.decode(old.body), dec.decode(page.entry.body)];
-        const [la, lb] = [stylesheetsOf(a), stylesheetsOf(b)];
-        if (la.length !== lb.length) return { t: "reload" };
-        // The same HTML once the stylesheet URLs are taken out?
-        let [ta, tb] = [a, b];
-        la.forEach((u, i) => {
-            ta = ta.replace(u, "\0");
-            tb = tb.replace(lb[i]!, "\0");
-            if (u !== lb[i]) swap[u] = lb[i]!;
-        });
-        if (ta !== tb) htmlSame = false;
-    }
-    if (!htmlSame) return { t: "reload" };
-    // A stylesheet that changed under the same name (no hash) is swapped by the page re-requesting it.
-    for (const [k, v] of assets) if (isCss(k) && before.assets.get(k)?.etag !== v.etag && !Object.values(swap).includes(k)) swap[k] = k;
-    anyChange = Object.keys(swap).length > 0;
-    return anyChange ? { t: "css", swap } : null;
+export function changeOf(
+  before: { assets: Map<string, Entry>; html: Map<string, Entry | null> },
+  assets: Map<string, Entry>,
+  pages: Map<string, Page>,
+): { t: "reload" } | { t: "css"; swap: Record<string, string> } | null {
+  const dec = new TextDecoder();
+  const scripts = (m: Map<string, Entry>) =>
+    [...m]
+      .filter(([k]) => !isCss(k))
+      .map(([k, v]) => `${k}=${v.etag}`)
+      .sort()
+      .join("\n");
+  const swap: Record<string, string> = {};
+  let htmlSame = true;
+  let anyChange = scripts(before.assets) !== scripts(assets);
+  if (anyChange) return { t: "reload" };
+  for (const [pattern, page] of pages) {
+    const old = before.html.get(pattern);
+    if (!old || !page.entry) return { t: "reload" };
+    if (old === page.entry) continue;
+    const [a, b] = [dec.decode(old.body), dec.decode(page.entry.body)];
+    const [la, lb] = [stylesheetsOf(a), stylesheetsOf(b)];
+    if (la.length !== lb.length) return { t: "reload" };
+    // The same HTML once the stylesheet URLs are taken out?
+    let [ta, tb] = [a, b];
+    la.forEach((u, i) => {
+      ta = ta.replace(u, "\0");
+      tb = tb.replace(lb[i]!, "\0");
+      if (u !== lb[i]) swap[u] = lb[i]!;
+    });
+    if (ta !== tb) htmlSame = false;
+  }
+  if (!htmlSame) return { t: "reload" };
+  // A stylesheet that changed under the same name (no hash) is swapped by the page re-requesting it.
+  for (const [k, v] of assets)
+    if (
+      isCss(k) &&
+      before.assets.get(k)?.etag !== v.etag &&
+      !Object.values(swap).includes(k)
+    )
+      swap[k] = k;
+  anyChange = Object.keys(swap).length > 0;
+  return anyChange ? { t: "css", swap } : null;
 }
 
 /** Build errors as readable text: message, then file:line:column and the offending line when the bundler gave them. */
 function describe(e: unknown): string {
-    const list = e instanceof AggregateError && e.errors.length > 0 ? e.errors : [e];
-    return list
-        .map((x) => {
-            const m = x as { message?: string; position?: { file?: string; line?: number; column?: number; lineText?: string } | null };
-            const p = m.position;
-            const where = p?.file ? `${p.file}:${p.line ?? "?"}:${p.column ?? "?"}` : "";
-            return [m.message ?? String(x), where && `  at ${where}`, p?.lineText && `  ${p.lineText.trim()}`].filter(Boolean).join("\n");
-        })
-        .join("\n\n");
+  const list =
+    e instanceof AggregateError && e.errors.length > 0 ? e.errors : [e];
+  return list
+    .map((x) => {
+      const m = x as {
+        message?: string;
+        position?: {
+          file?: string;
+          line?: number;
+          column?: number;
+          lineText?: string;
+        } | null;
+      };
+      const p = m.position;
+      const where = p?.file
+        ? `${p.file}:${p.line ?? "?"}:${p.column ?? "?"}`
+        : "";
+      return [
+        m.message ?? String(x),
+        where && `  at ${where}`,
+        p?.lineText && `  ${p.lineText.trim()}`,
+      ]
+        .filter(Boolean)
+        .join("\n");
+    })
+    .join("\n\n");
 }
 
 /** A cacheable answer: etag from the build hash (or the bytes), content-type and cache policy as given. */
-function entry(status: number, type: string, body: Uint8Array, cache: string, hash?: string): Entry {
-    const etag = `"${hash ?? Bun.hash(body).toString(16)}"`;
-    return { status, headers: [["content-type", type], ["cache-control", cache], ["etag", etag]], body, etag };
+function entry(
+  status: number,
+  type: string,
+  body: Uint8Array,
+  cache: string,
+  hash?: string,
+): Entry {
+  const etag = `"${hash ?? Bun.hash(body).toString(16)}"`;
+  return {
+    status,
+    headers: [
+      ["content-type", type],
+      ["cache-control", cache],
+      ["etag", etag],
+    ],
+    body,
+    etag,
+  };
 }
 
 function withDevClient(e: Entry): Entry {
-    const html = new TextDecoder().decode(e.body);
-    const tag = `<script src="${DEV_CLIENT}"></script>`;
-    const patched = html.includes("</head>") ? html.replace("</head>", `${tag}</head>`) : html + tag;
-    const cache = e.headers.find(([k]) => k === "cache-control")![1];
-    return entry(200, "text/html;charset=utf-8", encoder.encode(patched), cache);
+  const html = new TextDecoder().decode(e.body);
+  const tag = `<script src="${DEV_CLIENT}"></script>`;
+  const patched = html.includes("</head>")
+    ? html.replace("</head>", `${tag}</head>`)
+    : html + tag;
+  const cache = e.headers.find(([k]) => k === "cache-control")![1];
+  return entry(200, "text/html;charset=utf-8", encoder.encode(patched), cache);
 }
 
 function respond(e: Entry, req: Request): Response | Reply {
-    const inm = req.headers.get("if-none-match");
-    if (inm && inm.split(",").some((t) => t.trim().replace(/^W\//, "") === e.etag)) return new Reply(null, { status: 304, headers: [["etag", e.etag]] });
-    return new Reply(e.body, { status: e.status, headers: e.headers });
+  const inm = req.headers.get("if-none-match");
+  if (
+    inm &&
+    inm.split(",").some((t) => t.trim().replace(/^W\//, "") === e.etag)
+  )
+    return new Reply(null, { status: 304, headers: [["etag", e.etag]] });
+  return new Reply(e.body, { status: e.status, headers: e.headers });
 }
 
 /** The script injected into pages in development: reloads on rebuild, shows build errors, forwards the console. */
 function devClientSource(forwardConsole: boolean): string {
-    return `(() => {
+  return `(() => {
   const url = (location.protocol === "https:" ? "wss://" : "ws://") + location.host + ${JSON.stringify(DEV_SOCKET)};
   let ws, overlay;
   const queue = [];
@@ -382,25 +498,32 @@ function devClientSource(forwardConsole: boolean): string {
     ws.onclose = () => setTimeout(connect, 500);
   };
   connect();
-  ${forwardConsole ? `const fmt = (v) => { if (typeof v === "string") return v; if (v instanceof Error) return v.stack || String(v); try { return JSON.stringify(v); } catch { return String(v); } };
+  ${
+    forwardConsole
+      ? `const fmt = (v) => { if (typeof v === "string") return v; if (v instanceof Error) return v.stack || String(v); try { return JSON.stringify(v); } catch { return String(v); } };
   for (const level of ["log", "info", "warn", "error", "debug"]) {
     const orig = console[level].bind(console);
     console[level] = (...args) => { orig(...args); send({ t: "console", level, text: args.map(fmt).join(" ") }); };
   }
   addEventListener("error", (e) => send({ t: "console", level: "error", text: e.message + (e.filename ? " (" + e.filename + ":" + e.lineno + ")" : "") }));
-  addEventListener("unhandledrejection", (e) => send({ t: "console", level: "error", text: "Unhandled rejection: " + fmt(e.reason) }));` : ""}
+  addEventListener("unhandledrejection", (e) => send({ t: "console", level: "error", text: "Unhandled rejection: " + fmt(e.reason) }));`
+      : ""
+  }
 })();
 `;
 }
 
 /** Prints a forwarded browser console message the way Bun's dev server does. */
 export function printBrowserConsole(raw: string | Uint8Array): void {
-    try {
-        const m = JSON.parse(typeof raw === "string" ? raw : new TextDecoder().decode(raw)) as { t?: string; level?: string; text?: string };
-        if (m.t !== "console" || typeof m.text !== "string") return;
-        const out = m.level === "error" || m.level === "warn" ? console.error : console.log;
-        out(`[browser] ${m.text}`);
-    } catch {
-        // not ours
-    }
+  try {
+    const m = JSON.parse(
+      typeof raw === "string" ? raw : new TextDecoder().decode(raw),
+    ) as { t?: string; level?: string; text?: string };
+    if (m.t !== "console" || typeof m.text !== "string") return;
+    const out =
+      m.level === "error" || m.level === "warn" ? console.error : console.log;
+    out(`[browser] ${m.text}`);
+  } catch {
+    // not ours
+  }
 }
