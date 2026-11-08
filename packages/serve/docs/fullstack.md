@@ -177,9 +177,10 @@ is most of what the whole-page entry carries. Islands remove JavaScript only fro
 
 - an island that is only needed in some states should be mounted only then: the starter's menu is an island for a signed-in visitor and a plain link for an anonymous
   one, so the anonymous home page has no island at all;
-- when a page renders no island, the server should leave out the bootstrap script, the preload links and the `window.__FORGE__` state altogether (zero JavaScript).
-  This needs the render to know whether an island was rendered, and React writes the bootstrap into the stream before that is known, so it means either rendering to
-  a string first, or deciding from the route's classification. Not done yet.
+- when a page renders no island, the server leaves out the bootstrap script, the preload links and the `window.__FORGE__` state altogether, so the page has no
+  JavaScript. This is done: the island render is written without scripts, counts the islands it meets, and the scripts are put into the HTML (before `</body>`, with
+  the preloads before `</head>`) only when the count is not zero. Tested: an anonymous visitor's `/about` in the fixture has no `<script>` and no `modulepreload`,
+  while the same site's signed-in pages load the islands entry.
 
 The starter templates are not split yet: splitting changes what `create-archlast-forge` writes (and so the skill and the docs), which should happen when islands are
 opt-in for users, not while they are a flag.
