@@ -147,9 +147,24 @@ recursion in React's renderer makes inclusive times unreliable, so no inclusive 
 - A cache key must include every input a page reads about the viewer. Pages that read cookies other than the session and zone are not cached.
 - Hydration mismatches stay fatal in tests (`hydration.test.ts`), per island.
 
+## Step 1 result: the classifier (`packages/framework/src/classify.ts`, `bun packages/framework/src/classify-cli.ts <app>`)
+
+On the starter, with no change to any file: `index` is a page; `chat` and `sign-in` are islands; the header (`Chrome`) is an island because the sign-out
+button, `useAuth()` and `useNavigate()` live in the same component as the static header and footer. The finding that matters: `Root` passes the page
+(`<Outlet />`, elements) to `Chrome`, and elements cannot cross into an island, so **the root layout is an island and the whole page would hydrate**. Islands
+only pay when the interactive part is its own component. Two ways forward, to decide at step 2:
+
+- split the starter's header so the viewer menu (avatar, sign-out) is a small component of its own. The templates are ours, so the starters ship split;
+  an app that does not split loses nothing, it behaves as today and the report says why.
+- or teach the build to extract an interactive subtree into a synthesized island (a compiler job: the subtree closes over hooks and handlers, so it is only
+  safe for simple cases). Later, if splitting by hand proves a burden.
+
+The classifier fails closed: packages it does not read, members of objects, components chosen at run time and unresolved imports all count as islands (or make
+the component containing them one), a class or `this` is a fallback, and an `action` export makes the route a fallback.
+
 ## First steps
 
-1. Classifier over the starter templates and the framework's own test fixture, as a build-time report (`archlast-forge build` prints tiers).
+1. (Done.) Classifier over the starter templates, as a report. Not yet printed by `archlast-forge build`.
 2. One island end to end (the sign-out button), client entry and loader, behind the framework's existing build.
 3. Navigation by HTML swap with `Link` and `redirect` unchanged; run the framework's browser tests against it.
 4. Rust page cache with topic invalidation.
