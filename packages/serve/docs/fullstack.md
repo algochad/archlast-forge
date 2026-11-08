@@ -64,6 +64,46 @@ gain, not the gain. A real Forge page request has not been profiled yet; that is
 Gate: after Stage 1, measure a page request's cost split (loader, React render, serialization, I/O). If React render is not the larger part, Stage 2
 does not happen. The classifier from Stage 1 is the same one Stage 2 needs, so nothing is thrown away.
 
+## Profile of a real page request (measured 2026-11-08)
+
+Setup: the starter app (`create-archlast-forge` framework template) built for production and served by the real engine; server pinned to 4 cores,
+`oha -c 64` on 4 others; `packages/framework/bench/profile.ts` reproduces it. Anonymous `/` and signed-in `/chat` (a loader, a live paginated query rendered
+on the server).
+
+| page                                                 | `Bun.serve` | archlast-serve |
+| ---------------------------------------------------- | ----------- | -------------- |
+| `/` (about 2.6 KB)                                   | 5.7k req/s  | 7.7k req/s     |
+| `/chat` (about 2.7 KB, loader + query)               | 3.2 to 3.5k | 4.6 to 4.8k    |
+| `/sign-in` while signed in (302 redirect, no render) | 21k to 50k  | 49k to 63k     |
+
+So a page costs about 175 us of JS-thread time on `/` and about 300 us on `/chat`, against 57 us for React alone rendering a page of that size in the
+micro-benchmark above. The CPU profile (Bun `--cpu-prof-md`, `/`, 15 s of busy time, `Bun.serve`) by where the self time went:
+
+| share     | what                                                                                                                                            |
+| --------- | ----------------------------------------------------------------------------------------------------------------------------------------------- |
+| about 41% | Bun's native work: socket `write`/`end`/`writeSync`, `Response` and `ReadableStream` objects, `URL`, `JSON.stringify`, header copying           |
+| about 27% | React: `react-dom/server` 23%, `react` 4%                                                                                                       |
+| about 14% | React Router on the server: path matching, `resolvePathname`, `joinPaths`, `createStaticRouter`, hooks (a static router is built per request)   |
+| about 6%  | the engine's own request path: `server.ts`, security headers, telemetry recorder, rate limit                                                    |
+| about 5%  | the framework and the app: `server.tsx`, `time.tsx`, providers, `root.tsx`, route code                                                          |
+| about 4%  | Better Auth's browser client, built during server render (nanostores, session atom, focus/online managers) because the header calls `useAuth()` |
+| rest      | zod, TanStack Query, small                                                                                                                      |
+
+Reading it:
+
+- **Moving I/O to Rust already pays.** The 41% of native socket and `Response` work is what the engine takes over: +35% on `/` and `/chat`
+  with no change to any page code. That is the number to hold the other ideas against.
+- **React plus the router are about 41% of what is left on the JS thread.** A perfect Rust renderer would remove most of that, not all of it (the
+  loader, the query cache, serialization and glue stay). With the engine already in place, expect page throughput up by roughly 1.5 to 1.7 times from the
+  renderer alone, if every part of the page is in the compilable subset. The 20 to 45 times from the micro-benchmark is not available to a whole request.
+- **A page cache removes all of it for a hit.** A cache hit is served in Rust at engine speed (the redirect above, which also never renders, does 49k to 63k req/s).
+  For pages that can be cached that is tenfold or more, a larger lever than the renderer. It is why the cache comes first.
+- **There is cheap work in the existing path that is not about Rust**: a `createStaticRouter` per request, and a Better Auth client built on every server render
+  for a header that only needs the viewer on the server (it could be created lazily, in the browser). Together about 5% of the thread, no new architecture.
+
+Caveats: one machine, one page shape; the `/chat` loader here reads an empty table; profile overhead is in the numbers; shares are of self time by file, and
+recursion in React's renderer makes inclusive times unreliable, so no inclusive figure is given.
+
 ## Dev experience (unchanged, and how)
 
 - The existing rebuild in `framework/dev.ts` reclassifies and rebuilds the changed files; the engine swaps its route/page table like `reload()`.
