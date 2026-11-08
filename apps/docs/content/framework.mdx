@@ -393,6 +393,23 @@ const add = useMutation(api.tasks.add);
 
 Because every query on screen is live, there is nothing to revalidate after a mutation. For optimistic updates see [Clients](clients.html). `<form method="post">` to a page URL does nothing: the engine answers only `GET` and `HEAD` for pages.
 
+## Islands: pages that ship only the JavaScript they need
+
+A new app's `app/root.tsx` says `export const islands = true;`. With it, a page is HTML from the server, and only the parts that need the browser load JavaScript and hydrate, each on its own. A page with none of them has no JavaScript but a navigation script of about 1.3 kB (the starter's home page for a visitor who is not signed in: 126 kB before, 1.3 kB now). Without the line (or with `FORGE_ISLANDS=0`) every page is rendered and hydrated as a whole, as before.
+
+**What is an island.** The build reads your components and puts each in one of three groups. A *page* has no state, effects, handlers, refs or browser globals: it reads props, loader data, `useViewer()`, `useTimeZone()` and the like, which the server already knows. An *island* has state, effects, handlers, a ref, a browser global, or a hook such as `useQuery`, `useMutation`, `useAuth`, `useNavigate` or `useNow`. A *fallback* is anything it cannot read. See what it decided with `bun node_modules/@archlast/forge-framework/src/classify-cli.ts .`: it prints every route and component with the reason.
+
+**Rules an island follows.**
+
+- It lives in a file of its own, and that file exports it. A page that renders an island declared in the same file makes that page an island too, and the report says so.
+- Its props are plain data (strings, numbers, booleans, arrays, plain objects), because they cross to the browser as JSON. A function or an element as a prop, or `children`, throws with a message that names the island. Render what an island needs inside it.
+- It does not use `useLoaderData()`, `useParams()`, `useRouteError()` or other hooks that need the router in the browser: there is none. A route that does is rendered as a whole.
+- Put an island only where it is needed. The starter renders its menu only for a signed-in visitor, so the pages of a visitor who is not have no island.
+
+**What stays whole.** A page with an error, a route that exports `action`, and an app whose `root.tsx` is interactive itself are rendered and hydrated as a whole, as without islands, and the build says why when it turns islands off.
+
+**Navigation.** A link to another page of the site fetches that page's HTML and swaps it in. The document, the stylesheets and the shared client survive; the islands of the new page hydrate; back and forward work; `useNavigate()` inside an island does the same. A target that is not a page with islands is loaded in the ordinary way. Add `data-forge-reload` to a link, or to anything around it, to load the page the ordinary way. Loaders run on the server only. `useNavigation()` has no state to report here, and `Link`'s prefetching is not done.
+
 ## Navigation
 
 - `Link` and `NavLink` navigate in the browser, loading only the next page's code. `NavLink` adds `class="active"` and `aria-current="page"` to the link of the current page; pass `end` on `/` so it is not active everywhere.
@@ -846,6 +863,7 @@ The app has no config file of its own. The environment variables of the engine a
 | `RATE_LIMIT_PER_MINUTE` | applies to page requests too (they count per client IP) |
 | `TRUST_PROXY` | use `X-Forwarded-For` for the client IP; set it behind a proxy |
 | `DASHBOARD` | `on` to serve `/_dashboard` in production |
+| `FORGE_ISLANDS` | `1` or `0` at build time: turns [islands](#islands-pages-that-ship-only-the-javascript-they-need) on or off, over what `root.tsx` says |
 
 Nothing from `process.env` reaches the browser bundle except `NODE_ENV`. To give pages a value, return it from a query or a loader (a public setting) or read it in a function.
 

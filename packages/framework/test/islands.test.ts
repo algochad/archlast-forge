@@ -49,11 +49,12 @@ describe("pages with islands", () => {
     expect(scripts(page).some((s) => /islands\.client-/.test(s))).toBe(true);
   });
 
-  test("a page where no island rendered has no JavaScript at all", async () => {
+  test("a page where no island rendered has no framework JavaScript: only the small navigation script", async () => {
     const page = await html("/about");
     expect(markers(page)).toEqual([]);
-    expect(scripts(page)).toEqual([]);
-    expect(page).not.toContain("__FORGE__");
+    expect(scripts(page).length).toBe(1);
+    expect(scripts(page)[0]).toMatch(/\/nav-.*\.js$/);
+    expect(page).not.toContain("forge-state");
     expect(page).not.toContain("modulepreload");
     expect(page).toContain('<h1 id="title">About</h1>');
   });
@@ -87,11 +88,35 @@ describe("pages with islands", () => {
     await page.click("#menu-button");
     expect(await page.textContent("#menu-open")).toContain("Grace");
     await page.evaluate(() => ((window as any).mark = "same document"));
-    await page.click("#go-about"); // useNavigate inside an island: a page load
+    await page.click("#go-about"); // useNavigate inside an island: the page is swapped in, the document stays
     await page.waitForURL("**/about");
-    await page.waitForSelector("#title");
+    await page.waitForFunction(() => document.querySelector("#title")?.textContent === "About");
+    expect(await page.evaluate(() => (window as any).mark)).toBe("same document");
+    // a link in the page (not in an island) does the same, and the islands of the new page hydrate
+    await page.click("text=Home");
+    await page.waitForSelector("#counter");
+    expect(await page.evaluate(() => (window as any).mark)).toBe("same document");
+    await page.click("#counter");
+    expect(await page.textContent("#counter")).toBe("count 3");
+    await page.click("text=Live");
+    await page.waitForSelector("#inc");
+    await page.click("#inc");
+    expect(await page.textContent("#inc")).toBe("n = 1");
+    expect(await page.evaluate(() => (window as any).mark)).toBe("same document");
+    // back and forward
+    await page.goBack();
+    await page.waitForSelector("#counter");
+    expect(new URL(page.url()).pathname).toBe("/");
+    await page.click("#counter");
+    expect(await page.textContent("#counter")).toBe("count 3");
+    await page.goForward();
+    await page.waitForSelector("#inc");
+    expect(await page.evaluate(() => (window as any).mark)).toBe("same document");
+    // a page that is not an island page is loaded the ordinary way
+    await page.click("text=Old");
+    await page.waitForURL("**/old");
+    await page.waitForFunction(() => document.querySelector("#title")?.textContent === "Old");
     expect(await page.evaluate(() => (window as any).mark)).toBeUndefined();
-    expect(await page.textContent("#title")).toBe("About");
     // an island that is a whole route
     await page.goto(`${srv.url}/live`, { waitUntil: "networkidle" });
     await page.click("#inc");

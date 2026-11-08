@@ -19,7 +19,7 @@ export interface BuildManifest {
    * Present when pages are rendered with islands (see classify.ts): the browser entry that hydrates them, the files to preload with it, and the routes
    * (ids) that can be rendered that way. A page whose routes are not all in `routes` is rendered and hydrated as a whole, as without islands.
    */
-  islands?: { entry: string; preload: string[]; routes: string[] };
+  islands?: { entry: string; nav: string; preload: string[]; routes: string[] };
 }
 
 export interface BuildResult {
@@ -57,6 +57,16 @@ async function tailwind(root: string): Promise<Bun.BunPlugin[]> {
     return [];
   }
   return [(await import(path)).default];
+}
+
+/** Whether app/root.tsx says `export const islands = true`. */
+function optsIn(appDir: string, rootFile: string | undefined): boolean {
+  if (!rootFile) return false;
+  try {
+    return /^export\s+const\s+islands\s*=\s*true\b/m.test(readFileSync(join(appDir, rootFile), "utf8"));
+  } catch {
+    return false;
+  }
 }
 
 /** The id of an island in the page: its file below app/ and the name it is exported under. */
@@ -146,7 +156,8 @@ export async function buildApp(o: { root: string; dev: boolean; islands?: boolea
   // Islands: only when the root layout and document can be left unhydrated (see classify.ts); otherwise the app is rendered as it always was.
   let mounts: ComponentReport[] = [];
   let islandRoutes: string[] = [];
-  const wantIslands = o.islands ?? process.env.FORGE_ISLANDS === "1";
+  // On when asked for: the option, FORGE_ISLANDS=1 (0 turns it off), or `export const islands = true` in app/root.tsx.
+  const wantIslands = o.islands ?? (process.env.FORGE_ISLANDS ? process.env.FORGE_ISLANDS === "1" : optsIn(appDir, tree.root));
   if (wantIslands) {
     const report = classifyApp(root);
     const layout = tree.root ? report.components.find((c) => c.name === "Layout" && c.file === join(appDir, tree.root!)) : undefined;
@@ -185,7 +196,7 @@ ${mounts.map((m) => `  ${JSON.stringify(islandId(appRoot, m))}: () => import(${J
 
   const client = await Bun.build({
     ...common,
-    entrypoints: [join(gen, "entry.client.tsx"), ...(mounts.length ? [join(gen, "islands.client.ts")] : [])],
+    entrypoints: [join(gen, "entry.client.tsx"), ...(mounts.length ? [join(gen, "islands.client.ts"), join(import.meta.dir, "nav.ts")] : [])],
     outdir: join(dir, "client"),
     target: "browser",
     splitting: true,
@@ -247,7 +258,7 @@ ${mounts.map((m) => `  ${JSON.stringify(islandId(appRoot, m))}: () => import(${J
     css,
     routes,
     server: `server/${basename(serverOut.path)}`,
-    ...(islandsOut && { islands: { entry: basename(islandsOut.path), preload: [...preload(basename(islandsOut.path))], routes: islandRoutes } }),
+    ...(islandsOut && { islands: { entry: basename(islandsOut.path), nav: basename(entryOf("nav")!.path), preload: [...preload(basename(islandsOut.path))], routes: islandRoutes } }),
   };
   writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2));
   mkdirSync(buildDirOf(root), { recursive: true });

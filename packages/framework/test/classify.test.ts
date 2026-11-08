@@ -103,11 +103,9 @@ export default function K() { return <Gone />; }`,
       }),
     );
     for (const n of ["I", "J"]) expect(tierOf(r, n)).toBe("island");
-    // a page that merely contains an unread package component lists it as an island
-    expect(r.components.find((c) => c.name === "H")!.islands).toEqual([
-      "Widget",
-    ]);
-    expect(r.components.find((c) => c.name === "K")!.islands).toEqual(["Gone"]);
+    // a component that renders one it cannot read has nothing to mount it from, so it is an island too
+    for (const n of ["H", "K"]) expect(tierOf(r, n)).toBe("island");
+    expect(r.components.find((c) => c.name === "H")!.reasons[0]).toContain("Widget from some-package is not analyzed");
   });
 
   test("a class or `this` is a fallback; an action makes the route one", () => {
@@ -136,7 +134,7 @@ export default function N() { return <><Plain /><Wrapped /><N /></>; }`,
     expect(tierOf(r, "N")).toBe("page");
   });
 
-  test("the starter: its home page is a page; the chat, the sign-in form and the header are islands", () => {
+  test("the starter: its home page and header are pages; the chat, the sign-in form and the visitor's menu are islands", () => {
     const r = classifyApp(
       join(import.meta.dir, "../../create-archlast-forge/template/framework"),
     );
@@ -145,12 +143,12 @@ export default function N() { return <><Plain /><Wrapped /><N /></>; }`,
         r.routes.map((x) => [x.id.replace(/^.*\//, ""), x.tier]),
       ),
     ).toEqual({ index: "page", chat: "island", "sign-in": "island" });
-    expect(tierOf(r, "Chrome")).toBe("island"); // the header: the sign-out button is in it
-    // The header is an island and lives in the file `Root` is in, and it would also be handed the page: until its interactive part is a
-    // component of its own, in a file of its own, the root layout is an island and the whole page hydrates. The report is how an app finds out.
-    expect(r.components.find((c) => c.name === "Root")!.reasons[0]).toContain(
-      "renders Chrome, which is an island used in the file that declares it",
-    );
+    // The header is a page: its one interactive part, the signed-in visitor's menu, is an island of its own in its own file.
+    expect(tierOf(r, "Chrome")).toBe("page");
+    expect(tierOf(r, "Root")).toBe("page");
+    expect(tierOf(r, "UserMenu")).toBe("island");
+    expect(r.mounts.map((m) => m.name).sort()).toEqual(["Chat", "SignIn", "UserMenu"]);
+    expect(r.root!.tier).toBe("page");
   });
 
   test("islands are mounted from their own file by the name they export; one used where it is declared, or not exported, cannot be", () => {

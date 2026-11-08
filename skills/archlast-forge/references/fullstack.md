@@ -300,6 +300,16 @@ const toggle = useMutation(api.todos.toggle).withOptimisticUpdate(
 
 - `useAction(api.x.y)` calls an action. File upload: `const upload = useUploadFile(api.files.generateUploadUrl); const storageId = await upload(file);` (the mutation must take `{ contentType?: string }` and return `ctx.storage.generateUploadUrl(args)`), then save `storageId` with another mutation and show it through a query that returns `ctx.storage.getUrl(id)`.
 
+## Islands (`export const islands = true` in `app/root.tsx`)
+
+New apps have it. A page is server HTML; only components that need the browser load JavaScript and hydrate, each on its own, and a link swaps the next page's HTML in (the document and the shared client survive; back/forward work; `data-forge-reload` on a link opts out). A page with no island has only a ~1.3 kB navigation script. Remove the export (or `FORGE_ISLANDS=0`) for whole-page hydration as in a plain React Router app.
+
+- The build sorts components: **page** (no state, effects, handlers, refs, browser globals; may read props, loader data, `useViewer`, `useTimeZone`), **island** (any of those, or `useQuery`/`useMutation`/`useAuth`/`useNavigate`/`useNow`), **fallback** (cannot be read). `bun node_modules/@archlast/forge-framework/src/classify-cli.ts .` prints each with its reason.
+- An island lives in its own file and is exported from it. Its props are plain JSON data: no functions, elements or `children` (it throws, naming the island). It must not use `useLoaderData`/`useParams`/`useRouteError` (no router in the browser): such a route renders as a whole.
+- Mount an island only when needed (`{viewer ? <UserMenu name={viewer.name} /> : <Link to="/sign-in">Sign in</Link>}`): a page with none has no framework JS.
+- Routes with an `action`, pages with errors, and an interactive `root.tsx` or `Layout` render and hydrate as a whole; the build logs why when islands turn off.
+- Loaders run on the server only; `useNavigation()` has nothing to report and `Link` does no prefetching.
+
 ## Hydration: the browser's first render must equal the server's HTML
 
 If the two differ, React discards the server HTML and re-renders (dev: a notice in the corner of the page and a console message naming the component; production: `Minified React error #418`). Focus, selection and typed text are lost. The server renders in its own time zone (UTC in a container) at its own moment; the browser hydrates seconds later in the visitor's zone.

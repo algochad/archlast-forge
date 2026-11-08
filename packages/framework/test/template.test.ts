@@ -52,6 +52,14 @@ function suite(label: string, name: string, shadcn?: BaseColor) {
       expect(await checkFrontendImports(join(dir, "forge"))).toEqual([]);
     }, 60_000);
 
+    test("an anonymous visitor's home page has no JavaScript of its own: only the navigation script", async () => {
+      const html = await fetch(srv.url).then((r) => r.text());
+      const scripts = [...html.matchAll(/<script[^>]*\ssrc="([^"]+)"/g)].map((m) => m[1]);
+      expect(scripts.length).toBe(1);
+      expect(scripts[0]).toMatch(/\/nav-[^/]*\.js$/);
+      expect(html).not.toContain("forge-state");
+    });
+
     describe("the template, in a browser", () => {
       run("the home page is rendered and sends you to sign in", async () => {
         const { page, problems } = await visitor();

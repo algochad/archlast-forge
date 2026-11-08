@@ -5,7 +5,7 @@
 // It reads what Bun's transpiler makes of the file (plain JavaScript, JSX as `jsx(...)` calls), parsed with acorn, so it works wherever
 // the framework builds, TypeScript or not. See packages/serve/docs/fullstack.md.
 import { existsSync, readFileSync } from "node:fs";
-import { dirname, join, resolve } from "node:path";
+import { dirname, isAbsolute, join, resolve } from "node:path";
 import * as acorn from "acorn";
 import { scanRoutes, type RouteFile } from "./routes";
 
@@ -87,6 +87,14 @@ const PAGE_COMPONENTS = new Set([
   "Fragment",
   "Suspense",
 ]);
+/**
+ * Components of packages that render the same HTML with or without hydration when they are given no handlers: icons, and the plain button and input
+ * primitives the shadcn/ui starter is made of. Anything else from a package is not read, and a component that renders it is an island.
+ */
+const PURE_PACKAGE_COMPONENTS: [RegExp, RegExp][] = [
+  [/^lucide-react$/, /.*/],
+  [/^@base-ui\/react\/(button|input)$/, /^(Button|Input)$/],
+];
 const INTERACTIVE_COMPONENTS = new Set(["Form", "ScrollRestoration", "Await"]);
 
 type Node = acorn.Node & Record<string, any>;
@@ -438,6 +446,7 @@ export class Classifier {
     let tier = own.tier;
     const reasons = [...own.reasons];
     const islands: string[] = [];
+    const mounts: ComponentReport[] = [];
     for (const r of own.renders) {
       if (r.unanalyzable) {
         if (tier === "page") tier = "island";
@@ -447,7 +456,9 @@ export class Classifier {
       let child = this.child(file, entry, r.name);
       if (!child) continue;
       // An island is loaded from its own module by the name it exports; used where it is declared, or not exported, it cannot be.
-      if (child.tier === "island" && !child.unmountable && child.file === file && entry.comps.has(r.name))
+      if (child.tier === "island" && !child.unmountable && !isAbsolute(child.file))
+        child = { ...child, unmountable: true, reasons: [child.reasons[0] ?? "is not analyzed"] };
+      else if (child.tier === "island" && !child.unmountable && child.file === file && entry.comps.has(r.name))
         child = { ...child, unmountable: true, reasons: [`which is an island used in the file that declares it; put it in a file of its own`] };
       else if (child.tier === "island" && !child.unmountable && entry.comps.has(r.name) && !child.exportName)
         child = { ...child, unmountable: true, reasons: [`which is an island that its file does not export`] };
@@ -466,12 +477,14 @@ export class Classifier {
             );
           } else {
             islands.push(child.name);
-            this.mounts.set(`${child.file}#${child.name}`, child);
+            mounts.push(child);
           }
         } else islands.push(...child.islands);
       }
     }
     this.active.delete(key);
+    // The islands a page renders are mounted where it renders them; those inside an island are part of it.
+    if (tier === "page") for (const m of mounts) this.mounts.set(`${m.file}#${m.name}`, m);
     const report: ComponentReport = {
       ...base,
       own: own.tier,
@@ -546,8 +559,15 @@ export class Classifier {
         !target ||
         target.includes("/node_modules/") ||
         !target.startsWith(this.appRoot)
-      )
+      ) {
+        if (
+          PURE_PACKAGE_COMPONENTS.some(
+            ([pkg, names]) => pkg.test(imp.source) && names.test(name),
+          )
+        )
+          return undefined;
         return unread(`${name} from ${imp.source} is not analyzed`);
+      }
     }
     if (!target) return unread(`${imp.source} could not be resolved`);
     if (!/\.[tj]sx?$/.test(target)) return undefined; // an asset

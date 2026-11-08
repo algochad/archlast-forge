@@ -1,15 +1,19 @@
-import { isRouteErrorResponse, Link, NavLink, Outlet, useNavigate, useNonce, useRouteError, useViewer } from "@archlast/forge-framework";
-import { useAuth } from "@archlast/forge-react";
+import { isRouteErrorResponse, Link, NavLink, Outlet, useNonce, useRouteError, useViewer } from "@archlast/forge-framework";
 import type { ReactNode } from "react";
 import { ThemeToggle } from "@/components/theme-toggle";
-import { Avatar, AvatarFallback } from "@/components/ui/avatar";
-import { Button, buttonVariants } from "@/components/ui/button";
+import { UserMenu } from "@/components/user-menu";
+import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import "./styles.css";
 
-// Runs before the first paint, so the saved theme (or the system's) does not flash the other one. It carries the page's nonce: the engine's
-// Content-Security-Policy runs an inline script only with it.
-const THEME = `try{var t=localStorage.getItem("theme");if(t==="dark"||(!t&&matchMedia("(prefers-color-scheme: dark)").matches))document.documentElement.classList.add("dark")}catch(e){}`;
+// Pages ship JavaScript only for the parts that need the browser (here the theme switch, the menu of a signed-in visitor, and the chat and sign-in pages), and a link
+// swaps the next page in. Remove this line to render and hydrate every page as a whole, as a React Router app does.
+export const islands = true;
+
+// Runs before the first paint, so the saved theme (or the system's) does not flash the other one, and handles the click on the theme switch (a button with
+// `data-theme-toggle`, anywhere on the page, for as long as the document lives). It carries the page's nonce: the engine's Content-Security-Policy runs an inline
+// script only with it.
+const THEME = `try{var t=localStorage.getItem("theme");if(t==="dark"||(!t&&matchMedia("(prefers-color-scheme: dark)").matches))document.documentElement.classList.add("dark")}catch(e){}document.addEventListener("click",function(e){var b=e.target.closest&&e.target.closest("[data-theme-toggle]");if(!b)return;var d=document.documentElement.classList.toggle("dark");try{localStorage.setItem("theme",d?"dark":"light")}catch(e){}})`;
 
 /** The HTML document around every page, including error pages. */
 export function Layout({ children }: { children: ReactNode }) {
@@ -31,13 +35,6 @@ const navLink = ({ isActive }: { isActive: boolean }) => cn(buttonVariants({ var
 /** The header and footer around a page, and around the error page, so there is always a way back. */
 function Chrome({ children }: { children: ReactNode }) {
   const viewer = useViewer();
-  const auth = useAuth();
-  const navigate = useNavigate();
-
-  async function signOut() {
-    await auth.signOut();
-    await navigate("/");
-  }
 
   return (
     <>
@@ -53,13 +50,7 @@ function Chrome({ children }: { children: ReactNode }) {
           </nav>
           <ThemeToggle />
           {viewer ? (
-            <div className="who flex items-center gap-2 text-sm text-muted-foreground">
-              <Avatar size="sm" aria-hidden>
-                <AvatarFallback>{viewer.name.slice(0, 1).toUpperCase()}</AvatarFallback>
-              </Avatar>
-              <span>{viewer.name}</span>
-              <Button variant="outline" size="sm" onClick={signOut}>Sign out</Button>
-            </div>
+            <UserMenu name={viewer.name} />
           ) : (
             <Link to="/sign-in" className={buttonVariants({ size: "sm" })}>Sign in</Link>
           )}

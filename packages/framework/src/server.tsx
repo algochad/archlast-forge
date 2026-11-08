@@ -20,7 +20,7 @@ export interface AppOptions {
   /** The project directory: it holds app/, public/ and forge/. */
   root: string;
   dev: boolean;
-  /** Render pages with islands where the app allows it (see classify.ts). Default: on when FORGE_ISLANDS=1. */
+  /** Render pages with islands where the app allows it (see classify.ts). Default: what app/root.tsx's `islands` export or FORGE_ISLANDS says. */
   islands?: boolean;
   /** Where build and error messages go. Defaults to the console. */
   log?: (level: "info" | "error", message: string) => void;
@@ -103,11 +103,14 @@ const escapeAttr = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;
  */
 function withScripts(html: string, o: { islands: NonNullable<BuildManifest["islands"]>; meter: IslandCount; state: PageState; nonce?: string; dev: boolean }): string {
   const nonce = o.nonce ? ` nonce="${escapeAttr(o.nonce)}"` : "";
-  const dev = o.dev ? `<script type="module" src="/_app/__dev.js" async=""${nonce}></script>` : "";
-  if (o.meter.count === 0) return insertBefore(html, "</body>", dev);
+  const module = (file: string) => `<script type="module" src="/_app/${escapeAttr(file)}" async=""${nonce}></script>`;
+  const dev = o.dev ? module("__dev.js") : "";
+  // Every page gets the navigation script (a few hundred bytes), so a link to another page swaps it in; the rest only when an island rendered.
+  if (o.meter.count === 0) return insertBefore(html, "</body>", module(o.islands.nav) + dev);
   const preloads = o.islands.preload.map((f) => `<link rel="modulepreload" href="/_app/${escapeAttr(f)}"${nonce}/>`).join("");
-  const scripts = `<script${nonce}>window.__FORGE__=${scriptJson(o.state)};</script><script type="module" src="/_app/${escapeAttr(o.islands.entry)}" async=""${nonce}></script>${dev}`;
-  return insertBefore(insertBefore(html, "</head>", preloads), "</body>", scripts);
+  // The state is data, not a script: it needs no nonce, and a page that is swapped in carries it as a loaded one does.
+  const state = `<script type="application/json" id="forge-state">${scriptJson(o.state)}</script>`;
+  return insertBefore(insertBefore(html, "</head>", preloads), "</body>", state + module(o.islands.entry) + module(o.islands.nav) + dev);
 }
 
 /** `html` with `text` before the last `marker`, or at the end when there is none. */
@@ -268,7 +271,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       );
       await stream.allReady;
       if (!meter) return new Response(stream, { status, headers: { ...HTML_HEADERS, "x-request-id": env.requestId } });
-      return new Response(withScripts(await new Response(stream).text(), { islands: islands!, meter, state, nonce: env.nonce, dev }), { status, headers: { ...HTML_HEADERS, "x-request-id": env.requestId } });
+      return new Response(withScripts(await new Response(stream).text(), { islands: islands!, meter, state, nonce: env.nonce, dev }), { status, headers: { ...HTML_HEADERS, "x-forge-page": "islands", "x-request-id": env.requestId } });
     } catch (e) {
       log("error", `render failed (request ${env.requestId}): ${(e as Error)?.stack ?? e}`);
       return dev ? buildErrorPage(`A page failed to render:\n\n${(e as Error)?.stack ?? e}`, env.nonce) : new Response(`Server error (request ${env.requestId})`, { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });
