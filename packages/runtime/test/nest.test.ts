@@ -63,6 +63,7 @@ describe("Nest controllers under /http", () => {
   test("params, query and headers reach the handler, and pipes and guards run", async () => {
     expect(await (await http("/notes/echo/abc?x=1", { headers: { "x-thing": "t" } })).json()).toEqual({ id: "abc", x: "1", thing: "t" });
     expect(await (await http("/notes/plus/1")).json()).toEqual({ n: 2 });
+    expect(await (await http("/math/cube/3")).json()).toEqual({ cube: 27, ran: "worker" }); // a pool made in a decorated file
     expect((await http("/notes/plus/one")).status).toBe(400);
     expect((await http("/notes/secret")).status).toBe(403);
     expect(await (await http("/notes/secret", { headers: { "x-key": "open sesame" } })).json()).toEqual({ secret: true });

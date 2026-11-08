@@ -437,7 +437,7 @@ export const checkout = action({
 
 ## CPU-heavy work (`@archlast/forge-runtime/pool`)
 
-A long calculation in a function stalls the other calls on its thread. `computePool(tasks, { threads? })` runs `task({ f })` functions on worker threads (knitting; `task`, `createPool`, `importTask` are re-exported) and `await work.call.name(arg)` answers like any async call. Put tasks in a module of their own with few imports (each worker imports it again), define each with `task({ f })`, give each one plain-data argument and result.
+A long calculation in a function stalls the other calls on its thread. `computePool(tasks, { threads? })` runs `task({ f })` functions on worker threads (knitting; `task`, `createPool`, `importTask` are re-exported) and `await work.call.name(arg)` answers like any async call. Put tasks in a module of their own with few imports (each worker imports it again), define each with `task({ f })`, give each one plain-data argument and result. Or pass plain functions (`computePool({ digest: (b: Uint8Array) => … })`) from any file, a Nest service with decorators included: no task module, `task()` or `isMain`; they must be self-contained (import inside them with `await import()`), because a worker loads only their source, not the file around them.
 
 ```ts
 // forge/_work/hash.ts

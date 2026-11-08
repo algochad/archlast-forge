@@ -300,6 +300,21 @@ export const checksum = action({
 });
 ```
 
+**Or make the pool where you use it.** Pass plain functions and there is no task module, no `task()` and no `isMain` guard: the functions' source goes to a small generated module (in the temp folder) and that is all a worker loads, so the file that made the pool is never run again in a thread. That makes it safe in a Nest service with decorators or a module with side effects.
+
+```ts
+const work = computePool({
+  digest: (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex"),
+  async parse(text: string) {
+    const { parse } = await import("node:path"); // what a function needs, it imports itself
+    return parse(text);
+  },
+});
+export const checksum = action({ handler: async (ctx, { url }) => work.call.digest(new Uint8Array(await (await fetch(url)).arrayBuffer())) });
+```
+
+Such a function sees only its own argument: a variable, helper or import of the file around it is not there on the worker, and the call fails with `x is not defined` and a hint. Import inside the function, or use a task module. They can be mixed with `task({ f })` entries in one `computePool`.
+
 A task takes one value and returns one, both plain data. It cannot use `ctx`, a transaction or the database: they belong to the thread that called, and a read made on a worker is not part of the call's snapshot and records no topics, so live queries would not see it. Do the work in the task and write from the action (`action → pool → ctx.runMutation`). Don't wait on the pool inside a mutation, which would hold the writer (SQLite) or a transaction (Postgres) meanwhile. A task's `timeout` bounds the wait, not the work.
 
 ## Internal functions

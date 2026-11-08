@@ -1,5 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { computePool } from "../src/pool";
+import { work as inline } from "./fixture-pool/inline";
 import * as tasks from "./fixture-pool/tasks";
 
 describe("@archlast/forge-runtime/pool", () => {
@@ -28,5 +29,27 @@ describe("@archlast/forge-runtime/pool", () => {
     await again.shutdown();
     expect(await again.call.square(5)).toBe(25);
     await again.shutdown();
+  });
+
+  test("a pool made from plain functions, in a module that is not a task module and has no isMain guard", async () => {
+    expect(await inline.call.double(21)).toBe(42);
+    expect(await inline.call.lengthOf("hello")).toBe("5:aaf4c6");
+    expect(await inline.call.where()).toBe("worker");
+    const all = await Promise.all(Array.from({ length: 100 }, (_, i) => inline.call.double(i)));
+    expect(all.every((r, i) => r === i * 2)).toBe(true);
+    await inline.shutdown();
+  });
+
+  test("a plain function that uses a variable of its file fails with a message that says what to do", async () => {
+    await expect(inline.call.leaks()).rejects.toThrow(/secret is not defined.*import what it needs inside it/);
+    await inline.shutdown();
+  });
+
+  test("plain functions and task modules can be mixed, and a bound function is refused", async () => {
+    const mixed = computePool({ triple: (n: number) => n * 3, square: tasks.square }, { threads: 1 });
+    expect(await mixed.call.triple(4)).toBe(12);
+    expect(await mixed.call.square(4)).toBe(16);
+    await mixed.shutdown();
+    expect(() => computePool({ bound: ((n: number) => n).bind(null) }).call.bound(1)).toThrow(/no source/);
   });
 });
