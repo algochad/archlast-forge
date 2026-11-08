@@ -4,6 +4,7 @@
 
 mod file;
 mod pagecache;
+pub mod json;
 pub mod template;
 pub use template::{register as template_register, render as template_render};
 mod http;

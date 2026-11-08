@@ -9,6 +9,7 @@
 //! `["if", e, then, else]`; `["map", e, item, index, body]`; `["style", e]` is not here: styles are made at build time.
 //! Expressions: `["l", value]`, `["p", "var", "key", ...]` (a variable and keys into it; a number key indexes an array), `["!", e]`, `["&&", a, b]`, `["||", a, b]`,
 //! `["??", a, b]`, `["?:", c, a, b]`, `["===", a, b]`, `["!==", a, b]`, `["+", a, b]`, `["`", [e, ...]]`.
+use crate::json::{self, Val};
 use serde_json::Value;
 use std::borrow::Cow;
 use std::collections::HashMap;
@@ -16,7 +17,7 @@ use std::sync::RwLock;
 
 #[derive(Debug)]
 enum Expr {
-    Lit(Value),
+    Lit(Val<'static>),
     Path(String, Vec<Key>),
     Not(Box<Expr>),
     And(Box<Expr>, Box<Expr>),
@@ -26,6 +27,8 @@ enum Expr {
     Eq(Box<Expr>, Box<Expr>, bool),
     Add(Box<Expr>, Box<Expr>),
     Concat(Vec<Expr>),
+    /// A navigation link's active state: the request path (`d.path`) is `to`, or below it unless `end` (React Router's rule, without case).
+    Active(String, bool),
 }
 
 #[derive(Debug)]
@@ -38,6 +41,8 @@ enum Key {
 enum Node {
     Text(String),
     Print(Expr),
+    /// Printed as it is, not escaped: HTML the caller made.
+    Raw(Expr),
     Attr(String, Expr, bool),
     If(Expr, Vec<Node>, Vec<Node>),
     Map(Expr, String, Option<String>, Vec<Node>),
@@ -47,13 +52,24 @@ pub struct Template {
     nodes: Vec<Node>,
 }
 
+fn lit(v: &Value) -> Val<'static> {
+    match v {
+        Value::Null => Val::Null,
+        Value::Bool(b) => Val::Bool(*b),
+        Value::Number(n) => n.as_i64().map(Val::Int).unwrap_or_else(|| Val::Num(n.as_f64().unwrap_or(f64::NAN))),
+        Value::String(s) => Val::Str(Cow::Owned(s.clone())),
+        Value::Array(a) => Val::Arr(a.iter().map(lit).collect()),
+        Value::Object(o) => Val::Obj(o.iter().map(|(k, v)| (Cow::Owned(k.clone()), lit(v))).collect()),
+    }
+}
+
 fn expr(v: &Value) -> Result<Expr, String> {
     let a = v.as_array().ok_or("an expression is an array")?;
     let op = a.first().and_then(Value::as_str).ok_or("an expression starts with its operator")?;
     let arg = |i: usize| a.get(i).ok_or_else(|| format!("{op}: missing operand {i}"));
     let b = |i: usize| -> Result<Box<Expr>, String> { Ok(Box::new(expr(arg(i)?)?)) };
     Ok(match op {
-        "l" => Expr::Lit(arg(1)?.clone()),
+        "l" => Expr::Lit(lit(arg(1)?)),
         "p" => {
             let var = arg(1)?.as_str().ok_or("p: a variable name")?.to_string();
             let keys = a[2..].iter().map(|k| match k {
@@ -72,6 +88,7 @@ fn expr(v: &Value) -> Result<Expr, String> {
         "!==" => Expr::Eq(b(1)?, b(2)?, false),
         "+" => Expr::Add(b(1)?, b(2)?),
         "`" => Expr::Concat(arg(1)?.as_array().ok_or("`: parts")?.iter().map(expr).collect::<Result<_, _>>()?),
+        "act" => Expr::Active(arg(1)?.as_str().ok_or("act: a path")?.to_ascii_lowercase(), arg(2)?.as_bool().unwrap_or(false)),
         other => return Err(format!("unknown operator {other}")),
     })
 }
@@ -89,6 +106,7 @@ fn node(v: &Value) -> Result<Node, String> {
     let arg = |i: usize| a.get(i).ok_or_else(|| format!("{op}: missing operand {i}"));
     Ok(match op {
         "x" => Node::Print(expr(arg(1)?)?),
+        "raw" => Node::Raw(expr(arg(1)?)?),
         "a" => Node::Attr(arg(1)?.as_str().ok_or("a: a name")?.to_string(), expr(arg(2)?)?, arg(3)?.as_bool().unwrap_or(false)),
         "if" => Node::If(expr(arg(1)?)?, nodes(arg(2)?)?, nodes(arg(3)?)?),
         "map" => Node::Map(expr(arg(1)?)?, arg(2)?.as_str().ok_or("map: item name")?.to_string(), arg(3)?.as_str().map(str::to_string), nodes(arg(4)?)?),
@@ -103,88 +121,104 @@ impl Template {
     }
 
     /// Prints the template with `data` as the variable `d`.
-    pub fn render(&self, data: &Value) -> Result<String, String> {
-        let mut out = String::with_capacity(4096);
+    pub fn render(&self, data: &Val) -> Result<String, String> {
+        let mut out = String::with_capacity(8192);
         let mut scope: Scope = Vec::new();
         print(&self.nodes, data, &mut scope, &mut out)?;
         Ok(out)
     }
 }
 
-type Scope<'a> = Vec<(&'a str, Cow<'a, Value>)>;
+type Scope<'r, 'a> = Vec<(&'r str, Cow<'r, Val<'a>>)>;
 
-fn lookup<'a, 'b>(var: &str, data: &'a Value, scope: &'b Scope<'a>) -> Option<&'b Value>
-where
-    'a: 'b,
-{
+fn lookup<'r, 'a>(var: &str, data: &'r Val<'a>, scope: &Scope<'r, 'a>) -> Option<Cow<'r, Val<'a>>> {
     if let Some((_, v)) = scope.iter().rev().find(|(n, _)| *n == var) {
-        return Some(v.as_ref());
+        return Some(match v {
+            Cow::Borrowed(r) => Cow::Borrowed(*r),
+            Cow::Owned(o) => Cow::Owned(o.clone()),
+        });
     }
-    (var == "d").then_some(data)
+    (var == "d").then_some(Cow::Borrowed(data))
 }
 
-fn truthy(v: &Value) -> bool {
+fn truthy(v: &Val) -> bool {
     match v {
-        Value::Null => false,
-        Value::Bool(b) => *b,
-        Value::Number(n) => n.as_f64().is_some_and(|f| f != 0.0 && !f.is_nan()),
-        Value::String(s) => !s.is_empty(),
+        Val::Null => false,
+        Val::Bool(b) => *b,
+        Val::Int(n) => *n != 0,
+        Val::Num(f) => *f != 0.0 && !f.is_nan(),
+        Val::Str(s) => !s.is_empty(),
         _ => true,
     }
 }
 
 /// JavaScript's `String(v)` for the values that can be printed.
-fn js_string(v: &Value) -> String {
+fn js_string(v: &Val) -> String {
     match v {
-        Value::Null => "null".into(),
-        Value::Bool(b) => b.to_string(),
-        Value::String(s) => s.clone(),
-        Value::Number(n) => {
-            if let Some(i) = n.as_i64() {
-                i.to_string()
+        Val::Null => "null".into(),
+        Val::Bool(b) => b.to_string(),
+        Val::Str(s) => s.to_string(),
+        Val::Int(i) => i.to_string(),
+        Val::Num(f) => {
+            if f.fract() == 0.0 && f.abs() < 1e21 {
+                format!("{}", *f as i128)
             } else {
-                let f = n.as_f64().unwrap_or(f64::NAN);
-                if f.fract() == 0.0 && f.abs() < 1e21 {
-                    format!("{}", f as i128)
-                } else {
-                    format!("{f}")
-                }
+                format!("{f}")
             }
         }
-        Value::Array(a) => a.iter().map(|x| if x.is_null() { String::new() } else { js_string(x) }).collect::<Vec<_>>().join(","),
-        Value::Object(_) => "[object Object]".into(),
+        Val::Arr(a) => a.iter().map(|x| if matches!(x, Val::Null) { String::new() } else { js_string(x) }).collect::<Vec<_>>().join(","),
+        Val::Obj(_) => "[object Object]".into(),
+    }
+}
+
+fn num(v: &Val) -> Option<f64> {
+    match v {
+        Val::Int(i) => Some(*i as f64),
+        Val::Num(f) => Some(*f),
+        _ => None,
+    }
+}
+
+/// `===`: numbers by value, strings by content, objects and arrays never (they would be the same object only).
+fn strict_eq(a: &Val, b: &Val) -> bool {
+    match (a, b) {
+        (Val::Null, Val::Null) => true,
+        (Val::Bool(x), Val::Bool(y)) => x == y,
+        (Val::Str(x), Val::Str(y)) => x == y,
+        (x, y) => match (num(x), num(y)) {
+            (Some(x), Some(y)) => x == y,
+            _ => false,
+        },
     }
 }
 
 /// Evaluates without copying data: a path gives a reference into the data.
-fn eval<'a>(e: &'a Expr, data: &'a Value, scope: &Scope<'a>) -> Cow<'a, Value> {
+fn eval<'r, 'a>(e: &'r Expr, data: &'r Val<'a>, scope: &Scope<'r, 'a>) -> Cow<'r, Val<'a>> {
     match e {
         Expr::Lit(v) => Cow::Borrowed(v),
         Expr::Path(var, keys) => {
             let mut cur = match lookup(var, data, scope) {
                 Some(v) => v,
-                None => return Cow::Owned(Value::Null),
+                None => return Cow::Owned(Val::Null),
             };
             for k in keys {
                 cur = match (k, cur) {
-                    (Key::Name(n), Value::Object(o)) => match o.get(n) {
-                        Some(v) => v,
-                        None => return Cow::Owned(Value::Null),
+                    (Key::Name(n), Cow::Borrowed(Val::Obj(fields))) => match fields.iter().find(|(f, _)| f == n.as_str()) {
+                        Some((_, v)) => Cow::Borrowed(v),
+                        None => return Cow::Owned(Val::Null),
                     },
-                    (Key::Name(n), Value::Array(a)) if n == "length" => return Cow::Owned(Value::from(a.len())),
-                    (Key::Name(n), Value::String(s)) if n == "length" => return Cow::Owned(Value::from(s.encode_utf16().count())),
-                    (Key::Index(i), Value::Array(a)) => match a.get(*i) {
-                        Some(v) => v,
-                        None => return Cow::Owned(Value::Null),
+                    (Key::Name(n), Cow::Borrowed(Val::Arr(a))) if n == "length" => return Cow::Owned(Val::Int(a.len() as i64)),
+                    (Key::Name(n), Cow::Borrowed(Val::Str(s))) if n == "length" => return Cow::Owned(Val::Int(s.encode_utf16().count() as i64)),
+                    (Key::Index(i), Cow::Borrowed(Val::Arr(a))) => match a.get(*i) {
+                        Some(v) => Cow::Borrowed(v),
+                        None => return Cow::Owned(Val::Null),
                     },
-                    _ => return Cow::Owned(Value::Null),
+                    _ => return Cow::Owned(Val::Null),
                 };
             }
-            // `cur` borrows from the data or from the scope, both of which live as long as the render: see `print`.
-            // SAFETY: values pushed on the scope are references into `data`, or small owned values that stay until their loop ends, after every use of this result.
-            Cow::Borrowed(unsafe { &*(cur as *const Value) })
+            cur
         }
-        Expr::Not(a) => Cow::Owned(Value::Bool(!truthy(&eval(a, data, scope)))),
+        Expr::Not(a) => Cow::Owned(Val::Bool(!truthy(&eval(a, data, scope)))),
         Expr::And(a, b) => {
             let l = eval(a, data, scope);
             if truthy(&l) { eval(b, data, scope) } else { l }
@@ -195,20 +229,38 @@ fn eval<'a>(e: &'a Expr, data: &'a Value, scope: &Scope<'a>) -> Cow<'a, Value> {
         }
         Expr::Nullish(a, b) => {
             let l = eval(a, data, scope);
-            if l.is_null() { eval(b, data, scope) } else { l }
+            if matches!(*l, Val::Null) { eval(b, data, scope) } else { l }
         }
         Expr::Cond(c, a, b) => {
             if truthy(&eval(c, data, scope)) { eval(a, data, scope) } else { eval(b, data, scope) }
         }
-        Expr::Eq(a, b, equal) => Cow::Owned(Value::Bool((*eval(a, data, scope) == *eval(b, data, scope)) == *equal)),
+        Expr::Eq(a, b, equal) => Cow::Owned(Val::Bool(strict_eq(&eval(a, data, scope), &eval(b, data, scope)) == *equal)),
         Expr::Add(a, b) => {
             let (l, r) = (eval(a, data, scope), eval(b, data, scope));
-            Cow::Owned(match (&*l, &*r) {
-                (Value::Number(x), Value::Number(y)) => Value::from(x.as_f64().unwrap_or(0.0) + y.as_f64().unwrap_or(0.0)),
-                _ => Value::String(js_string(&l) + &js_string(&r)),
+            Cow::Owned(match (num(&l), num(&r), &*l, &*r) {
+                (_, _, Val::Int(x), Val::Int(y)) if x.checked_add(*y).is_some() => Val::Int(x + y),
+                (Some(x), Some(y), _, _) => Val::Num(x + y),
+                _ => Val::Str(Cow::Owned(js_string(&l) + &js_string(&r))),
             })
         }
-        Expr::Concat(parts) => Cow::Owned(Value::String(parts.iter().map(|p| js_string(&eval(p, data, scope))).collect())),
+        Expr::Concat(parts) => {
+            let mut s = String::new();
+            for p in parts {
+                match &*eval(p, data, scope) {
+                    Val::Str(t) => s.push_str(t),
+                    other => s.push_str(&js_string(other)),
+                }
+            }
+            Cow::Owned(Val::Str(Cow::Owned(s)))
+        }
+        Expr::Active(to, end) => {
+            let here = match data.get("path") {
+                Some(Val::Str(p)) => p.to_ascii_lowercase(),
+                _ => return Cow::Owned(Val::Bool(false)),
+            };
+            let active = here == *to || (!*end && here.starts_with(to.as_str()) && here.as_bytes().get(to.len()) == Some(&b'/'));
+            Cow::Owned(Val::Bool(active))
+        }
     }
 }
 
@@ -230,19 +282,24 @@ fn escape(s: &str, out: &mut String) {
     out.push_str(&s[last..]);
 }
 
-fn print<'a>(ns: &'a [Node], data: &'a Value, scope: &mut Scope<'a>, out: &mut String) -> Result<(), String> {
+fn print<'r, 'a>(ns: &'r [Node], data: &'r Val<'a>, scope: &mut Scope<'r, 'a>, out: &mut String) -> Result<(), String> {
     for n in ns {
         match n {
             Node::Text(t) => out.push_str(t),
             Node::Print(e) => match &*eval(e, data, scope) {
-                Value::Null | Value::Bool(_) => {}
-                Value::String(s) => escape(s, out),
-                v @ Value::Number(_) => out.push_str(&js_string(v)),
+                Val::Null | Val::Bool(_) => {}
+                Val::Str(s) => escape(s, out),
+                v @ (Val::Int(_) | Val::Num(_)) => out.push_str(&js_string(v)),
                 other => escape(&js_string(other), out),
             },
+            Node::Raw(e) => match &*eval(e, data, scope) {
+                Val::Str(s) => out.push_str(s),
+                Val::Null | Val::Bool(_) => {}
+                other => out.push_str(&js_string(other)),
+            },
             Node::Attr(name, e, boolean) => match &*eval(e, data, scope) {
-                Value::Null | Value::Bool(false) => {}
-                Value::Bool(true) => {
+                Val::Null | Val::Bool(false) => {}
+                Val::Bool(true) => {
                     if *boolean {
                         out.push(' ');
                         out.push_str(name);
@@ -254,7 +311,7 @@ fn print<'a>(ns: &'a [Node], data: &'a Value, scope: &mut Scope<'a>, out: &mut S
                     out.push_str(name);
                     out.push_str("=\"");
                     match v {
-                        Value::String(s) => escape(s, out),
+                        Val::Str(s) => escape(s, out),
                         other => escape(&js_string(other), out),
                     }
                     out.push('"');
@@ -264,14 +321,12 @@ fn print<'a>(ns: &'a [Node], data: &'a Value, scope: &mut Scope<'a>, out: &mut S
                 if truthy(&eval(c, data, scope)) { print(t, data, scope, out)? } else { print(f, data, scope, out)? }
             }
             Node::Map(list, item, index, body) => {
-                if let Value::Array(items) = &*eval(list, data, scope) {
-                    // The list borrows from the data (or a literal in the template), which outlives the render.
-                    let items: &'a [Value] = unsafe { &*(items.as_slice() as *const [Value]) };
+                if let Cow::Borrowed(Val::Arr(items)) = eval(list, data, scope) {
                     for (i, v) in items.iter().enumerate() {
                         let depth = scope.len();
                         scope.push((item.as_str(), Cow::Borrowed(v)));
                         if let Some(ix) = index {
-                            scope.push((ix.as_str(), Cow::Owned(Value::from(i))));
+                            scope.push((ix.as_str(), Cow::Owned(Val::Int(i as i64))));
                         }
                         print(body, data, scope, out)?;
                         scope.truncate(depth);
@@ -305,7 +360,7 @@ pub fn register(name: &str, json: &str) -> Result<u32, String> {
 /// Prints template `id` with the JSON in `data`.
 pub fn render(id: u32, data: &str) -> Result<String, String> {
     let t = REGISTRY.read().unwrap().get(id as usize).cloned().ok_or("no such template")?;
-    let v: Value = serde_json::from_str(data).map_err(|e| e.to_string())?;
+    let v = json::parse(data)?;
     t.render(&v)
 }
 
@@ -314,7 +369,7 @@ mod tests {
     use super::*;
 
     fn run(t: &str, d: &str) -> String {
-        Template::parse(t).unwrap().render(&serde_json::from_str(d).unwrap()).unwrap()
+        Template::parse(t).unwrap().render(&json::parse(d).unwrap()).unwrap()
     }
 
     #[test]
@@ -353,11 +408,46 @@ mod tests {
     }
 
     #[test]
+    fn raw_and_navigation_links() {
+        let d = r#"{"path":"/Products/42","html":"<b>x</b>"}"#;
+        assert_eq!(run(r#"[["raw",["p","d","html"]]]"#, d), "<b>x</b>");
+        let act = |to: &str, end: bool| run(&format!(r#"[["x",["?:",["act","{to}",{end}],["l","on"],["l","off"]]]]"#), d);
+        assert_eq!(act("/products", false), "on");
+        assert_eq!(act("/products", true), "off");
+        assert_eq!(act("/products/42", true), "on");
+        assert_eq!(act("/prod", false), "off");
+        assert_eq!(act("/", false), "off"); // the same rule as the framework's NavLink (link.tsx): "/" is active only on "/" and on paths below it with another slash
+    }
+
+    #[test]
     fn registered_templates_render_and_can_be_replaced() {
         let id = register("t1", r#"["a",["x",["p","d","v"]]]"#).unwrap();
         assert_eq!(render(id, r#"{"v":1}"#).unwrap(), "a1");
         assert_eq!(register("t1", r#"["b"]"#).unwrap(), id);
         assert_eq!(render(id, "{}").unwrap(), "b");
         assert!(register("bad", r#"[["nope"]]"#).is_err());
+    }
+}
+
+#[cfg(test)]
+mod timing {
+    use super::*;
+    use std::time::Instant;
+
+    #[test]
+    #[ignore] // cargo test --release -p archlast-serve-core timing -- --ignored --nocapture
+    fn where_the_time_goes() {
+        let rows: Vec<String> = (0..100).map(|i| format!(r#"{{"id":{i},"name":"Anvil Bolt {i}","sku":"SKU-{i:05}","price":"$1,234.56","stock":{},"added":"Jan {}, 2026"}}"#, i * 3 % 500, i % 28 + 1)).collect();
+        let data = format!(r#"{{"rows":[{}]}}"#, rows.join(","));
+        let t = Template::parse(r#"["<table><tbody>",["map",["p","d","rows"],"p",null,["<tr><td>",["x",["p","p","sku"]],"</td><td>",["x",["p","p","name"]],"</td><td>",["x",["p","p","price"]],"</td><td>",["x",["p","p","stock"]],"</td><td>",["x",["p","p","added"]],"</td></tr>"]],"</tbody></table>"]"#).unwrap();
+        let v = json::parse(&data).unwrap();
+        let n = 20_000;
+        let a = Instant::now();
+        for _ in 0..n { std::hint::black_box(json::parse(&data).unwrap()); }
+        let parse = a.elapsed().as_secs_f64() * 1e6 / n as f64;
+        let b = Instant::now();
+        for _ in 0..n { std::hint::black_box(t.render(&v).unwrap()); }
+        let render = b.elapsed().as_secs_f64() * 1e6 / n as f64;
+        println!("data {} bytes: parse {parse:.1} us, render {render:.1} us", data.len());
     }
 }
