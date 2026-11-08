@@ -55,6 +55,12 @@ A small compiler for the page tier alone: JSX to a template with holes, for the 
 reads, `&&`, ternary, `map` with keys, string/number formatting). Anything else stays React. Rust renders it without a JS hop and the loader is the only
 JS call. This is brust's compiler idea, cut down to the one tier where it pays, written for our data shapes (loader data, viewer, zone, nonce).
 
+First numbers (one machine, one thread, release builds, no I/O): a starter-sized page of about 1 KB rendered by `renderToString` takes 36 us, and through
+`renderToReadableStream` + `allReady` + text, the way the framework does it, 57 us; a 3.4 KB page with a 50-row table takes 174 us and 224 us. The same
+pages as minijinja templates rendered in Rust, from a prebuilt value, take 1.3 us and 16 us. That is 20 to 45 times less for the render step alone. It does
+not include the loader, getting the loader's data into Rust, the router and providers around a real Forge page, or the nonce, so it is the ceiling of the
+gain, not the gain. A real Forge page request has not been profiled yet; that is the gate below.
+
 Gate: after Stage 1, measure a page request's cost split (loader, React render, serialization, I/O). If React render is not the larger part, Stage 2
 does not happen. The classifier from Stage 1 is the same one Stage 2 needs, so nothing is thrown away.
 
