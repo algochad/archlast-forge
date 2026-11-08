@@ -35,17 +35,18 @@ Forge's framework (`packages/framework`) is a React Router data router: file rou
 dehydrated into `window.__FORGE__`, whole-document `hydrateRoot`, a per-request CSP nonce, viewer/session in every page, live queries
 over WebSocket. brust compiles a _subset_ of React:
 
-|               | brust                                                                                                   | Forge framework                                               |
-| ------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------- |
-| route fields  | `path`, `Component`, `loader`, `cache`, `ssg`, `children` only                                          | React Router: `action`, `errorElement`, `handle`, `lazy`, ... |
-| loader result | flat JSON merged root to leaf                                                                           | per-request context, TanStack prefetch, sanitized errors      |
-| client        | its own runtime for native; islands hydrate one by one                                                  | one `hydrateRoot` over the router, client-side navigation     |
-| components    | compiler decides; hooks like `useQuery`, `useViewer`, `useMutation`, `useNavigate` force the React tier | those hooks are in most real pages                            |
+|               | brust                                                                                                   | Forge framework                                                           |
+| ------------- | ------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
+| route fields  | `path`, `Component`, `loader`, `cache`, `ssg`, `children` only                                          | React Router: `action`, `errorElement`, `handle`, `lazy`, ...             |
+| loader result | flat JSON merged root to leaf                                                                           | per-request context, TanStack prefetch, sanitized errors                  |
+| client        | its own runtime for native; islands hydrate one by one                                                  | one `hydrateRoot` over the router, client-side navigation (router-driven) |
+| components    | compiler decides; hooks like `useQuery`, `useViewer`, `useMutation`, `useNavigate` force the React tier | those hooks are in most real pages                                        |
 
 So a compiled route and a Forge route are two different kinds of page. Pages that are static or lightly interactive (marketing, docs,
 lists, dashboards' shells) would compile; pages that use the live-query hooks fall to the React tier, where Rust only wraps a Bun SSR
-job and there is no win over what Forge does now. A compiled page also cannot take part in the SPA's client-side navigation (brust
-navigates by document load, `docs/navigation.md`), so links between the two kinds must be real navigations.
+job and there is no win over what Forge does now. brust has its own client navigation (`docs/navigation.md`): a link click fetches the target's real HTML and swaps the changed layout levels
+in place, so a brust app is not a multi-page site. What it cannot do is share a router with React Router, so a Forge app is either one model or
+the other per site, not mixed per link. (An earlier version of this note said brust navigates by full document load; that was wrong.)
 
 Expected benefit is therefore **per route, not whole framework**, and it grows with the share of public/read-mostly pages.
 
@@ -94,13 +95,13 @@ itself vendors `bun_react_compiler`. No GitHub fork is created without being ask
 
 ## Plan
 
-| phase    | work                                                                                                                                                                                                                  | exit test                                                                                                   |
-| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------- |
-| 0 (done) | read brust; build `brust-core` on stable; map `Host`                                                                                                                                                                  | this document                                                                                               |
-| 1        | `crates/render` in packages/serve: `EngineHost: Host`; boot `Core` from a `dist/manifest.json`; wire `loader`/`jobs` to lanes (new event/command kinds in `codec.ts` and `state.rs`); static + page-cache routes only | brust's pokedex example served by the engine; parity against `brust start` output (their parity normalizer) |
-| 2        | `serveCompat` option `brust: { dist }`; Forge `build.ts` runs the compiler on routes that opt in (`export const render = "rust"` or a directory convention); the rest unchanged                                       | one Forge template page rendered by Rust, links to the SPA routes do full navigations                       |
-| 3        | tags and `cache.invalidate` wired to Forge mutations; per-viewer cache keys (`ctx.auth` is already a cache key dimension in Forge's query cache)                                                                      | page cache hit never reaches JS; invalidation after a mutation                                              |
-| 4        | measure in the pinned container against `renderToReadableStream` on the same page                                                                                                                                     | published numbers, or a stop decision                                                                       |
+| phase    | work                                                                                                                                                                                                                  | exit test                                                                                                                              |
+| -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------- |
+| 0 (done) | read brust; build `brust-core` on stable; map `Host`                                                                                                                                                                  | this document                                                                                                                          |
+| 1        | `crates/render` in packages/serve: `EngineHost: Host`; boot `Core` from a `dist/manifest.json`; wire `loader`/`jobs` to lanes (new event/command kinds in `codec.ts` and `state.rs`); static + page-cache routes only | brust's pokedex example served by the engine; parity against `brust start` output (their parity normalizer)                            |
+| 2        | `serveCompat` option `brust: { dist }`; Forge `build.ts` runs the compiler on routes that opt in (`export const render = "rust"` or a directory convention); the rest unchanged                                       | one Forge template page rendered by Rust, links between the two kinds are full document loads (the two navigations do not share state) |
+| 3        | tags and `cache.invalidate` wired to Forge mutations; per-viewer cache keys (`ctx.auth` is already a cache key dimension in Forge's query cache)                                                                      | page cache hit never reaches JS; invalidation after a mutation                                                                         |
+| 4        | measure in the pinned container against `renderToReadableStream` on the same page                                                                                                                                     | published numbers, or a stop decision                                                                                                  |
 
 ## Risks to decide on, in order
 
