@@ -142,6 +142,44 @@ export class NotesController {
 
 A request is an action, so a controller gets an `ActionCtx` through `@Ctx()`. It has auth, storage and the scheduler, and it reaches the database through queries and mutations, where the services above do the work. That keeps every write in a transaction and every read reactive. A `ForgeService<ActionCtx>` injected into a controller gets the request's ctx too.
 
+### The database straight from a controller
+
+`ctx.runQuery` calls a registered function by name, and a call by name costs a lot more than a one-row read: the lookup, the argument validation, the access check and result cache, a span and a log line of its own. When a route only needs the database, skip it with a `DbService`: a plain singleton whose methods are transactions.
+
+```ts
+// forge/_modules/items/items.service.ts
+import { DbService, Injectable, Read, Write, type MutationCtx } from "@archlast/forge-runtime/nest";
+
+@Injectable()
+export class Items extends DbService<MutationCtx> {
+  @Read() async get(id: number) {
+    return this.ctx.db.query("items").withIndex("by_item", (q) => q.eq("itemId", id)).first();
+  }
+  @Write() async add(name: string) {
+    return this.ctx.db.insert("items", { itemId: 1, name });
+  }
+}
+
+// forge/_modules/items/items.controller.ts
+@Controller("items")
+export class ItemsController {
+  constructor(private readonly items: Items) {}
+  @Get(":id") get(@Param("id", ParseIntPipe) id: number) {
+    return this.items.get(id);
+  }
+}
+```
+
+Register the service in `nest(http, { providers: [Items] })`. A `@Read()` method runs in one read transaction and a `@Write()` method in one write transaction; inside, `this.ctx` is that transaction's `ctx` (`db`, `auth`, `storage`, and `scheduler` in a write). Writes publish their topics after the commit, so live queries and the query cache see them as they see a mutation's.
+
+- **A method called from another one joins its transaction.** A `@Write()` method can call `@Read()` ones and its own; a `@Read()` method that calls a `@Write()` one is refused, because a read transaction cannot write.
+- **Methods must be `async`**, and, as for a query or a mutation, a transaction can run again (the database may re-run a read, and a write that loses a serialization conflict is retried): keep a `fetch` or an email outside it.
+- **The caller is the request's**: `await this.ctx.auth.getUserIdentity()` gives who signed in. `this.ctx` outside a `@Read()` or `@Write()` method throws.
+- **It is a singleton, so the controller stays a singleton** and Nest builds nothing per request. A `ForgeService` is request-scoped, which makes everything that injects it request-scoped too; that is right inside a query or a mutation, and costly for a route.
+- **For routes, gateways and message handlers.** Inside a query or a mutation you already are in a transaction: use a `ForgeService` with `inject()`.
+
+The same thing without a class is `ctx.read(fn)` and `ctx.write(fn)` on the `HttpCtx` that a controller gets with `@Ctx() ctx: HttpCtx`, and that `httpAction` and `lightAction` handlers get: see [HTTP endpoints](http.html#the-database-from-a-route).
+
 ### Contract: validators and the OpenAPI document
 
 `@Contract` gives a controller method the engine's validators for its params, query and body (checked on every request before the handler runs, `400` with the reason otherwise) and for what it answers, and puts all of it in the [OpenAPI document](api-docs.html):

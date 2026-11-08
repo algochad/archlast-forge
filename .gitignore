@@ -57,9 +57,11 @@ benchmarks/fullstack/results.raw
 
 # benchmark run files
 benchmarks/rest/results.raw
+benchmarks/rest/results-sqlite.raw
 benchmarks/pool/results.raw
 benchmarks/pool/params.json
 benchmarks/fullstack/brust/dist
 benchmarks/fullstack/brust/node_modules
 benchmarks/fullstack/brust/bun.lock
 benchmarks/rest/profile/server.log
+benchmarks/rest/.bench-data

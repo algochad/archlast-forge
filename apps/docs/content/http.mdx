@@ -198,6 +198,27 @@ http.route({
 - **Everything else is as for `httpAction`**: telemetry, the request id, rate limits, CORS you set yourself, validators and the OpenAPI document, errors, time limits. Only the objects differ.
 - **When to use it.** For a hot route. On the benchmark API (reading one item from memory, 4 cores) a `lightAction` route answers about 328,000 requests a second against about 150,000 for the same route as a NestJS controller; see [benchmarks](benchmarks.html). A route that reads a body as JSON, forwards the `Request`, or uses a library that wants one should stay an `httpAction`.
 
+## The database from a route
+
+A route's `ctx` is an `HttpCtx`: an action's ctx and two methods that run a function in a transaction, with no registered function in between.
+
+```ts
+http.route({
+  method: "GET",
+  pathPrefix: "/items/",
+  handler: lightAction(async (ctx, req) => {
+    const item = await ctx.read((c) => c.db.query("items").withIndex("by_item", (q) => q.eq("itemId", 7)).first());
+    return item ? lightJson(item) : lightJson({ error: "not found" }, 404);
+  }),
+});
+```
+
+- **`ctx.read(fn)`** runs `fn` in one read transaction and **`ctx.write(fn)`** in one write transaction. `fn` gets what a query's or a mutation's handler gets (`db`, `auth`, `storage`, and `scheduler` for a write) and returns anything. A write publishes its topics after the commit, so live queries and the query cache see it.
+- **It skips what a call by name costs**: the lookup, the argument validation, the access check and result cache, and the span and log line of a function. The database spans are recorded as always, and `FUNCTION_TIMEOUT_MS` ends a transaction that runs too long.
+- **Like a query or a mutation, `fn` can run again.** The database may re-run a read, and a write that loses a serialization conflict is retried, so keep side effects (a `fetch`, an email) outside it and return what the route needs.
+- **Use `ctx.runQuery` and `ctx.runMutation` when you want the function.** A named function is called by clients and other functions too, validates its arguments, is cached and is a span of its own. `ctx.read` and `ctx.write` are for the route's own data access, and for NestJS the same thing is a [`DbService`](nest.html#the-database-straight-from-a-controller).
+- Regular `action`s are unchanged: they have no `db`.
+
 ## Who is calling
 
 The engine reads the `cookie` and `authorization` headers of the request and resolves the caller before your handler starts. `await ctx.auth.getUserIdentity()` gives the same `{ userId, sessionId, email, name }` that a function would see, or `null`.

@@ -35,6 +35,7 @@ function Bars({ title, rows, log = false, note, unit = "req/s" }: { title: strin
 }
 
 const rest = bench.rest as Record<string, { scenarios: Record<string, { rps: number; p99ms: number }>; peakMiB: number }>;
+const restSqlite = bench.restSqlite as typeof rest;
 const fs = bench.fullstack as Record<string, Record<string, Record<string, { rps: number }>>>;
 const pool = bench.pool;
 
@@ -60,6 +61,7 @@ export function Env() {
 
 export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }) {
   const read = (n: string) => rest[n]!.scenarios.read!.rps;
+  const sql = (n: string) => restSqlite[n]!.scenarios.read!.rps;
   return (
     <>
       <div className="perf">
@@ -75,27 +77,52 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
           </div>
           <ul className="points">
             <li><b>The engine alone is level with the compiled servers</b> ({k(read("serve"))} req/s, TypeScript handler). The framework around it costs: a Forge light route does {k(read("forge-light"))}, a NestJS controller {k(read("forge"))}; .NET does {k(read("dotnet"))}.</li>
+            <li><b>NestJS on archlast-serve alone</b> (a basic adapter, no Forge) does {k(read("nest-serve"))} req/s, {x(read("nest-serve"), read("nest-bun"))} NestJS on Bun and {x(read("nest-serve"), read("forge"))} the Forge Nest path: the difference to Forge is what it adds around every request.</li>
+            <li><b>With the items in SQLite</b>, archlast-serve alone does {k(sql("serve"))} reads a second (Axum {k(sql("axum"))}, .NET {k(sql("dotnet"))}). Forge through <code>ctx.db</code> does {k(sql("forge-light"))} on a light route and {k(sql("forge"))} on the Nest path; on <code>bun:sqlite</code> the same routes do {k(sql("forge-light-bunsqlite"))} and {k(sql("forge-bunsqlite"))}. <code>ctx.db</code> adds schema checks, indexes, transactions and reactivity.</li>
             <li><b>Where it loses:</b> one connection at a time, and about 1.5× the CPU of Bun.serve per request.</li>
           </ul>
           <Link className="btn link" to="/archlast-serve">How the engine works <Arrow /></Link>
         </div>
-        <Bars
-          title="GET /items/:id · in-memory CRUD API"
-          rows={[
-            { label: "Rust · Axum", value: read("axum") },
-            { label: "archlast-serve · alone", value: read("serve"), us: true },
-            { label: "Go · fasthttp", value: read("go") },
-            { label: ".NET 10 · Minimal API", value: read("dotnet") },
-            { label: "Forge · light route", value: read("forge-light"), us: true },
-            { label: "Bun.serve", value: read("bun") },
-            { label: "NestJS · Bun", value: read("nest-bun") },
-            { label: "NestJS · Node", value: read("nest-node") },
-            { label: "Forge · archlast-serve", value: read("forge"), us: true },
-            { label: "Node · Express", value: read("node") },
-            { label: "Forge · on Bun.serve", value: read("forge-bun"), us: true },
-          ]}
-          note={<>4 CPU cores, 2 GiB. <Link to="/benchmarks">Method and all four operations</Link></>}
-        />
+        <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+          <Bars
+            title="GET /items/:id · in-memory CRUD API"
+            rows={[
+              { label: "Rust · Axum", value: read("axum") },
+              { label: "archlast-serve · alone", value: read("serve"), us: true },
+              { label: "Go · fasthttp", value: read("go") },
+              { label: ".NET 10 · Minimal API", value: read("dotnet") },
+              { label: "Forge · light route", value: read("forge-light"), us: true },
+              { label: "NestJS · archlast-serve, no Forge", value: read("nest-serve"), us: true },
+              { label: "Bun.serve", value: read("bun") },
+              { label: "NestJS · Bun", value: read("nest-bun") },
+              { label: "NestJS · Node", value: read("nest-node") },
+              { label: "Forge · archlast-serve", value: read("forge"), us: true },
+              { label: "Node · Express", value: read("node") },
+              { label: "Forge · on Bun.serve", value: read("forge-bun"), us: true },
+            ]}
+            note={<>4 CPU cores, 2 GiB. <Link to="/benchmarks">Method and all four operations</Link></>}
+          />
+          <Bars
+            title="GET /items/:id · the same API on SQLite"
+            rows={[
+              { label: "archlast-serve · alone", value: sql("serve"), us: true },
+              { label: "Rust · Axum", value: sql("axum") },
+              { label: "Forge · light route · bun:sqlite", value: sql("forge-light-bunsqlite"), us: true },
+              { label: "NestJS · archlast-serve, no Forge", value: sql("nest-serve"), us: true },
+              { label: ".NET 10 · Minimal API", value: sql("dotnet") },
+              { label: "Go · fasthttp", value: sql("go") },
+              { label: "Forge · Nest · bun:sqlite", value: sql("forge-bunsqlite"), us: true },
+              { label: "Bun.serve", value: sql("bun") },
+              { label: "Forge · light route · ctx.db", value: sql("forge-light"), us: true },
+              { label: "Forge · Nest · ctx.db", value: sql("forge"), us: true },
+              { label: "NestJS · Bun", value: sql("nest-bun") },
+              { label: "Node · Express", value: sql("node") },
+              { label: "NestJS · Node", value: sql("nest-node") },
+              { label: "Forge · on Bun.serve", value: sql("forge-bun"), us: true },
+            ]}
+            note={<>Each in its own SQLite driver; Forge through <code>ctx.db</code> and through <code>bun:sqlite</code>. <Link to="/benchmarks#the-same-api-on-sqlite">Method, writes and what Forge adds</Link></>}
+          />
+        </div>
       </div>
 
       <div className="perf flip">

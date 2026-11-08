@@ -48,6 +48,7 @@ The store is a map in memory, seeded with 1,000 items, safe for concurrent use, 
 |---|---|
 | archlast-forge | a NestJS controller on the Nest path (`forge/http.ts`), served by archlast-serve, under `/http`; also with `HTTP_ENGINE=bun` and with telemetry off. Rate limiting is off (it is on by default in production and would refuse the load); everything else is as shipped, including telemetry. |
 | archlast-serve | the engine on its own, with no framework: its native `App` API (`packages/serve`), one JavaScript thread and 3 Rust I/O threads |
+| NestJS on archlast-serve | the same controller on archlast-serve with no Forge around it: a basic Nest HTTP adapter (about 150 lines, `benchmarks/rest/servers/nest-serve/adapter.ts`) over the engine's native `App` API, one JavaScript thread and 3 Rust I/O threads. It does JSON bodies, params, the query string, status codes and Nest's own guards, pipes and exception filter; no middleware, CORS, static files, views or streaming |
 | NestJS on Node.js | the same controller as Forge's, as a plain NestJS app on Nest's Express adapter (`@nestjs/platform-express`), Node 24, one process |
 | NestJS on Bun | the same NestJS app on Bun 1.4 (still Nest's Express adapter), one process |
 | Node.js | Express 5, one process |
@@ -67,6 +68,7 @@ The JavaScript servers (Forge, archlast-serve, NestJS, Express, Bun) use the sam
 | Go (fasthttp) | 483,527 | 397,865 | 450,130 | 458,484 | 67 MiB |
 | .NET 10 (Minimal APIs) | 399,712 | 347,109 | 341,848 | 306,066 | 70 MiB |
 | archlast-forge (forge/http.ts light routes, archlast-serve) | 328,080 | 249,418 | 260,617 | 240,264 | 247 MiB |
+| NestJS on archlast-serve (no Forge, a basic adapter) | 263,986 | 204,306 | 237,050 | 201,806 | 143 MiB |
 | archlast-forge (NestJS path, archlast-serve, telemetry off) | 177,181 | 158,322 | 130,741 | 121,959 | 238 MiB |
 | archlast-forge (NestJS path, archlast-serve) | 152,116 | 140,668 | 122,569 | 117,999 | 278 MiB |
 | Bun.serve | 142,882 | 108,589 | 92,094 | 81,816 | 97 MiB |
@@ -75,7 +77,7 @@ The JavaScript servers (Forge, archlast-serve, NestJS, Express, Bun) use the sam
 | NestJS on Node.js 24 (Express adapter) | 22,670 | 19,896 | 15,566 | 17,090 | 123 MiB |
 | Node.js 24 (Express 5) | 22,408 | 20,694 | 16,090 | 16,925 | 122 MiB |
 
-Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.11 / 0.22; archlast-serve 0.12 / 0.41; Go 0.11 / 0.54; .NET 10 0.14 / 0.57; archlast-forge 0.17 / 0.89; archlast-forge 0.34 / 1.27; archlast-forge 0.41 / 1.42; Bun.serve 0.43 / 0.86; NestJS on Bun 1.60 / 2.56; archlast-forge 1.72 / 3.40; NestJS on Node.js 24 2.77 / 3.49; Node.js 24 2.81 / 3.29.
+Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.11 / 0.22; archlast-serve 0.12 / 0.41; Go 0.11 / 0.54; .NET 10 0.14 / 0.57; archlast-forge 0.17 / 0.89; NestJS on archlast-serve 0.22 / 0.81; archlast-forge 0.34 / 1.27; archlast-forge 0.41 / 1.42; Bun.serve 0.43 / 0.86; NestJS on Bun 1.60 / 2.56; archlast-forge 1.72 / 3.40; NestJS on Node.js 24 2.77 / 3.49; Node.js 24 2.81 / 3.29.
 
 {/* /bench:rest */}
 
@@ -84,8 +86,55 @@ How to read this:
 - **The compiled servers are 2.6 to 3.7 times as fast as a Forge NestJS controller on reads, and 1.3 to 1.8 times as fast as a Forge light route.** A Forge request goes through the engine's routing, telemetry, security headers and the JavaScript runtime, and your code runs on one JavaScript thread: a NestJS controller used about 1.9 of the four cores, a light route about 2.6, the Rust I/O threads taking the rest. Axum, Go and .NET spread the work over all four. If a route needs more than a light route gives, write it in one of them.
 - **archlast-serve on its own is level with the compiled servers.** Its handler is TypeScript on one JavaScript thread, and the engine's Rust threads do the sockets and HTTP around it: it answers about 3.5 times as many reads as `Bun.serve` and sits between Axum and Go. This is the engine's native API, which hands the handler a light context and takes a `Reply` back; the `Bun.serve` server here is one `fetch` handler with Web `Request` and `Response` objects, and a leaner `Bun.serve` (its `routes` option) would be faster than the row shown. The gap between this row and Forge's is what a framework costs: a NestJS controller, routing, validation, telemetry and the runtime between the socket and your code.
 - **Forge on the Nest path is about 7 times Express and a little above a bare `Bun.serve`** on reads, with a NestJS controller, telemetry and security headers that neither of those has. A [light route](http.html#light-routes) on the same engine is about twice a bare `Bun.serve`. On `Bun.serve` the same NestJS controller runs at about a quarter of the Nest figure: the engine's own request reaches the Nest adapter without a Web `Request` or `Response` in between (see [archlast-serve](archlast-serve.html#what-the-http-path-does-for-a-request)).
+- **The same NestJS controller on archlast-serve alone, with no Forge, does 264,000 reads a second**: 7 times NestJS on Bun, 12 times NestJS on Node, 1.7 times the Forge Nest path (152,000) and 1.9 times a bare `Bun.serve`. Nest's own pipeline (guards, pipes, exception filter) costs little once the Web `Request`, Express's request and response objects and their event emitters are gone. The gap to Forge's 152,000 is what the framework adds around every `/http` request: telemetry, rate limiting, security headers, the request id, the caller's identity, the action's time limit, the async context for logs, and an Express-compatible `req` and `res` for the middleware, CORS and streaming that real apps use and this basic adapter leaves out. It is a measure of the ceiling, not a replacement for Forge's adapter.
 - **Telemetry costs about 12%** here, and it is on by default (every request is counted and a share of them are traced, kept in your own database). `TELEMETRY=off` turns it off; the first row shows what that gains.
 - The state is in memory and in one process, which is why the benchmark runs one function worker. A real Forge app keeps it in the database, which adds the database's time to each of these.
+
+## The same API on SQLite
+
+The same API, scenarios and limits, with the items in a SQLite database instead of in memory. Each server uses its own driver in the setup you would use: `rusqlite` in Rust, `go-sqlite3` in Go, `Microsoft.Data.Sqlite` in .NET, `bun:sqlite` on Bun and `node:sqlite` on Node. archlast-forge uses what it ships: the items are documents in the engine's database, read and written with `ctx.db` directly from the route, in a transaction of its own (`ctx.read` and `ctx.write` in the light routes, a `DbService` with `@Read()` and `@Write()` methods in the NestJS controller). No function of the reactive system is called in between.
+
+Every server has the same table, WAL mode and `synchronous = NORMAL` (Forge: `SQLITE_SYNCHRONOUS=NORMAL`; its default, `FULL`, is stronger), and the same rules: ids count up from 1001 and a trigger removes item *n − 100,000* when item *n* is inserted. The multi-threaded servers (Rust, Go, .NET) read through a few connections and write through one, as SQLite wants, and the JavaScript servers have one connection because they have one thread. The database is a file on the machine's NVMe disk (a new directory per server, bind-mounted), not tmpfs.
+
+{/* bench:sqlite-versions */}
+
+SQLite 3.53.4 is the version in Bun 1.4 (which `bun:sqlite` and the engine use); `rusqlite` and `go-sqlite3` compile their own copy, Node's `node:sqlite` and .NET's `Microsoft.Data.Sqlite` bring theirs.
+
+{/* /bench:sqlite-versions */}
+
+{/* bench:rest-sqlite */}
+
+| Server | Read | List (20) | Update | Create | Peak memory |
+|---|---:|---:|---:|---:|---:|
+| archlast-serve (native App API, 3 I/O threads, bun:sqlite) | 369,695 | 156,134 | 266,164 | 31,326 | 34 MiB |
+| Rust (Axum 0.8, Tokio, rusqlite) | 362,227 | 196,657 | 182,745 | 27,281 | 6 MiB |
+| archlast-forge (forge/http.ts light routes, archlast-serve, bun:sqlite) | 214,328 | 108,078 | 150,983 | 26,788 | 103 MiB |
+| NestJS on archlast-serve (no Forge, a basic adapter, bun:sqlite) | 201,986 | 102,041 | 149,604 | 27,676 | 56 MiB |
+| .NET 10 (Minimal APIs, Microsoft.Data.Sqlite) | 189,697 | 120,579 | 97,017 | 10,985 | 33 MiB |
+| Go (fasthttp, go-sqlite3) | 181,957 | 88,679 | 63,319 | 19,761 | 12 MiB |
+| archlast-forge (NestJS path, archlast-serve, bun:sqlite) | 119,299 | 73,461 | 92,026 | 24,994 | 139 MiB |
+| Bun.serve (bun:sqlite) | 101,684 | 63,859 | 60,555 | 19,528 | 21 MiB |
+| archlast-forge (forge/http.ts light routes, archlast-serve, ctx.db) | 86,895 | 56,963 | 46,731 | 10,474 | 180 MiB |
+| archlast-forge (NestJS path, archlast-serve, telemetry off, ctx.db) | 72,162 | 48,672 | 40,447 | 9,736 | 184 MiB |
+| archlast-forge (NestJS path, archlast-serve, ctx.db) | 66,457 | 47,199 | 39,043 | 8,526 | 212 MiB |
+| NestJS on Bun (Express adapter, bun:sqlite) | 30,720 | 25,997 | 20,008 | 11,910 | 85 MiB |
+| archlast-forge (NestJS path, Bun.serve, ctx.db) | 21,227 | 17,975 | 25,100 | 8,792 | 198 MiB |
+| Node.js 24 (Express 5, node:sqlite) | 18,845 | 14,302 | 14,329 | 10,016 | 96 MiB |
+| NestJS on Node.js 24 (Express adapter, node:sqlite) | 18,424 | 13,632 | 13,558 | 9,969 | 101 MiB |
+
+Requests per second. Latency in milliseconds (p50 / p99) for the read case: archlast-serve 0.16 / 0.42; Rust 0.17 / 0.32; archlast-forge 0.27 / 0.93; NestJS on archlast-serve 0.28 / 0.78; .NET 10 0.31 / 1.51; Go 0.27 / 1.24; archlast-forge 0.49 / 1.44; Bun.serve 0.60 / 1.21; archlast-forge 0.66 / 1.69; archlast-forge 0.80 / 2.02; archlast-forge 0.87 / 2.18; NestJS on Bun 2.01 / 2.91; archlast-forge 2.90 / 5.55; Node.js 24 3.34 / 3.90; NestJS on Node.js 24 3.42 / 4.07.
+
+{/* /bench:rest-sqlite */}
+
+How to read this:
+
+- **Reads are the engine, and the database is in its way.** With in-memory data archlast-serve alone is level with the compiled servers; here it answers about as many reads as Axum and twice as many as .NET or Go, because `bun:sqlite` runs a prepared statement without leaving the thread, while the others take a lock or a pooled connection per request. This is one fast statement on a table the cache holds, so it measures the driver more than SQLite.
+- **archlast-forge on its own database does about 70,000 reads a second on the Nest path and 90,000 on a light route.** Compare the in-memory rows (152,000 and 328,000): the database costs the Nest path about 54% of its reads and a light route about 73%. What is left is the database layer itself: a transaction, an index lookup, a stored JSON document parsed and a result, plus schema checks on writes and topics published after every write, where `bun:sqlite` called directly runs one prepared statement. A `Bun.serve` server on `bun:sqlite` does about 102,000, so a light route here is a little under it and the Nest path about two thirds. The first version of these rows called the database through `ctx.runQuery` and `ctx.runMutation` (60,000 and 74,000 reads); calling it directly gained 17% and 22%, which is what the lookup, validation, cache and span of a call by name cost.
+- **The same Forge routes on `bun:sqlite` do 119,000 (Nest path) and 214,000 (light route) reads a second.** These two rows keep the engine and the route code and replace only the storage: the store is the one Express, `Bun.serve` and archlast-serve use, a prepared statement on a connection of the app's own, outside Forge's database. A light route with it answers about twice as many reads as `Bun.serve` on the same store and more than .NET, so the framework around the route is not what limits the `ctx.db` rows; the database layer is. The cost of `ctx.db` over a bare `bun:sqlite` call here is about 40% of the Nest path's reads and 58% of the light route's, and it buys what a raw connection does not: documents checked against a schema, indexes the engine maintains, transactions that retry, and live queries that update after a write. Creates show it most (8,000 against 25,000 a second), because Forge's write path validates each document against the schema, maintains its indexes and publishes its topics.
+- **NestJS on archlast-serve with `bun:sqlite`, no Forge, does 202,000 reads a second**: 6.5 times NestJS on Bun on the same store (31,000), and above both Forge variants (119,000 on `bun:sqlite`, 66,000 on `ctx.db`).
+- **Writes are limited by the disk and by SQLite's single writer.** Create and update are one transaction each. Every server's create is below its update, because an insert also changes the index and the file grows; the figures for create also depend on what the disk does while the log is checkpointed (the p99 in the full table), so read them as an order of magnitude.
+- **Forge's write-ahead log is bounded under writes that never pause.** The benchmark found that it was not: the engine copied the log into the database from its own thread, but the log restarts only when a write finds nothing left to copy, and 64 connections inserting at once leave no such moment, so the file grew to several gigabytes in a 17-second create run (about 6 KB per insert) and, on a 256 MB tmpfs, every create failed. The checkpointer now holds the writer for the length of one checkpoint when the log passes 64 MiB, so the log restarts and stays near that size ([SQLite durability](https://github.com/algochad/archlast-forge/blob/staging/docs/decisions.md#sqlite-durability) has the details). The suite still keeps the databases on the disk, as measured before the fix, so that the rows stay comparable.
+- Memory is the largest anonymous memory sampled during the run (the page cache is left out, because the log fills it).
 
 ## A thread pool
 

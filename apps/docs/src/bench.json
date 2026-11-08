@@ -28,6 +28,7 @@
     "rust": "1.90.0",
     "express": "5.1.0",
     "fasthttp": "1.62.0",
+    "sqlite": "3.53.4",
     "axum": "0.8",
     "next": "16.0.0",
     "reactRouter": "7.9.4",
@@ -438,6 +439,552 @@
           "p50ms": 0.413,
           "p99ms": 4.219,
           "cores": 1.95,
+          "success": 1
+        }
+      }
+    },
+    "nest-serve": {
+      "label": "NestJS on archlast-serve (no Forge, a basic adapter)",
+      "peakMiB": 143,
+      "scenarios": {
+        "read": {
+          "rps": 263986,
+          "p50ms": 0.219,
+          "p99ms": 0.812,
+          "cores": 2.17,
+          "success": 1
+        },
+        "list": {
+          "rps": 204306,
+          "p50ms": 0.279,
+          "p99ms": 0.888,
+          "cores": 1.83,
+          "success": 1
+        },
+        "update": {
+          "rps": 237050,
+          "p50ms": 0.24,
+          "p99ms": 0.769,
+          "cores": 2.06,
+          "success": 1
+        },
+        "create": {
+          "rps": 201806,
+          "p50ms": 0.259,
+          "p99ms": 1.973,
+          "cores": 2.1,
+          "success": 1
+        }
+      }
+    }
+  },
+  "restSqlite": {
+    "axum": {
+      "label": "Rust (Axum 0.8, Tokio, rusqlite)",
+      "peakMiB": 6,
+      "scenarios": {
+        "read": {
+          "rps": 362227,
+          "p50ms": 0.172,
+          "p99ms": 0.319,
+          "cores": 3.21,
+          "success": 1
+        },
+        "list": {
+          "rps": 196657,
+          "p50ms": 0.324,
+          "p99ms": 0.582,
+          "cores": 3.43,
+          "success": 1
+        },
+        "update": {
+          "rps": 182745,
+          "p50ms": 0.337,
+          "p99ms": 0.707,
+          "cores": 2.52,
+          "success": 1
+        },
+        "create": {
+          "rps": 27281,
+          "p50ms": 1.344,
+          "p99ms": 8.184,
+          "cores": 0.91,
+          "success": 1
+        }
+      }
+    },
+    "go": {
+      "label": "Go (fasthttp, go-sqlite3)",
+      "peakMiB": 12,
+      "scenarios": {
+        "read": {
+          "rps": 181957,
+          "p50ms": 0.274,
+          "p99ms": 1.235,
+          "cores": 3.44,
+          "success": 1
+        },
+        "list": {
+          "rps": 88679,
+          "p50ms": 0.554,
+          "p99ms": 2.846,
+          "cores": 3.56,
+          "success": 1
+        },
+        "update": {
+          "rps": 63319,
+          "p50ms": 0.711,
+          "p99ms": 4.504,
+          "cores": 1.72,
+          "success": 1
+        },
+        "create": {
+          "rps": 19761,
+          "p50ms": 1.669,
+          "p99ms": 15.294,
+          "cores": 0.98,
+          "success": 1
+        }
+      }
+    },
+    "dotnet": {
+      "label": ".NET 10 (Minimal APIs, Microsoft.Data.Sqlite)",
+      "peakMiB": 33,
+      "scenarios": {
+        "read": {
+          "rps": 189697,
+          "p50ms": 0.308,
+          "p99ms": 1.513,
+          "cores": 3.36,
+          "success": 1
+        },
+        "list": {
+          "rps": 120579,
+          "p50ms": 0.503,
+          "p99ms": 1.366,
+          "cores": 3.56,
+          "success": 1
+        },
+        "update": {
+          "rps": 97017,
+          "p50ms": 0.621,
+          "p99ms": 1.728,
+          "cores": 2.23,
+          "success": 1
+        },
+        "create": {
+          "rps": 10985,
+          "p50ms": 3.191,
+          "p99ms": 142.548,
+          "cores": 0.79,
+          "success": 1
+        }
+      }
+    },
+    "bun": {
+      "label": "Bun.serve (bun:sqlite)",
+      "peakMiB": 21,
+      "scenarios": {
+        "read": {
+          "rps": 101684,
+          "p50ms": 0.604,
+          "p99ms": 1.21,
+          "cores": 0.83,
+          "success": 1
+        },
+        "list": {
+          "rps": 63859,
+          "p50ms": 0.975,
+          "p99ms": 1.91,
+          "cores": 0.87,
+          "success": 1
+        },
+        "update": {
+          "rps": 60555,
+          "p50ms": 1.023,
+          "p99ms": 2.03,
+          "cores": 0.86,
+          "success": 1
+        },
+        "create": {
+          "rps": 19528,
+          "p50ms": 2.216,
+          "p99ms": 8.128,
+          "cores": 0.67,
+          "success": 1
+        }
+      }
+    },
+    "node": {
+      "label": "Node.js 24 (Express 5, node:sqlite)",
+      "peakMiB": 96,
+      "scenarios": {
+        "read": {
+          "rps": 18845,
+          "p50ms": 3.341,
+          "p99ms": 3.903,
+          "cores": 0.93,
+          "success": 1
+        },
+        "list": {
+          "rps": 14302,
+          "p50ms": 4.398,
+          "p99ms": 6.299,
+          "cores": 0.96,
+          "success": 1
+        },
+        "update": {
+          "rps": 14329,
+          "p50ms": 4.436,
+          "p99ms": 5.228,
+          "cores": 0.94,
+          "success": 1
+        },
+        "create": {
+          "rps": 10016,
+          "p50ms": 5.455,
+          "p99ms": 12.03,
+          "cores": 0.83,
+          "success": 1
+        }
+      }
+    },
+    "nest-node": {
+      "label": "NestJS on Node.js 24 (Express adapter, node:sqlite)",
+      "peakMiB": 101,
+      "scenarios": {
+        "read": {
+          "rps": 18424,
+          "p50ms": 3.417,
+          "p99ms": 4.073,
+          "cores": 0.93,
+          "success": 1
+        },
+        "list": {
+          "rps": 13632,
+          "p50ms": 4.604,
+          "p99ms": 6.581,
+          "cores": 0.97,
+          "success": 1
+        },
+        "update": {
+          "rps": 13558,
+          "p50ms": 4.646,
+          "p99ms": 5.546,
+          "cores": 0.95,
+          "success": 1
+        },
+        "create": {
+          "rps": 9969,
+          "p50ms": 5.533,
+          "p99ms": 12.273,
+          "cores": 0.85,
+          "success": 1
+        }
+      }
+    },
+    "nest-bun": {
+      "label": "NestJS on Bun (Express adapter, bun:sqlite)",
+      "peakMiB": 85,
+      "scenarios": {
+        "read": {
+          "rps": 30720,
+          "p50ms": 2.009,
+          "p99ms": 2.914,
+          "cores": 0.92,
+          "success": 1
+        },
+        "list": {
+          "rps": 25997,
+          "p50ms": 2.378,
+          "p99ms": 3.234,
+          "cores": 0.91,
+          "success": 1
+        },
+        "update": {
+          "rps": 20008,
+          "p50ms": 3.116,
+          "p99ms": 4.077,
+          "cores": 0.93,
+          "success": 1
+        },
+        "create": {
+          "rps": 11910,
+          "p50ms": 4.302,
+          "p99ms": 10.678,
+          "cores": 0.8,
+          "success": 1
+        }
+      }
+    },
+    "serve": {
+      "label": "archlast-serve (native App API, 3 I/O threads, bun:sqlite)",
+      "peakMiB": 34,
+      "scenarios": {
+        "read": {
+          "rps": 369695,
+          "p50ms": 0.161,
+          "p99ms": 0.417,
+          "cores": 2.74,
+          "success": 1
+        },
+        "list": {
+          "rps": 156134,
+          "p50ms": 0.389,
+          "p99ms": 0.703,
+          "cores": 1.79,
+          "success": 1
+        },
+        "update": {
+          "rps": 266164,
+          "p50ms": 0.226,
+          "p99ms": 0.514,
+          "cores": 2.5,
+          "success": 1
+        },
+        "create": {
+          "rps": 31326,
+          "p50ms": 0.96,
+          "p99ms": 7.306,
+          "cores": 0.76,
+          "success": 1
+        }
+      }
+    },
+    "forge-bunsqlite": {
+      "label": "archlast-forge (NestJS path, archlast-serve, bun:sqlite)",
+      "peakMiB": 139,
+      "scenarios": {
+        "read": {
+          "rps": 119299,
+          "p50ms": 0.486,
+          "p99ms": 1.442,
+          "cores": 1.61,
+          "success": 1
+        },
+        "list": {
+          "rps": 73461,
+          "p50ms": 0.793,
+          "p99ms": 1.968,
+          "cores": 1.42,
+          "success": 1
+        },
+        "update": {
+          "rps": 92026,
+          "p50ms": 0.669,
+          "p99ms": 1.873,
+          "cores": 1.59,
+          "success": 1
+        },
+        "create": {
+          "rps": 24994,
+          "p50ms": 1.554,
+          "p99ms": 8.176,
+          "cores": 0.85,
+          "success": 1
+        }
+      }
+    },
+    "forge-light-bunsqlite": {
+      "label": "archlast-forge (forge/http.ts light routes, archlast-serve, bun:sqlite)",
+      "peakMiB": 103,
+      "scenarios": {
+        "read": {
+          "rps": 214328,
+          "p50ms": 0.268,
+          "p99ms": 0.934,
+          "cores": 2.13,
+          "success": 1
+        },
+        "list": {
+          "rps": 108078,
+          "p50ms": 0.542,
+          "p99ms": 1.397,
+          "cores": 1.58,
+          "success": 1
+        },
+        "update": {
+          "rps": 150983,
+          "p50ms": 0.38,
+          "p99ms": 1.317,
+          "cores": 1.93,
+          "success": 1
+        },
+        "create": {
+          "rps": 26788,
+          "p50ms": 1.21,
+          "p99ms": 8.21,
+          "cores": 0.8,
+          "success": 1
+        }
+      }
+    },
+    "forge": {
+      "label": "archlast-forge (NestJS path, archlast-serve, ctx.db)",
+      "peakMiB": 212,
+      "scenarios": {
+        "read": {
+          "rps": 66457,
+          "p50ms": 0.866,
+          "p99ms": 2.183,
+          "cores": 1.62,
+          "success": 1
+        },
+        "list": {
+          "rps": 47199,
+          "p50ms": 1.225,
+          "p99ms": 2.76,
+          "cores": 1.49,
+          "success": 1
+        },
+        "update": {
+          "rps": 39043,
+          "p50ms": 1.742,
+          "p99ms": 3.383,
+          "cores": 1.33,
+          "success": 1
+        },
+        "create": {
+          "rps": 8526,
+          "p50ms": 4.153,
+          "p99ms": 205.497,
+          "cores": 0.73,
+          "success": 1
+        }
+      }
+    },
+    "forge-light": {
+      "label": "archlast-forge (forge/http.ts light routes, archlast-serve, ctx.db)",
+      "peakMiB": 180,
+      "scenarios": {
+        "read": {
+          "rps": 86895,
+          "p50ms": 0.656,
+          "p99ms": 1.692,
+          "cores": 1.65,
+          "success": 1
+        },
+        "list": {
+          "rps": 56963,
+          "p50ms": 1.023,
+          "p99ms": 2.14,
+          "cores": 1.45,
+          "success": 1
+        },
+        "update": {
+          "rps": 46731,
+          "p50ms": 1.298,
+          "p99ms": 2.767,
+          "cores": 1.31,
+          "success": 1
+        },
+        "create": {
+          "rps": 10474,
+          "p50ms": 4.27,
+          "p99ms": 21.396,
+          "cores": 0.85,
+          "success": 1
+        }
+      }
+    },
+    "forge-bun": {
+      "label": "archlast-forge (NestJS path, Bun.serve, ctx.db)",
+      "peakMiB": 198,
+      "scenarios": {
+        "read": {
+          "rps": 21227,
+          "p50ms": 2.895,
+          "p99ms": 5.552,
+          "cores": 0.94,
+          "success": 1
+        },
+        "list": {
+          "rps": 17975,
+          "p50ms": 3.44,
+          "p99ms": 4.865,
+          "cores": 0.94,
+          "success": 1
+        },
+        "update": {
+          "rps": 25100,
+          "p50ms": 2.277,
+          "p99ms": 5.67,
+          "cores": 1.01,
+          "success": 1
+        },
+        "create": {
+          "rps": 8792,
+          "p50ms": 4.945,
+          "p99ms": 127.756,
+          "cores": 0.79,
+          "success": 1
+        }
+      }
+    },
+    "forge-notelemetry": {
+      "label": "archlast-forge (NestJS path, archlast-serve, telemetry off, ctx.db)",
+      "peakMiB": 184,
+      "scenarios": {
+        "read": {
+          "rps": 72162,
+          "p50ms": 0.8,
+          "p99ms": 2.02,
+          "cores": 1.64,
+          "success": 1
+        },
+        "list": {
+          "rps": 48672,
+          "p50ms": 1.187,
+          "p99ms": 2.615,
+          "cores": 1.5,
+          "success": 1
+        },
+        "update": {
+          "rps": 40447,
+          "p50ms": 1.503,
+          "p99ms": 3.359,
+          "cores": 1.33,
+          "success": 1
+        },
+        "create": {
+          "rps": 9736,
+          "p50ms": 4.662,
+          "p99ms": 29.456,
+          "cores": 0.91,
+          "success": 1
+        }
+      }
+    },
+    "nest-serve": {
+      "label": "NestJS on archlast-serve (no Forge, a basic adapter, bun:sqlite)",
+      "peakMiB": 56,
+      "scenarios": {
+        "read": {
+          "rps": 201986,
+          "p50ms": 0.282,
+          "p99ms": 0.784,
+          "cores": 1.78,
+          "success": 1
+        },
+        "list": {
+          "rps": 102041,
+          "p50ms": 0.565,
+          "p99ms": 1.307,
+          "cores": 1.41,
+          "success": 1
+        },
+        "update": {
+          "rps": 149604,
+          "p50ms": 0.381,
+          "p99ms": 0.977,
+          "cores": 1.67,
+          "success": 1
+        },
+        "create": {
+          "rps": 27676,
+          "p50ms": 1.162,
+          "p99ms": 7.793,
+          "cores": 0.75,
           "success": 1
         }
       }
