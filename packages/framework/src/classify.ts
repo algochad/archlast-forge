@@ -24,6 +24,8 @@ export interface ComponentReport {
   islands: string[];
   /** How its file exports it ("default" or a name), when it does: what an island is loaded by. */
   exportName?: string;
+  /** It renders an `<Outlet />`, itself or through a component it renders. */
+  usesOutlet?: boolean;
   /** Set when it cannot be hydrated on its own because it has no module to load (so whoever renders it is an island too). */
   unmountable?: true;
 }
@@ -447,7 +449,10 @@ export class Classifier {
     const reasons = [...own.reasons];
     const islands: string[] = [];
     const mounts: ComponentReport[] = [];
+    let usesOutlet = false;
     for (const r of own.renders) {
+      const imp = entry.imports.byLocal.get(r.name);
+      if (imp?.imported === "Outlet" && /^(@archlast\/forge-framework|react-router|react-router-dom)$/.test(imp.source)) usesOutlet = true;
       if (r.unanalyzable) {
         if (tier === "page") tier = "island";
         reasons.push(r.unanalyzable);
@@ -455,6 +460,7 @@ export class Classifier {
       }
       let child = this.child(file, entry, r.name);
       if (!child) continue;
+      if (child.usesOutlet) usesOutlet = true;
       // An island is loaded from its own module by the name it exports; used where it is declared, or not exported, it cannot be.
       if (child.tier === "island" && !child.unmountable && !isAbsolute(child.file))
         child = { ...child, unmountable: true, reasons: [child.reasons[0] ?? "is not analyzed"] };
@@ -483,6 +489,11 @@ export class Classifier {
       }
     }
     this.active.delete(key);
+    // An island is hydrated alone, with no router around it, so an `<Outlet />` inside one would render nothing in the browser where the server rendered a page.
+    if (tier === "island" && usesOutlet) {
+      tier = "fallback";
+      reasons.push("renders an <Outlet /> inside an island: there is no router in the browser to fill it, so this route is rendered and hydrated as a whole");
+    }
     // The islands a page renders are mounted where it renders them; those inside an island are part of it.
     if (tier === "page") for (const m of mounts) this.mounts.set(`${m.file}#${m.name}`, m);
     const report: ComponentReport = {
@@ -491,6 +502,7 @@ export class Classifier {
       tier,
       reasons,
       islands: [...new Set(islands)],
+      ...(usesOutlet && { usesOutlet }),
     };
     this.memo.set(key, report);
     return report;

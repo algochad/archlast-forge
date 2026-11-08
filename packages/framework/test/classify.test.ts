@@ -173,6 +173,27 @@ export default function Same() { return <p><Inner /></p>; }`,
     expect(r.components.find((c) => c.name === "Same")!.reasons[0]).toContain("used in the file that declares it");
   });
 
+  test("an island that renders an Outlet makes its route a fallback; a page that does is fine", () => {
+    const r = classifyApp(
+      app({
+        "routes/shell/_layout.tsx": `import { Outlet } from "@archlast/forge-framework";
+import { useState } from "react";
+export default function Shell() { const [open] = useState(false); return <div className={String(open)}><Outlet /></div>; }`,
+        "routes/shell/page.tsx": `export default function Page() { return <p>x</p>; }`,
+        "routes/plain.tsx": `import { Outlet } from "@archlast/forge-framework";
+export default function Plain() { return <section><Outlet /></section>; }`,
+        "routes/wrapped.tsx": `import { Outlet } from "@archlast/forge-framework";
+import { useState } from "react";
+function Inner() { return <Outlet />; }
+export default function Wrapped() { const [n] = useState(0); return <div>{n}<Inner /></div>; }`,
+      }),
+    );
+    expect(tierOf(r, "Shell")).toBe("fallback");
+    expect(r.components.find((c) => c.name === "Shell")!.reasons.join(" ")).toContain("Outlet");
+    expect(tierOf(r, "Plain")).toBe("page");
+    expect(tierOf(r, "Wrapped")).toBe("fallback");
+  });
+
   test("the report reads well", () => {
     const root = app({
       "routes/index.tsx": `export default function Home() { return <p>hi</p>; }`,
