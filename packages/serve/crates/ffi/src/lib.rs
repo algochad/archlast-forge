@@ -145,3 +145,36 @@ pub extern "C" fn archlast_open_connections(id: u32) -> u32 {
 pub extern "C" fn archlast_stop(id: u32) {
     core::stop(id);
 }
+
+/// Registers a page template (JSON; see `crates/core/src/template.rs`) under a name; returns its id, or -1 on failure (see `archlast_last_error`).
+/// The registry belongs to this library: templates registered through the Node-API addon are not here.
+/// # Safety
+/// Every pointer argument must be valid for the length given with it, for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn archlast_template_register(name: *const u8, name_len: u32, json: *const u8, json_len: u32) -> i64 {
+    let (name, json) = (slice::from_raw_parts(name, name_len as usize), slice::from_raw_parts(json, json_len as usize));
+    match (std::str::from_utf8(name), std::str::from_utf8(json)) {
+        (Ok(n), Ok(j)) => match core::template_register(n, j) {
+            Ok(id) => id as i64,
+            Err(e) => fail(e, -1),
+        },
+        _ => fail("template is not UTF-8".into(), -1),
+    }
+}
+
+/// Prints template `id` with `data` (JSON) into `out`. Returns the bytes written, `-needed` if `cap` is too small (call again with room),
+/// or `i32::MIN` on failure (see `archlast_last_error`).
+/// # Safety
+/// Every pointer argument must be valid for the length given with it, for the duration of the call.
+#[no_mangle]
+pub unsafe extern "C" fn archlast_template_render(id: u32, data: *const u8, data_len: u32, out: *mut u8, cap: u32) -> i32 {
+    let Ok(data) = std::str::from_utf8(slice::from_raw_parts(data, data_len as usize)) else { return fail("data is not UTF-8".into(), i32::MIN) };
+    match core::template_render(id, data) {
+        Ok(page) if page.len() <= cap as usize => {
+            std::ptr::copy_nonoverlapping(page.as_ptr(), out, page.len());
+            page.len() as i32
+        }
+        Ok(page) => -(page.len() as i32),
+        Err(e) => fail(e, i32::MIN),
+    }
+}

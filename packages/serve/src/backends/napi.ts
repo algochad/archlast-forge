@@ -24,5 +24,9 @@ export function backend(): Backend {
     wsBuffered: (id, ws) => addon.wsBuffered(id, ws),
     closeIdle: (id) => addon.closeIdle(id),
     stop: (id) => addon.stop(id),
+    templates: {
+      register: (name, json) => addon.registerTemplate(name, json),
+      render: (id, data) => addon.renderTemplate(id, data),
+    },
   };
 }

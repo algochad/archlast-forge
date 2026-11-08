@@ -54,7 +54,7 @@ function nativeTemplates() {
   templateEngine ??= (async () => {
     try {
       const url = new URL("../../serve/src/templates.ts", import.meta.url);
-      if (!existsSync(new URL("../native/archlast_serve.node", url))) return null;
+      if (!existsSync(new URL("../native/archlast_serve.node", url)) && !existsSync(new URL("../native/archlast_serve_ffi.so", url))) return null;
       const mod = await import(url.href);
       mod.registerTemplate("probe", ["ok"]);
       return mod;
@@ -118,11 +118,11 @@ function serializeErrors(errors: StaticHandlerContext["errors"], o: { dev: boole
 }
 
 /** What a route's `handle.cache` asks for, if it is valid: `export const handle = { cache: { ttl: 30, tags: ["home"] } }`. */
-function cacheRequest(context: StaticHandlerContext): { ttl: number; tags: string[] } | undefined {
+function cacheRequest(context: StaticHandlerContext, read: string[] = []): { ttl: number; tags: string[] } | undefined {
   const c = (context.matches.at(-1)?.route.handle as { cache?: { ttl?: unknown; tags?: unknown } } | undefined)?.cache;
   if (!c || typeof c.ttl !== "number" || !(c.ttl >= 1) || c.ttl > 86_400) return undefined;
   const tags = Array.isArray(c.tags) ? c.tags.filter((t): t is string => typeof t === "string" && /^[\w.:-]{1,64}$/.test(t)) : [];
-  return { ttl: Math.floor(c.ttl), tags };
+  return { ttl: Math.floor(c.ttl), tags: [...new Set([...tags, ...read])] };
 }
 
 /** The CSP hashes (`sha256-…`) of the inline scripts in some HTML: a page that is kept names them instead of carrying a nonce. */
@@ -351,7 +351,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       printed.prep?.(d);
       // A page that shows something the template cannot print for this visitor (the starters' menu for someone signed in) is printed by React.
       needsReact = Boolean(printed.bail?.(d));
-      const keepIt = !dev && status0 === 200 && viewer.get() === null && !env.headers.authorization ? cacheRequest(context) : undefined;
+      const keepIt = !dev && status0 === 200 && viewer.get() === null && !env.headers.authorization ? cacheRequest(context, env.tags?.()) : undefined;
       if (!needsReact) {
         return new Response(JSON.stringify(d), {
           status: status0,
@@ -389,7 +389,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       // A page a route asks to have kept (`handle.cache`) is kept for anonymous visitors only: the same HTML would be served to anyone, so nothing in it may be about
       // a person. The engine does the keeping (and drops this note when it cannot), and a hit is served without running the app: the page can be up to `ttl`
       // seconds old, and a request that carries any cookie but the time zone's, or an authorization header, is not served from it.
-      const keep = !dev && status === 200 && viewer.get() === null && !env.headers.authorization ? cacheRequest(context) : undefined;
+      const keep = !dev && status === 200 && viewer.get() === null && !env.headers.authorization ? cacheRequest(context, env.tags?.()) : undefined;
       if (keep)
         return new Response(document, {
           status,

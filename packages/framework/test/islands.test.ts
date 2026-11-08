@@ -29,7 +29,7 @@ describe("pages with islands", () => {
   test("the build records the islands entry and which routes can use it", () => {
     const b = readBuild(root)!;
     expect(b.manifest.islands?.entry).toMatch(/^islands\.client-.*\.js$/);
-    expect([...b.manifest.islands!.routes].sort()).toEqual(["routes/about", "routes/cached", "routes/index", "routes/live"]);
+    expect([...b.manifest.islands!.routes].sort()).toEqual(["routes/about", "routes/cached", "routes/cached-items", "routes/index", "routes/live"]);
   });
 
   test("a page renders its static parts as HTML and marks its islands, which load from their own entry", async () => {
@@ -93,6 +93,20 @@ describe("pages with islands", () => {
     // a page without the request in its handle is never kept
     const about = async () => (await fetch(`${srv.url}/about`).then((r) => r.text())).includes("About");
     expect(await about()).toBe(true);
+  });
+
+  test("a write to a table a kept page read ends it; a write to another table does not", async () => {
+    if (!native) return console.warn("skipped: the native engine is not built here");
+    const seen = async () => /(\d+) items, rendered (\d+)/.exec((await fetch(`${srv.url}/cached-items`).then((r) => r.text())).replaceAll("<!-- -->", ""))?.slice(1).map(Number);
+    const rpc = (name: string, args: object) => fetch(`${srv.url}/rpc/${name}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args) });
+    const [n, r] = (await seen())!;
+    expect(await seen()).toEqual([n, r]); // kept
+    await rpc("messages:setFlag", {}); // a table the page did not read
+    expect(await seen()).toEqual([n, r]);
+    await rpc("items:add", { from: 1000, count: 2 });
+    for (let i = 0; i < 50 && (await seen())![0] === n; i++) await Bun.sleep(20);
+    expect(await seen()).toEqual([n + 2, r + 1]); // rendered again, once, with the new rows
+    expect(await seen()).toEqual([n + 2, r + 1]);
   });
 
   test("an unknown page is the error page, rendered as a whole", async () => {

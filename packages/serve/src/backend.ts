@@ -34,6 +34,13 @@ export interface Backend {
   /** Closes keep-alive connections with no request in flight; returns how many. */
   closeIdle(id: number): number;
   stop(id: number): void;
+  /** Page templates (crates/core/src/template.rs). Each binding has its own registry: register where the server runs. */
+  templates: {
+    /** Registers (or replaces) a template; returns its id. */
+    register(name: string, json: string): number;
+    /** Template `id` printed with `data` (JSON text) as its variable `d`. */
+    render(id: number, data: string): string;
+  };
 }
 
 // Both backends run on Bun only: "bun-ffi" via bun:ffi, "napi" via Bun's Node-API support.

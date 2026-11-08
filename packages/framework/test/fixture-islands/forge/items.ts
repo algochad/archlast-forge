@@ -12,3 +12,5 @@ export const add = mutation({
     for (let n = from; n < from + count; n++) await ctx.db.insert("items", { n });
   },
 });
+
+export const total = query({ handler: async (ctx) => (await ctx.db.query("items").collect()).length });

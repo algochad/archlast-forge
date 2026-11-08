@@ -106,7 +106,15 @@ export interface AppEnv {
   nonce?: string;
   /** Whether the HTTP engine can print a page from a template and JSON (`x-forge-template` on the answer says which template and carries the data as its body). */
   templates?: boolean;
+  /**
+   * Cache tags for the tables the queries of this request read (`call` with a query), for a page the engine keeps: a write to one of the tables
+   * purges the page. Tag names are safe for `x-forge-cache`'s `tag=`.
+   */
+  tags?(): string[];
 }
+
+/** The cache tag for a topic: the same on every server, so a write seen on one purges the pages another keeps. */
+const topicTag = (topic: string) => `t${Bun.hash(topic).toString(36)}`;
 
 export interface ServerOptions {
   forgeDir: string;
@@ -274,7 +282,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   let pool = runtimeWorkersFor(env);
   const serverId = `${hostname()}:${process.pid}`;
   const ttl = config.cacheTtlMs;
-  const bus: Bus = config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0, prefix: config.redisPrefix }) : new MemoryBus();
+  const bus: Bus = config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0 || config.httpEngine !== "bun", prefix: config.redisPrefix }) : new MemoryBus();
   const cache = ttl > 0 ? (config.redisUrl ? await RedisCache.connect(config.redisUrl, config.redisPrefix) : new MemoryCache(10_000, config.cacheMaxBytes)) : undefined;
   const limiterRedis = config.redisUrl ? await connectRedis(config.redisUrl) : undefined;
   const limiter: RateLimiter = limiterRedis ? new RedisRateLimiter(limiterRedis, `${config.redisPrefix}rl:`) : new MemoryRateLimiter();
@@ -361,7 +369,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     telemetry,
   );
   // Evicts cache entries, and lets subscriptions notice writes that overlapped their first read. A Redis bus only delivers every topic when caching.
-  if (cache || !config.redisUrl) bus.subscribe("*", (topic) => queries.invalidated(topic));
+  if (cache || !config.redisUrl || config.httpEngine !== "bun") bus.subscribe("*", (topic) => queries.invalidated(topic));
   // A restore rewrote the tables: what any query read may have changed.
   bus.subscribe(RESET_TOPIC, () => {
     void queries.reset().catch((e) => log("error", "cache reset failed", { error: String(e) }));
@@ -370,6 +378,16 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   /** Whether the HTTP engine keeps responses a page asks it to (see `x-forge-cache`). */
   let nativeCache = false;
+  /** Tags the pages the engine keeps were given (one per table read), so a write purges only for tables a page depends on. */
+  const pageTags = new Set<string>();
+  let purgePages: ((tags: string[]) => void) | undefined;
+  // A table's own topic is published by every write to it (rows' index and id topics only matter to subscriptions).
+  if (config.httpEngine !== "bun")
+    bus.subscribe("*", (topic) => {
+      if (!purgePages || topic.includes(":")) return;
+      const tag = topicTag(topic);
+      if (pageTags.has(tag)) purgePages([tag]);
+    });
   let nativeTemplateReply: (new (template: number, data: string, init: { status: number; headers: [string, string][] }) => unknown) | undefined;
   const rpcOpts: RpcOptions = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
   const maxBody = config.limits.maxRequestBytes;
@@ -1275,6 +1293,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             });
         };
         let res: Response | undefined;
+        const pageRead = new Set<string>();
         // A fresh nonce per page, when the app's policy limits scripts: its inline scripts carry it, and the policy names it.
         const nonce = security.wantsNonce("app") ? Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64") : undefined;
         try {
@@ -1284,6 +1303,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             ...(nonce && { nonce }),
             ...(nativeCache && { templates: true }),
             headers,
+            tags: () => [...pageRead].slice(0, 32),
             async call(name, kind, args) {
               const started = clock();
               const obs: QueryObserver = root
@@ -1298,6 +1318,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
                   // A copy: the result may be the object the query cache keeps, and a page is free to change what it gets.
                   const r = await queries.run(name, (args ?? {}) as Record<string, unknown>, headers, requestId, undefined, obs);
                   keep(obs, name, started);
+                  if (nativeCache) for (const t of r.topics) if (!t.includes(":")) pageRead.add(topicTag(t)), pageTags.add(topicTag(t));
                   return r.json !== undefined ? JSON.parse(r.json) : structuredClone(r.value);
                 }
                 const r = await runtime.call(name, kind, args ?? {}, headers, { requestId, trace: obs.trace });
@@ -1409,6 +1430,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     nativeCache = true;
     const native = (await nativeEngine())!;
     nativeTemplateReply = native.TemplateReply;
+    purgePages = (tags) => (server as unknown as { purgeCache?(tags: string[]): void }).purgeCache?.(tags);
     const Reply = native.Reply;
     rpcOpts.reply = (body, headers) => new Reply(body, { headers }) as unknown as Response;
   }

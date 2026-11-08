@@ -2,6 +2,8 @@ import { dlopen, FFIType, JSCallback, ptr } from "bun:ffi";
 import type { Backend, LaneBinding } from "../backend.ts";
 import { nativePath } from "../paths.ts";
 
+const enc = new TextEncoder();
+
 export function backend(): Backend {
   // dlopen refcounts: every worker thread maps the same library, so the Rust-side registry is shared.
   const lib = dlopen(nativePath("archlast_serve_ffi.so"), {
@@ -45,6 +47,14 @@ export function backend(): Backend {
     archlast_close_idle: { args: [FFIType.u32], returns: FFIType.u32 },
     archlast_open_connections: { args: [FFIType.u32], returns: FFIType.u32 },
     archlast_stop: { args: [FFIType.u32], returns: FFIType.void },
+    archlast_template_register: {
+      args: [FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32],
+      returns: FFIType.i64,
+    },
+    archlast_template_render: {
+      args: [FFIType.u32, FFIType.ptr, FFIType.u32, FFIType.ptr, FFIType.u32],
+      returns: FFIType.i32,
+    },
   });
   const s = lib.symbols;
 
@@ -124,5 +134,24 @@ export function backend(): Backend {
     wsBuffered: (id, ws) => Number(s.archlast_ws_buffered(id, ws)),
     closeIdle: (id) => s.archlast_close_idle(id),
     stop: (id) => s.archlast_stop(id),
+    templates: {
+      register(name, json) {
+        const n = enc.encode(name);
+        const j = enc.encode(json);
+        const id = Number(s.archlast_template_register(ptr(n), n.length, ptr(j), j.length));
+        if (id < 0) throw lastError("failed to register template");
+        return id;
+      },
+      render(id, data) {
+        const d = enc.encode(data);
+        for (let cap = 64 * 1024; ; ) {
+          const out = new Uint8Array(cap);
+          const n = s.archlast_template_render(id, ptr(d), d.length, ptr(out), cap);
+          if (n === -2147483648) throw lastError("failed to print template");
+          if (n >= 0) return new TextDecoder().decode(out.subarray(0, n));
+          cap = -n;
+        }
+      },
+    },
   };
 }
