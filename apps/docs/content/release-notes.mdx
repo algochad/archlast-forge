@@ -12,6 +12,7 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ### Changed
 
+- **Pages render faster on the server.** The Better Auth client a page's header gets from `useAuth()` is built when something uses it, not on every server render (the starter's home page: about 15% more requests per second). Nothing changes in the browser.
 - **Faster calls on the native engine.** `/rpc/<function>` and Forge RPC answer with the engine's own response type, which skips the Web `Response` (a cached query on 4 cores: 88k req/s on `Bun.serve`, about 100k on the engine; Forge RPC's echo: 49k and 97k).
 
 ## 0.20.0

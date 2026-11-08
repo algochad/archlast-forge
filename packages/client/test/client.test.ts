@@ -193,3 +193,14 @@ test.skipIf(!redis)("two apps on one Redis: each app's cache and subscriptions a
     await billing.stop();
   }
 }, 20_000);
+
+test("on a server the auth client is built when something uses it, not when it is handed out", () => {
+  const client = new ArchlastForgeClient({ url: "http://localhost:3000" });
+  const built = () => (client as unknown as { authClient?: unknown }).authClient;
+  const auth = client.auth;
+  expect(auth).toBe(client.auth); // the same object each time
+  expect(built()).toBeUndefined();
+  expect(typeof auth.signOut).toBe("function");
+  expect(built()).toBeDefined();
+  expect(auth.useSession).toBe(client.auth.useSession);
+});
