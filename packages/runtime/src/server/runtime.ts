@@ -71,7 +71,7 @@ interface Worker {
  * miss costs besides its own work. The price: a function that never yields blocks the server too. A watchdog thread then kills the whole
  * process (after the call's timeout plus the grace), so a supervisor (Docker's restart policy, systemd) can start it again.
  */
-class InlineWorker implements Worker {
+export class InlineWorker implements Worker {
   proc?: RuntimeCore;
   ready = false;
   started?: Promise<Manifest>;
@@ -138,30 +138,33 @@ class InlineWorker implements Worker {
     this.proc?.event(msg);
   }
 
-  /** `request` for an HTTP request, answering without a promise when the runtime can (see `httpDirect` in runtime-core.ts). Counted and failing as `request` does. */
+  /**
+   * `request` for an HTTP request, answering without a promise when the runtime can (see `httpDirect` in runtime-core.ts). The request counts as in flight until
+   * the caller says it is over with `settled()`: for an answer that is a promise, that is when the promise is, and the caller already is at that moment, so no
+   * promise is made here to find out. A failure is `RuntimeCallError.from(serializeError(e))` as `request` throws it: `failed(e)` does that for the caller's.
+   */
   httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">): HttpResponseMessage | Promise<HttpResponseMessage> {
     const core = this.proc;
     if (!core) throw new RuntimeCallError("Function runtime is not running", "internal");
     if (this.inFlight >= (this.opts.maxPending ?? 1000)) throw new RuntimeCallError("Server is busy, try again", "overloaded");
     this.inFlight++;
-    let answer: HttpResponseMessage | Promise<HttpResponseMessage>;
     try {
-      answer = core.httpDirect(msg);
+      const answer = core.httpDirect(msg);
+      if (!(answer instanceof Promise)) this.inFlight--;
+      return answer;
     } catch (e) {
       this.inFlight--;
-      throw RuntimeCallError.from(serializeError(e));
+      throw this.failed(e);
     }
-    if (!(answer instanceof Promise)) {
-      this.inFlight--;
-      return answer;
-    }
-    return answer.then(
-      (v) => (this.inFlight--, v),
-      (e) => {
-        this.inFlight--;
-        throw RuntimeCallError.from(serializeError(e));
-      },
-    );
+  }
+
+  /** An answer that was a promise is settled (see `httpDirect`). */
+  settled() {
+    this.inFlight--;
+  }
+
+  failed(e: unknown) {
+    return e instanceof RuntimeCallError ? e : RuntimeCallError.from(serializeError(e));
   }
 
   async request(msg: Omit2<HostMessage, "id">) {
@@ -544,11 +547,6 @@ export class FunctionRuntime {
     return best;
   }
 
-  /** Whether requests are answered in this process (RUNTIME_MODE=inline, one worker): what is handed to the runtime can then be read lazily. */
-  get inline(): boolean {
-    return this.only() instanceof InlineWorker;
-  }
-
   /** The only process, when there is one and it is up: no choice to make, so no await either. */
   private only(index?: number): Worker | undefined {
     if (this.workers.length !== 1 || this.starting || !this.manifest || this.loadError || (index !== undefined && index !== 0)) return undefined;
@@ -602,14 +600,10 @@ export class FunctionRuntime {
     return this.send({ t: "http", req, headers, requestId, trace }, t.actionMs + HARD_TIMEOUT_GRACE_MS, worker) as Promise<HttpResponseMessage>;
   }
 
-  /**
-   * `http` for a runtime in this process, answered without a promise when nothing needs waiting for; otherwise the same as `http`. For an HTTP request that is
-   * not pinned to a process (Socket.IO's polling is) and that the server has not traced.
-   */
-  httpDirect(req: HttpRequestMessage, headers: CallHeaders, requestId: string, trace?: TraceParent): HttpResponseMessage | Promise<HttpResponseMessage> {
+  /** The function runtime, when it runs in this process and is up: what `httpDirect` is called on. */
+  inlineWorker(): InlineWorker | undefined {
     const w = this.only();
-    if (w instanceof InlineWorker) return w.httpDirect({ t: "http", req, headers, requestId, trace });
-    return this.http(req, headers, requestId, undefined, trace);
+    return w instanceof InlineWorker ? w : undefined;
   }
 
   admin<T = unknown>(op: string, args: Record<string, unknown>, actor: string) {

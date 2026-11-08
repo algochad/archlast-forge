@@ -1071,20 +1071,33 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     const body = bytes && (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
     const search = q < 0 ? "" : target.slice(q);
     // To a runtime in this process the headers and the URL are given as getters that make them when read (most routes read neither); to another process, as they are.
-    const message: HttpRequestMessage = runtime.inline
+    const inline = runtime.inlineWorker();
+    const message: HttpRequestMessage = inline
       ? new InlineHttpRequest(raw, method, raw.secure, host, httpPath, search, body)
       : { method, url: `${raw.secure ? "https" : "http"}://${host}${httpPath}${search}`, path: httpPath, search, headers: pairsOf(raw), body };
     const root = telemetry?.begin("http", `${method} ${normalizePath(httpPath)}`, method, traceparent ?? null, requestId, { "url.path": httpPath });
     const callHeaders: CallHeaders = {};
     if (cookie) callHeaders.cookie = cookie;
     if (authorization) callHeaders.authorization = authorization;
+    const trace = root && telemetry!.parent(root);
     let r: HttpResponseMessage | Promise<HttpResponseMessage>;
     try {
-      r = runtime.httpDirect(message, callHeaders, requestId, root && telemetry!.parent(root));
+      r = inline ? inline.httpDirect({ t: "http", req: message, headers: callHeaders, requestId, trace }) : runtime.http(message, callHeaders, requestId, undefined, trace);
     } catch (e) {
       return rawFailed(root, e, requestId, path);
     }
-    if (r instanceof Promise) return r.then((v) => rawAnswered(root, method, v, requestId, path), (e) => rawFailed(root, e, requestId, path));
+    if (r instanceof Promise) {
+      return r.then(
+        (v) => {
+          inline?.settled();
+          return rawAnswered(root, method, v, requestId, path);
+        },
+        (e) => {
+          inline?.settled();
+          return rawFailed(root, inline ? inline.failed(e) : e, requestId, path);
+        },
+      );
+    }
     return rawAnswered(root, method, r, requestId, path);
   };
 

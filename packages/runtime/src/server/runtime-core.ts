@@ -374,7 +374,7 @@ export async function startCore(opts: {
         body: new TextEncoder().encode(JSON.stringify({ error: { code: "BAD_REQUEST", message: invalid, requestId: msg.requestId } })).buffer as ArrayBuffer,
       };
     const light = (route.handler as unknown as Record<symbol, unknown>)[LIGHT] === true;
-    const out = exec.runHttpAnonymous(
+    return exec.runHttpAnonymous(
       routeName(route),
       route.handler,
       light
@@ -392,8 +392,9 @@ export async function startCore(opts: {
           }
         : new Request(req.url, { method, headers: req.headers, body }),
       msg.requestId,
-    );
-    return out instanceof Promise ? out.then((res) => httpAnswer(route, res, undefined)) : httpAnswer(route, out, undefined);
+      httpAnswer,
+      route,
+    ) as HttpResponseMessage | Promise<HttpResponseMessage>; // a promise of an answer that is itself a promise is one promise
   }
 
   async function handle(msg: HostMessage): Promise<unknown> {

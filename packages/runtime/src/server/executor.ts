@@ -447,7 +447,7 @@ export class Executor {
    * `runHttp` for a caller with no cookie or authorization header and no trace to record: the answer comes back without a promise when the handler's does not
    * (a handler that waits for something is given its time limit as before). Everything else `runHttp` does is done in the same order.
    */
-  runHttpAnonymous(name: string, action: HttpAction, req: Request | LightRequest, requestId?: string): Response | LightResponse | Promise<Response | LightResponse> {
+  runHttpAnonymous<R, T>(name: string, action: HttpAction, req: Request | LightRequest, requestId: string | undefined, answer: (route: R, res: Response | LightResponse, telemetry: undefined) => T, route: R): T | Promise<T> {
     const start = performance.now();
     let res: unknown;
     try {
@@ -457,21 +457,39 @@ export class Executor {
       throw e;
     }
     if (res && typeof (res as PromiseLike<unknown>).then === "function") {
-      return withTimeout(Promise.resolve(res), this.limits.actionTimeoutMs, name).then(
-        (value) => {
-          const checked = this.httpResult(name, value);
-          this.logCall(name, requestId, start, undefined, true, "ok");
-          return checked;
-        },
-        (e) => {
-          this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
-          throw e;
-        },
-      );
+      // One promise for the wait: the answer, the call's log line and the time limit are settled in the one step that sees the handler's result.
+      return new Promise<T>((resolve, reject) => {
+        const node = deadlines.add(this.limits.actionTimeoutMs, () => {
+          this.logCall(name, requestId, start, undefined, false, `${name} timed out after ${this.limits.actionTimeoutMs} ms`);
+          reject(new TimeoutError(`${name} timed out after ${this.limits.actionTimeoutMs} ms`));
+        });
+        (res as PromiseLike<unknown>).then(
+          (value) => {
+            if (node.done) return; // the time limit came first
+            deadlines.remove(node);
+            let out: T;
+            try {
+              out = answer(route, this.httpResult(name, value), undefined);
+            } catch (e) {
+              this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
+              reject(e);
+              return;
+            }
+            this.logCall(name, requestId, start, undefined, true, "ok");
+            resolve(out);
+          },
+          (e) => {
+            if (node.done) return;
+            deadlines.remove(node);
+            this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
+            reject(e);
+          },
+        );
+      });
     }
     const checked = this.httpResult(name, res);
     this.logCall(name, requestId, start, undefined, true, "ok");
-    return checked;
+    return answer(route, checked, undefined);
   }
 
   private httpResult(name: string, res: unknown): Response | LightResponse {

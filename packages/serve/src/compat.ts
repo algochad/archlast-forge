@@ -122,7 +122,7 @@ export interface CompatOptions<D = undefined> {
   routes?: CompatRoutes<D>;
   /**
    * Called with the engine's own request before a Web `Request` is built for `fetch`: an app that can answer some requests without one (it reads the
-   * method, the path, the headers and the body from `raw`, and answers with a `Reply`) skips the cost of the Web objects for them. Returning `undefined`
+   * method, the path, the headers and the body from `raw`, and answers with a `Reply`) skips the cost of the Web objects for them. Returning `undefined` (at once, not from a promise)
    * leaves the request to `routes` and `fetch` as if this were not set. It must not read the body or the stream unless it answers.
    */
   rawFetch?(raw: RawRequest, server: CompatServer<D>): Reply | Response | undefined | Promise<Reply | Response | undefined>;
@@ -862,10 +862,7 @@ export function serveCompat<D = undefined>(
   router.fallback = (raw) => {
     if (opts.rawFetch) {
       const early = opts.rawFetch(raw, server);
-      if (early !== undefined) {
-        if (!(early instanceof Promise)) return early as never;
-        return early.then((r) => (r !== undefined ? (r as never) : viaWebRequest(raw)));
-      }
+      if (early !== undefined) return early as never;
     }
     return viaWebRequest(raw);
   };
