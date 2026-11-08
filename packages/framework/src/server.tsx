@@ -15,6 +15,7 @@ import { IslandsContext, type IslandCount } from "./island";
 import { Providers } from "./providers";
 import { toRouteObjects } from "./route-objects";
 import { reviveErrors, type PageState, type SerializedError } from "./state";
+import { memoizeIntl } from "./intl-cache";
 import { DEFAULT_ZONE, ZONE_COOKIE, zoneFromCookie, type TimeState } from "./time";
 
 export interface AppOptions {
@@ -125,7 +126,7 @@ function inlineScriptHashes(html: string): string[] {
 function renderInOnePass(element: ReactElement): string | null {
   try {
     const html = renderToString(element);
-    if (/<!--\$[!?]-->/.test(html)) return null;
+    if (html.includes("<!--$!-->") || html.includes("<!--$?-->")) return null;
     return html.startsWith("<html") ? `<!DOCTYPE html>${html}` : html;
   } catch {
     return null;
@@ -137,7 +138,7 @@ function withBootstrap(html: string, o: { entry: string; state: PageState; nonce
   const nonce = o.nonce ? ` nonce="${escapeAttr(o.nonce)}"` : "";
   const module = (file: string) => `<script type="module" src="/_app/${escapeAttr(file)}" async=""${nonce}></script>`;
   const scripts = `<script${nonce}>window.__FORGE__=${scriptJson(o.state)};</script>${module(o.entry)}${o.dev ? module("__dev.js") : ""}`;
-  return insertBefore(insertBefore(html, "</head>", `<link rel="modulepreload" fetchPriority="low" href="/_app/${escapeAttr(o.entry)}"/>`), "</body>", scripts);
+  return insertAround(html, { marker: "</head>", text: `<link rel="modulepreload" fetchPriority="low" href="/_app/${escapeAttr(o.entry)}"/>` }, { marker: "</body>", text: scripts });
 }
 
 const escapeAttr = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
@@ -151,18 +152,29 @@ function withScripts(html: string, o: { islands: NonNullable<BuildManifest["isla
   const module = (file: string) => `<script type="module" src="/_app/${escapeAttr(file)}" async=""${nonce}></script>`;
   const dev = o.dev ? module("__dev.js") : "";
   // Every page gets the navigation script (a few hundred bytes), so a link to another page swaps it in; the rest only when an island rendered.
-  if (o.meter.count === 0) return insertBefore(html, "</body>", module(o.islands.nav) + dev);
+  if (o.meter.count === 0) return insertAround(html, { marker: "</head>", text: "" }, { marker: "</body>", text: module(o.islands.nav) + dev });
   const preloads = o.islands.preload.map((f) => `<link rel="modulepreload" href="/_app/${escapeAttr(f)}"${nonce}/>`).join("");
   // The state is data, not a script: it needs no nonce, and a page that is swapped in carries it as a loaded one does.
   const state = `<script type="application/json" id="forge-state">${scriptJson(o.state)}</script>`;
-  return insertBefore(insertBefore(html, "</head>", preloads), "</body>", state + module(o.islands.entry) + module(o.islands.nav) + dev);
+  return insertAround(html, { marker: "</head>", text: preloads }, { marker: "</body>", text: state + module(o.islands.entry) + module(o.islands.nav) + dev });
 }
 
-/** `html` with `text` before the last `marker`, or at the end when there is none. */
-function insertBefore(html: string, marker: string, text: string): string {
-  if (!text) return html;
-  const at = html.lastIndexOf(marker);
-  return at < 0 ? html + text : html.slice(0, at) + text + html.slice(at);
+/** `html` with `text` before the first `head` marker and the last `tail` marker (both searched from the nearer end: the head is at the start, the body's end at the end). */
+function insertAround(html: string, head: { marker: string; text: string }, tail: { marker: string; text: string }): string {
+  const h = head.text ? html.indexOf(head.marker) : -1;
+  const t = tail.text ? html.lastIndexOf(tail.marker) : -1;
+  const parts: string[] = [];
+  let from = 0;
+  if (h >= 0) {
+    parts.push(html.slice(0, h), head.text);
+    from = h;
+  } else if (head.text) {
+    // no head to put it in: it goes with the tail
+    tail = { ...tail, text: head.text + tail.text };
+  }
+  if (t >= 0) parts.push(html.slice(from, t), tail.text, html.slice(t));
+  else parts.push(html.slice(from), tail.text);
+  return parts.join("");
 }
 
 function Page(props: { islands: IslandCount | null; router: ReturnType<typeof createStaticRouter>; context: StaticHandlerContext; client: ArchlastForgeClient; queryClient: QueryClient; viewer: ReturnType<typeof createViewerStore>; time: TimeState; dev: boolean; css: string[]; preload: string[]; nonce?: string }) {
@@ -184,6 +196,7 @@ function Page(props: { islands: IslandCount | null; router: ReturnType<typeof cr
  */
 export async function createApp(opts: AppOptions): Promise<AppHost> {
   const { dev } = opts;
+  if (process.env.FORGE_MEMO_INTL !== "0") memoizeIntl();
   const root = resolve(opts.root);
   const log = opts.log ?? ((level, message) => (level === "error" ? console.error(message) : console.log(message)));
   const publicDir = join(root, "public");
