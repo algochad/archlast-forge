@@ -71,7 +71,7 @@ Expected benefit is therefore **per route, not whole framework**, and it grows w
   | `static_file`                    | `file.rs` (Range, ETag, validators already done)                                                                                                                                                |
   | `read_body` / `Body`             | hyper `Incoming` as in `http.rs`                                                                                                                                                                |
   | `Clock`, `PageCache`, `JobStore` | reuse brust's `L1Cache`/`JobCache` (moka) or move them into `brust-core` features; they are the page cache we do not have                                                                       |
-  | `l2_get` / `l2_set`              | optional; Forge already has Redis                                                                                                                                                               |
+  | `l2_get` / `l2_set`              | the trait defaults (no second tier)                                                                                                                                                             |
 
 - Routing falls through: the engine asks `Core` whether a path is a brust route (matchit); if not, the request goes to the handler
   as today. Forge keeps owning `/rpc`, `/_dashboard`, `/api/auth`, storage and every non-compiled page.
@@ -92,6 +92,33 @@ Not a fork of the whole repository. A **fork of the thin edges only**, if upstre
 
 Everything else is used as published. Pin `brust-core` by git rev or vendor it under `crates/` with a `BRUST-PATCH.md`, the way brust
 itself vendors `bun_react_compiler`. No GitHub fork is created without being asked.
+
+## Scope (decided)
+
+Taken from brust: the render pipeline in `brust-core` (routes, templates, layout chains, the loader call), the page cache (L1), compression and
+static roots, and the compiler as a build step.
+
+Left out on purpose:
+
+- **The actions layer** (`/_brust/action`, its CORS and streamed-body rules): Forge already has `/rpc`, `/http` and Forge RPC. `actions` and `cors` stay `None` in `CoreConfig`.
+- **Cloudflare / Workers** (`brust-wasm`, `core-cf`): not built, not depended on.
+- **Caching of jobs** (the job cache, `JobStore`): jobs still run when a page needs one (a React island's SSR render is a job), but their results are not kept. The L2 (shared Redis/Cloudflare) tier is also left out.
+- **brust's own dev server** (`brust dev`: a proxy and a restarted child per build): not used.
+
+## Constraint: Forge's dev experience does not change
+
+`archlast-forge dev`, `forge/` functions and codegen, `app/routes` conventions, `.forge/gen`, rebuild with live reload (`framework/dev.ts`) all stay as
+they are. That decides what brust can be: an **optional render backend behind the existing conventions**, not a new authoring model.
+
+- A route module keeps its React Router shape (`loader`, `Component`, ...). The framework's build asks the compiler whether it can render that
+  route in Rust; if it can, the route is served by Rust, and if not (or if the route uses `action`, `errorElement`, a live-query hook outside an
+  island, ...) it is rendered by today's `renderToReadableStream` path. No new file, no new field, no new command for the developer.
+- In development the framework's existing rebuild recompiles the changed routes and the engine swaps its `Core` (the same way `reload()` swaps
+  routes today). No second process and no proxy.
+- **Open problem:** a page whose HTML comes from a brust template cannot be hydrated by `hydrateRoot` over the same route tree unless the markup is
+  React's exactly. brust solves this with its own client (islands plus its navigation), so using its output means using its client for that route.
+  Making that invisible to the developer is the hard part and phase 2 is where to find out whether it can be done. If it cannot, brust's contribution
+  shrinks to the page cache and the compression/static pipeline in front of the existing SSR.
 
 ## Plan
 
