@@ -207,7 +207,7 @@ ${mounts.map((m) => `  ${JSON.stringify(islandId(appRoot, m))}: () => import(${J
 
   const client = await Bun.build({
     ...common,
-    entrypoints: [join(gen, "entry.client.tsx"), ...(islandsOn ? [join(gen, "islands.client.ts"), join(import.meta.dir, "nav.ts")] : [])],
+    entrypoints: [join(gen, "entry.client.tsx"), ...(islandsOn ? [join(gen, "islands.client.ts"), join(import.meta.dir, existsSync(join(import.meta.dir, "nav.ts")) ? "nav.ts" : "nav.js")] : [])],
     outdir: join(dir, "client"),
     target: "browser",
     splitting: true,

@@ -106,6 +106,8 @@ export interface AppEnv {
   nonce?: string;
   /** Whether the HTTP engine can print a page from a template and JSON (`x-forge-template` on the answer says which template and carries the data as its body). */
   templates?: boolean;
+  /** Registers a page template with the engine (when `templates` is true); returns the id a `x-forge-template` answer names. */
+  registerTemplate?(name: string, template: unknown): number;
   /**
    * Cache tags for the tables the queries of this request read (`call` with a query), for a page the engine keeps: a write to one of the tables
    * purges the page. Tag names are safe for `x-forge-cache`'s `tag=`.
@@ -381,6 +383,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   /** Tags the pages the engine keeps were given (one per table read), so a write purges only for tables a page depends on. */
   const pageTags = new Set<string>();
   let purgePages: ((tags: string[]) => void) | undefined;
+  let nativeRegister: ((name: string, template: unknown) => number) | undefined;
   // A table's own topic is published by every write to it (rows' index and id topics only matter to subscriptions).
   if (config.httpEngine !== "bun")
     bus.subscribe("*", (topic) => {
@@ -1301,7 +1304,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             requestId,
             dev,
             ...(nonce && { nonce }),
-            ...(nativeCache && { templates: true }),
+            ...(nativeCache && { templates: true, registerTemplate: nativeRegister }),
             headers,
             tags: () => [...pageRead].slice(0, 32),
             async call(name, kind, args) {
@@ -1430,6 +1433,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     nativeCache = true;
     const native = (await nativeEngine())!;
     nativeTemplateReply = native.TemplateReply;
+    nativeRegister = native.registerTemplate;
     purgePages = (tags) => (server as unknown as { purgeCache?(tags: string[]): void }).purgeCache?.(tags);
     const Reply = native.Reply;
     rpcOpts.reply = (body, headers) => new Reply(body, { headers }) as unknown as Response;

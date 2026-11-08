@@ -2,7 +2,6 @@ import { ArchlastForgeClient, queryKey } from "@archlast/forge-client";
 import { getFunctionName, isForgeError } from "@archlast/forge-runtime";
 import type { AppEnv, AppHost } from "@archlast/forge-runtime/server";
 import { dehydrate, QueryClient } from "@tanstack/react-query";
-import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { preinit, preloadModule } from "react-dom";
@@ -36,8 +35,16 @@ interface Loaded {
   clientDir: string;
   /** app/root.tsx's `authPlugins`, for the client each render makes. */
   authPlugins?: unknown[];
-  /** Routes whose pages the engine prints (see render-compile.ts): the template's id there and the code that runs the app's functions for it. */
-  templates: Map<string, { id: number; prep?: (d: unknown) => void; bail?: (d: unknown) => boolean }>;
+  /** Routes whose pages the engine prints (see render-compile.ts): the compiled template and the code that runs the app's functions for it. */
+  compiled: Map<string, CompiledRoute>;
+  /** The ids the engine gave the templates, once a request has shown that it can print them (it is the server that holds the engine, so it registers them). */
+  templates?: Map<string, { id: number; prep?: (d: unknown) => void; bail?: (d: unknown) => boolean }>;
+}
+
+interface CompiledRoute {
+  template: unknown[];
+  prep?: (d: unknown) => void;
+  bail?: (d: unknown) => boolean;
 }
 
 const HTML_HEADERS = {
@@ -47,23 +54,6 @@ const HTML_HEADERS = {
   "x-content-type-options": "nosniff",
   "referrer-policy": "strict-origin-when-cross-origin",
 };
-
-/** The engine's template functions, or null where the native engine is not here (not Linux, not built, or this package is used without it). */
-let templateEngine: Promise<{ registerTemplate(name: string, template: unknown): number } | null> | undefined;
-function nativeTemplates() {
-  templateEngine ??= (async () => {
-    try {
-      const url = new URL("../../serve/src/templates.ts", import.meta.url);
-      if (!existsSync(new URL("../native/archlast_serve.node", url)) && !existsSync(new URL("../native/archlast_serve_ffi.so", url))) return null;
-      const mod = await import(url.href);
-      mod.registerTemplate("probe", ["ok"]);
-      return mod;
-    } catch {
-      return null;
-    }
-  })();
-  return templateEngine;
-}
 
 /** JSON that is safe inside a <script> element. */
 const scriptJson = (value: unknown) =>
@@ -227,10 +217,8 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
   async function load(build: BuildResult) {
     const mod = (await import(join(build.dir, build.manifest.server))) as { manifest: Parameters<typeof toRouteObjects>[0]; templates?: { route: string; template: unknown[]; prep?: (d: unknown) => void; bail?: (d: unknown) => boolean }[] };
     const routes = toRouteObjects(mod.manifest);
-    const engine = mod.templates?.length ? await nativeTemplates() : null;
-    const templates = new Map<string, { id: number; prep?: (d: unknown) => void; bail?: (d: unknown) => boolean }>();
-    for (const t of mod.templates ?? []) if (engine) templates.set(t.route, { id: engine.registerTemplate(`${root}:${t.route}`, t.template), prep: t.prep, bail: t.bail });
-    loaded = { build, routes, templates, handler: createStaticHandler(routes), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
+    const compiled = new Map((mod.templates ?? []).map((t) => [t.route, { template: t.template, prep: t.prep, bail: t.bail }] as const));
+    loaded = { build, routes, compiled, handler: createStaticHandler(routes), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
   }
 
   async function rebuild(): Promise<boolean> {
@@ -334,7 +322,12 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     };
     // A page the engine can print from a template (render-compile.ts) is not rendered here: the data goes to it as JSON, and it prints the page on its I/O thread.
     const leaf = context.matches.at(-1)?.route.id;
-    const printed = withIslands && env.templates && leaf !== undefined ? loaded.templates.get(leaf) : undefined;
+    if (withIslands && env.templates && env.registerTemplate && !loaded.templates) {
+      const register = env.registerTemplate;
+      loaded.templates = new Map();
+      for (const [route, c] of loaded.compiled) loaded.templates.set(route, { id: register(`${root}:${route}`, c.template), prep: c.prep, bail: c.bail });
+    }
+    const printed = withIslands && env.templates && leaf !== undefined ? loaded.templates?.get(leaf) : undefined;
     const status0 = context.statusCode;
     let needsReact = false;
     if (printed) {

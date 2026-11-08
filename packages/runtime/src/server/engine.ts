@@ -20,6 +20,8 @@ export interface NativeEngine {
   Reply: new (body: string | Uint8Array | null, init?: { status?: number; headers?: Record<string, string> | [string, string][] }) => unknown;
   /** A page the engine prints from a template and JSON data (see packages/serve/src/templates.ts). */
   TemplateReply: new (template: number, data: string, init?: { status?: number; headers?: [string, string][] }) => unknown;
+  /** Registers (or replaces) a page template with the binding the server runs on; returns its id. */
+  registerTemplate: (name: string, template: unknown) => number;
 }
 
 let loading: Promise<NativeEngine | null> | undefined;
@@ -34,7 +36,7 @@ export function nativeEngine(): Promise<NativeEngine | null> {
       // The paths are built at run time so the runtime's own build does not try to bundle a package that is not part of it.
       const compat = await import(new URL("src/compat.ts", root).href);
       const index = await import(new URL("src/index.ts", root).href);
-      return { serve: compat.serveCompat, Reply: index.Reply, TemplateReply: index.TemplateReply } as NativeEngine;
+      return { serve: compat.serveCompat, Reply: index.Reply, TemplateReply: index.TemplateReply, registerTemplate: index.registerTemplate } as NativeEngine;
     } catch {
       return null;
     }
