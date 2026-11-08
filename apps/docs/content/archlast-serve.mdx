@@ -45,6 +45,8 @@ Two measurements, both in containers limited to 4 CPU cores and 2 GiB of memory,
 
 The engine gives the same Nest controller about 1.8 times the requests per second, because the JavaScript thread no longer parses and frames requests and it is the thread that limits the app.
 
+**The engine on its own**, with no framework, serving the same API with its native `App` API (one JavaScript thread, three Rust I/O threads): about 494,000 reads a second, 3.5 times `Bun.serve`'s and level with Go, .NET and Axum, whose servers are compiled; the handler is TypeScript. It is in the table on the [benchmarks](benchmarks.html) page. The `Bun.serve` server there is a single `fetch` handler, so a leaner one would narrow that gap.
+
 **The same API in other stacks** (Go, Rust, .NET, Node, Bun) is on the [benchmarks](benchmarks.html) page. A Forge app is a framework with a database layer, authentication, telemetry and a dashboard in the request path, and it runs your code in JavaScript; it is not a rival to a hand-written Axum or fasthttp server, and the numbers there say so. The engine's job is to remove the cost the HTTP server adds, not the cost of JavaScript.
 
 **Forge RPC echo, a call that does almost nothing** (the engine's own harness, `bench/container/compare.sh`, same limits). The echo handler's cost is so small that this measures the server:

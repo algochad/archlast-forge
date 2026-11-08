@@ -1,6 +1,6 @@
-# A REST API in six stacks
+# A REST API in seven setups
 
-The same in-memory CRUD API, built in archlast-forge (NestJS path), Node.js (Express), Bun (`Bun.serve`), Go (fasthttp), .NET (Minimal APIs) and Rust (Axum), each in a Docker container with the same limits, loaded with [oha](https://github.com/hatoo/oha). The results and how to read them are on the docs site's [Benchmarks](../../apps/docs/content/benchmarks.mdx) page.
+The same in-memory CRUD API, built in archlast-forge (NestJS path), archlast-serve alone (its native `App` API), Node.js (Express), Bun (`Bun.serve`), Go (fasthttp), .NET (Minimal APIs) and Rust (Axum), each in a Docker container with the same limits, loaded with [oha](https://github.com/hatoo/oha). The results and how to read them are on the docs site's [Benchmarks](../../apps/docs/content/benchmarks.mdx) page.
 
 ## The API
 
@@ -42,4 +42,4 @@ Choose `SERVER_CPUS` and `CLIENT_CPUS` so the two do not share a core or its SMT
 ## Layout
 
 - `servers/shared/store.ts`: the store the three JavaScript servers share.
-- `servers/forge`, `express`, `bun`, `go`, `dotnet`, `axum`: one server each, with its `Dockerfile` (build context: this folder).
+- `servers/forge`, `archlast-serve`, `express`, `bun`, `go`, `dotnet`, `axum`: one server each, with its `Dockerfile` (build context: this folder).

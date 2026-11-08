@@ -270,5 +270,39 @@
         "success": 1
       }
     }
+  },
+  "serve": {
+    "label": "archlast-serve (native App API, 3 I/O threads)",
+    "peakMiB": 106,
+    "scenarios": {
+      "read": {
+        "rps": 493662,
+        "p50ms": 0.116,
+        "p99ms": 0.408,
+        "cores": 3.02,
+        "success": 1
+      },
+      "list": {
+        "rps": 361024,
+        "p50ms": 0.162,
+        "p99ms": 0.488,
+        "cores": 2.67,
+        "success": 1
+      },
+      "update": {
+        "rps": 392359,
+        "p50ms": 0.135,
+        "p99ms": 0.612,
+        "cores": 2.96,
+        "success": 1
+      },
+      "create": {
+        "rps": 352873,
+        "p50ms": 0.133,
+        "p99ms": 1.277,
+        "cores": 2.78,
+        "success": 1
+      }
+    }
   }
 }

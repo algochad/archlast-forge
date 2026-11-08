@@ -9,6 +9,7 @@ const LABELS: Record<string, string> = {
   go: "Go (fasthttp)",
   dotnet: ".NET 10 (Minimal APIs)",
   bun: "Bun.serve",
+  serve: "archlast-serve (native App API, 3 I/O threads)",
   node: "Node.js 24 (Express 5)",
   forge: "archlast-forge (NestJS path, archlast-serve)",
   "forge-bun": "archlast-forge (NestJS path, Bun.serve)",

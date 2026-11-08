@@ -70,17 +70,19 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
           <div className="big">
             <div><b>{x(read("forge"), read("forge-bun"))}</b><span>the same NestJS controller, against Bun.serve</span></div>
             <div><b>{x(read("forge"), read("node"))}</b><span>Express on Node, same API</span></div>
+            <div><b>{x(read("serve"), read("bun"))}</b><span>archlast-serve on its own, against Bun.serve</span></div>
           </div>
           <ul className="points">
-            <li><b>Honest about the rest.</b> Go, Rust and .NET are {x(read("dotnet"), read("forge"))} to {x(read("axum"), read("forge"))} faster on this API. Forge is a framework in JavaScript, not a hand-written server.</li>
+            <li><b>The engine alone is level with the compiled servers</b> ({k(read("serve"))} req/s, TypeScript handler). The framework around it costs: Go, Rust and .NET are {x(read("dotnet"), read("forge"))} to {x(read("axum"), read("forge"))} faster than a Forge controller.</li>
             <li><b>Where it loses:</b> one connection at a time, and about 1.5× the CPU of Bun.serve per request.</li>
           </ul>
           <Link className="btn link" to="/archlast-serve">How the engine works <Arrow /></Link>
         </div>
         <Bars
-          title="GET /items/:id · NestJS controller on Forge"
+          title="GET /items/:id · in-memory CRUD API"
           rows={[
             { label: "Rust · Axum", value: read("axum") },
+            { label: "archlast-serve · alone", value: read("serve"), us: true },
             { label: "Go · fasthttp", value: read("go") },
             { label: ".NET 10 · Minimal API", value: read("dotnet") },
             { label: "Bun.serve", value: read("bun") },

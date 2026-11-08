@@ -1,6 +1,7 @@
 | Server | Read | List (20) | Update | Create | Peak memory |
 |---|---:|---:|---:|---:|---:|
 | Rust (Axum 0.8, Tokio) | 556,334 | 306,858 | 487,527 | 490,500 | 26 MiB |
+| archlast-serve (native App API, 3 I/O threads) | 493,662 | 361,024 | 392,359 | 352,873 | 106 MiB |
 | Go (fasthttp) | 483,527 | 397,865 | 450,130 | 458,484 | 67 MiB |
 | .NET 10 (Minimal APIs) | 399,712 | 347,109 | 341,848 | 306,066 | 70 MiB |
 | Bun.serve | 142,882 | 108,589 | 92,094 | 81,816 | 97 MiB |
@@ -17,6 +18,10 @@ Requests per second, median of the runs. Latency (p50 / p99, ms) and the CPU the
 | Rust (Axum 0.8, Tokio) | list | 0.206 | 0.374 | 3.25 |
 | Rust (Axum 0.8, Tokio) | update | 0.123 | 0.256 | 3.12 |
 | Rust (Axum 0.8, Tokio) | create | 0.127 | 0.248 | 3.13 |
+| archlast-serve (native App API, 3 I/O threads) | read | 0.116 | 0.408 | 3.02 |
+| archlast-serve (native App API, 3 I/O threads) | list | 0.162 | 0.488 | 2.67 |
+| archlast-serve (native App API, 3 I/O threads) | update | 0.135 | 0.612 | 2.96 |
+| archlast-serve (native App API, 3 I/O threads) | create | 0.133 | 1.277 | 2.78 |
 | Go (fasthttp) | read | 0.106 | 0.536 | 2.49 |
 | Go (fasthttp) | list | 0.114 | 0.995 | 3.09 |
 | Go (fasthttp) | update | 0.115 | 0.437 | 3.14 |
