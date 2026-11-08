@@ -23,12 +23,14 @@
     ".": "./src/index.ts",
     "./client": "./src/client.tsx",
     "./server": "./src/server.tsx",
-    "./build": "./src/build.ts"
+    "./build": "./src/build.ts",
+    "./island": "./src/island.tsx",
+    "./islands": "./src/islands.tsx"
   },
   "scripts": {
     "typecheck": "bun check",
     "test": "bun test",
-    "build": "rm -rf dist && bun build ./src/index.ts ./src/client.tsx ./src/server.tsx ./src/build.ts --root ./src --outdir ./dist --target bun --splitting --packages external && tsc -p tsconfig.build.json"
+    "build": "rm -rf dist && bun build ./src/index.ts ./src/client.tsx ./src/server.tsx ./src/build.ts ./src/island.tsx ./src/islands.tsx --root ./src --outdir ./dist --target bun --splitting --packages external && tsc -p tsconfig.build.json"
   },
   "dependencies": {
     "@archlast/forge-client": "workspace:*",

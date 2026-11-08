@@ -162,10 +162,32 @@ only pay when the interactive part is its own component. Two ways forward, to de
 The classifier fails closed: packages it does not read, members of objects, components chosen at run time and unresolved imports all count as islands (or make
 the component containing them one), a class or `this` is a fallback, and an `action` export makes the route a fallback.
 
+## Step 2 result: islands, end to end, behind a flag (`FORGE_ISLANDS=1`, or `islands: true` to `buildApp`/`createApp`)
+
+Built and tested (`test/islands.test.ts`, with a fixture app and a real browser): the build classifies the app, wraps each island's export for the server bundle
+(`island.tsx`; a wrapper module under its own path, because Bun treats a module of the same path in another namespace as the same module), generates a second
+browser entry that loads each island by id (`islands.client.ts`), and the server renders island markers plus the island's own HTML. In the browser each marker
+hydrates on its own root with the page's shared client, query cache, viewer and clock; `useNavigate` and `<Link>` inside an island load the page (there is no router
+in the browser). A page with an error, or with a route the build cannot place (an `action`, for now), is rendered and hydrated as a whole, exactly as before, and the
+two kinds of page can link to each other. Islands are off when the root layout or the document is itself interactive, with the reason printed at build time.
+
+What the first measurement said: with the starter's header split so that the viewer menu is an island of its own, the home page ships **124.3 KiB gzip instead of
+126.2 KiB**. That is almost nothing, and it is the honest result: the one island that remains (sign-out) needs React, the forge client and Better Auth's client, which
+is most of what the whole-page entry carries. Islands remove JavaScript only from pages where **no island renders**. Two consequences for the next step:
+
+- an island that is only needed in some states should be mounted only then: the starter's menu is an island for a signed-in visitor and a plain link for an anonymous
+  one, so the anonymous home page has no island at all;
+- when a page renders no island, the server should leave out the bootstrap script, the preload links and the `window.__FORGE__` state altogether (zero JavaScript).
+  This needs the render to know whether an island was rendered, and React writes the bootstrap into the stream before that is known, so it means either rendering to
+  a string first, or deciding from the route's classification. Not done yet.
+
+The starter templates are not split yet: splitting changes what `create-archlast-forge` writes (and so the skill and the docs), which should happen when islands are
+opt-in for users, not while they are a flag.
+
 ## First steps
 
 1. (Done.) Classifier over the starter templates, as a report. Not yet printed by `archlast-forge build`.
-2. One island end to end (the sign-out button), client entry and loader, behind the framework's existing build.
+2. (Done, behind a flag.) One island end to end, client entry and loader, behind the framework's existing build.
 3. Navigation by HTML swap with `Link` and `redirect` unchanged; run the framework's browser tests against it.
 4. Rust page cache with topic invalidation.
 5. Measure; decide on Stage 2.

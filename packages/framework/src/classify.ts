@@ -615,6 +615,7 @@ export class Classifier {
     }
     for (const n of [
       "loader",
+      "authPlugins",
       "action",
       "clientLoader",
       "clientAction",

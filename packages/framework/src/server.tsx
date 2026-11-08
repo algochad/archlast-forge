@@ -10,6 +10,7 @@ import { createStaticHandler, createStaticRouter, isRouteErrorResponse, matchRou
 import { BuildError, buildApp, readBuild, type BuildResult } from "./build";
 import { createViewerStore, forgeContext, type LoaderContext, type Viewer } from "./context";
 import { buildErrorPage, DEV_SCRIPT, DevEvents, watchApp } from "./dev";
+import { IslandsContext } from "./island";
 import { Providers } from "./providers";
 import { toRouteObjects } from "./route-objects";
 import { reviveErrors, type PageState, type SerializedError } from "./state";
@@ -19,6 +20,8 @@ export interface AppOptions {
   /** The project directory: it holds app/, public/ and forge/. */
   root: string;
   dev: boolean;
+  /** Render pages with islands where the app allows it (see classify.ts). Default: on when FORGE_ISLANDS=1. */
+  islands?: boolean;
   /** Where build and error messages go. Defaults to the console. */
   log?: (level: "info" | "error", message: string) => void;
 }
@@ -92,13 +95,15 @@ function serializeErrors(errors: StaticHandlerContext["errors"], o: { dev: boole
   );
 }
 
-function Page(props: { router: ReturnType<typeof createStaticRouter>; context: StaticHandlerContext; client: ArchlastForgeClient; queryClient: QueryClient; viewer: ReturnType<typeof createViewerStore>; time: TimeState; dev: boolean; css: string[]; preload: string[]; nonce?: string }) {
+function Page(props: { islands: boolean; router: ReturnType<typeof createStaticRouter>; context: StaticHandlerContext; client: ArchlastForgeClient; queryClient: QueryClient; viewer: ReturnType<typeof createViewerStore>; time: TimeState; dev: boolean; css: string[]; preload: string[]; nonce?: string }) {
   // Float hoists these into <head>, wherever the user's root document puts it.
   for (const href of props.css) preinit(`/_app/${href}`, { as: "style", precedence: "forge" });
   for (const file of props.preload) preloadModule(`/_app/${file}`, { as: "script" });
   return (
     <Providers client={props.client} queryClient={props.queryClient} viewer={props.viewer} time={props.time} dev={props.dev} nonce={props.nonce}>
-      <StaticRouterProvider router={props.router} context={props.context} hydrate={false} />
+      <IslandsContext.Provider value={props.islands}>
+        <StaticRouterProvider router={props.router} context={props.context} hydrate={false} />
+      </IslandsContext.Provider>
     </Providers>
   );
 }
@@ -125,7 +130,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
   async function rebuild(): Promise<boolean> {
     const began = performance.now();
     try {
-      await load(await buildApp({ root, dev }));
+      await load(await buildApp({ root, dev, islands: opts.islands }));
       buildError = undefined;
       log("info", `✓ app built in ${Math.round(performance.now() - began)} ms`);
       return true;
@@ -209,27 +214,31 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     const errors = serializeErrors(context.errors, { dev, requestId: env.requestId, log });
     context.errors = reviveErrors(errors);
     const viewer = createViewerStore(await ctx.viewer().catch(() => null));
+    // With islands the page is HTML plus a few small roots, and no router starts in the browser: nothing to hand it. A page with an error, or
+    // with a route the build could not place, is rendered and hydrated as a whole.
+    const islands = build.manifest.islands;
+    const withIslands = Boolean(islands && !errors && context.matches.every((m) => m.route.id === "root" || islands.routes.includes(m.route.id)));
     const state: PageState = {
       dev,
       ...time,
       viewer: viewer.get(),
       queries: dehydrate(queryClient),
-      hydration: { loaderData: context.loaderData, actionData: context.actionData, errors },
+      hydration: withIslands ? { loaderData: {}, actionData: null, errors: null } : { loaderData: context.loaderData, actionData: context.actionData, errors },
       ...(env.nonce && { nonce: env.nonce }),
     };
     const router = createStaticRouter(handler.dataRoutes, context);
-    const preload = [...new Set(context.matches.flatMap((m) => build.manifest.routes[m.route.id] ?? []))].filter((f) => f !== build.manifest.entry);
+    const preload = withIslands ? islands!.preload : [...new Set(context.matches.flatMap((m) => build.manifest.routes[m.route.id] ?? []))].filter((f) => f !== build.manifest.entry);
     const client = new ArchlastForgeClient({ url: url.origin, authPlugins });
     const status = context.statusCode;
 
     try {
       const stream = await renderToReadableStream(
-        <Page router={router} context={context} client={client} queryClient={queryClient} viewer={viewer} time={time} dev={dev} css={build.manifest.css} preload={preload} nonce={env.nonce} />,
+        <Page islands={withIslands} router={router} context={context} client={client} queryClient={queryClient} viewer={viewer} time={time} dev={dev} css={build.manifest.css} preload={preload} nonce={env.nonce} />,
         {
           // React's own inline scripts (the page's state, streamed boundaries) carry the engine's CSP nonce.
           ...(env.nonce && { nonce: env.nonce }),
           bootstrapScriptContent: `window.__FORGE__=${scriptJson(state)};`,
-          bootstrapModules: [`/_app/${build.manifest.entry}`, ...(dev ? ["/_app/__dev.js"] : [])],
+          bootstrapModules: [`/_app/${withIslands ? islands!.entry : build.manifest.entry}`, ...(dev ? ["/_app/__dev.js"] : [])],
           signal: req.signal,
           onError: (e) => log("error", `render failed (request ${env.requestId}): ${(e as Error)?.stack ?? e}`),
         },

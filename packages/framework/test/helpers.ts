@@ -16,10 +16,10 @@ export const tempDir = () => {
 };
 
 /** An engine serving the fixture app, built the way production builds it. */
-export async function startFixture(o: { root?: string; dev?: boolean; env?: Record<string, string> } = {}): Promise<RunningServer> {
+export async function startFixture(o: { root?: string; dev?: boolean; islands?: boolean; env?: Record<string, string> } = {}): Promise<RunningServer> {
   const root = o.root ?? fixture;
   const dev = o.dev ?? false;
-  if (!dev) await buildApp({ root, dev });
+  if (!dev) await buildApp({ root, dev, islands: o.islands });
   return startServer({
     forgeDir: join(root, "forge"),
     dev,
@@ -33,7 +33,7 @@ export async function startFixture(o: { root?: string; dev?: boolean; env?: Reco
       LOG_FORMAT: "json",
       ...o.env,
     },
-    app: await createApp({ root, dev, log: () => {} }),
+    app: await createApp({ root, dev, islands: o.islands, log: process.env.FORGE_TEST_LOG ? (_, m) => console.error(m) : () => {} }),
   });
 }
 
