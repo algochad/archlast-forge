@@ -177,6 +177,19 @@ export interface RunningServer {
   stop(opts?: { graceful?: boolean; keepApp?: boolean }): Promise<void>;
 }
 
+/** What the engine's request offers the server's /http path (see `rawHttp`). */
+interface RawRequestLike {
+  method: string;
+  url: string;
+  secure: boolean;
+  upgradeable: boolean;
+  bodyStreamed: boolean;
+  body: Uint8Array | null;
+  ip: string | null;
+  header(name: string): string | null;
+  headerPairs(): string[];
+}
+
 const pickAuthHeaders = (get: (name: string) => string | null | undefined): CallHeaders => {
   const h: CallHeaders = {};
   for (const name of ["cookie", "authorization"]) {
@@ -391,6 +404,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       const tag = topicTag(topic);
       if (pageTags.has(tag)) purgePages([tag]);
     });
+  let nativeReply: (new (body: string | Uint8Array | null, init?: { status?: number; headers?: [string, string][] }) => unknown) | undefined;
   let nativeTemplateReply: (new (template: number, data: string, init: { status: number; headers: [string, string][] }) => unknown) | undefined;
   const rpcOpts: RpcOptions = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
   const maxBody = config.limits.maxRequestBytes;
@@ -793,11 +807,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   };
   const clientIp = (req: Request, srv: Server<SocketData>) => (config.trustProxy && lastForwarded(req.headers.get("x-forwarded-for"))) || srv.requestIP(req)?.address || "unknown";
   /** Seconds to wait when this client is over its rate limit; with no limit configured, null at once and the client's address is never looked up. */
-  const limited = (req: Request, srv: Server<SocketData>, prefix = ""): Promise<number | null> | null => {
-    const max = config.limits.rateLimitPerMinute;
-    if (!max) return null;
-    return limiter.consume(prefix + rateKeyOf(clientIp(req, srv)), { window: 60, max }).then((r) => (r.allowed ? null : (r.retryAfter ?? 60)));
-  };
+  const limitedBy = (ip: string, prefix = ""): Promise<number | null> => limiter.consume(prefix + rateKeyOf(ip), { window: 60, max: config.limits.rateLimitPerMinute }).then((r) => (r.allowed ? null : (r.retryAfter ?? 60)));
+  const limited = (req: Request, srv: Server<SocketData>, prefix = ""): Promise<number | null> | null => (config.limits.rateLimitPerMinute ? limitedBy(clientIp(req, srv), prefix) : null);
   const tooMany = (retryAfter: number) => Response.json({ message: "Too many requests" }, { status: 429, headers: { "retry-after": String(retryAfter) } });
 
   async function handleAdmin(req: Request, path: string, requestId: string): Promise<Response> {
@@ -956,6 +967,90 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   metrics.waf = () => (firewall.enabled ? { ...firewall.stats.counters, rules: firewall.stats.ruleCounts() } : undefined);
 
   dashboardPage?.warm(); // built while the server starts, so the first visit doesn't wait
+  const NO_BYTES = new Uint8Array(0);
+  /**
+   * Requests under /http, answered from the engine's own request: no Web `Request` for the engine's side, no copies of the URL and the headers, and the
+   * answer written as an engine `Reply`. It does what the branch for /http in `fetch` below does, in the same order, and returns undefined (leaving the
+   * request to that branch) for anything it would do differently: a WebSocket, a streamed body, the firewall, the API docs' paths, Socket.IO's polling,
+   * routes at the root, and a server that is shutting down or has not loaded. Telemetry, rate limits, security headers and the request id are the same.
+   */
+  const rawHttp = async (raw: RawRequestLike): Promise<unknown> => {
+    const target = raw.url;
+    if (!target.startsWith("/http") || !nativeReply) return undefined;
+    const q = target.indexOf("?");
+    const path = q < 0 ? target : target.slice(0, q);
+    if (path !== "/http" && !path.startsWith("/http/")) return undefined;
+    if (shuttingDown || firewall.enabled || raw.upgradeable || raw.bodyStreamed || (q >= 0 && target.includes("EIO="))) return undefined;
+    const method = raw.method;
+    const bytes = method === "GET" ? undefined : (raw.body ?? NO_BYTES);
+    if (bytes && bytes.byteLength > maxBody) return undefined;
+    // One pass over the headers: the ones the request needs, and the list the function runtime is sent.
+    const pairs = raw.headerPairs();
+    const headers: [string, string][] = [];
+    let host = "localhost";
+    let given: string | undefined, traceparent: string | undefined, forwarded: string | undefined, cookie: string | undefined, authorization: string | undefined;
+    for (let i = 0; i < pairs.length; i += 2) {
+      const name = pairs[i]!;
+      const value = pairs[i + 1]!;
+      headers.push([name, value]);
+      switch (name) {
+        case "host": host = value; break;
+        case "upgrade": return undefined;
+        case "x-request-id": given = value; break;
+        case "traceparent": traceparent = value; break;
+        case "x-forwarded-for": forwarded = value; break;
+        case "cookie": cookie = cookie === undefined ? value : `${cookie}; ${value}`; break; // HTTP/2 may split it
+        case "authorization": authorization = value; break;
+      }
+    }
+    const docs = config.apiDocs === false ? null : await docsAt();
+    if (docs && (docsClaim(docs, path) || (opts.apiDocs && docsMayServe(docs, path, method)))) return undefined;
+    const requestId = requestIdOf(given);
+    if (config.limits.rateLimitPerMinute) {
+      const ip = (config.trustProxy && lastForwarded(forwarded)) || raw.ip || "unknown";
+      const retry = await limitedBy(ip);
+      if (retry) {
+        const res = tooMany(retry);
+        res.headers.set("x-request-id", requestId);
+        return res;
+      }
+    }
+    await loading;
+    const httpPath = path.slice("/http".length) || "/";
+    const body = bytes && (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+    const search = q < 0 ? "" : target.slice(q);
+    const root = telemetry?.begin("http", `${method} ${normalizePath(httpPath)}`, method, traceparent ?? null, requestId, { "url.path": httpPath });
+    try {
+      const r = await runtime.http(
+        { method, url: `${raw.secure ? "https" : "http"}://${host}${httpPath}${search}`, path: httpPath, search, headers, body },
+        pickAuthHeaders((n) => (n === "cookie" ? cookie : authorization)),
+        requestId,
+        undefined,
+        root && telemetry!.parent(root),
+      );
+      if (root) {
+        const route = r.telemetry?.attrs?.["http.route"];
+        root.operation = route ? `${method} ${route}` : r.status === 404 ? `${method} (unmatched)` : root.operation;
+        telemetry!.end(root, {
+          status: r.status,
+          telemetry: r.telemetry,
+          ...(r.status >= 500 && { error: { type: `HTTP ${r.status}`, message: `${root.operation} answered ${r.status}`, handled: false } }),
+        });
+      }
+      let out = r.headers;
+      if (r.nest) out = security.applyPairs("api", out);
+      out.push(["x-request-id", requestId]);
+      // A stream is the engine's to send as a Response; anything else is bytes and a status.
+      if (r.body instanceof ReadableStream) return new Response(r.body, { status: r.status, headers: out });
+      const bytes = r.body;
+      return new nativeReply!(typeof bytes === "string" ? bytes || null : bytes.byteLength ? (bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)) : null, { status: r.status, headers: out });
+    } catch (e) {
+      if (root) telemetry!.end(root, failureOf(e));
+      const res = errorResponse(toPublicError(e, requestId, dev, { path }));
+      res.headers.set("x-request-id", requestId);
+      return res;
+    }
+  };
   const {
     server,
     engine: httpEngine,
@@ -968,6 +1063,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     // The dashboard is bundled in production mode everywhere, dev included: minified, with React's production build (which the engine image
     // has, so a development bundle there renders a blank page). Its source isn't watched; edits to it show after a restart.
     development: false,
+    ...(config.httpEngine !== "bun" && { rawFetch: rawHttp }),
     routes: config.dashboardUrl
       ? { "/_dashboard": () => Response.redirect(`${config.dashboardUrl}/_dashboard#/microservices`, 302) }
       : {},
@@ -1176,8 +1272,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             });
           }
           // A body on a 204 or 304 is an error in a Response.
-          const out = r.body instanceof ReadableStream ? r.body : r.body.byteLength ? r.body : null;
-          const res = new Response(out, { status: r.status, headers: r.headers });
+          const out = r.body instanceof ReadableStream ? r.body : typeof r.body === "string" ? r.body || null : r.body.byteLength ? r.body : null;
+          const res = new Response(out as BodyInit | null, { status: r.status, headers: r.headers });
           return withId(r.nest ? security.apply("api", res) : res);
         } catch (e) {
           if (root) telemetry!.end(root, failureOf(e));
@@ -1436,6 +1532,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     nativeRegister = native.registerTemplate;
     purgePages = (tags) => (server as unknown as { purgeCache?(tags: string[]): void }).purgeCache?.(tags);
     const Reply = native.Reply;
+    nativeReply = Reply as typeof nativeReply;
     rpcOpts.reply = (body, headers) => new Reply(body, { headers }) as unknown as Response;
   }
 

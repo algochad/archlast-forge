@@ -84,13 +84,19 @@ function namespaceOf(s: Span): string {
 }
 
 /** Ids and tokens in a path become `:id`, so `/reset-password/8f2c…` and `/users/41` group as one route. */
+const normalized = new Map<string, string>();
 export function normalizePath(path: string) {
-  return (
-    path
-      .split("/")
-      .map((seg) => (/^\d+$|^[0-9a-f]{8}-[0-9a-f-]{27}$|^[0-9a-f]{16,}$|^(?=.*\d)[A-Za-z0-9_-]{20,}$/i.test(seg) ? ":id" : seg))
-      .join("/") || "/"
-  );
+  let out = normalized.get(path);
+  if (out === undefined) {
+    out =
+      path
+        .split("/")
+        .map((seg) => (/^\d+$|^[0-9a-f]{8}-[0-9a-f-]{27}$|^[0-9a-f]{16,}$|^(?=.*\d)[A-Za-z0-9_-]{20,}$/i.test(seg) ? ":id" : seg))
+        .join("/") || "/";
+    if (normalized.size >= 1000) normalized.clear(); // paths with ids in them are many; the ones a server sees most come back
+    normalized.set(path, out);
+  }
+  return out;
 }
 
 /** An HTTP status for a call's outcome, as /rpc would answer it. */

@@ -317,6 +317,20 @@ export class SecurityHeaders {
     return out;
   }
 
+  private plain = new WeakMap<object, [string, string][]>();
+
+  /** `apply` for an answer that is header pairs (an engine `Reply`): the surface's headers it lacks, added to a copy. Without a nonce, so for answers that are not pages. */
+  applyPairs(surface: Surface, pairs: [string, string][]): [string, string][] {
+    const resolved = this.resolved.get(surface)!;
+    let headers = this.plain.get(resolved);
+    if (!headers) this.plain.set(resolved, (headers = resolved.headers.map(([name, value]) => [name.toLowerCase(), value.replaceAll(` ${NONCE}`, "")] as [string, string])));
+    if (!headers.length) return pairs;
+    const have = new Set<string>();
+    for (const [name] of pairs) have.add(name.toLowerCase());
+    for (const h of headers) if (!have.has(h[0])) pairs.push(h);
+    return pairs;
+  }
+
   /** A browser's violation report: `application/csp-report` or the Reporting API's `application/reports+json`. Kept in memory, the latest 200. */
   record(body: unknown, surfaceOf: (page: string) => Surface | "unknown") {
     const items = Array.isArray(body) ? body.map((r) => (r as { body?: unknown })?.body) : [(body as { "csp-report"?: unknown })?.["csp-report"]];

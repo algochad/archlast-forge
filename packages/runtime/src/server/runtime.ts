@@ -144,7 +144,8 @@ class InlineWorker implements Worker {
     if (this.inFlight >= (this.opts.maxPending ?? 1000)) throw new RuntimeCallError("Server is busy, try again", "overloaded");
     this.inFlight++;
     try {
-      return await core.handle({ ...msg, id: 0 } as HostMessage);
+      (msg as { id?: number }).id = 0; // nothing here is matched by id: the answer is this call's own promise
+      return await core.handle(msg as HostMessage);
     } catch (e) {
       throw RuntimeCallError.from(serializeError(e));
     } finally {
@@ -517,8 +518,15 @@ export class FunctionRuntime {
     return best;
   }
 
+  /** The only process, when there is one and it is up: no choice to make, so no await either. */
+  private only(index?: number): Worker | undefined {
+    if (this.workers.length !== 1 || this.starting || !this.manifest || this.loadError || (index !== undefined && index !== 0)) return undefined;
+    const w = this.workers[0]!;
+    return w.proc && w.ready ? w : undefined;
+  }
+
   private async send(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, index?: number) {
-    const w = await this.pick(index);
+    const w = this.only(index) ?? (await this.pick(index));
     return w.request(msg, hardTimeoutMs, () => {
       const i = this.workers.indexOf(w);
       console.error(`function runtime ${i} didn't answer within ${hardTimeoutMs} ms; killing ${i < 0 ? "it (it was leaving the pool)" : "and restarting it"}`);

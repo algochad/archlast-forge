@@ -22,6 +22,9 @@ export interface SerializedResponse {
 export interface HttpRequestMessage {
   method: string;
   url: string;
+  /** The path of `url` and its query string, when the sender has them already (the receiver skips parsing the URL for them). */
+  path?: string;
+  search?: string;
   headers: [string, string][];
   body?: ArrayBuffer;
 }
@@ -30,7 +33,7 @@ export interface HttpResponseMessage {
   status: number;
   headers: [string, string][];
   /** A stream for a response that is sent as it is written (`stream`): across IPC its bytes follow as `chunk` messages. */
-  body: ArrayBuffer | ReadableStream<Uint8Array>;
+  body: ArrayBuffer | Uint8Array | string | ReadableStream<Uint8Array>;
   stream?: true;
   telemetry?: CallTelemetry;
   /** The answer is a Nest controller's (`nest(http, ...)`): the server gives it the REST API's security headers. */

@@ -375,8 +375,14 @@ export class RawRequest {
     return q === -1 ? "" : this.url.slice(q);
   }
 
-  /** Flat [name, value, name, value, ...]; names are lower-case. */
+  private pairs: string[] | null = null;
+
+  /** Flat [name, value, name, value, ...]; names are lower-case. Decoded once: the same array every time, which callers only read. */
   headerPairs(): string[] {
+    return (this.pairs ??= this.decodeHeaders());
+  }
+
+  private decodeHeaders(): string[] {
     const out: string[] = [];
     if (this.hEnd <= this.hStart) return out;
     const b = Buffer.from(

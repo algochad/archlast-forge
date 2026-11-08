@@ -62,3 +62,4 @@ benchmarks/pool/params.json
 benchmarks/fullstack/brust/dist
 benchmarks/fullstack/brust/node_modules
 benchmarks/fullstack/brust/bun.lock
+benchmarks/rest/profile/server.log

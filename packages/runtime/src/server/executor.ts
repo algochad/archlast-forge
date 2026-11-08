@@ -1,4 +1,5 @@
 import { SnapshotMoved, type ReadCache } from "./read-cache";
+import { LightResponse, type LightRequest } from "./light";
 import { isForgeError, TimeoutError } from "../errors";
 import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, type RegisteredFunction, type UserIdentity } from "../functions";
 import { validate, validateFields, ValidationError } from "../values";
@@ -116,13 +117,14 @@ function checkReturn<T>(fn: RegisteredFunction, value: T): T {
 
 /** Rejects after `ms`. The handler may keep running; its transaction handle refuses further use once the call ends. */
 function withTimeout<T>(promise: Promise<T>, ms: number, name: string): Promise<T> {
-  let timer: Timer;
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new TimeoutError(`${name} timed out after ${ms} ms`)), ms);
-    }),
-  ]).finally(() => clearTimeout(timer));
+  // One promise and one timer: the answer, or the timeout, whichever comes first.
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new TimeoutError(`${name} timed out after ${ms} ms`)), ms);
+    promise.then(
+      (value) => (clearTimeout(timer), resolve(value)),
+      (error) => (clearTimeout(timer), reject(error)),
+    );
+  });
 }
 
 export interface RunOptions {
@@ -344,15 +346,15 @@ export class Executor {
   }
 
   /** Runs an HTTP action. The caller is resolved from the request's cookie or authorization header, and is anonymous without one. */
-  async runHttp(name: string, action: HttpAction, req: Request, headers: CallHeaders, requestId?: string): Promise<Response> {
+  async runHttp(name: string, action: HttpAction, req: Request | LightRequest, headers: CallHeaders, requestId?: string): Promise<Response | LightResponse> {
     const identity = await this.identityOf(headers);
     this.ranAs(identity);
     const auth = { getUserIdentity: async () => identity };
-    const res = await this.logged(name, requestId, undefined, () =>
-      withTimeout(Promise.resolve(action.handler(this.actionCtx(auth, identity, requestId) as unknown as ActionCtx, req)), this.limits.actionTimeoutMs, name),
+    const res: unknown = await this.logged(name, requestId, undefined, () =>
+      withTimeout(Promise.resolve(action.handler(this.actionCtx(auth, identity, requestId) as unknown as ActionCtx, req as Request)), this.limits.actionTimeoutMs, name),
     );
-    if (!(res instanceof Response)) throw new Error(`${name} must return a Response`);
-    return res;
+    if (!(res instanceof Response) && !(res instanceof LightResponse)) throw new Error(`${name} must return a Response`);
+    return res as Response | LightResponse;
   }
 
   /** A function's time limit, for mutations run outside `call` (the scheduler). */

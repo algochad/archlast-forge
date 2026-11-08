@@ -17,9 +17,7 @@ export class Metrics {
     m.calls++;
     if (!ok) m.errors++;
     m.sum += durationMs;
-    BUCKETS.forEach((b, i) => {
-      if (durationMs <= b) m.buckets[i]!++;
-    });
+    for (let i = 0; i < BUCKETS.length; i++) if (durationMs <= BUCKETS[i]!) m.buckets[i]!++;
   }
 
   render(gauges: { subscriptions: number; connections: number; workers: number; backlog?: { waiting: number; waitMs: number }[] }, cache?: CacheSnapshot, loops?: LoopDelays) {

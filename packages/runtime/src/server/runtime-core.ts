@@ -16,6 +16,7 @@ import { Executor, logContext, serializeError, type CallHeaders, type LogEntry }
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
 import { checkHttpRequest, matchRoute, routeName } from "./http";
 import { buildOpenApi, docsWarnings, NEST_MOUNT, type NestRoute } from "./openapi";
+import { LIGHT, LightResponse } from "./light";
 import type { HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
 import { createStorage } from "./storage";
@@ -292,9 +293,11 @@ export async function startCore(opts: {
     return out;
   }
 
+  const EMPTY = new Uint8Array(0);
+  const strict = new TextDecoder("utf-8", { fatal: true });
   const isText = (bytes: ArrayBuffer) => {
     try {
-      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      strict.decode(bytes);
       return true;
     } catch {
       return false;
@@ -321,7 +324,8 @@ export async function startCore(opts: {
       }
       case "http": {
         const { method, url, headers, body } = msg.req;
-        const found = matchRoute(project.http, method, new URL(url).pathname);
+        const pathname = msg.req.path ?? new URL(url).pathname;
+        const found = matchRoute(project.http, method, pathname);
         const answer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({
           status,
           headers: [["content-type", "text/plain"], ...extra],
@@ -341,18 +345,50 @@ export async function startCore(opts: {
         const res = await traced(msg.trace, routeName(route), () => {
           // The route's pattern, for the request's name; a Nest controller names its own, finer one.
           annotate({ "http.route": route.path ?? `${route.pathPrefix}*` }, true);
-          return exec.runHttp(routeName(route), route.handler, new Request(url, { method, headers, body }), msg.headers, msg.requestId);
+          // A route that can do without Web objects (Nest's mount) is given the fields of the request and answers with its own.
+          const light = (route.handler as unknown as Record<symbol, unknown>)[LIGHT] === true;
+          return exec.runHttp(
+            routeName(route),
+            route.handler,
+            light ? { method, url, path: pathname, search: msg.req.search ?? new URL(url).search, headers, body } : new Request(url, { method, headers, body }),
+            msg.headers,
+            msg.requestId,
+          );
         }).then((r) => ((telemetry = r.telemetry), r.value));
-        const out = [...res.headers].filter(([k]) => k !== "content-length");
-        const nest = (route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true ? { nest: true as const } : {};
-        if (res.body && ((res as unknown as Record<symbol, unknown>)[STREAM] || res.headers.get("content-type")?.startsWith("text/event-stream")))
-          return { status: res.status, headers: out, body: res.body, stream: true, ...nest, ...(telemetry && { telemetry }) } satisfies HttpResponseMessage;
+        if (res instanceof LightResponse) {
+          const out = res.headers.filter((h) => h[0] !== "content-length");
+          const reply: HttpResponseMessage = { status: res.status, headers: out, body: res.body ?? EMPTY };
+          if ((route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true) reply.nest = true;
+          if (telemetry) reply.telemetry = telemetry;
+          return reply;
+        }
+        const out: [string, string][] = [];
+        let typed = false;
+        for (const h of res.headers) {
+          if (h[0] === "content-length") continue;
+          if (h[0] === "content-type") typed = true;
+          out.push(h);
+        }
+        const reply: HttpResponseMessage = { status: res.status, headers: out, body: undefined as never };
+        if ((route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true) reply.nest = true;
+        if (telemetry) reply.telemetry = telemetry;
+        if (res.body && ((res as unknown as Record<symbol, unknown>)[STREAM] || res.headers.get("content-type")?.startsWith("text/event-stream"))) {
+          reply.body = res.body;
+          reply.stream = true;
+          return reply;
+        }
+        // `new Response("text")` has no content-type header of its own: Bun.serve adds one when it sends. Passing the bytes along loses that,
+        // so give text bodies the type the platform would have (binary bodies keep the default, and a handler can always set one). A response that
+        // has a type already needs no blob to say so.
+        if (typed) {
+          reply.body = await res.arrayBuffer();
+          return reply;
+        }
         const blob = await res.blob();
         const bytes = await blob.arrayBuffer();
-        // `new Response("text")` has no content-type header of its own: Bun.serve adds one when it sends. Passing the bytes along loses that,
-        // so give text bodies the type the platform would have (binary bodies keep the default, and a handler can always set one).
-        if (!out.some(([k]) => k === "content-type") && blob.type.startsWith("text/plain") && isText(bytes)) out.push(["content-type", blob.type]);
-        return { status: res.status, headers: out, body: bytes, ...nest, ...(telemetry && { telemetry }) } satisfies HttpResponseMessage;
+        if (blob.type.startsWith("text/plain") && isText(bytes)) out.push(["content-type", blob.type]);
+        reply.body = bytes;
+        return reply;
       }
       case "admin":
         if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });

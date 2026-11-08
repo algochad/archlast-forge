@@ -53,6 +53,7 @@ import { EMPTY, filter, fromEvent, mergeMap, Observable, takeUntil, type Subscri
 import type { RouteDocs, SecurityRequirement } from "./api-docs";
 import { httpAction, type ActionCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
 import { queryValue } from "./server/http";
+import { LIGHT, LightResponse, type LightRequest } from "./server/light";
 import { NEST_MOUNT, type NestRoute } from "./server/openapi";
 import { validate, validateFields, ValidationError, type PropertyValidators, type Validator } from "./values";
 
@@ -100,18 +101,27 @@ const TIMED = Symbol.for("archlast-forge.timed");
  * itself, so the timed method carries the same metadata. `interceptor: false` leaves out the one that records transport messages, for a
  * transport that records them itself (Forge RPC).
  */
+// Nest's metadata keys: a microservice pattern, a gateway's message, and the list of interceptors on a handler.
+const MESSAGE_PATTERN = "microservices:pattern";
+const GATEWAY_MESSAGE = "message";
+const INTERCEPTORS = "__interceptors__";
+
 export function timeClass(target: Function, kind: string, interceptor = true) {
   const bridge = telemetry();
   const proto = target.prototype as Record<string | symbol, unknown> | undefined;
   if (!bridge || !proto || Object.hasOwn(proto, TIMED)) return;
   Object.defineProperty(proto, TIMED, { value: true });
-  if (interceptor && (kind === "controller" || kind === "gateway")) UseInterceptors(EntryInterceptor)(target);
+  // The interceptor that records transport messages goes on the handlers that take them (a message pattern, a gateway's event), not on the class: Nest
+  // runs a request through its interceptors with an Observable and an async-context binding each, which an HTTP route would pay for and gain nothing from.
+  const entries = interceptor && (kind === "controller" || kind === "gateway");
   for (const key of Object.getOwnPropertyNames(proto)) {
     const d = Object.getOwnPropertyDescriptor(proto, key);
     if (key === "constructor" || !d || typeof d.value !== "function" || !d.writable) continue;
     const original = d.value as (...args: unknown[]) => unknown;
     const timed = bridge.wrap(original, `${target.name}.${key}`, { "code.namespace": target.name, "code.function": key, "nest.kind": kind });
     for (const meta of Reflect.getOwnMetadataKeys(original)) Reflect.defineMetadata(meta, Reflect.getOwnMetadata(meta, original), timed);
+    if (entries && (Reflect.hasOwnMetadata(MESSAGE_PATTERN, original) || Reflect.hasOwnMetadata(GATEWAY_MESSAGE, original)))
+      Reflect.defineMetadata(INTERCEPTORS, [EntryInterceptor, ...((Reflect.getOwnMetadata(INTERCEPTORS, timed) as unknown[] | undefined) ?? [])], timed);
     Object.defineProperty(timed, "name", { value: original.name });
     Object.defineProperty(proto, key, { ...d, value: timed });
   }
@@ -318,8 +328,10 @@ export function nest(http: { route(spec: HttpRoute): void; root?: boolean }, opt
   })();
   started.catch(() => {}); // reported to every call that needs the app
 
-  const handler = httpAction(async (ctx, request) => (await started!).adapter.handle(request, ctx));
+  // The mount takes a `LightRequest` and may answer with a `LightResponse` (see server/light.ts): a Nest request needs no Web `Request` or `Response` unless a handler asks.
+  const handler = httpAction(async (ctx, request) => (await started!).adapter.handle(request, ctx) as Promise<Response>);
   (handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] = true;
+  (handler as unknown as Record<symbol, unknown>)[LIGHT] = true;
   if (o.helmet !== undefined) (handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-helmet")] = o.helmet;
   for (const method of METHODS) http.route({ method, pathPrefix: prefix, handler });
   (globalThis as Record<symbol, unknown>)[NEST_ROUTES] = async () => routesOf((await started!).app, http.root ? prefix : `/http${prefix}`);
@@ -692,17 +704,57 @@ const toObject = (params: URLSearchParams) => {
   return out;
 };
 
+/** The path and the query string of a URL a `Request` serialized (it is already parsed and normalized, so they are the text between the host and the `?` or `#`). */
+function splitUrl(url: string): { pathname: string; search: string } {
+  const start = url.indexOf("/", url.indexOf("://") + 3);
+  const hash = url.indexOf("#");
+  const end = hash < 0 ? url.length : hash;
+  const q = url.indexOf("?", start);
+  if (start < 0) return { pathname: "/", search: q < 0 || q > end ? "" : url.slice(q, end) };
+  return q < 0 || q > end ? { pathname: url.slice(start, end), search: "" } : { pathname: url.slice(start, q), search: q + 1 === end ? "" : url.slice(q, end) };
+}
+
 /** What Nest's handlers see as `req`: the parts its decorators read (`@Body`, `@Query`, `@Param`, `@Headers`, `@Req`), Express's helpers, and the Web Request. */
 class ForgeRequest extends EventEmitter {
   readonly url: string;
   readonly originalUrl: string;
   readonly baseUrl = "";
-  readonly hostname: string;
-  readonly protocol: string;
-  readonly headers: Record<string, string>;
+  // Worked out when a handler asks: most routes read few of them, and each costs a parse.
+  private _headers?: Record<string, string>;
+  private _query?: Record<string, string | string[]>;
+  private _cookies?: Record<string, string>;
+  private _protocol?: string;
+  private _hostname?: string;
+  private readonly search: string;
+  get headers(): Record<string, string> {
+    if (this._headers) return this._headers;
+    const source = this.source;
+    if (source instanceof Request) return (this._headers = Object.fromEntries(source.headers));
+    // as a Headers object gives them: a name that repeats is one value joined with ", " ("; " for cookies)
+    const out: Record<string, string> = {};
+    for (const [name, value] of source.headers) out[name] = name in out ? `${out[name]}${name === "cookie" ? "; " : ", "}${value}` : value;
+    return (this._headers = out);
+  }
+  /** The Web `Request`: the engine's own when this is one, otherwise made now from what the server sent (nothing reads it on most routes). */
+  get raw(): Request {
+    const source = this.source;
+    if (source instanceof Request) return source;
+    return (this._raw ??= new Request(source.url, { method: source.method, headers: source.headers, body: source.method === "GET" || source.method === "HEAD" ? undefined : source.body }));
+  }
+  private _raw?: Request;
   /** As the URL gave them; on a route with a `@Contract`, the fields it names hold their checked values (`?limit=2` is the number 2). */
-  readonly query: Record<string, string | string[]>;
-  readonly cookies: Record<string, string>;
+  get query(): Record<string, string | string[]> {
+    return (this._query ??= this.search ? toObject(new URLSearchParams(this.search)) : {});
+  }
+  get cookies(): Record<string, string> {
+    return (this._cookies ??= Object.fromEntries(new Bun.CookieMap(this.headers.cookie ?? "")));
+  }
+  get hostname(): string {
+    return (this._hostname ??= new URL(this.source.url).hostname);
+  }
+  get protocol(): string {
+    return (this._protocol ??= this.headers["x-forwarded-proto"]?.split(",")[0]?.trim() || this.source.url.slice(0, this.source.url.indexOf(":")));
+  }
   /** Node's connection, as engine.io reads it; the engine's server knows the address, which isn't passed on. */
   readonly connection = { remoteAddress: "", encrypted: false };
   /** What Node's `setEncoding()` asked for: "data" events then carry strings. */
@@ -716,21 +768,17 @@ class ForgeRequest extends EventEmitter {
   [FORGE_CTX]: ActionCtx;
 
   constructor(
-    readonly raw: Request,
+    private readonly source: Request | LightRequest,
     readonly method: string,
     readonly path: string,
     readonly body: unknown,
     readonly rawBody: Buffer | undefined,
     ctx: ActionCtx,
+    search: string,
   ) {
     super();
-    const url = new URL(raw.url);
-    this.url = this.originalUrl = path + url.search;
-    this.hostname = url.hostname;
-    this.headers = Object.fromEntries(raw.headers);
-    this.protocol = this.headers["x-forwarded-proto"]?.split(",")[0]?.trim() || url.protocol.slice(0, -1);
-    this.query = toObject(url.searchParams);
-    this.cookies = Object.fromEntries(new Bun.CookieMap(this.headers.cookie ?? ""));
+    this.search = search;
+    this.url = this.originalUrl = path + search;
     this[FORGE_CTX] = ctx;
   }
   get secure() {
@@ -917,6 +965,22 @@ class ForgeResponse extends EventEmitter {
     return this.status(code).location(to).end();
   }
 
+  /** The answer as bytes when that is all it is (a string, bytes or nothing), so the server need not make a `Response` to read it back; otherwise the `Response`. */
+  toAnswer(): Response | LightResponse {
+    const empty = this.statusCode === 204 || this.statusCode === 304;
+    const body = this.readable ?? (empty ? null : this.body);
+    if (body !== null && typeof body !== "string" && !(body instanceof Uint8Array)) return this.toResponse();
+    const headers: [string, string][] = [];
+    let typed = false;
+    for (const h of this.headers) {
+      if (h[0] === "content-type") typed = true;
+      headers.push(h);
+    }
+    // `new Response("text")` says what it is when sent: the same here
+    if (typeof body === "string" && !typed) headers.push(["content-type", "text/plain;charset=utf-8"]);
+    return new LightResponse(this.statusCode, headers, body);
+  }
+
   toResponse() {
     const empty = this.statusCode === 204 || this.statusCode === 304;
     const body = this.readable ?? (empty ? null : this.body);
@@ -934,6 +998,8 @@ interface Layer {
   route: boolean;
   /** The path as the route was declared (`/users/:id`). */
   pattern: string;
+  /** What the request is named after when this route matches (made once). */
+  named?: string;
 }
 
 /** The `instance` Nest's adapter base class hands routes to: an Express-style list of layers, run in order. */
@@ -969,11 +1035,20 @@ class Router {
 const unsupported = (what: string) => new Error(`${what} is not available for Nest inside archlast-forge`);
 
 /** The body as Express's parsers would leave it: JSON parsed, forms as an object, text as a string, anything else as bytes. */
-async function readBody(request: Request): Promise<{ body: unknown; rawBody?: Buffer }> {
-  if (request.method === "GET" || request.method === "HEAD" || !request.body) return { body: undefined };
-  const rawBody = Buffer.from(await request.arrayBuffer());
+async function readBody(request: Request | LightRequest): Promise<{ body: unknown; rawBody?: Buffer }> {
+  if (request.method === "GET" || request.method === "HEAD") return { body: undefined };
+  let rawBody: Buffer;
+  let type: string;
+  if (request instanceof Request) {
+    if (!request.body) return { body: undefined };
+    rawBody = Buffer.from(await request.arrayBuffer());
+    type = (request.headers.get("content-type") ?? "").toLowerCase();
+  } else {
+    if (!request.body) return { body: undefined };
+    rawBody = Buffer.from(request.body);
+    type = (request.headers.find((h) => h[0] === "content-type")?.[1] ?? "").toLowerCase();
+  }
   if (!rawBody.length) return { body: undefined, rawBody };
-  const type = (request.headers.get("content-type") ?? "").toLowerCase();
   if (/[/+]json\b/.test(type)) {
     try {
       return { body: JSON.parse(rawBody.toString("utf8")), rawBody };
@@ -1010,7 +1085,7 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
   }
 
   /** Runs one request through Nest. Errors that are not HttpExceptions are thrown, so the engine answers them like an HTTP action's. */
-  async handle(request: Request, ctx: ActionCtx): Promise<Response> {
+  async handle(request: Request | LightRequest, ctx: ActionCtx): Promise<Response | LightResponse> {
     let parsed: Awaited<ReturnType<typeof readBody>>;
     try {
       parsed = await readBody(request);
@@ -1019,8 +1094,9 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
       return Response.json(e.getResponse(), { status: e.getStatus() });
     }
     // Nest sees paths below the mount point, so `prefix: "/api/"` with `@Controller("users")` serves /http/api/users.
-    const path = "/" + new URL(request.url).pathname.slice(this.prefix.length);
-    const req = new ForgeRequest(request, request.method, path, parsed.body, parsed.rawBody, ctx);
+    const { pathname, search } = request instanceof Request ? splitUrl(request.url) : { pathname: request.path, search: request.search };
+    const path = "/" + pathname.slice(this.prefix.length);
+    const req = new ForgeRequest(request, request.method, path, parsed.body, parsed.rawBody, ctx, search);
     const res = new ForgeResponse();
     res.request = req;
 
@@ -1036,14 +1112,19 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
         if (layer.route) {
           req.params = found.params;
           // The request is named after the route it matched, below /http: the mount prefix and Nest's own path.
-          telemetry()?.annotate({ "http.route": `${this.prefix.slice(0, -1)}${layer.pattern}` }, true);
+          telemetry()?.annotate({ "http.route": (layer.named ??= `${this.prefix.slice(0, -1)}${layer.pattern}`) }, true);
         }
-        return Promise.resolve()
-          .then(() => layer.handler(req, res, next))
-          .then(
-            () => {},
-            (e) => res.fail(e),
-          );
+        try {
+          const out = layer.handler(req, res, next);
+          return out && typeof (out as PromiseLike<unknown>).then === "function"
+            ? (out as Promise<unknown>).then(
+                () => {},
+                (e) => res.fail(e),
+              )
+            : undefined;
+        } catch (e) {
+          return res.fail(e);
+        }
       }
       return Promise.resolve(this.notFound?.(req, res, next)).then(
         () => {},
@@ -1053,7 +1134,7 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
     await next();
     await res.done; // handlers answer when they end the response or start streaming it; the action's time limit bounds the wait
     if (res.error) throw res.error; // before the head went out; an error while streaming ends the stream instead
-    return res.toResponse();
+    return res.toAnswer();
   }
 
   // Nest calls these while it handles a request.
