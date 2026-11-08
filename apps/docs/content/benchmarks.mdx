@@ -32,7 +32,7 @@ Express 5.1.0 on Node 24.22.2; Bun 1.4.4; Go 1.24.13 with fasthttp 1.62.0; .NET 
 
 ## A REST API with in-memory CRUD
 
-A small `items` API, built the same way in seven setups. An item is `{ id, name, quantity }`.
+A small `items` API, built the same way in nine setups. An item is `{ id, name, quantity }`.
 
 | | |
 |---|---|
@@ -48,13 +48,15 @@ The store is a map in memory, seeded with 1,000 items, safe for concurrent use, 
 |---|---|
 | archlast-forge | a NestJS controller on the Nest path (`forge/http.ts`), served by archlast-serve, under `/http`; also with `HTTP_ENGINE=bun` and with telemetry off. Rate limiting is off (it is on by default in production and would refuse the load); everything else is as shipped, including telemetry. |
 | archlast-serve | the engine on its own, with no framework: its native `App` API (`packages/serve`), one JavaScript thread and 3 Rust I/O threads |
+| NestJS on Node.js | the same controller as Forge's, as a plain NestJS app on Nest's Express adapter (`@nestjs/platform-express`), Node 24, one process |
+| NestJS on Bun | the same NestJS app on Bun 1.4 (still Nest's Express adapter), one process |
 | Node.js | Express 5, one process |
 | Bun | `Bun.serve`, one process |
 | Go | fasthttp with `fasthttp/router`, one goroutine per connection |
 | .NET | Minimal APIs on Kestrel, source-generated JSON |
 | Rust | Axum on Tokio, multi-threaded |
 
-The JavaScript servers (Forge, archlast-serve, Express, Bun) use the same store module, so they differ only in what serves HTTP. Each case is one request type at 64 connections: read a random seeded item, list 20, update a random item, create an item.
+The JavaScript servers (Forge, archlast-serve, NestJS, Express, Bun) use the same store module, so they differ only in what serves HTTP. Each case is one request type at 64 connections: read a random seeded item, list 20, update a random item, create an item.
 
 {/* bench:rest */}
 
@@ -68,10 +70,12 @@ The JavaScript servers (Forge, archlast-serve, Express, Bun) use the same store 
 | archlast-forge (NestJS path, archlast-serve, telemetry off) | 172,030 | 141,447 | 127,302 | 117,821 | 210 MiB |
 | archlast-forge (NestJS path, archlast-serve) | 151,079 | 133,364 | 120,762 | 109,043 | 255 MiB |
 | Bun.serve | 142,882 | 108,589 | 92,094 | 81,816 | 97 MiB |
+| NestJS on Bun (Express adapter) | 38,122 | 34,027 | 22,919 | 21,135 | 138 MiB |
 | archlast-forge (NestJS path, Bun.serve) | 34,362 | 30,813 | 25,560 | 24,880 | 196 MiB |
+| NestJS on Node.js 24 (Express adapter) | 22,670 | 19,896 | 15,566 | 17,090 | 123 MiB |
 | Node.js 24 (Express 5) | 22,408 | 20,694 | 16,090 | 16,925 | 122 MiB |
 
-Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.11 / 0.22; archlast-serve 0.12 / 0.41; Go 0.11 / 0.54; .NET 10 0.14 / 0.57; archlast-forge 0.18 / 0.96; archlast-forge 0.34 / 1.31; archlast-forge 0.40 / 1.38; Bun.serve 0.43 / 0.86; archlast-forge 1.78 / 3.54; Node.js 24 2.81 / 3.29.
+Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.11 / 0.22; archlast-serve 0.12 / 0.41; Go 0.11 / 0.54; .NET 10 0.14 / 0.57; archlast-forge 0.18 / 0.96; archlast-forge 0.34 / 1.31; archlast-forge 0.40 / 1.38; Bun.serve 0.43 / 0.86; NestJS on Bun 1.60 / 2.56; archlast-forge 1.78 / 3.54; NestJS on Node.js 24 2.77 / 3.49; Node.js 24 2.81 / 3.29.
 
 {/* /bench:rest */}
 
@@ -118,7 +122,7 @@ React Router 7, Next.js 16, brust and archlast-forge, serving the same two pages
 ## Run them yourself
 
 ```sh
-# the REST API: builds seven images, checks each server, loads each one (about 15 minutes)
+# the REST API: builds ten images, checks each server, loads each one (about 15 minutes)
 cd benchmarks/rest && ./run.sh && bun report.ts
 
 # the thread pool

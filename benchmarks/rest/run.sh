@@ -1,6 +1,6 @@
 #!/bin/bash
 # The benchmark's CRUD API in six stacks, each in a container with the same limits, loaded with oha from outside.
-#   ./run.sh [server...]        servers: axum go dotnet bun node serve forge forge-light forge-bun forge-notelemetry   (default: all; a run of some servers keeps the others' results)
+#   ./run.sh [server...]        servers: axum go dotnet bun node nest-node nest-bun serve forge forge-light forge-bun forge-notelemetry   (default: all; a run of some servers keeps the others' results)
 #   env: SERVER_CPUS (0-3)  SERVER_MEM (2g)  CLIENT_CPUS (4-7,12-15)  CONNS (64)  SECS (5)  RUNS (3)
 # Builds the images first (docker build, context: this folder), checks each server with conformance.ts, then for each scenario warms up for 2 s and
 # measures RUNS runs of SECS seconds: requests/s, latency, the CPU the container used (cgroup cpu.stat) and its peak memory (memory.peak).
@@ -20,16 +20,18 @@ def axum bench-rest-axum "" "" "Rust (Axum 0.8, Tokio)"
 def go bench-rest-go "" "" "Go (fasthttp)"
 def dotnet bench-rest-dotnet "" "" ".NET 10 (Minimal APIs)"
 def bun bench-rest-bun "" "" "Bun.serve"
+def nest-node bench-rest-nest-node "" "" "NestJS on Node.js 24 (Express adapter)"
+def nest-bun bench-rest-nest-bun "" "" "NestJS on Bun (Express adapter)"
 def serve bench-rest-archlast-serve "" "-e THREADS=3" "archlast-serve (native App API, 3 I/O threads)"
 def node bench-rest-express "" "" "Node.js 24 (Express 5)"
 def forge bench-rest-forge /http "${FORGE_ENV[*]}" "archlast-forge (NestJS path, archlast-serve)"
 def forge-light bench-rest-forge-light /http "${FORGE_ENV[*]}" "archlast-forge (forge/http.ts light routes, archlast-serve)"
 def forge-bun bench-rest-forge /http "${FORGE_ENV[*]} -e HTTP_ENGINE=bun" "archlast-forge (NestJS path, Bun.serve)"
 def forge-notelemetry bench-rest-forge /http "${FORGE_ENV[*]} -e TELEMETRY=off" "archlast-forge (NestJS path, archlast-serve, telemetry off)"
-SERVERS=${*:-axum go dotnet bun node serve forge forge-light forge-bun forge-notelemetry}
+SERVERS=${*:-axum go dotnet bun node nest-node nest-bun serve forge forge-light forge-bun forge-notelemetry}
 
 build() {
-  for s in axum go dotnet bun express archlast-serve forge forge-light; do
+  for s in axum go dotnet bun express nest-node nest-bun archlast-serve forge forge-light; do
     docker image inspect bench-rest-$s >/dev/null 2>&1 || docker build -q -f "$HERE/servers/$s/Dockerfile" -t bench-rest-$s "$HERE" >/dev/null || exit 1
   done
 }

@@ -88,6 +88,8 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
             { label: ".NET 10 · Minimal API", value: read("dotnet") },
             { label: "Forge · light route", value: read("forge-light"), us: true },
             { label: "Bun.serve", value: read("bun") },
+            { label: "NestJS · Bun", value: read("nest-bun") },
+            { label: "NestJS · Node", value: read("nest-node") },
             { label: "Forge · archlast-serve", value: read("forge"), us: true },
             { label: "Node · Express", value: read("node") },
             { label: "Forge · on Bun.serve", value: read("forge-bun"), us: true },

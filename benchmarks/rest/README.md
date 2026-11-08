@@ -1,6 +1,6 @@
-# A REST API in seven setups
+# A REST API in nine setups
 
-The same in-memory CRUD API, built in archlast-forge (NestJS path), archlast-serve alone (its native `App` API), Node.js (Express), Bun (`Bun.serve`), Go (fasthttp), .NET (Minimal APIs) and Rust (Axum), each in a Docker container with the same limits, loaded with [oha](https://github.com/hatoo/oha). The results and how to read them are on the docs site's [Benchmarks](../../apps/docs/content/benchmarks.mdx) page.
+The same in-memory CRUD API, built in archlast-forge (NestJS path and light routes), archlast-serve alone (its native `App` API), plain NestJS on Node and on Bun, Node.js (Express), Bun (`Bun.serve`), Go (fasthttp), .NET (Minimal APIs) and Rust (Axum), each in a Docker container with the same limits, loaded with [oha](https://github.com/hatoo/oha). The results and how to read them are on the docs site's [Benchmarks](../../apps/docs/content/benchmarks.mdx) page.
 
 ## The API
 

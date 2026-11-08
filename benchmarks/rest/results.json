@@ -338,5 +338,73 @@
         "success": 1
       }
     }
+  },
+  "nest-node": {
+    "label": "NestJS on Node.js 24 (Express adapter)",
+    "peakMiB": 123,
+    "scenarios": {
+      "read": {
+        "rps": 22670,
+        "p50ms": 2.772,
+        "p99ms": 3.486,
+        "cores": 0.91,
+        "success": 1
+      },
+      "list": {
+        "rps": 19896,
+        "p50ms": 3.172,
+        "p99ms": 3.848,
+        "cores": 0.92,
+        "success": 1
+      },
+      "update": {
+        "rps": 15566,
+        "p50ms": 4.055,
+        "p99ms": 4.802,
+        "cores": 0.94,
+        "success": 1
+      },
+      "create": {
+        "rps": 17090,
+        "p50ms": 3.655,
+        "p99ms": 4.823,
+        "cores": 0.94,
+        "success": 1
+      }
+    }
+  },
+  "nest-bun": {
+    "label": "NestJS on Bun (Express adapter)",
+    "peakMiB": 138,
+    "scenarios": {
+      "read": {
+        "rps": 38122,
+        "p50ms": 1.604,
+        "p99ms": 2.556,
+        "cores": 0.91,
+        "success": 1
+      },
+      "list": {
+        "rps": 34027,
+        "p50ms": 1.811,
+        "p99ms": 2.616,
+        "cores": 0.9,
+        "success": 1
+      },
+      "update": {
+        "rps": 22919,
+        "p50ms": 2.702,
+        "p99ms": 3.803,
+        "cores": 0.93,
+        "success": 1
+      },
+      "create": {
+        "rps": 21135,
+        "p50ms": 2.521,
+        "p99ms": 7.542,
+        "cores": 1.15,
+        "success": 1
+      }
+    }
   }
 }

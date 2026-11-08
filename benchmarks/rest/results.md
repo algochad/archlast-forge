@@ -8,7 +8,9 @@
 | archlast-forge (NestJS path, archlast-serve, telemetry off) | 172,030 | 141,447 | 127,302 | 117,821 | 210 MiB |
 | archlast-forge (NestJS path, archlast-serve) | 151,079 | 133,364 | 120,762 | 109,043 | 255 MiB |
 | Bun.serve | 142,882 | 108,589 | 92,094 | 81,816 | 97 MiB |
+| NestJS on Bun (Express adapter) | 38,122 | 34,027 | 22,919 | 21,135 | 138 MiB |
 | archlast-forge (NestJS path, Bun.serve) | 34,362 | 30,813 | 25,560 | 24,880 | 196 MiB |
+| NestJS on Node.js 24 (Express adapter) | 22,670 | 19,896 | 15,566 | 17,090 | 123 MiB |
 | Node.js 24 (Express 5) | 22,408 | 20,694 | 16,090 | 16,925 | 122 MiB |
 
 Requests per second, median of the runs. Latency (p50 / p99, ms) and the CPU the server used:
@@ -47,10 +49,18 @@ Requests per second, median of the runs. Latency (p50 / p99, ms) and the CPU the
 | Bun.serve | list | 0.568 | 1.121 | 0.82 |
 | Bun.serve | update | 0.664 | 1.331 | 0.84 |
 | Bun.serve | create | 0.683 | 3.045 | 1.06 |
+| NestJS on Bun (Express adapter) | read | 1.604 | 2.556 | 0.91 |
+| NestJS on Bun (Express adapter) | list | 1.811 | 2.616 | 0.9 |
+| NestJS on Bun (Express adapter) | update | 2.702 | 3.803 | 0.93 |
+| NestJS on Bun (Express adapter) | create | 2.521 | 7.542 | 1.15 |
 | archlast-forge (NestJS path, Bun.serve) | read | 1.776 | 3.541 | 0.92 |
 | archlast-forge (NestJS path, Bun.serve) | list | 1.984 | 3.845 | 0.91 |
 | archlast-forge (NestJS path, Bun.serve) | update | 2.38 | 4.735 | 0.93 |
 | archlast-forge (NestJS path, Bun.serve) | create | 2.332 | 7.171 | 0.99 |
+| NestJS on Node.js 24 (Express adapter) | read | 2.772 | 3.486 | 0.91 |
+| NestJS on Node.js 24 (Express adapter) | list | 3.172 | 3.848 | 0.92 |
+| NestJS on Node.js 24 (Express adapter) | update | 4.055 | 4.802 | 0.94 |
+| NestJS on Node.js 24 (Express adapter) | create | 3.655 | 4.823 | 0.94 |
 | Node.js 24 (Express 5) | read | 2.807 | 3.285 | 0.92 |
 | Node.js 24 (Express 5) | list | 3.068 | 3.546 | 0.91 |
 | Node.js 24 (Express 5) | update | 3.933 | 4.727 | 0.94 |
