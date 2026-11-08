@@ -406,5 +406,39 @@
         "success": 1
       }
     }
+  },
+  "nest-serve": {
+    "label": "NestJS on archlast-serve (no Forge, a basic adapter)",
+    "peakMiB": 143,
+    "scenarios": {
+      "read": {
+        "rps": 263986,
+        "p50ms": 0.219,
+        "p99ms": 0.812,
+        "cores": 2.17,
+        "success": 1
+      },
+      "list": {
+        "rps": 204306,
+        "p50ms": 0.279,
+        "p99ms": 0.888,
+        "cores": 1.83,
+        "success": 1
+      },
+      "update": {
+        "rps": 237050,
+        "p50ms": 0.24,
+        "p99ms": 0.769,
+        "cores": 2.06,
+        "success": 1
+      },
+      "create": {
+        "rps": 201806,
+        "p50ms": 0.259,
+        "p99ms": 1.973,
+        "cores": 2.1,
+        "success": 1
+      }
+    }
   }
 }

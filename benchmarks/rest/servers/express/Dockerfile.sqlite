@@ -1,0 +1,10 @@
+# Express on Node with the store in SQLite (node:sqlite): the same server.mjs, and a store.ts made of the driver, the rules and the SQLite store (build context: benchmarks/rest).
+FROM node:24-alpine
+WORKDIR /app
+COPY servers/express/package.json .
+RUN npm install --omit=dev --no-audit --no-fund
+COPY servers/express/server.mjs .
+COPY servers/shared/driver-node.ts servers/shared/rules.ts servers/shared/store-sqlite.ts ./
+RUN cat driver-node.ts rules.ts store-sqlite.ts > store.ts && rm driver-node.ts rules.ts store-sqlite.ts
+ENV NODE_ENV=production NODE_NO_WARNINGS=1
+CMD ["node", "server.mjs"]

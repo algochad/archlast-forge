@@ -5,6 +5,7 @@
 | Go (fasthttp) | 483,527 | 397,865 | 450,130 | 458,484 | 67 MiB |
 | .NET 10 (Minimal APIs) | 399,712 | 347,109 | 341,848 | 306,066 | 70 MiB |
 | archlast-forge (forge/http.ts light routes, archlast-serve) | 328,080 | 249,418 | 260,617 | 240,264 | 247 MiB |
+| NestJS on archlast-serve (no Forge, a basic adapter) | 263,986 | 204,306 | 237,050 | 201,806 | 143 MiB |
 | archlast-forge (NestJS path, archlast-serve, telemetry off) | 177,181 | 158,322 | 130,741 | 121,959 | 238 MiB |
 | archlast-forge (NestJS path, archlast-serve) | 152,116 | 140,668 | 122,569 | 117,999 | 278 MiB |
 | Bun.serve | 142,882 | 108,589 | 92,094 | 81,816 | 97 MiB |
@@ -37,6 +38,10 @@ Requests per second, median of the runs. Latency (p50 / p99, ms) and the CPU the
 | archlast-forge (forge/http.ts light routes, archlast-serve) | list | 0.23 | 0.902 | 2.3 |
 | archlast-forge (forge/http.ts light routes, archlast-serve) | update | 0.212 | 1.145 | 2.52 |
 | archlast-forge (forge/http.ts light routes, archlast-serve) | create | 0.196 | 1.861 | 2.53 |
+| NestJS on archlast-serve (no Forge, a basic adapter) | read | 0.219 | 0.812 | 2.17 |
+| NestJS on archlast-serve (no Forge, a basic adapter) | list | 0.279 | 0.888 | 1.83 |
+| NestJS on archlast-serve (no Forge, a basic adapter) | update | 0.24 | 0.769 | 2.06 |
+| NestJS on archlast-serve (no Forge, a basic adapter) | create | 0.259 | 1.973 | 2.1 |
 | archlast-forge (NestJS path, archlast-serve, telemetry off) | read | 0.342 | 1.266 | 2.05 |
 | archlast-forge (NestJS path, archlast-serve, telemetry off) | list | 0.349 | 1.297 | 1.95 |
 | archlast-forge (NestJS path, archlast-serve, telemetry off) | update | 0.479 | 1.596 | 1.88 |

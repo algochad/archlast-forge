@@ -29,6 +29,14 @@ ${ordered.map(([, r]) => `| ${r.label} | ${SCEN.map((s) => k(r.scenarios[s]!.rps
 
 Requests per second. Latency in milliseconds (p50 / p99) for the read case: ${ordered.map(([, r]) => `${r.label.replace(/ \(.*/, "")} ${ms(r.scenarios.read!.p50ms)} / ${ms(r.scenarios.read!.p99ms)}`).join("; ")}.`;
 
+const restSqlite = b.restSqlite as typeof rest;
+const orderedSqlite = Object.entries(restSqlite).sort((a, c) => (c[1].scenarios.read?.rps ?? 0) - (a[1].scenarios.read?.rps ?? 0));
+blocks["rest-sqlite"] = `| Server | Read | List (20) | Update | Create | Peak memory |
+|---|---:|---:|---:|---:|---:|
+${orderedSqlite.map(([, r]) => `| ${r.label} | ${SCEN.map((s) => k(r.scenarios[s]!.rps)).join(" | ")} | ${r.peakMiB} MiB |`).join("\n")}
+
+Requests per second. Latency in milliseconds (p50 / p99) for the read case: ${orderedSqlite.map(([, r]) => `${r.label.replace(/ \(.*/, "")} ${ms(r.scenarios.read!.p50ms)} / ${ms(r.scenarios.read!.p99ms)}`).join("; ")}.`;
+
 const fa = rest.forge!, fb = rest["forge-bun"]!;
 blocks.engine = `| | \`Bun.serve\` | archlast-serve | |
 |---|---:|---:|---:|
@@ -61,6 +69,8 @@ blocks["fullstack-products-percall"] = table(fs.perCall!["/products"]!);
 
 const v = b.versions;
 blocks.versions = `Express ${v.express} on Node ${v.node}; Bun ${v.bun}; Go ${v.go} with fasthttp ${v.fasthttp}; .NET ${v.dotnet} (Minimal APIs); Rust ${v.rust} with Axum ${v.axum}. The full-stack apps ran on Node ${v.nodeForFullstack}: React Router ${v.reactRouter}, Next.js ${v.next}, brust ${v.brust}.`;
+
+blocks["sqlite-versions"] = "SQLite " + v.sqlite + " is the version in Bun 1.4 (which `bun:sqlite` and the engine use); `rusqlite` and `go-sqlite3` compile their own copy, Node's `node:sqlite` and .NET's `Microsoft.Data.Sqlite` bring theirs.";
 
 let changed = 0;
 for (const file of readdirSync(`${dir}/content`).filter((f) => f.endsWith(".mdx"))) {
