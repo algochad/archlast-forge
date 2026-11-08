@@ -342,19 +342,26 @@ export async function startCore(opts: {
             body: new TextEncoder().encode(JSON.stringify({ error: { code: "BAD_REQUEST", message: invalid, requestId: msg.requestId } })).buffer as ArrayBuffer,
           };
         let telemetry: CallTelemetry | undefined;
-        const res = await traced(msg.trace, routeName(route), () => {
+        const name = routeName(route);
+        const run = () => {
           // The route's pattern, for the request's name; a Nest controller names its own, finer one.
           annotate({ "http.route": route.path ?? `${route.pathPrefix}*` }, true);
           // A route that can do without Web objects (Nest's mount) is given the fields of the request and answers with its own.
           const light = (route.handler as unknown as Record<symbol, unknown>)[LIGHT] === true;
           return exec.runHttp(
-            routeName(route),
+            name,
             route.handler,
             light ? { method, url, path: pathname, search: msg.req.search ?? new URL(url).search, headers, body } : new Request(url, { method, headers, body }),
             msg.headers,
             msg.requestId,
           );
-        }).then((r) => ((telemetry = r.telemetry), r.value));
+        };
+        let res: Response | LightResponse;
+        if (msg.trace) {
+          const traced_ = await traced(msg.trace, name, run);
+          telemetry = traced_.telemetry;
+          res = traced_.value;
+        } else res = await run(); // a request that is only counted runs untraced: nothing to collect
         if (res instanceof LightResponse) {
           const out = res.headers.filter((h) => h[0] !== "content-length");
           const reply: HttpResponseMessage = { status: res.status, headers: out, body: res.body ?? EMPTY };

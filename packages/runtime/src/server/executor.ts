@@ -347,7 +347,8 @@ export class Executor {
 
   /** Runs an HTTP action. The caller is resolved from the request's cookie or authorization header, and is anonymous without one. */
   async runHttp(name: string, action: HttpAction, req: Request | LightRequest, headers: CallHeaders, requestId?: string): Promise<Response | LightResponse> {
-    const identity = await this.identityOf(headers);
+    // Anonymous (no cookie, no authorization header) is known without waiting for anything
+    const identity = headers.cookie || headers.authorization ? await this.resolveIdentity(headers) : null;
     this.ranAs(identity);
     const auth = { getUserIdentity: async () => identity };
     const res: unknown = await this.logged(name, requestId, undefined, () =>

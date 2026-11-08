@@ -30,7 +30,12 @@ function findRoute<R extends RoutePattern>(routes: R[], method: string, path: st
 }
 
 /** The route as it appears in logs and metrics: patterns, not the paths callers sent. */
-export const routeName = (r: HttpRoute) => `http ${r.method} ${r.path ?? `${r.pathPrefix}*`}`;
+const names = new WeakMap<HttpRoute, string>();
+export const routeName = (r: HttpRoute) => {
+  let name = names.get(r);
+  if (name === undefined) names.set(r, (name = `http ${r.method} ${r.path ?? `${r.pathPrefix}*`}`));
+  return name;
+};
 
 /** Query parameters arrive as text: converted to what each validator expects, so the same validators check them and describe them. */
 export function queryValue(validator: Validator, values: string[]): unknown {

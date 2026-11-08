@@ -11,6 +11,7 @@ import { claimPrefix, connectRedis, MemoryBus, RedisBus, type Bus } from "./bus"
 import { MemoryCache, RedisCache } from "./cache";
 import { nativeEngine, startHttpServer } from "./engine";
 import { docsRouting, type ApiDocsPageConfig, type ApiDocsRouting } from "../api-docs";
+import { serverCores } from "./cores";
 import { ConfigError, loadConfig, redisOwnerOf, reservedPathOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
 import { matchRoute } from "./http";
 import { RESET_TOPIC } from "./docstore";
@@ -404,7 +405,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       const tag = topicTag(topic);
       if (pageTags.has(tag)) purgePages([tag]);
     });
-  let nativeReply: (new (body: string | Uint8Array | null, init?: { status?: number; headers?: [string, string][] }) => unknown) | undefined;
+  let nativeReply: (new (body: string | Uint8Array | null, init?: { status?: number; headers?: [string, string][]; block?: unknown }) => unknown) | undefined;
+  let nativeBlock: ((pairs: [string, string][]) => unknown) | undefined;
   let nativeTemplateReply: (new (template: number, data: string, init: { status: number; headers: [string, string][] }) => unknown) | undefined;
   const rpcOpts: RpcOptions = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
   const maxBody = config.limits.maxRequestBytes;
@@ -416,6 +418,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   // Rebuilt after each load; open sockets use whichever is current, so they see functions added by a reload.
   let rpc: Rpc = buildRpc({ functions: [], tables: {}, crons: [], storage: false }, runtime, queries, subs, rpcOpts);
   let loading: Promise<unknown> = Promise.resolve();
+  /** Whether `loading` is still going (a request has nothing to wait for otherwise, and need not pay for an await). */
+  let loadPending = false;
   /** The routes served at the root, for the manifest they came with (a reload brings new ones). */
   let rootRoutes: { manifest: Manifest; routes: NonNullable<Manifest["rootRoutes"]> } | undefined;
   /** Whether a root-mounted route (`httpRouter({ root: true })`) takes this path: one that matches it, under any method (a 405 is the route's). */
@@ -467,7 +471,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       return manifest;
     });
-    loading = p.catch(() => {});
+    loadPending = true;
+    loading = p.catch(() => {}).then(() => void (loadPending = false));
     return p;
   };
 
@@ -1003,7 +1008,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         case "authorization": authorization = value; break;
       }
     }
-    const docs = config.apiDocs === false ? null : await docsAt();
+    const plan = docsPlan;
+    const docs = config.apiDocs === false ? null : plan && plan.manifest === runtime.manifest && plan.settled ? plan.at && { at: plan.at, clashes: plan.clashes } : await docsAt();
     if (docs && (docsClaim(docs, path) || (opts.apiDocs && docsMayServe(docs, path, method)))) return undefined;
     const requestId = requestIdOf(given);
     if (config.limits.rateLimitPerMinute) {
@@ -1015,7 +1021,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         return res;
       }
     }
-    await loading;
+    if (loadPending) await loading;
     const httpPath = path.slice("/http".length) || "/";
     const body = bytes && (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
     const search = q < 0 ? "" : target.slice(q);
@@ -1038,12 +1044,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         });
       }
       let out = r.headers;
-      if (r.nest) out = security.applyPairs("api", out);
+      let block: unknown = null;
+      // The REST API's security headers: written as bytes encoded once when the answer sets none of them itself, otherwise added to the list
+      if (r.nest) {
+        block = nativeBlock ? security.blockFor("api", out, nativeBlock) : null;
+        if (!block) out = security.applyPairs("api", out);
+      }
       out.push(["x-request-id", requestId]);
       // A stream is the engine's to send as a Response; anything else is bytes and a status.
       if (r.body instanceof ReadableStream) return new Response(r.body, { status: r.status, headers: out });
       const bytes = r.body;
-      return new nativeReply!(typeof bytes === "string" ? bytes || null : bytes.byteLength ? (bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)) : null, { status: r.status, headers: out });
+      return new nativeReply!(typeof bytes === "string" ? bytes || null : bytes.byteLength ? (bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)) : null, { status: r.status, headers: out, block: block ?? undefined });
     } catch (e) {
       if (root) telemetry!.end(root, failureOf(e));
       const res = errorResponse(toPublicError(e, requestId, dev, { path }));
@@ -1063,7 +1074,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     // The dashboard is bundled in production mode everywhere, dev included: minified, with React's production build (which the engine image
     // has, so a development bundle there renders a blank page). Its source isn't watched; edits to it show after a restart.
     development: false,
-    ...(config.httpEngine !== "bun" && { rawFetch: rawHttp }),
+    // For the native engine only (Bun.serve has no such options): the /http fast path, and the Rust I/O threads, of which one core is left to the
+    // JavaScript thread and four are all that one JavaScript thread can use.
+    ...(config.httpEngine !== "bun" && { rawFetch: rawHttp, threads: Math.max(1, Number(env.ARCHLAST_THREADS) || Math.min(4, Math.max(2, serverCores() - 1))) }),
     routes: config.dashboardUrl
       ? { "/_dashboard": () => Response.redirect(`${config.dashboardUrl}/_dashboard#/microservices`, 302) }
       : {},
@@ -1533,6 +1546,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     purgePages = (tags) => (server as unknown as { purgeCache?(tags: string[]): void }).purgeCache?.(tags);
     const Reply = native.Reply;
     nativeReply = Reply as typeof nativeReply;
+    nativeBlock = (pairs) => new native.HeaderBlock(pairs);
     rpcOpts.reply = (body, headers) => new Reply(body, { headers }) as unknown as Response;
   }
 

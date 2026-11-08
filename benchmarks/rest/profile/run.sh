@@ -8,7 +8,12 @@ SPID=$!
 for i in $(seq 1 100); do curl -s -o /dev/null localhost:4900/http/ping && break; sleep 0.3; done
 for p in "$@"; do
   taskset -c 4-7,12-15 oha --no-tui -z 2s -c 64 http://127.0.0.1:4900$p > /dev/null 2>&1
+  cpu() { awk '{print $14 + $15}' /proc/$SPID/task/$SPID/stat; }   # the JavaScript thread's CPU time in clock ticks (user + system)
+  c0=$(cpu)
   out=$(taskset -c 4-7,12-15 oha --no-tui -z 5s -c 64 http://127.0.0.1:4900$p 2>&1)
-  echo "$p  $(echo "$out" | grep -E 'Requests/sec' | awk '{print $2}') req/s   $(echo "$out" | grep -E 'Success rate' | awk '{print $3}') ok   $(echo "$out" | grep -E '\[(2|4|5)[0-9][0-9]\]' | head -2 | tr '\n' ' ')"
+  c1=$(cpu)
+  n=$(echo "$out" | grep -E '\[200\]' | grep -oE '[0-9]+ responses' | head -1 | awk '{print $1}')
+  us=$(awk -v a=$c0 -v b=$c1 -v n=${n:-1} 'BEGIN { printf "%.2f", (b - a) * 10000 / n }')   # 100 ticks a second: a tick is 10000 us
+  echo "$p  $(echo "$out" | grep -E 'Requests/sec' | awk '{print $2}') req/s  ${us} us on the JS thread per request   $(echo "$out" | grep -E 'Success rate' | awk '{print $3}') ok   $(echo "$out" | grep -E '\[(2|4|5)[0-9][0-9]\]' | head -2 | tr '\n' ' ')"
 done
 kill -TERM $SPID; sleep 3

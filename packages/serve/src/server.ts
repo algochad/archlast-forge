@@ -12,6 +12,7 @@ import {
 } from "./backend.ts";
 import {
   type HeaderInit,
+  HeaderBlock,
   type NativeOptions,
   type RawRequest,
   encodeOptions,
@@ -36,9 +37,11 @@ export class Reply {
   body: Body;
   status: number;
   headers: HeaderInit | null;
+  /** Headers sent with the others, encoded ahead of time (see `HeaderBlock`). */
+  block: HeaderBlock | null;
   constructor(
     body: Body = null,
-    init: { status?: number; headers?: HeaderInit } = {},
+    init: { status?: number; headers?: HeaderInit; block?: HeaderBlock } = {},
   ) {
     this.body = body;
     this.status = init.status ?? 200;
@@ -52,6 +55,7 @@ export class Reply {
       );
     }
     this.headers = init.headers ?? null;
+    this.block = init.block ?? null;
   }
 }
 

@@ -158,6 +158,21 @@ export class ByteWriter {
 
 export type HeaderInit = Record<string, string> | [string, string][];
 
+/**
+ * Headers encoded once, for a set a server sends on many responses (a security policy): a `Reply` given one as `block` writes its bytes as they are,
+ * instead of encoding every name and value again for each response. Names are lower-cased; values should not change.
+ */
+export class HeaderBlock {
+  readonly bytes: Uint8Array;
+  readonly count: number;
+  constructor(pairs: [string, string][]) {
+    const w = new ByteWriter(512);
+    for (const [name, value] of pairs) (w.str16(name.toLowerCase()), w.str16(value));
+    this.bytes = w.buf.slice(0, w.pos);
+    this.count = pairs.length;
+  }
+}
+
 /** Body of a response that is constant for the lifetime of the server (answered without entering JS). */
 export interface StaticEntry {
   method: string;

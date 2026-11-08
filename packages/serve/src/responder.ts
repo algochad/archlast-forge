@@ -1,4 +1,4 @@
-import { ByteWriter, type HeaderInit } from "./codec.ts";
+import { ByteWriter, type HeaderBlock, type HeaderInit } from "./codec.ts";
 import { FileReply } from "./file.ts";
 import { type Body, Reply, type Result, TemplateReply, toReply } from "./server.ts";
 
@@ -25,7 +25,7 @@ export class Responder {
     if (v instanceof TemplateReply) return this.putTemplate(id, v);
     if (v instanceof Reply) {
       const r = toReply(v);
-      return this.put(id, r.status, 0, r.headers, r.body);
+      return this.put(id, r.status, 0, r.headers, r.body, r.block);
     }
     if (v instanceof Uint8Array) return this.put(id, 200, CT_BINARY, null, v);
     return this.put(id, 200, CT_JSON, null, JSON.stringify(v));
@@ -53,6 +53,7 @@ export class Responder {
     ct: number,
     extra: HeaderInit | null,
     body: Body,
+    block: HeaderBlock | null = null,
   ): void {
     const w = this.out;
     w.u8(1);
@@ -61,7 +62,12 @@ export class Responder {
     w.u8(ct);
     const hcAt = w.pos;
     w.u16(0);
-    w.setU16(hcAt, this.writeHeaders(null, extra));
+    let hc = this.writeHeaders(null, extra);
+    if (block !== null) {
+      w.bytes(block.bytes);
+      hc += block.count;
+    }
+    w.setU16(hcAt, hc);
     const lenAt = w.pos;
     w.u32(0);
     let len = 0;

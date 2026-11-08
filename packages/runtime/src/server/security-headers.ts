@@ -318,6 +318,20 @@ export class SecurityHeaders {
   }
 
   private plain = new WeakMap<object, [string, string][]>();
+  private blocks = new WeakMap<object, { names: Set<string>; block: unknown } | null>();
+
+  /** The surface's headers as one object encoded ahead of time by `encode`, when none of them is among `have` (the answer's own header names, lower-case): else null. */
+  blockFor(surface: Surface, have: [string, string][], encode: (headers: [string, string][]) => unknown): unknown {
+    const resolved = this.resolved.get(surface)!;
+    let entry = this.blocks.get(resolved);
+    if (entry === undefined) {
+      const headers = this.applyPairs(surface, []);
+      this.blocks.set(resolved, (entry = headers.length ? { names: new Set(headers.map((h) => h[0])), block: encode(headers) } : null));
+    }
+    if (!entry) return null;
+    for (const h of have) if (entry.names.has(h[0])) return null;
+    return entry.block;
+  }
 
   /** `apply` for an answer that is header pairs (an engine `Reply`): the surface's headers it lacks, added to a copy. Without a nonce, so for answers that are not pages. */
   applyPairs(surface: Surface, pairs: [string, string][]): [string, string][] {

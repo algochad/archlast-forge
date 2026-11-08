@@ -525,8 +525,13 @@ export class FunctionRuntime {
     return w.proc && w.ready ? w : undefined;
   }
 
-  private async send(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, index?: number) {
-    const w = this.only(index) ?? (await this.pick(index));
+  private send(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, index?: number): Promise<unknown> {
+    const w = this.only(index);
+    // with one process there is nothing to choose: no await before the call
+    return w ? this.dispatch(w, msg, hardTimeoutMs) : this.pick(index).then((picked) => this.dispatch(picked, msg, hardTimeoutMs));
+  }
+
+  private dispatch(w: Worker, msg: Omit2<HostMessage, "id">, hardTimeoutMs: number): Promise<unknown> {
     return w.request(msg, hardTimeoutMs, () => {
       const i = this.workers.indexOf(w);
       console.error(`function runtime ${i} didn't answer within ${hardTimeoutMs} ms; killing ${i < 0 ? "it (it was leaving the pool)" : "and restarting it"}`);
