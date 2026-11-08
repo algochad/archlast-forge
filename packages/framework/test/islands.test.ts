@@ -160,3 +160,18 @@ describe("pages with islands", () => {
     await page.close();
   }, 60_000);
 });
+
+describe("an app with islands on and no island in it", () => {
+  test("every page has only the navigation script", async () => {
+    const none = await startFixture({ root: join(import.meta.dir, "fixture-islands-none"), islands: true });
+    try {
+      for (const path of ["/", "/about"]) {
+        const page = await fetch(`${none.url}${path}`).then((r) => r.text());
+        expect(scripts(page).length).toBe(1);
+        expect(scripts(page)[0]).toMatch(/\/nav-.*\.js$/);
+      }
+    } finally {
+      await none.stop({ graceful: false });
+    }
+  });
+});
