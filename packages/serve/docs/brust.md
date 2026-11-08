@@ -1,6 +1,6 @@
 # brust and archlast-serve: design
 
-Status: analysis and recommendation, written from reading brust 2.0.0-alpha.38 (`AssetsArt/brust`, MIT, cloned read-only at
+Status: **superseded by [fullstack.md](fullstack.md)**, which keeps brust's philosophy and drops embedding it. Kept as the analysis. Originally: analysis and recommendation, written from reading brust 2.0.0-alpha.38 (`AssetsArt/brust`, MIT, cloned read-only at
 `~/http-bench/vendor/brust`). Nothing here is built into the engine yet.
 
 ## What brust is (not what its name suggests)
