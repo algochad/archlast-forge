@@ -4,22 +4,48 @@ import { validate, validateFields, ValidationError, type Validator } from "../va
 type RoutePattern = Pick<HttpRoute, "method" | "path" | "pathPrefix">;
 export type RouteMatch<R extends RoutePattern = HttpRoute> = { route: R } | { status: 404 } | { status: 405; allow: string[] };
 
-/** Exact paths win over prefixes, and the longest prefix wins. A path that exists under other methods answers 405. */
-const memo = new WeakMap<object, Map<string, Map<string, RouteMatch<any>>>>();
+/**
+ * Exact paths win over prefixes, and the longest prefix wins (the first declared among equals). A path that exists under other methods answers 405.
+ *
+ * The routes are fixed once loaded, so they are indexed once: exact paths in a map, prefixes longest first. A request that finds its route never scans or allocates,
+ * however many different paths (`/items/1`, `/items/2`, …) a server is asked for. A path that finds none (a 404 or a 405) is answered the long way, which lists
+ * what matched it.
+ */
+interface RouteIndex<R extends RoutePattern> {
+  size: number;
+  exact: Map<string, R[]>;
+  prefixes: R[];
+}
+const indexes = new WeakMap<object, RouteIndex<any>>();
+let lastRoutes: object | undefined;
+let lastIndex: RouteIndex<any> | undefined;
+
+function indexOf<R extends RoutePattern>(routes: R[]): RouteIndex<R> {
+  if (routes === lastRoutes && lastIndex!.size === routes.length) return lastIndex!;
+  let index = indexes.get(routes) as RouteIndex<R> | undefined;
+  if (!index || index.size !== routes.length) {
+    index = { size: routes.length, exact: new Map(), prefixes: [] };
+    for (const r of routes) {
+      if (r.path !== undefined) {
+        const list = index.exact.get(r.path);
+        if (list) list.push(r);
+        else index.exact.set(r.path, [r]);
+      } else index.prefixes.push(r);
+    }
+    index.prefixes.sort((a, b) => b.pathPrefix!.length - a.pathPrefix!.length); // stable: equal lengths keep the order they were declared in
+    indexes.set(routes, index);
+  }
+  lastRoutes = routes;
+  lastIndex = index;
+  return index;
+}
 
 export function matchRoute<R extends RoutePattern>(routes: R[], method: string, path: string): RouteMatch<R> {
-  // The routes are fixed once loaded, so an answer for a method and path stays right: kept for the paths a server sees most (a bounded few).
-  let byMethod = memo.get(routes);
-  if (!byMethod) memo.set(routes, (byMethod = new Map()));
-  let seen = byMethod.get(method);
-  if (!seen) byMethod.set(method, (seen = new Map()));
-  let found = seen.get(path);
-  if (!found) {
-    found = findRoute(routes, method, path);
-    if (seen.size >= 512) seen.clear();
-    seen.set(path, found);
-  }
-  return found as RouteMatch<R>;
+  const index = indexOf(routes);
+  const exact = index.exact.get(path);
+  if (exact) for (const r of exact) if (r.method === method) return { route: r };
+  for (const r of index.prefixes) if (r.method === method && path.startsWith(r.pathPrefix!)) return { route: r };
+  return findRoute(routes, method, path);
 }
 
 function findRoute<R extends RoutePattern>(routes: R[], method: string, path: string): RouteMatch<R> {

@@ -83,29 +83,58 @@ function namespaceOf(s: Span): string {
   return s.type;
 }
 
+/**
+ * Whether a path segment is an id or a token: all digits; a UUID; 16 or more hex digits; or 20 or more letters, digits, `_` and `-` with a digit among them.
+ * (The same answers as the regular expressions this replaced, without running four of them over every segment of every request.)
+ */
+export function looksLikeId(seg: string): boolean {
+  const n = seg.length;
+  if (n === 0) return false;
+  let digits = 0;
+  let hex = 0;
+  let word = 0;
+  for (let i = 0; i < n; i++) {
+    const c = seg.charCodeAt(i);
+    if (c >= 48 && c <= 57) (digits++, hex++, word++);
+    else if ((c >= 97 && c <= 102) || (c >= 65 && c <= 70)) (hex++, word++);
+    else if ((c >= 103 && c <= 122) || (c >= 71 && c <= 90) || c === 95 || c === 45) word++;
+  }
+  if (digits === n) return true;
+  if (hex === n && n >= 16) return true;
+  if (word === n && n >= 20 && digits > 0) return true;
+  // a UUID: 8 hex digits, a dash, then 27 hex digits and dashes
+  if (n === 36 && seg.charCodeAt(8) === 45) {
+    for (let i = 0; i < 8; i++) if (!isHex(seg.charCodeAt(i))) return false;
+    for (let i = 9; i < 36; i++) {
+      const c = seg.charCodeAt(i);
+      if (c !== 45 && !isHex(c)) return false;
+    }
+    return true;
+  }
+  return false;
+}
+const isHex = (c: number) => (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70);
+
 /** Ids and tokens in a path become `:id`, so `/reset-password/8f2c…` and `/users/41` group as one route. */
-const normalized = new Map<string, string>();
 let lastPath = "";
 let lastNormal = "/";
 export function normalizePath(path: string) {
-  // the same path as the request before is the common case under load: a comparison, not a hash of a new string
+  // the same path as the request before is the common case under load: a comparison, not a scan
   if (path === lastPath) return lastNormal;
-  const found = normalizedOf(path);
-  lastPath = path;
-  return (lastNormal = found);
-}
-function normalizedOf(path: string) {
-  let out = normalized.get(path);
-  if (out === undefined) {
-    out =
-      path
-        .split("/")
-        .map((seg) => (/^\d+$|^[0-9a-f]{8}-[0-9a-f-]{27}$|^[0-9a-f]{16,}$|^(?=.*\d)[A-Za-z0-9_-]{20,}$/i.test(seg) ? ":id" : seg))
-        .join("/") || "/";
-    if (normalized.size >= 1000) normalized.clear(); // paths with ids in them are many; the ones a server sees most come back
-    normalized.set(path, out);
+  let result = "";
+  let start = 0;
+  let changed = false;
+  for (;;) {
+    const slash = path.indexOf("/", start);
+    const seg = slash < 0 ? path.slice(start) : path.slice(start, slash);
+    if (looksLikeId(seg)) (result += ":id"), (changed = true);
+    else result += seg;
+    if (slash < 0) break;
+    result += "/";
+    start = slash + 1;
   }
-  return out;
+  lastPath = path;
+  return (lastNormal = changed ? result : path || "/");
 }
 
 /** An HTTP status for a call's outcome, as /rpc would answer it. */
