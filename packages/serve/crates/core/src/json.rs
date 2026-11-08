@@ -4,6 +4,8 @@ use std::borrow::Cow;
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Val<'a> {
+    /// JavaScript's `undefined`: what a path to something the data does not have gives (JSON has no such value, so it never comes from the parser).
+    Undef,
     Null,
     Bool(bool),
     Int(i64),

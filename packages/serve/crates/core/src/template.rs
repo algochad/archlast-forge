@@ -18,6 +18,12 @@ use std::sync::RwLock;
 #[derive(Debug)]
 enum Expr {
     Lit(Val<'static>),
+    /// `["u"]`: `undefined`.
+    Undef,
+    /// `["dflt", x, y]`: `y` where `x` is `undefined` (a default value of a prop), else `x`, which may be `null`.
+    Default(Box<Expr>, Box<Expr>),
+    /// `["style", [[name, unitless, x], …]]`: the text of a `style` object, as React writes it; `null` when no property has a value.
+    Style(Vec<(String, bool, Expr)>),
     Path(String, Vec<Key>),
     Not(Box<Expr>),
     And(Box<Expr>, Box<Expr>),
@@ -92,6 +98,19 @@ fn expr(v: &Value) -> Result<Expr, String> {
     let b = |i: usize| -> Result<Box<Expr>, String> { Ok(Box::new(expr(arg(i)?)?)) };
     Ok(match op {
         "l" => Expr::Lit(lit(arg(1)?)),
+        "u" => Expr::Undef,
+        "dflt" => Expr::Default(b(1)?, b(2)?),
+        "style" => Expr::Style(
+            arg(1)?
+                .as_array()
+                .ok_or("style: properties")?
+                .iter()
+                .map(|p| {
+                    let p = p.as_array().ok_or("style: a property is [name, unitless, value]")?;
+                    Ok((p.first().and_then(Value::as_str).ok_or("style: a name")?.to_string(), p.get(1).and_then(Value::as_bool).unwrap_or(false), expr(p.get(2).ok_or("style: a value")?)?))
+                })
+                .collect::<Result<_, String>>()?,
+        ),
         "p" => {
             let var = arg(1)?.as_str().ok_or("p: a variable name")?.to_string();
             let keys = a[2..].iter().map(|k| match k {
@@ -181,7 +200,7 @@ fn lookup<'r, 'a>(var: &str, data: &'r Val<'a>, scope: &Scope<'r, 'a>) -> Option
 
 fn truthy(v: &Val) -> bool {
     match v {
-        Val::Null => false,
+        Val::Null | Val::Undef => false,
         Val::Bool(b) => *b,
         Val::Int(n) => *n != 0,
         Val::Num(f) => *f != 0.0 && !f.is_nan(),
@@ -194,11 +213,12 @@ fn truthy(v: &Val) -> bool {
 fn js_string(v: &Val) -> String {
     match v {
         Val::Null => "null".into(),
+        Val::Undef => "undefined".into(),
         Val::Bool(b) => b.to_string(),
         Val::Str(s) => s.to_string(),
         Val::Int(i) => i.to_string(),
         Val::Num(f) => number_string(*f),
-        Val::Arr(a) => a.iter().map(|x| if matches!(x, Val::Null) { String::new() } else { js_string(x) }).collect::<Vec<_>>().join(","),
+        Val::Arr(a) => a.iter().map(|x| if matches!(x, Val::Null | Val::Undef) { String::new() } else { js_string(x) }).collect::<Vec<_>>().join(","),
         Val::Obj(_) => "[object Object]".into(),
     }
 }
@@ -250,7 +270,7 @@ fn num(v: &Val) -> Option<f64> {
 /// `===`: numbers by value, strings by content, objects and arrays never (they would be the same object only).
 fn strict_eq(a: &Val, b: &Val) -> bool {
     match (a, b) {
-        (Val::Null, Val::Null) => true,
+        (Val::Null, Val::Null) | (Val::Undef, Val::Undef) => true,
         (Val::Bool(x), Val::Bool(y)) => x == y,
         (Val::Str(x), Val::Str(y)) => x == y,
         (x, y) => match (num(x), num(y)) {
@@ -264,24 +284,52 @@ fn strict_eq(a: &Val, b: &Val) -> bool {
 fn eval<'r, 'a>(e: &'r Expr, data: &'r Val<'a>, scope: &Scope<'r, 'a>) -> Cow<'r, Val<'a>> {
     match e {
         Expr::Lit(v) => Cow::Borrowed(v),
+        Expr::Undef => Cow::Owned(Val::Undef),
+        Expr::Default(a, b) => {
+            let l = eval(a, data, scope);
+            if matches!(*l, Val::Undef) { eval(b, data, scope) } else { l }
+        }
+        Expr::Style(props) => {
+            let mut out = String::new();
+            for (name, unitless, e) in props {
+                let v = eval(e, data, scope);
+                let text = match &*v {
+                    Val::Null | Val::Undef | Val::Bool(_) => continue,
+                    Val::Int(0) => "0".to_string(),
+                    Val::Num(f) if *f == 0.0 => "0".to_string(),
+                    n @ (Val::Int(_) | Val::Num(_)) => format!("{}{}", js_string(n), if *unitless { "" } else { "px" }),
+                    other => js_string(other).trim().to_string(),
+                };
+                if text.is_empty() {
+                    continue;
+                }
+                if !out.is_empty() {
+                    out.push(';');
+                }
+                out.push_str(name);
+                out.push(':');
+                out.push_str(&text);
+            }
+            Cow::Owned(if out.is_empty() { Val::Null } else { Val::Str(Cow::Owned(out)) })
+        }
         Expr::Path(var, keys) => {
             let mut cur = match lookup(var, data, scope) {
                 Some(v) => v,
-                None => return Cow::Owned(Val::Null),
+                None => return Cow::Owned(Val::Undef),
             };
             for k in keys {
                 cur = match (k, cur) {
                     (Key::Name(n), Cow::Borrowed(Val::Obj(fields))) => match fields.iter().find(|(f, _)| f == n.as_str()) {
                         Some((_, v)) => Cow::Borrowed(v),
-                        None => return Cow::Owned(Val::Null),
+                        None => return Cow::Owned(Val::Undef),
                     },
                     (Key::Name(n), Cow::Borrowed(Val::Arr(a))) if n == "length" => return Cow::Owned(Val::Int(a.len() as i64)),
                     (Key::Name(n), Cow::Borrowed(Val::Str(s))) if n == "length" => return Cow::Owned(Val::Int(s.encode_utf16().count() as i64)),
                     (Key::Index(i), Cow::Borrowed(Val::Arr(a))) => match a.get(*i) {
                         Some(v) => Cow::Borrowed(v),
-                        None => return Cow::Owned(Val::Null),
+                        None => return Cow::Owned(Val::Undef),
                     },
-                    _ => return Cow::Owned(Val::Null),
+                    _ => return Cow::Owned(Val::Undef),
                 };
             }
             cur
@@ -297,7 +345,7 @@ fn eval<'r, 'a>(e: &'r Expr, data: &'r Val<'a>, scope: &Scope<'r, 'a>) -> Cow<'r
         }
         Expr::Nullish(a, b) => {
             let l = eval(a, data, scope);
-            if matches!(*l, Val::Null) { eval(b, data, scope) } else { l }
+            if matches!(*l, Val::Null | Val::Undef) { eval(b, data, scope) } else { l }
         }
         Expr::Cond(c, a, b) => {
             if truthy(&eval(c, data, scope)) { eval(a, data, scope) } else { eval(b, data, scope) }
@@ -404,18 +452,18 @@ fn print<'r, 'a>(ns: &'r [Node], data: &'r Val<'a>, scope: &mut Scope<'r, 'a>, o
         match n {
             Node::Text(t) => out.push_str(t),
             Node::Print(e) => match &*eval(e, data, scope) {
-                Val::Null | Val::Bool(_) => {}
+                Val::Null | Val::Undef | Val::Bool(_) => {}
                 Val::Str(s) => escape(s, out),
                 v @ (Val::Int(_) | Val::Num(_)) => out.push_str(&js_string(v)),
                 other => escape(&js_string(other), out),
             },
             Node::Raw(e) => match &*eval(e, data, scope) {
                 Val::Str(s) => out.push_str(s),
-                Val::Null | Val::Bool(_) => {}
+                Val::Null | Val::Undef | Val::Bool(_) => {}
                 other => out.push_str(&js_string(other)),
             },
             Node::Attr(name, e, mode) => match &*eval(e, data, scope) {
-                Val::Null => {}
+                Val::Null | Val::Undef => {}
                 Val::Bool(b) => match mode {
                     Mode::Boolean if *b => {
                         out.push(' ');
@@ -493,6 +541,29 @@ mod tests {
 
     fn run(t: &str, d: &str) -> String {
         Template::parse(t).unwrap().render(&json::parse(d).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn undefined_is_not_null_and_defaults_see_the_difference() {
+        let d = r#"{"a":null,"b":"x","n":0.5,"w":0}"#;
+        // a path to something the data lacks is undefined; null is null
+        assert_eq!(run(r#"[["x",["`",[["p","d","a"],["l","|"],["p","d","gone"]]]]]"#, d), "null|undefined");
+        assert_eq!(run(r#"[["x",["?:",["===",["p","d","gone"],["u"]],["l","u"],["l","n"]]]]"#, d), "u");
+        assert_eq!(run(r#"[["x",["?:",["===",["p","d","a"],["u"]],["l","u"],["l","n"]]]]"#, d), "n");
+        // a default applies to undefined only; ?? to both
+        assert_eq!(run(r#"[["x",["dflt",["p","d","gone"],["l","D"]]],["x",["dflt",["p","d","a"],["l","D"]]],["x",["dflt",["p","d","b"],["l","D"]]]]"#, d), "Dx");
+        assert_eq!(run(r#"[["x",["??",["p","d","a"],["l","D"]]],["x",["??",["p","d","gone"],["l","D"]]]]"#, d), "DD");
+        assert_eq!(run(r#"[["a","t",["p","d","gone"],false],["a","u",["p","d","a"],false]]"#, d), "");
+    }
+
+    #[test]
+    fn styles_are_written_as_react_writes_them() {
+        let d = r#"{"w":12.5,"s":" red ","z":0,"e":"","n":null,"b":true}"#;
+        let st = |props: &str| run(&format!(r#"[["a","style",["style",{props}],false]]"#), d);
+        assert_eq!(st(r#"[["width",false,["p","d","w"]],["color",false,["p","d","s"]],["z-index",true,["p","d","w"]],["margin",false,["p","d","z"]]]"#), r#" style="width:12.5px;color:red;z-index:12.5;margin:0""#);
+        // null, undefined, true/false and "" are left out, and a style with none leaves the attribute out
+        assert_eq!(st(r#"[["a",false,["p","d","n"]],["b",false,["p","d","gone"]],["c",false,["p","d","b"]],["d",false,["p","d","e"]]]"#), "");
+        assert_eq!(st(r#"[["a",false,["p","d","n"]],["height",false,["l",3]]]"#), r#" style="height:3px""#);
     }
 
     #[test]

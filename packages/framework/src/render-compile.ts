@@ -65,7 +65,9 @@ const BOOLEAN = new Set(["disabled", "readOnly", "hidden", "required", "autofocu
 const ENUMERATED = new Set(["contentEditable", "spellCheck", "draggable"]);
 /** The few names React changes when it prints an attribute; every other name is printed as written. */
 const RENAMED: Record<string, string> = { className: "class", htmlFor: "for", tabIndex: "tabindex", crossOrigin: "crossorigin", autoFocus: "autofocus", httpEquiv: "http-equiv", acceptCharset: "accept-charset" };
-const UNITLESS = new Set(["opacity", "zIndex", "flex", "flexGrow", "flexShrink", "fontWeight", "lineHeight", "order", "zoom", "orphans", "widows", "tabSize", "columns", "gridRow", "gridColumn"]);
+/** The style properties React writes a number for without "px" (its own list, with the vendor prefixes taken off before looking). */
+const UNITLESS = new Set(["animationIterationCount", "aspectRatio", "borderImageOutset", "borderImageSlice", "borderImageWidth", "boxFlex", "boxFlexGroup", "boxOrdinalGroup", "columnCount", "columns", "flex", "flexGrow", "flexPositive", "flexShrink", "flexNegative", "flexOrder", "gridArea", "gridRow", "gridRowEnd", "gridRowSpan", "gridRowStart", "gridColumn", "gridColumnEnd", "gridColumnSpan", "gridColumnStart", "fontWeight", "lineClamp", "lineHeight", "opacity", "order", "orphans", "scale", "tabSize", "widows", "zIndex", "zoom", "fillOpacity", "floodOpacity", "stopOpacity", "strokeDasharray", "strokeDashoffset", "strokeMiterlimit", "strokeOpacity", "strokeWidth"]);
+const unitless = (key: string) => key.startsWith("--") || UNITLESS.has(key.replace(/^(Webkit|ms|Moz|O)(?=[A-Z])/, (m) => m.toLowerCase()).replace(/^[A-Z]/, (c) => c.toLowerCase()));
 
 const escapeText = (s: string) => s.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;").replace(/'/g, "&#x27;");
 const kebab = (s: string) => s.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`).replace(/^ms-/, "-ms-");
@@ -165,6 +167,10 @@ function irToJs(ir: Ir): string {
       return JSON.stringify(a[0] ?? null);
     case "p":
       return jsPath(ir);
+    case "u":
+      return "undefined";
+    case "dflt":
+      return `((${x(0)}) === undefined ? ${x(1)} : (${x(0)}))`;
     case "!":
       return `!(${x(0)})`;
     case "&&":
@@ -230,7 +236,7 @@ function expression(n: Node, env: Env, ctx: Ctx, mod: Module): Ir {
       if (n.regex || typeof n.value === "bigint") return no("a regular expression or bigint");
       return ["l", n.value];
     case "Identifier": {
-      if (n.name === "undefined") return ["l", null];
+      if (n.name === "undefined") return ["u"];
       const b = env.get(n.name);
       if (!b) return mod.consts.has(n.name) ? ["l", mod.consts.get(n.name)] : no(`${n.name} is not something a template knows`);
       if (b.kind === "ir") return b.ir;
@@ -244,14 +250,15 @@ function expression(n: Node, env: Env, ctx: Ctx, mod: Module): Ir {
         const props = (env.get(n.object.name) as { props: Map<string, Binding> }).props;
         const key = n.computed ? no("a computed prop") : n.property.name;
         const b = props.get(key as string);
-        if (!b) return ["l", null];
+        if (!b) return ["u"];
         if (b.kind !== "ir") return no(`prop ${String(key)} is not a value`);
         return b.ir;
       }
       const obj = expression(n.object, env, ctx, mod);
       if (obj[0] === "l" && !n.computed) {
         const v = obj[1] as Record<string, unknown> | unknown[] | string | null;
-        return ["l", v !== null && v !== undefined && n.property.name in Object(v) ? (Object(v) as Record<string, unknown>)[n.property.name] : n.property.name === "length" && typeof v === "string" ? v.length : null];
+        if (v !== null && v !== undefined && n.property.name in Object(v)) return ["l", (Object(v) as Record<string, unknown>)[n.property.name]];
+        return n.property.name === "length" && typeof v === "string" ? ["l", v.length] : ["u"];
       }
       if (!isPath(obj)) return no("a member of something that is not data");
       const key = n.computed ? (n.property.type === "Literal" && (typeof n.property.value === "string" || Number.isInteger(n.property.value)) ? n.property.value : no("a computed key")) : n.property.name;
@@ -269,9 +276,9 @@ function expression(n: Node, env: Env, ctx: Ctx, mod: Module): Ir {
     case "BinaryExpression": {
       if (["===", "!==", "+", "<", ">", "<=", ">=", "-", "*", "/", "%"].includes(n.operator)) return [n.operator, expression(n.left, env, ctx, mod), expression(n.right, env, ctx, mod)];
       if ((n.operator === "==" || n.operator === "!=") && ((n.right.type === "Literal" && n.right.value === null) || (n.left.type === "Literal" && n.left.value === null))) {
-        // `x == null` is true for null and undefined, which are one thing in the data
+        // `x == null` is true for null and undefined: `x ?? null` is null for both and for nothing else
         const x = expression(n.right.type === "Literal" ? n.left : n.right, env, ctx, mod);
-        return n.operator === "==" ? ["===", x, ["l", null]] : ["!==", x, ["l", null]];
+        return [n.operator === "==" ? "===" : "!==", ["??", x, ["l", null]], ["l", null]];
       }
       return no(`operator ${n.operator}`);
     }
@@ -436,59 +443,26 @@ function attributeName(raw: string): { name: string; mode: boolean | "enum" } {
   return { name, mode: ENUMERATED.has(raw) ? "enum" : BOOLEAN.has(name) || BOOLEAN.has(raw) };
 }
 
-/** What a style value is, when it can be told from the code: a number gets "px" unless it is unitless, a string is printed as it is. */
-function valueKind(n: Node): "string" | "number" | undefined {
-  switch (n.type) {
-    case "Literal":
-      return typeof n.value === "string" ? "string" : typeof n.value === "number" ? "number" : undefined;
-    case "TemplateLiteral":
-      return "string";
-    case "BinaryExpression": {
-      if (["-", "*", "/", "%"].includes(n.operator)) return "number";
-      if (n.operator !== "+") return undefined;
-      const l = valueKind(n.left);
-      const r = valueKind(n.right);
-      return l === "string" || r === "string" ? "string" : l === "number" && r === "number" ? "number" : undefined;
-    }
-    case "ConditionalExpression": {
-      const l = valueKind(n.consequent);
-      return l && l === valueKind(n.alternate) ? l : undefined;
-    }
-    default:
-      return undefined;
-  }
-}
-
-/** A style object as its text when every value is a literal, otherwise as an expression that makes the text. */
+/** A style object as its text when every value is a literal; otherwise an expression the engine evaluates (numbers get "px", null, booleans and "" leave the property out, as in React). */
 function styleValue(v: Node, env: Env, ctx: Ctx, mod: Module): string | Ir {
   if (v.type !== "ObjectExpression") return no("a style that is not an object literal");
-  const parts: (string | Ir)[] = [];
+  const props: { name: string; unitless: boolean; value: Node }[] = [];
   for (const p of v.properties as Node[]) {
     if (p.type !== "Property" || p.computed) return no("a style with a computed or spread property");
     const key = (p.key.name ?? p.key.value) as string;
-    const name = kebab(key);
-    let value: string | Ir;
-    if (p.value.type === "Literal") {
-      const val = p.value.value;
-      if (val === null || typeof val === "boolean") continue;
-      value = typeof val === "number" ? `${val === 0 || UNITLESS.has(key) ? val : `${val}px`}` : String(val);
-    } else {
-      const kind = valueKind(p.value);
-      if (!kind) return no(`a style value for ${key} that may be a number or a string`);
-      const x = expression(p.value, env, ctx, mod);
-      value = kind === "string" || UNITLESS.has(key) ? x : ["?:", ["===", x, ["l", 0]], ["l", "0"], ["`", [x, ["l", "px"]]]];
-    }
-    parts.push(parts.length ? `;${name}:` : `${name}:`, value);
+    props.push({ name: key.startsWith("--") ? key : kebab(key), unitless: unitless(key), value: p.value });
   }
-  if (parts.every((x) => typeof x === "string")) return parts.join("");
-  // adjacent text is joined so the template stays small
-  const joined: Ir[] = [];
-  for (const x of parts) {
-    const last = joined.at(-1);
-    if (typeof x === "string" && last && last[0] === "l" && typeof last[1] === "string") joined[joined.length - 1] = ["l", last[1] + x];
-    else joined.push(typeof x === "string" ? ["l", x] : x);
+  if (props.every((p) => p.value.type === "Literal")) {
+    return props
+      .map((p) => {
+        const val = (p.value as Node).value;
+        if (val === null || typeof val === "boolean" || (typeof val === "string" && val.trim() === "")) return "";
+        return `${p.name}:${typeof val === "number" ? (val === 0 || p.unitless ? String(val) : `${val}px`) : String(val).trim()}`;
+      })
+      .filter(Boolean)
+      .join(";");
   }
-  return ["`", joined];
+  return ["style", props.map((p) => [p.name, p.unitless, expression(p.value, env, ctx, mod)])];
 }
 
 /** Attributes of a host element, as nodes. */
@@ -687,13 +661,13 @@ function run(mod: Module, fn: Node, given: Map<string, Binding>, ctx: Ctx): Node
         const key = (p.key.name ?? p.key.value) as string;
         const target = p.value.type === "Identifier" ? p.value : p.value.left;
         const got = given.get(key);
-        if (p.value.type === "Identifier") env.set(target.name, got ?? { kind: "ir", ir: ["l", null] });
+        if (p.value.type === "Identifier") env.set(target.name, got ?? { kind: "ir", ir: ["u"] });
         else {
-          // A default applies to what is undefined. That is known when the caller left the prop out or wrote `undefined`; what it passes from data may be undefined or null, which differ in JavaScript and not in the data.
-          const literal = got?.kind === "ir" && got.ir[0] === "l" && got.ir[1] !== null;
-          if (!got) env.set(target.name, { kind: "ir", ir: expression(p.value.right, new Map(), ctx, mod) });
-          else if (literal || got.kind !== "ir") env.set(target.name, got);
-          else return no(`the default of ${key}, given a value that may be undefined`);
+          // A default replaces `undefined` and nothing else (`null` stays), which the engine tells apart: a path to something the data lacks is undefined.
+          const fallback = expression(p.value.right, env, ctx, mod);
+          if (!got) env.set(target.name, { kind: "ir", ir: fallback });
+          else if (got.kind !== "ir" || (got.ir[0] === "l" && got.ir[1] !== undefined) || got.ir[0] === "`") env.set(target.name, got);
+          else env.set(target.name, { kind: "ir", ir: ["dflt", got.ir, fallback] });
         }
       }
     } else return no("a parameter that is a pattern");
