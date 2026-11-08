@@ -45,6 +45,7 @@ It is **not** a hosting platform. One deployment serves one app. There is no con
 | **Full-stack framework** | Server-rendered React with file-based routes, loaders that preload live data, and sign-in state in the first HTML. Built on React Router's data router. | [Full-stack apps](framework.html) |
 | **Clients** | A plain TypeScript client, plus React, Vue and Svelte bindings. The wire protocol is plain JSON over HTTP and WebSocket, so any language can speak it. | [Clients](clients.html) |
 | **CLI** | `archlast-forge` for `dev`, `build`, `up`, data export and import, backups, environment variables and dashboard accounts. | [CLI reference](cli.html) |
+| **Performance** | A Rust HTTP engine in place of `Bun.serve` ([archlast-serve](archlast-serve.html)), pages printed by Rust ([Rust page rendering](rust-renderer.html)) and a built-in thread pool ([Anvil](thread-pool.html)), measured against other stacks with the method and the machine written down. | [Benchmarks](benchmarks.html) |
 | **Operations** | Health and readiness endpoints, Prometheus metrics, JSON logs, OpenTelemetry spans, rate limiting, timeouts, request-size limits. | [Deployment](deployment.html), [Configuration](configuration.html), [Limits](limits.html) |
 
 ## Two project modes
@@ -128,6 +129,14 @@ The sidebar has the same sections, in the same order.
 - [Configuration](configuration.html): every environment variable.
 - [Dashboard](dashboard.html): the admin UI, roles and accounts.
 - [Limits and security](limits.html): timeouts, size limits, rate limits and the production checklist.
+
+**Performance**
+
+- [archlast-serve](archlast-serve.html): the Rust HTTP engine, `HTTP_ENGINE`, what it costs and gains.
+- [Rust page rendering](rust-renderer.html): islands, templates, kept pages, against React Router, Next.js and brust.
+- [Anvil: the thread pool](thread-pool.html): `computePool` from any file, for CPU-heavy work.
+- [Benchmarks](benchmarks.html): the machine, the limits, the method and every result.
+- [Compared with Convex](convex.html): the same workload on both backends.
 
 **Reference**
 

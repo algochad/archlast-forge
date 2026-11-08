@@ -1,0 +1,558 @@
+{
+  "date": "2026-11-08",
+  "machine": {
+    "cpu": "11th Gen Intel Core i7-11700 @ 2.50GHz",
+    "cores": 8,
+    "threads": 16,
+    "memoryGiB": 63,
+    "kernel": "7.2.5-3-omarchy",
+    "governor": "powersave",
+    "docker": "29.7.2",
+    "oha": "1.16.0"
+  },
+  "limits": {
+    "serverCpus": "0-3",
+    "serverThreads": 4,
+    "serverMemory": "2 GiB",
+    "swap": "none",
+    "clientCpus": "4-7,12-15",
+    "clientThreads": 8,
+    "connections": 64
+  },
+  "versions": {
+    "node": "24.22.2",
+    "nodeForFullstack": "26.8.2",
+    "bun": "1.4.4",
+    "go": "1.24.13",
+    "dotnet": "10.0.14",
+    "rust": "1.90.0",
+    "express": "5.1.0",
+    "fasthttp": "1.62.0",
+    "axum": "0.8",
+    "next": "16.0.0",
+    "reactRouter": "7.9.4",
+    "brust": "2.0.0-alpha.38"
+  },
+  "rest": {
+    "axum": {
+      "label": "Rust (Axum 0.8, Tokio)",
+      "peakMiB": 26,
+      "scenarios": {
+        "read": {
+          "rps": 556334,
+          "p50ms": 0.107,
+          "p99ms": 0.22,
+          "cores": 2.95,
+          "success": 1
+        },
+        "list": {
+          "rps": 306858,
+          "p50ms": 0.206,
+          "p99ms": 0.374,
+          "cores": 3.25,
+          "success": 1
+        },
+        "update": {
+          "rps": 487527,
+          "p50ms": 0.123,
+          "p99ms": 0.256,
+          "cores": 3.12,
+          "success": 1
+        },
+        "create": {
+          "rps": 490500,
+          "p50ms": 0.127,
+          "p99ms": 0.248,
+          "cores": 3.13,
+          "success": 1
+        }
+      }
+    },
+    "go": {
+      "label": "Go (fasthttp)",
+      "peakMiB": 67,
+      "scenarios": {
+        "read": {
+          "rps": 483527,
+          "p50ms": 0.106,
+          "p99ms": 0.536,
+          "cores": 2.49,
+          "success": 1
+        },
+        "list": {
+          "rps": 397865,
+          "p50ms": 0.114,
+          "p99ms": 0.995,
+          "cores": 3.09,
+          "success": 1
+        },
+        "update": {
+          "rps": 450130,
+          "p50ms": 0.115,
+          "p99ms": 0.437,
+          "cores": 3.14,
+          "success": 1
+        },
+        "create": {
+          "rps": 458484,
+          "p50ms": 0.115,
+          "p99ms": 0.421,
+          "cores": 3.17,
+          "success": 1
+        }
+      }
+    },
+    "dotnet": {
+      "label": ".NET 10 (Minimal APIs)",
+      "peakMiB": 70,
+      "scenarios": {
+        "read": {
+          "rps": 399712,
+          "p50ms": 0.139,
+          "p99ms": 0.574,
+          "cores": 2.9,
+          "success": 1
+        },
+        "list": {
+          "rps": 347109,
+          "p50ms": 0.17,
+          "p99ms": 0.508,
+          "cores": 2.96,
+          "success": 1
+        },
+        "update": {
+          "rps": 341848,
+          "p50ms": 0.166,
+          "p99ms": 0.932,
+          "cores": 3,
+          "success": 1
+        },
+        "create": {
+          "rps": 306066,
+          "p50ms": 0.169,
+          "p99ms": 1.511,
+          "cores": 2.79,
+          "success": 1
+        }
+      }
+    },
+    "bun": {
+      "label": "Bun.serve",
+      "peakMiB": 97,
+      "scenarios": {
+        "read": {
+          "rps": 142882,
+          "p50ms": 0.426,
+          "p99ms": 0.863,
+          "cores": 0.79,
+          "success": 1
+        },
+        "list": {
+          "rps": 108589,
+          "p50ms": 0.568,
+          "p99ms": 1.121,
+          "cores": 0.82,
+          "success": 1
+        },
+        "update": {
+          "rps": 92094,
+          "p50ms": 0.664,
+          "p99ms": 1.331,
+          "cores": 0.84,
+          "success": 1
+        },
+        "create": {
+          "rps": 81816,
+          "p50ms": 0.683,
+          "p99ms": 3.045,
+          "cores": 1.06,
+          "success": 1
+        }
+      }
+    },
+    "node": {
+      "label": "Node.js 24 (Express 5)",
+      "peakMiB": 122,
+      "scenarios": {
+        "read": {
+          "rps": 22408,
+          "p50ms": 2.807,
+          "p99ms": 3.285,
+          "cores": 0.92,
+          "success": 1
+        },
+        "list": {
+          "rps": 20694,
+          "p50ms": 3.068,
+          "p99ms": 3.546,
+          "cores": 0.91,
+          "success": 1
+        },
+        "update": {
+          "rps": 16090,
+          "p50ms": 3.933,
+          "p99ms": 4.727,
+          "cores": 0.94,
+          "success": 1
+        },
+        "create": {
+          "rps": 16925,
+          "p50ms": 3.731,
+          "p99ms": 4.653,
+          "cores": 0.94,
+          "success": 1
+        }
+      }
+    },
+    "forge": {
+      "label": "archlast-forge (NestJS path, archlast-serve)",
+      "peakMiB": 249,
+      "scenarios": {
+        "read": {
+          "rps": 33602,
+          "p50ms": 2.15,
+          "p99ms": 3.98,
+          "cores": 1.23,
+          "success": 1
+        },
+        "list": {
+          "rps": 31122,
+          "p50ms": 1.885,
+          "p99ms": 4.022,
+          "cores": 1.22,
+          "success": 1
+        },
+        "update": {
+          "rps": 29605,
+          "p50ms": 2.386,
+          "p99ms": 4.362,
+          "cores": 1.24,
+          "success": 1
+        },
+        "create": {
+          "rps": 26680,
+          "p50ms": 2.139,
+          "p99ms": 7.488,
+          "cores": 1.32,
+          "success": 1
+        }
+      }
+    },
+    "forge-bun": {
+      "label": "archlast-forge (NestJS path, Bun.serve)",
+      "peakMiB": 197,
+      "scenarios": {
+        "read": {
+          "rps": 18849,
+          "p50ms": 3.241,
+          "p99ms": 6.405,
+          "cores": 0.95,
+          "success": 1
+        },
+        "list": {
+          "rps": 17547,
+          "p50ms": 3.499,
+          "p99ms": 5.154,
+          "cores": 0.94,
+          "success": 1
+        },
+        "update": {
+          "rps": 15635,
+          "p50ms": 3.892,
+          "p99ms": 7.556,
+          "cores": 0.95,
+          "success": 1
+        },
+        "create": {
+          "rps": 14549,
+          "p50ms": 3.95,
+          "p99ms": 9.762,
+          "cores": 1.05,
+          "success": 1
+        }
+      }
+    },
+    "forge-notelemetry": {
+      "label": "archlast-forge (NestJS path, archlast-serve, telemetry off)",
+      "peakMiB": 215,
+      "scenarios": {
+        "read": {
+          "rps": 35414,
+          "p50ms": 1.961,
+          "p99ms": 3.709,
+          "cores": 1.23,
+          "success": 1
+        },
+        "list": {
+          "rps": 33213,
+          "p50ms": 2.065,
+          "p99ms": 4.055,
+          "cores": 1.26,
+          "success": 1
+        },
+        "update": {
+          "rps": 30164,
+          "p50ms": 2.166,
+          "p99ms": 4.382,
+          "cores": 1.25,
+          "success": 1
+        },
+        "create": {
+          "rps": 27920,
+          "p50ms": 2.349,
+          "p99ms": 7.288,
+          "cores": 1.34,
+          "success": 1
+        }
+      }
+    }
+  },
+  "pool": {
+    "params": {
+      "rounds": 20000,
+      "conns": 32,
+      "secs": 6
+    },
+    "inlineWork": {
+      "rps": 133,
+      "p50ms": 238.68,
+      "p99ms": 318.46,
+      "cores": 1.02,
+      "success": 1
+    },
+    "poolWork": {
+      "rps": 401,
+      "p50ms": 80.73,
+      "p99ms": 105.4,
+      "cores": 3.14,
+      "success": 1
+    },
+    "pingIdle": {
+      "rps": 23519,
+      "p50ms": 0.16,
+      "p99ms": 0.29,
+      "cores": 0,
+      "success": 1
+    },
+    "pingInline": {
+      "rps": 17,
+      "p50ms": 241.8,
+      "p99ms": 339.91,
+      "cores": 0,
+      "success": 1
+    },
+    "pingPool": {
+      "rps": 14543,
+      "p50ms": 0.24,
+      "p99ms": 0.71,
+      "cores": 0,
+      "success": 1
+    }
+  },
+  "fullstack": {
+    "perCall": {
+      "/": {
+        "archlast-forge (as scaffolded: islands + kept home)": {
+          "rps": 304373.9822,
+          "p50ms": 0.21,
+          "p99ms": 0.31,
+          "peakMiB": 113,
+          "htmlKB": 0.9,
+          "jsGzKB": 1.3
+        },
+        "archlast-forge (islands, home rendered each time)": {
+          "rps": 44620.2971,
+          "p50ms": 1.34,
+          "p99ms": 2.91,
+          "peakMiB": 129,
+          "htmlKB": 0.9,
+          "jsGzKB": 1.3
+        },
+        "archlast-forge (whole-page hydration, like React Router)": {
+          "rps": 16203.1859,
+          "p50ms": 3.66,
+          "p99ms": 7.19,
+          "peakMiB": 136,
+          "htmlKB": 1.3,
+          "jsGzKB": 121.6
+        },
+        "brust 2.0 alpha (brust start, Rust renderer)": {
+          "rps": 211009.5771,
+          "p50ms": 0.3,
+          "p99ms": 0.56,
+          "peakMiB": 52,
+          "htmlKB": 1,
+          "jsGzKB": 4.7
+        },
+        "React Router 7 (react-router-serve, Node)": {
+          "rps": 2261.5149,
+          "p50ms": 27.01,
+          "p99ms": 43.89,
+          "peakMiB": 145,
+          "htmlKB": 3.7,
+          "jsGzKB": 97.9
+        },
+        "Next.js 16 (next start, Node)": {
+          "rps": 3693.7548,
+          "p50ms": 16.83,
+          "p99ms": 26.48,
+          "peakMiB": 143,
+          "htmlKB": 6.4,
+          "jsGzKB": 169.7
+        }
+      },
+      "/products": {
+        "archlast-forge (as scaffolded: islands + kept home)": {
+          "rps": 3339.8464,
+          "p50ms": 18.89,
+          "p99ms": 22.94,
+          "peakMiB": 131,
+          "htmlKB": 10.4,
+          "jsGzKB": 1.3
+        },
+        "archlast-forge (islands, home rendered each time)": {
+          "rps": 3323.6341,
+          "p50ms": 18.95,
+          "p99ms": 22.44,
+          "peakMiB": 159,
+          "htmlKB": 10.4,
+          "jsGzKB": 1.3
+        },
+        "archlast-forge (whole-page hydration, like React Router)": {
+          "rps": 1916.5844,
+          "p50ms": 32.84,
+          "p99ms": 51,
+          "peakMiB": 162,
+          "htmlKB": 21.6,
+          "jsGzKB": 122
+        },
+        "brust 2.0 alpha (brust start, Rust renderer)": {
+          "rps": 358.8614,
+          "p50ms": 183.9,
+          "p99ms": 321.85,
+          "peakMiB": 185,
+          "htmlKB": 10.5,
+          "jsGzKB": 4.7
+        },
+        "React Router 7 (react-router-serve, Node)": {
+          "rps": 115.3655,
+          "p50ms": 362.9,
+          "p99ms": 4255.5,
+          "peakMiB": 553,
+          "htmlKB": 27.1,
+          "jsGzKB": 98.1
+        },
+        "Next.js 16 (next start, Node)": {
+          "rps": 81.7553,
+          "p50ms": 425.5,
+          "p99ms": 4331.8,
+          "peakMiB": 388,
+          "htmlKB": 44.7,
+          "jsGzKB": 169.7
+        }
+      }
+    },
+    "shared": {
+      "/": {
+        "archlast-forge (as scaffolded: islands + kept home)": {
+          "rps": 303616.2257,
+          "p50ms": 0.21,
+          "p99ms": 0.31,
+          "peakMiB": 113,
+          "htmlKB": 0.9,
+          "jsGzKB": 1.3
+        },
+        "archlast-forge (islands, home rendered each time)": {
+          "rps": 44096.7316,
+          "p50ms": 1.4,
+          "p99ms": 2.97,
+          "peakMiB": 130,
+          "htmlKB": 0.9,
+          "jsGzKB": 1.3
+        },
+        "archlast-forge (whole-page hydration, like React Router)": {
+          "rps": 15984.045,
+          "p50ms": 3.72,
+          "p99ms": 6.47,
+          "peakMiB": 136,
+          "htmlKB": 1.3,
+          "jsGzKB": 121.6
+        },
+        "brust 2.0 alpha (brust start, Rust renderer)": {
+          "rps": 212169.8997,
+          "p50ms": 0.3,
+          "p99ms": 0.55,
+          "peakMiB": 53,
+          "htmlKB": 1,
+          "jsGzKB": 4.7
+        },
+        "React Router 7 (react-router-serve, Node)": {
+          "rps": 2206.6659,
+          "p50ms": 27.51,
+          "p99ms": 44.66,
+          "peakMiB": 145,
+          "htmlKB": 3.7,
+          "jsGzKB": 97.9
+        },
+        "Next.js 16 (next start, Node)": {
+          "rps": 3737.5748,
+          "p50ms": 16.65,
+          "p99ms": 26.62,
+          "peakMiB": 137,
+          "htmlKB": 6.4,
+          "jsGzKB": 169.7
+        }
+      },
+      "/products": {
+        "archlast-forge (as scaffolded: islands + kept home)": {
+          "rps": 5875.4283,
+          "p50ms": 10.79,
+          "p99ms": 14.08,
+          "peakMiB": 130,
+          "htmlKB": 10.4,
+          "jsGzKB": 1.3
+        },
+        "archlast-forge (islands, home rendered each time)": {
+          "rps": 5700.7536,
+          "p50ms": 11.13,
+          "p99ms": 14.47,
+          "peakMiB": 165,
+          "htmlKB": 10.4,
+          "jsGzKB": 1.3
+        },
+        "archlast-forge (whole-page hydration, like React Router)": {
+          "rps": 2548.9458,
+          "p50ms": 24.46,
+          "p99ms": 34.96,
+          "peakMiB": 167,
+          "htmlKB": 21.6,
+          "jsGzKB": 122
+        },
+        "brust 2.0 alpha (brust start, Rust renderer)": {
+          "rps": 11261.6335,
+          "p50ms": 5.54,
+          "p99ms": 11.64,
+          "peakMiB": 175,
+          "htmlKB": 10.5,
+          "jsGzKB": 4.7
+        },
+        "React Router 7 (react-router-serve, Node)": {
+          "rps": 848.3984,
+          "p50ms": 72.34,
+          "p99ms": 168.88,
+          "peakMiB": 187,
+          "htmlKB": 27.1,
+          "jsGzKB": 98.1
+        },
+        "Next.js 16 (next start, Node)": {
+          "rps": 228.0853,
+          "p50ms": 269.9,
+          "p99ms": 2457.2,
+          "peakMiB": 207,
+          "htmlKB": 44.7,
+          "jsGzKB": 169.7
+        }
+      }
+    }
+  }
+}

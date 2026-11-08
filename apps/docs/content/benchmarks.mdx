@@ -1,0 +1,130 @@
+# Benchmarks
+
+Everything here was measured on one machine, in containers with fixed limits, with the same load generator, and the harness is in the repository so you can run it. This page says what was run and where the numbers come from; the pages for [archlast-serve](archlast-serve.html), [Rust page rendering](rust-renderer.html) and [Anvil, the thread pool](thread-pool.html) say what they show. How archlast-forge compares with Convex is [its own page](convex.html).
+
+## The machine and the limits
+
+Every server was held to the same resources, whatever it is written in.
+
+{/* bench:machine */}
+
+| | |
+|---|---|
+| CPU | 11th Gen Intel Core i7-11700 @ 2.50GHz: 8 cores, 16 threads (governor `powersave`, boost on) |
+| Memory | 63 GiB |
+| OS | Linux 7.2.5-3-omarchy, Docker 29.7.2 |
+| Server limits | **4 CPU cores** (`--cpuset-cpus=0-3`, the first thread of four physical cores) and **2 GiB of memory** with no swap (`--memory=2g --memory-swap=2g`) |
+| Load | [oha](https://github.com/hatoo/oha) 1.16.0 on 8 other threads (`4-7,12-15`, the four other physical cores), 64 connections, outside the server's container |
+| Runs | 2 s warm-up, then 3 runs of 5 s per case; the median is reported |
+
+{/* /bench:machine */}
+
+{/* bench:versions */}
+
+Express 5.1.0 on Node 24.22.2; Bun 1.4.4; Go 1.24.13 with fasthttp 1.62.0; .NET 10.0.14 (Minimal APIs); Rust 1.90.0 with Axum 0.8. The full-stack apps ran on Node 26.8.2: React Router 7.9.4, Next.js 16.0.0, brust 2.0.0-alpha.38.
+
+{/* /bench:versions */}
+
+- **REST API servers** ran in Docker containers with those limits (`--network host`, so no bridge sits in the path). The Go, Rust and .NET servers were built in a multi-stage image from the language's official SDK image; Node and Bun run the code as it is.
+- **Full-stack apps** (React Router, Next.js, brust, archlast-forge) ran on the host under a systemd scope with the same limits (`MemoryMax=2G`, no swap, `taskset` to cores 0–3). The memory in the tables is the scope's peak (`memory.peak`), children included.
+- The server uses four cores and the load generator eight threads on different cores, so the client does not compete with the server. The fastest servers here (compiled languages at 400,000 to 550,000 requests a second) are close to what one client of that size can send, so their numbers are a floor on what they can do.
+- One run is 5 seconds after 2 seconds of warm-up; the table shows the median of 3.
+
+## A REST API with in-memory CRUD
+
+A small `items` API, built the same way in six stacks. An item is `{ id, name, quantity }`.
+
+| | |
+|---|---|
+| `GET /items/:id` | the item, or `404` |
+| `GET /items?limit=N` | the existing items among ids `1…N` (default 20, at most 100) |
+| `POST /items` | creates an item (`201`), or `400` for an invalid body |
+| `PUT /items/:id` | replaces an item (`200`), `404` or `400` |
+| `DELETE /items/:id` | `204` or `404` |
+
+The store is a map in memory, seeded with 1,000 items, safe for concurrent use, and capped at 100,000 items (creating item *n* removes item *n − 100,000*, so a long create run does not fill the memory). Every body is validated: a non-empty `name` of at most 100 characters and a whole `quantity` of 0 or more. A script (`conformance.ts`) checks all of this against each server before it is measured, and the benchmark does not run a server that fails it.
+
+| Stack | How it is served |
+|---|---|
+| archlast-forge | a NestJS controller on the Nest path (`forge/http.ts`), served by archlast-serve, under `/http`; also with `HTTP_ENGINE=bun` and with telemetry off. Rate limiting is off (it is on by default in production and would refuse the load); everything else is as shipped, including telemetry. |
+| Node.js | Express 5, one process |
+| Bun | `Bun.serve`, one process |
+| Go | fasthttp with `fasthttp/router`, one goroutine per connection |
+| .NET | Minimal APIs on Kestrel, source-generated JSON |
+| Rust | Axum on Tokio, multi-threaded |
+
+The three JavaScript servers use the same store module, so they differ only in what serves HTTP. Each case is one request type at 64 connections: read a random seeded item, list 20, update a random item, create an item.
+
+{/* bench:rest */}
+
+| Server | Read | List (20) | Update | Create | Peak memory |
+|---|---:|---:|---:|---:|---:|
+| Rust (Axum 0.8, Tokio) | 556,334 | 306,858 | 487,527 | 490,500 | 26 MiB |
+| Go (fasthttp) | 483,527 | 397,865 | 450,130 | 458,484 | 67 MiB |
+| .NET 10 (Minimal APIs) | 399,712 | 347,109 | 341,848 | 306,066 | 70 MiB |
+| Bun.serve | 142,882 | 108,589 | 92,094 | 81,816 | 97 MiB |
+| archlast-forge (NestJS path, archlast-serve, telemetry off) | 35,414 | 33,213 | 30,164 | 27,920 | 215 MiB |
+| archlast-forge (NestJS path, archlast-serve) | 33,602 | 31,122 | 29,605 | 26,680 | 249 MiB |
+| Node.js 24 (Express 5) | 22,408 | 20,694 | 16,090 | 16,925 | 122 MiB |
+| archlast-forge (NestJS path, Bun.serve) | 18,849 | 17,547 | 15,635 | 14,549 | 197 MiB |
+
+Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.11 / 0.22; Go 0.11 / 0.54; .NET 10 0.14 / 0.57; Bun.serve 0.43 / 0.86; archlast-forge 1.96 / 3.71; archlast-forge 2.15 / 3.98; Node.js 24 2.81 / 3.29; archlast-forge 3.24 / 6.41.
+
+{/* /bench:rest */}
+
+How to read this:
+
+- **The compiled servers are 12 to 17 times as fast as a Forge app on reads, and that is expected.** A Forge request goes through a NestJS controller, the engine's routing, validation, telemetry and the JavaScript runtime, on one thread: it used about 1.2 of its four cores. Axum, Go and .NET do the same job in a few microseconds across all four. If a route needs that, write it in one of them.
+- **Forge on the Nest path is faster than Express** (about 1.5 times on read) and slower than a bare `Bun.serve` (about a quarter of it): it does more per request than either. The engine is what puts it ahead of Express: on `Bun.serve` the same controller is slower than Express.
+- **Telemetry costs about 5%** here. It is on by default; set `TELEMETRY=off` to turn it off.
+- The state is in memory and in one process, which is why the benchmark runs one function worker. A real Forge app keeps it in the database, which adds the database's time to each of these.
+
+## A thread pool
+
+{/* bench:pool */}
+
+| | requests/s | p50 | p99 | CPU cores used |
+|---|---:|---:|---:|---:|
+| The work on the serving thread | 133 | 239 ms | 318 ms | 1.02 |
+| The work in Anvil (3 workers) | **401** (3.0×) | 80.7 ms | 105 ms | 3.14 |
+
+`/ping` (does nothing), measured while the work route is under load from 32 connections:
+
+| | requests/s | p50 | p99 |
+|---|---:|---:|---:|
+| Idle server | 23,519 | 0.16 ms | 0.29 ms |
+| Work on the serving thread | 17 | 242 ms | 340 ms |
+| Work in Anvil | **14,543** | 0.24 ms | 0.71 ms |
+
+{/* /bench:pool */}
+
+The API has one route that hashes 20,000 times (about 8 ms of CPU) on the serving thread, the same route with the work in Anvil, and a `/ping` that does nothing. See [Anvil](thread-pool.html).
+
+## Full-stack pages
+
+React Router 7, Next.js 16, brust and archlast-forge, serving the same two pages. See [Rust page rendering](rust-renderer.html) for the results and how to read them.
+
+## What these numbers do not show
+
+- **One machine, one run of three medians.** A different CPU, kernel or container runtime moves every number. Compare the rows within a table, not against someone else's table.
+- **No database, no TLS, no authentication in the REST and page cases.** They measure the server and the framework, not the app around them.
+- **Closed-loop load.** 64 connections each send the next request when the last is answered, which measures capacity. It is not a model of a user, and latency at saturation is mostly queueing.
+- **Latest versions at the time of writing.** brust is an alpha release; Next.js and React Router are used the way their documentation says to ship them (`next start`, `react-router-serve`), as one process each.
+
+## Run them yourself
+
+```sh
+# the REST API: builds six images, checks each server, loads each one (about 15 minutes)
+cd benchmarks/rest && ./run.sh && bun report.ts
+
+# the thread pool
+cd benchmarks/pool && ./run.sh
+
+# the full-stack pages (React Router, Next.js, brust and Forge)
+cd benchmarks/fullstack && ./run.sh && bun report.ts
+
+# put the numbers on the docs pages
+bun benchmarks/collect.ts && bun benchmarks/docs.ts
+```
+
+Each folder has a README with the details. You need Docker (the REST and thread pool servers), [oha](https://github.com/hatoo/oha) and Bun; the full-stack benchmark also needs Node.

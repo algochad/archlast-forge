@@ -1,23 +1,25 @@
-# archlast-forge against React Router and Next.js
+# archlast-forge against React Router, Next.js and brust
 
-The same two pages in three frameworks, each built for production and served the way it ships:
+The same two pages in four frameworks, each built for production and served the way it ships:
 
 | | what runs | notes |
 |---|---|---|
 | archlast-forge | `archlast/server.ts`: a project made from the starter, built with the framework, served by the native engine (Bun, Rust I/O threads) | three variants: as the starters ship (islands, the home page kept by the engine), islands with the home page rendered on every request, and whole-page hydration (the React Router way) |
 | React Router 7 | framework mode, default entry files, `react-router-serve` (Node, one process) | |
 | Next.js 16 | App Router, `next start` (Node, one process) | `/` is prerendered at build time (Next's default for a page with no data); `/products` is `force-dynamic` |
+| brust 2.0 alpha | `brust/`: `brust build` and `brust start` (a Rust server with Bun for loaders), the pages written the way its docs write them (native tier: compiled to templates, printed in Rust) | the loader formats the rows with the shared code and hands the page finished strings |
 
 archlast-forge prints both pages from templates (the compiler reads them; see `packages/framework/src/render-compile.ts`), so its numbers include that.
 
 Pages: `/` has a header, three cards and a footer, no data. `/products` renders 100 rows from a loader (a table with a price and a date formatted in every row). The data and the formatting code are shared (`shared/data.ts`) and are built per call, as such code is usually written. A second run builds the formatters once (`CACHE_INTL=1`): archlast-forge also makes formatters once by itself on the server, so the first run shows what that is worth.
 
-Method (`run.sh`): each server is pinned to cores 0-3 and loaded from cores 4-7 with [oha](https://github.com/hatoo/oha), 64 connections, 5 s per run, median of 3, after two warm-up requests. Node servers are single processes, as `react-router-serve` and `next start` run by default; the engine uses Rust threads for I/O and one Bun thread for the app. Memory is the server's resident size after the runs.
+Method (`run.sh`): each server runs in a systemd scope limited to 2 GiB of memory with no swap (`systemd-run --user --scope -p MemoryMax=2G -p MemorySwapMax=0`), pinned to cores 0-3, and is loaded from cores 4-7,12-15 with [oha](https://github.com/hatoo/oha), 64 connections, 5 s per run, median of 3, after two warm-up requests. The memory column is the scope's peak (`memory.peak`). Node servers are single processes, as `react-router-serve` and `next start` run by default; the engine uses Rust threads for I/O and one Bun thread for the app. Memory is the server's resident size after the runs.
 
 ```
 (cd react-router && bun install && node node_modules/@react-router/dev/bin.js build)
 (cd next && bun install && node node_modules/next/dist/bin/next build)
-./run.sh && bun report.ts      # writes results.raw and results.md
+(cd brust && bun install && bun run build)
+./run.sh && bun report.ts      # writes results.raw, results.md and results.json
 ```
 
 Read it with these in mind:

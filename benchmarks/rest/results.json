@@ -1,0 +1,274 @@
+{
+  "axum": {
+    "label": "Rust (Axum 0.8, Tokio)",
+    "peakMiB": 26,
+    "scenarios": {
+      "read": {
+        "rps": 556334,
+        "p50ms": 0.107,
+        "p99ms": 0.22,
+        "cores": 2.95,
+        "success": 1
+      },
+      "list": {
+        "rps": 306858,
+        "p50ms": 0.206,
+        "p99ms": 0.374,
+        "cores": 3.25,
+        "success": 1
+      },
+      "update": {
+        "rps": 487527,
+        "p50ms": 0.123,
+        "p99ms": 0.256,
+        "cores": 3.12,
+        "success": 1
+      },
+      "create": {
+        "rps": 490500,
+        "p50ms": 0.127,
+        "p99ms": 0.248,
+        "cores": 3.13,
+        "success": 1
+      }
+    }
+  },
+  "go": {
+    "label": "Go (fasthttp)",
+    "peakMiB": 67,
+    "scenarios": {
+      "read": {
+        "rps": 483527,
+        "p50ms": 0.106,
+        "p99ms": 0.536,
+        "cores": 2.49,
+        "success": 1
+      },
+      "list": {
+        "rps": 397865,
+        "p50ms": 0.114,
+        "p99ms": 0.995,
+        "cores": 3.09,
+        "success": 1
+      },
+      "update": {
+        "rps": 450130,
+        "p50ms": 0.115,
+        "p99ms": 0.437,
+        "cores": 3.14,
+        "success": 1
+      },
+      "create": {
+        "rps": 458484,
+        "p50ms": 0.115,
+        "p99ms": 0.421,
+        "cores": 3.17,
+        "success": 1
+      }
+    }
+  },
+  "dotnet": {
+    "label": ".NET 10 (Minimal APIs)",
+    "peakMiB": 70,
+    "scenarios": {
+      "read": {
+        "rps": 399712,
+        "p50ms": 0.139,
+        "p99ms": 0.574,
+        "cores": 2.9,
+        "success": 1
+      },
+      "list": {
+        "rps": 347109,
+        "p50ms": 0.17,
+        "p99ms": 0.508,
+        "cores": 2.96,
+        "success": 1
+      },
+      "update": {
+        "rps": 341848,
+        "p50ms": 0.166,
+        "p99ms": 0.932,
+        "cores": 3,
+        "success": 1
+      },
+      "create": {
+        "rps": 306066,
+        "p50ms": 0.169,
+        "p99ms": 1.511,
+        "cores": 2.79,
+        "success": 1
+      }
+    }
+  },
+  "bun": {
+    "label": "Bun.serve",
+    "peakMiB": 97,
+    "scenarios": {
+      "read": {
+        "rps": 142882,
+        "p50ms": 0.426,
+        "p99ms": 0.863,
+        "cores": 0.79,
+        "success": 1
+      },
+      "list": {
+        "rps": 108589,
+        "p50ms": 0.568,
+        "p99ms": 1.121,
+        "cores": 0.82,
+        "success": 1
+      },
+      "update": {
+        "rps": 92094,
+        "p50ms": 0.664,
+        "p99ms": 1.331,
+        "cores": 0.84,
+        "success": 1
+      },
+      "create": {
+        "rps": 81816,
+        "p50ms": 0.683,
+        "p99ms": 3.045,
+        "cores": 1.06,
+        "success": 1
+      }
+    }
+  },
+  "node": {
+    "label": "Node.js 24 (Express 5)",
+    "peakMiB": 122,
+    "scenarios": {
+      "read": {
+        "rps": 22408,
+        "p50ms": 2.807,
+        "p99ms": 3.285,
+        "cores": 0.92,
+        "success": 1
+      },
+      "list": {
+        "rps": 20694,
+        "p50ms": 3.068,
+        "p99ms": 3.546,
+        "cores": 0.91,
+        "success": 1
+      },
+      "update": {
+        "rps": 16090,
+        "p50ms": 3.933,
+        "p99ms": 4.727,
+        "cores": 0.94,
+        "success": 1
+      },
+      "create": {
+        "rps": 16925,
+        "p50ms": 3.731,
+        "p99ms": 4.653,
+        "cores": 0.94,
+        "success": 1
+      }
+    }
+  },
+  "forge": {
+    "label": "archlast-forge (NestJS path, archlast-serve)",
+    "peakMiB": 249,
+    "scenarios": {
+      "read": {
+        "rps": 33602,
+        "p50ms": 2.15,
+        "p99ms": 3.98,
+        "cores": 1.23,
+        "success": 1
+      },
+      "list": {
+        "rps": 31122,
+        "p50ms": 1.885,
+        "p99ms": 4.022,
+        "cores": 1.22,
+        "success": 1
+      },
+      "update": {
+        "rps": 29605,
+        "p50ms": 2.386,
+        "p99ms": 4.362,
+        "cores": 1.24,
+        "success": 1
+      },
+      "create": {
+        "rps": 26680,
+        "p50ms": 2.139,
+        "p99ms": 7.488,
+        "cores": 1.32,
+        "success": 1
+      }
+    }
+  },
+  "forge-bun": {
+    "label": "archlast-forge (NestJS path, Bun.serve)",
+    "peakMiB": 197,
+    "scenarios": {
+      "read": {
+        "rps": 18849,
+        "p50ms": 3.241,
+        "p99ms": 6.405,
+        "cores": 0.95,
+        "success": 1
+      },
+      "list": {
+        "rps": 17547,
+        "p50ms": 3.499,
+        "p99ms": 5.154,
+        "cores": 0.94,
+        "success": 1
+      },
+      "update": {
+        "rps": 15635,
+        "p50ms": 3.892,
+        "p99ms": 7.556,
+        "cores": 0.95,
+        "success": 1
+      },
+      "create": {
+        "rps": 14549,
+        "p50ms": 3.95,
+        "p99ms": 9.762,
+        "cores": 1.05,
+        "success": 1
+      }
+    }
+  },
+  "forge-notelemetry": {
+    "label": "archlast-forge (NestJS path, archlast-serve, telemetry off)",
+    "peakMiB": 215,
+    "scenarios": {
+      "read": {
+        "rps": 35414,
+        "p50ms": 1.961,
+        "p99ms": 3.709,
+        "cores": 1.23,
+        "success": 1
+      },
+      "list": {
+        "rps": 33213,
+        "p50ms": 2.065,
+        "p99ms": 4.055,
+        "cores": 1.26,
+        "success": 1
+      },
+      "update": {
+        "rps": 30164,
+        "p50ms": 2.166,
+        "p99ms": 4.382,
+        "cores": 1.25,
+        "success": 1
+      },
+      "create": {
+        "rps": 27920,
+        "p50ms": 2.349,
+        "p99ms": 7.288,
+        "cores": 1.34,
+        "success": 1
+      }
+    }
+  }
+}

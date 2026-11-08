@@ -55,11 +55,25 @@ export const list = query({
   },
 });`;
 
+const pool = `import { action, v } from "@archlast/forge-runtime";
+import { computePool } from "@archlast/forge-runtime/pool";
+
+// Anywhere: no task module, no isMain guard.
+const work = computePool({
+  digest: (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex"),
+});
+
+export const checksum = action({
+  args: { url: v.string() },
+  handler: async (ctx, { url }) => work.call.digest(new Uint8Array(await (await fetch(url)).arrayBuffer())),
+});`;
+
 export function snippets() {
   return {
     hero: highlight("ts", hero),
     schema: highlight("ts", schema, "forge/schema.ts"),
     functions: highlight("ts", functions, "forge/notes.ts"),
     component: highlight("tsx", component, "app/routes/notes.tsx"),
+    pool: highlight("ts", pool, "forge/files.ts"),
   };
 }

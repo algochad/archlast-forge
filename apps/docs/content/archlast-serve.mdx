@@ -1,0 +1,66 @@
+# archlast-serve: the Rust HTTP engine
+
+archlast-serve is the HTTP server inside the engine image, written in Rust to take the place of `Bun.serve`. Sockets, TLS, HTTP/1.1, HTTP/2, WebSocket framing, server-sent events and pub/sub fan-out run on Rust threads (hyper, tokio, rustls, and uWebSockets' WebSocket protocol layer). Your functions, queries, mutations and pages still run in JavaScript on Bun's threads, so nothing about how you write an app changes.
+
+You do not install it or call it. The engine image has it, and `HTTP_ENGINE=auto` (the default) uses it in production on 4 or more CPU cores. Anywhere else (development, a one- or two-core machine, a platform it is not built for) the same app runs on `Bun.serve`.
+
+## Why a second server
+
+`Bun.serve` runs the HTTP stack and your handler on one thread. For a Forge app that thread also runs the function, so the more the server does per request (parsing, TLS, framing, headers, compression) the less is left for your code, and one core of a four-core machine does all of it. In archlast-serve the Rust threads do that work and hand the JavaScript thread a batch of finished requests through shared buffers, one native call per batch, and take back the answers the same way. The JavaScript thread spends its time on your function.
+
+## What it does for a Forge app
+
+- **Faster everything around your code.** HTTP parsing, TLS, WebSocket framing and subscriptions' fan-out are off the JavaScript thread. A published query's update goes to every subscriber from Rust.
+- **Pages printed by Rust** and **pages kept in memory.** The framework hands the engine a template and JSON, or asks it to keep a page for anonymous visitors, so a request is answered without running JavaScript at all: [Rust page rendering](rust-renderer.html).
+- **A response type that skips Web `Response` objects** on `/rpc/<function>` and Forge RPC.
+- **Everything else stays as it was.** CORS, rate limits, the firewall, security headers, telemetry and graceful shutdown run in the engine as before. The server logs which HTTP engine it chose at start.
+
+## Choosing it
+
+| `HTTP_ENGINE` | |
+|---|---|
+| `auto` (default) | The native engine in production on 4 or more cores when its library is there, `Bun.serve` otherwise. |
+| `archlast` | The native engine. An error, not a fallback, where it cannot load. |
+| `bun` | `Bun.serve`, always. |
+
+`ARCHLAST_BACKEND` chooses how Bun loads the Rust core: `napi` (the default, a Node-API addon) or `bun-ffi` (a plain C ABI). Both run the same core and pass the same tests. The engine image ships the `napi` one. See [configuration](configuration.html#server).
+
+## How much faster
+
+Two measurements, both in containers limited to 4 CPU cores and 2 GiB of memory, loaded with oha ([method and machine](benchmarks.html)).
+
+**A REST API with in-memory CRUD on the NestJS path**, the same controller on both servers: only `HTTP_ENGINE` changes.
+
+{/* bench:engine */}
+
+| | `Bun.serve` | archlast-serve | |
+|---|---:|---:|---:|
+| Read one item (requests/s) | 18,849 | 33,602 | 1.8× |
+| List 20 items (requests/s) | 17,547 | 31,122 | 1.8× |
+| Update an item (requests/s) | 15,635 | 29,605 | 1.9× |
+| Create an item (requests/s) | 14,549 | 26,680 | 1.8× |
+| Read, 99th percentile | 6.41 ms | 3.98 ms | |
+
+{/* /bench:engine */}
+
+The engine gives the same Nest controller about 1.8 times the requests per second, because the JavaScript thread no longer parses and frames requests and it is the thread that limits the app.
+
+**The same API in other stacks** (Go, Rust, .NET, Node, Bun) is on the [benchmarks](benchmarks.html) page. A Forge app is a framework with a database layer, authentication, telemetry and a dashboard in the request path, and it runs your code in JavaScript; it is not a rival to a hand-written Axum or fasthttp server, and the numbers there say so. The engine's job is to remove the cost the HTTP server adds, not the cost of JavaScript.
+
+**Forge RPC echo, a call that does almost nothing** (the engine's own harness, `bench/container/compare.sh`, same limits). The echo handler's cost is so small that this measures the server:
+
+| | `Bun.serve` | archlast-serve |
+|---|---:|---:|
+| HTTP, 64 connections (requests/s) | about 90,000 | about 105,000 |
+| WebSocket, 16 connections (messages/s) | about 196,000 | about 307,000 |
+| WebSocket, 512 connections, 32 in flight each | about 803,000 | about 911,000 |
+
+**Where it loses.** With a single connection (a request, then wait for the answer) the Rust engine is behind: two thread hand-offs cost more than one thread doing everything (WebSocket echo at one connection: about 48,000 messages/s against 80,000; 75,000 with `spinMicros`, which spins instead of sleeping and costs CPU). It also uses more CPU per request than `Bun.serve` on the same load, about 1.4 to 1.6 times. The engine trades CPU for throughput and for keeping the JavaScript thread free; it is the right trade on a server with cores to spare and not on a single-core box, which is why `auto` leaves it off there.
+
+## Limits worth knowing
+
+- Linux only. Where its library is missing (macOS, Windows, a build without it) `auto` picks `Bun.serve`, and `archlast` is an error.
+- A page the engine keeps skips rate limits, the firewall and telemetry on a hit, because the app is not run: [keeping a page](framework.html#keeping-a-page-for-visitors-who-are-not-signed-in).
+- It is a workspace package (`packages/serve` in the repository) and is not published to npm on its own; the engine image builds its native library.
+
+The package has its own README with the standalone API (`App`, `serve`, `serveCompat`), the options (`threads`, `workers`, `spinMicros`) and an architecture document with the buffers and the wire protocol.

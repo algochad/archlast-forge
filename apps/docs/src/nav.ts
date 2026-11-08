@@ -39,6 +39,10 @@ export const PAGES = {
   backups: ["Backups", () => import("../content/backups.mdx")],
   observability: ["Observability", () => import("../content/observability.mdx")],
   limits: ["Limits and security", () => import("../content/limits.mdx")],
+  "archlast-serve": ["archlast-serve: the Rust HTTP engine", () => import("../content/archlast-serve.mdx")],
+  "rust-renderer": ["Rust page rendering", () => import("../content/rust-renderer.mdx")],
+  "thread-pool": ["Anvil: the thread pool", () => import("../content/thread-pool.mdx")],
+  benchmarks: ["Benchmarks", () => import("../content/benchmarks.mdx")],
   convex: ["Compared with Convex", () => import("../content/convex.mdx")],
   reference: ["API reference", () => import("../content/reference.mdx")],
   troubleshooting: ["Troubleshooting", () => import("../content/troubleshooting.mdx")],
@@ -54,7 +58,7 @@ export const GROUPS: [string, Slug[]][] = [
   ["Server features", ["auth", "storage", "scheduling", "http", "webhooks", "nest", "forge-rpc", "api-docs", "security-headers"]],
   ["Clients and guides", ["clients", "mobile", "desktop", "testing", "recipes", "agent-skill"]],
   ["Run", ["cli", "deployment", "configuration", "dashboard", "backups", "observability", "limits"]],
-  ["Benchmarks", ["convex"]],
+  ["Performance", ["archlast-serve", "rust-renderer", "thread-pool", "benchmarks", "convex"]],
   ["Reference", ["reference", "troubleshooting", "release-notes"]],
 ];
 

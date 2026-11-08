@@ -23,6 +23,10 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 - **A production build made without `NODE_ENV` set no longer fails every page.** The build called React's development JSX runtime when the shell it ran in had no `NODE_ENV=production`, and the server answered every page with `jsxDEV is not a function`. The build now chooses the runtime from whether it is a development build.
 
+### Documentation
+
+- **Performance pages and a new landing page.** [archlast-serve](archlast-serve.html), [Rust page rendering](rust-renderer.html) and [Anvil, the thread pool](thread-pool.html) have pages of their own, and [Benchmarks](benchmarks.html) says how everything was measured: a CRUD REST API in six stacks (archlast-forge on the NestJS path, Node with Express, Bun, Go with fasthttp, .NET Minimal APIs, Rust with Axum), a blocking-work API with and without the thread pool, and React Router, Next.js, brust and archlast-forge on the same pages. Every server ran in a container limited to 4 CPU cores and 2 GiB of memory and was loaded with oha; the harness is in `benchmarks/rest`, `benchmarks/pool` and `benchmarks/fullstack`. The landing page shows the numbers, with an animated model of the thread pool. brust is faster than archlast-forge on plain pages, and the pages say so.
+
 ## 0.20.0
 
 Better Auth's plugins built into the engine, an API docs site in the layout readers know, an engine image less than half the size, monorepos that deploy with `bun run up` in each app, commands for the agent skill, and security hardening across the server, GraphQL and the image.

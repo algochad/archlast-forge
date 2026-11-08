@@ -1,0 +1,97 @@
+# Rust page rendering
+
+A full-stack page is React, but most pages do not need React to be shown: they read data and print markup. With islands on and the native engine ([archlast-serve](archlast-serve.html)), the build finds those pages, turns them into templates, and the engine prints them in Rust on its I/O threads. The JavaScript thread runs the loader and starts the next request while the page is being written. Pages that need React are rendered by React, with the same output, and nothing about how you write a component changes.
+
+Three pieces make this work, and each is worth having by itself:
+
+1. **Islands.** The build sorts each component into a *page* (reads props, loader data, `useViewer()`, the time zone), an *island* (state, effects, handlers, `useQuery`) or a *fallback* (it cannot tell). Only islands load JavaScript, and each hydrates on its own. A page with none ships a 1.3 kB navigation script instead of the 120 kB of React and the router. See [islands](framework.html#islands-pages-that-ship-only-the-javascript-they-need).
+2. **Templates.** A route whose components are all pages is compiled at build time. The loader's data goes to the engine as JSON and Rust prints the page from the template. See [pages printed by the engine](framework.html#pages-printed-by-the-engine).
+3. **Kept pages.** A route can say `handle = { cache: { ttl: 60 } }`: the engine keeps the page for visitors who are not signed in and answers from memory without running your app, and a write to a table the page's loaders read ends it early. See [keeping a page](framework.html#keeping-a-page-for-visitors-who-are-not-signed-in).
+
+```
+loader (JS) ──► JSON ──► template (Rust, I/O thread) ──► HTML
+                              ▲
+                  compiled from your components at build time
+```
+
+## What the compiler reads
+
+Function components made of `const`s and one `return`; elements, fragments and text; paths, `&&`, `||`, `??`, `?:`, arithmetic, comparisons and template literals; `list.map(...)`; your own components and functions (`formatMoney(row.price)` runs per row on the server before printing); `Link`, `NavLink` and `Outlet`; `<title>`, `<meta>` and `<link>`; forms with a literal `action`; `style` objects; `dangerouslySetInnerHTML`; `useMemo` and prop defaults. JavaScript's rules for `undefined`, `null`, numbers and text are kept: `null + 1` is `1` and a prop default replaces `undefined` and not `null`.
+
+What it does not read leaves that route to React, and the page is the same either way: a hook like `useQuery`, a handler, a method call like `.sort()`, `<script>`. A page that shows an island only to some visitors (a menu for a signed-in user) is printed from its template for everyone else, and by React for those who see the island. `bun node_modules/@archlast/forge-framework/src/classify-cli.ts .` lists which routes are printed and why not for the others; `FORGE_TEMPLATES=0` at build time turns it off.
+
+## How fast
+
+The same two pages in five setups, each in production mode, limited to 4 CPU cores and 2 GiB of memory, loaded with oha ([method and machine](benchmarks.html)):
+
+- **Home:** a header, three cards and a footer, no data.
+- **Products:** 100 rows from a loader, with a price and a date formatted in each row (200 formatter calls per request).
+
+{/* bench:versions */}
+
+Express 5.1.0 on Node 24.22.2; Bun 1.4.4; Go 1.24.13 with fasthttp 1.62.0; .NET 10.0.14 (Minimal APIs); Rust 1.90.0 with Axum 0.8. The full-stack apps ran on Node 26.8.2: React Router 7.9.4, Next.js 16.0.0, brust 2.0.0-alpha.38.
+
+{/* /bench:versions */}
+
+**Home**
+
+{/* bench:fullstack-home */}
+
+| | requests/s | p50 | p99 | Peak memory | HTML | JavaScript sent (gzip) |
+|---|---:|---:|---:|---:|---:|---:|
+| archlast-forge (as scaffolded: islands + kept home) | 304,374 | 0.21 ms | 0.31 ms | 113 MiB | 0.9 KB | 1.3 KB |
+| brust 2.0 alpha (brust start, Rust renderer) | 211,010 | 0.30 ms | 0.56 ms | 52 MiB | 1 KB | 4.7 KB |
+| archlast-forge (islands, home rendered each time) | 44,620 | 1.34 ms | 2.91 ms | 129 MiB | 0.9 KB | 1.3 KB |
+| archlast-forge (whole-page hydration, like React Router) | 16,203 | 3.66 ms | 7.19 ms | 136 MiB | 1.3 KB | 121.6 KB |
+| Next.js 16 (next start, Node) | 3,694 | 16.8 ms | 26.5 ms | 143 MiB | 6.4 KB | 169.7 KB |
+| React Router 7 (react-router-serve, Node) | 2,262 | 27.0 ms | 43.9 ms | 145 MiB | 3.7 KB | 97.9 KB |
+
+{/* /bench:fullstack-home */}
+
+**Products**, formatters built once (what a careful author writes, and the fair comparison, since the formatting is the same JavaScript everywhere):
+
+{/* bench:fullstack-products */}
+
+| | requests/s | p50 | p99 | Peak memory | HTML | JavaScript sent (gzip) |
+|---|---:|---:|---:|---:|---:|---:|
+| brust 2.0 alpha (brust start, Rust renderer) | 11,262 | 5.54 ms | 11.6 ms | 175 MiB | 10.5 KB | 4.7 KB |
+| archlast-forge (as scaffolded: islands + kept home) | 5,875 | 10.8 ms | 14.1 ms | 130 MiB | 10.4 KB | 1.3 KB |
+| archlast-forge (islands, home rendered each time) | 5,701 | 11.1 ms | 14.5 ms | 165 MiB | 10.4 KB | 1.3 KB |
+| archlast-forge (whole-page hydration, like React Router) | 2,549 | 24.5 ms | 35.0 ms | 167 MiB | 21.6 KB | 122 KB |
+| React Router 7 (react-router-serve, Node) | 848 | 72.3 ms | 169 ms | 187 MiB | 27.1 KB | 98.1 KB |
+| Next.js 16 (next start, Node) | 228 | 270 ms | 2,457 ms | 207 MiB | 44.7 KB | 169.7 KB |
+
+{/* /bench:fullstack-products */}
+
+**Products**, formatters built on every call (how this code is often written). Forge makes `Intl` formatters once per locale and options by itself on the server, which is why it barely notices; React Router and Next.js, and brust, pay for each one:
+
+{/* bench:fullstack-products-percall */}
+
+| | requests/s | p50 | p99 | Peak memory | HTML | JavaScript sent (gzip) |
+|---|---:|---:|---:|---:|---:|---:|
+| archlast-forge (as scaffolded: islands + kept home) | 3,340 | 18.9 ms | 22.9 ms | 131 MiB | 10.4 KB | 1.3 KB |
+| archlast-forge (islands, home rendered each time) | 3,324 | 18.9 ms | 22.4 ms | 159 MiB | 10.4 KB | 1.3 KB |
+| archlast-forge (whole-page hydration, like React Router) | 1,917 | 32.8 ms | 51.0 ms | 162 MiB | 21.6 KB | 122 KB |
+| brust 2.0 alpha (brust start, Rust renderer) | 359 | 184 ms | 322 ms | 185 MiB | 10.5 KB | 4.7 KB |
+| React Router 7 (react-router-serve, Node) | 115 | 363 ms | 4,256 ms | 553 MiB | 27.1 KB | 98.1 KB |
+| Next.js 16 (next start, Node) | 82 | 426 ms | 4,332 ms | 388 MiB | 44.7 KB | 169.7 KB |
+
+{/* /bench:fullstack-products-percall */}
+
+### Reading the numbers
+
+- **brust is faster than we are on these pages.** On the home page it prints a compiled template with no JavaScript in the request at all, and it answers about 4.7 times as many requests as our page when we render it every time. On the products page, with the same formatting code, it answers about twice as many. Forge's request goes through the router's loaders, the viewer and the time zone, and the data it hands to the template, because a Forge page can use all of them; brust's static page has none of that to do. We would rather say this plainly than hide it: brust is the Rust-first design this work follows, and where a page is plain, it shows.
+- **Forge's kept page is the fastest row.** When a route asks to be kept, the engine answers from memory and the request never reaches JavaScript, which is faster than printing a page every time. It is for pages that are the same for everyone not signed in, for up to `ttl` seconds or until a write to a table they read.
+- **Forge against React Router and Next.js** is not close: from 7 times (products, formatters built once, against React Router) to over 100 times (the kept home page) the requests per second, and the JavaScript sent for a page without an island is 1.3 kB against about 100 to 170 kB.
+- **What brust leaves out.** brust is in alpha. A page that is only markup is its best case; anything that needs live data, sign-in or a database is yours to wire with its own store and actions. Forge's pages are connected to a reactive backend: a component can read a query and stay current, and a page can use the signed-in user, without leaving the framework. The benchmark pages use none of that, so it is not in the numbers, and it is what the remaining cost buys.
+- These pages have nothing interactive. A page with an island sends about what whole-page hydration does (the "whole-page hydration" row), and an island only loads when it is on the page.
+
+## Settings
+
+| | |
+|---|---|
+| `export const islands = true` in `app/root.tsx` | Islands on (new apps have it). `FORGE_ISLANDS=0` turns them off for a build. |
+| `FORGE_TEMPLATES=0` | At build time: every page is rendered by React. |
+| `export const handle = { cache: { ttl: 60 } }` | Keep this route's page for anonymous visitors, for up to `ttl` seconds. |
+| `ARCHLAST_PAGE_CACHE_MB` | Memory for kept pages (default 64). |
+| `HTTP_ENGINE` | Needs the native engine for templates and kept pages; `bun` renders every page with React. |

@@ -277,7 +277,7 @@ An action is for work with the outside world: calling an API, sending email, run
 
 ### CPU-heavy work in an action
 
-A function runs on one thread, so a long calculation (hashing a large file, resizing an image, parsing a big document) stalls the other calls on it. `computePool` from `@archlast/forge-runtime/pool` runs it on worker threads, and the action awaits the answer like any async call. The pool is [knitting](https://js.knitting.run); `task`, `createPool` and `importTask` are re-exported from the same entry. Its threads start with the first call, and there is one fewer than the cores the process may use (a container's CPU quota counts) unless you pass `{ threads }`.
+A function runs on one thread, so a long calculation (hashing a large file, resizing an image, parsing a big document) stalls the other calls on it. Forge's thread pool, [Anvil](thread-pool.html), moves it off that thread. `computePool` from `@archlast/forge-runtime/pool` runs it on worker threads, and the action awaits the answer like any async call. The pool is [knitting](https://js.knitting.run); `task`, `createPool` and `importTask` are re-exported from the same entry. Its threads start with the first call, and there is one fewer than the cores the process may use (a container's CPU quota counts) unless you pass `{ threads }`.
 
 ```ts
 // forge/_work/hash.ts: a module of its own, with few imports, because every worker imports it again

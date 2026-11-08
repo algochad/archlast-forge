@@ -74,6 +74,14 @@ export const DESCRIPTIONS: Record<Slug, string> = {
     "Built-in tracing, issues, logs, SLOs and alerts; custom spans and metrics; OpenTelemetry ingest and export; one dashboard for a monorepo.",
   limits:
     "Every limit the engine enforces and what a caller sees at each, plus the security model and checklist.",
+  "archlast-serve":
+    "The Rust HTTP engine that replaces Bun.serve: what runs on Rust threads and what stays in JavaScript, HTTP_ENGINE, measured against Bun.serve, and where it loses.",
+  "rust-renderer":
+    "Pages printed by Rust: islands, templates compiled from components, kept pages, what the compiler reads, and measured against React Router, Next.js and brust.",
+  "thread-pool":
+    "Anvil, the built-in thread pool: computePool from plain functions anywhere (forge/, NestJS), task modules, rules, and the measured gain for blocking work.",
+  benchmarks:
+    "The machine, the CPU and memory limits, the oha method, and the results: a CRUD REST API in six stacks, the thread pool, and four full-stack frameworks.",
   convex:
     "How archlast-forge compares with Convex's self-hosted backend on one machine: cached and uncached reads, writes and live updates, with the setup and what it does not show.",
   reference:
@@ -106,6 +114,8 @@ export const TASKS: [task: string, pages: Slug[]][] = [
     ["deployment", "configuration", "backups", "dashboard", "observability"],
   ],
   ["Fix a failure", ["troubleshooting", "errors", "limits"]],
+  ["Make a route faster: the Rust engine, rendering, threads", ["archlast-serve", "rust-renderer", "thread-pool"]],
+  ["See the benchmarks and how they were run", ["benchmarks"]],
   ["See how it compares with Convex", ["convex"]],
   ["Look up an exact signature", ["reference"]],
 ];

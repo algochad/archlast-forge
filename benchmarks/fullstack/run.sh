@@ -1,11 +1,12 @@
 #!/bin/bash
 # Compares archlast-forge, React Router (framework mode, react-router-serve) and Next.js (next start) on the same two pages.
 #   cd benchmarks/fullstack && (cd react-router && bun install && node node_modules/@react-router/dev/bin.js build) && (cd next && bun install && node node_modules/next/dist/bin/next build) && ./run.sh
-# Each server is pinned to cores 0-3 and loaded from cores 4-7 with oha, 64 connections, 5 s per run, 3 runs (the median is reported); one process each, as shipped.
+# Each server is pinned to cores 0-3 and limited to 2 GiB of memory (a systemd scope: MemoryMax, no swap), and loaded from cores 4-7,12-15 with oha, 64 connections, 5 s per run,
+# 3 runs (the median is reported); one process each, as shipped. The memory reported is the scope's peak (memory.peak), children included.
 set -u
 HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
-SERVER_CPUS=${SERVER_CPUS:-0-3}; CLIENT_CPUS=${CLIENT_CPUS:-4-7}; CONNS=${CONNS:-64}; SECS=${SECS:-5}
+SERVER_CPUS=${SERVER_CPUS:-0-3}; SERVER_MEM=${SERVER_MEM:-2G}; CLIENT_CPUS=${CLIENT_CPUS:-4-7,12-15}; CONNS=${CONNS:-64}; SECS=${SECS:-5}
 OUT=$HERE/results.raw
 : > "$OUT.tmp"
 
@@ -15,7 +16,7 @@ median() { sort -n | awk '{a[NR]=$1} END {print a[int((NR+1)/2)]}'; }
 bench() {
   local label=$1 port=$2 dir=$3 vars=$4; shift 4
   if curl -s -o /dev/null "localhost:$port/"; then echo "port $port is in use: stop what is there first" >&2; exit 1; fi
-  ( cd "$dir" && exec env $vars taskset -c "$SERVER_CPUS" "$@" > "$HERE/.server-$port.log" 2>&1 ) &
+  ( cd "$dir" && exec env $vars systemd-run --user --scope -q -p MemoryMax="$SERVER_MEM" -p MemorySwapMax=0 taskset -c "$SERVER_CPUS" "$@" > "$HERE/.server-$port.log" 2>&1 ) &
   local pid=$!
   for _ in $(seq 1 90); do curl -s -o /dev/null "localhost:$port/" && break; sleep 1; done
   for path in / /products; do
@@ -29,7 +30,7 @@ bench() {
       echo "$o" | grep -q "Success rate:.*100.00%" || echo "  (errors in a run of $label $path)" >&2
     done
     local a; a=$(bun "$HERE/assets.ts" "http://127.0.0.1:$port" "$path")
-    local rss; rss=$(ps -o rss= -p "$pid" | awk '{printf "%.0f", $1/1024}')
+    local rss; rss=$(awk '{printf "%.0f", $1/1048576}' "/sys/fs/cgroup$(sed 's/^0:://' /proc/$pid/cgroup)/memory.peak")
     echo "$label|$path|$(printf '%s\n' "${rps[@]}" | median)|$(printf '%s\n' "${p50[@]}" | median)|$(printf '%s\n' "${p99[@]}" | median)|$rss|$a" >> "$OUT.tmp"
     echo "$label $path rps=$(printf '%s\n' "${rps[@]}" | median) p50=$(printf '%s\n' "${p50[@]}" | median)ms p99=$(printf '%s\n' "${p99[@]}" | median)ms rss=${rss}MB $a"
   done
@@ -44,6 +45,7 @@ for FMT in 0 1; do
   bench "archlast-forge (as scaffolded: islands + kept home)$SUFFIX" 3400 "$ROOT" "NODE_ENV=production KEEP=1" bun benchmarks/fullstack/archlast/server.ts
   bench "archlast-forge (islands, home rendered each time)$SUFFIX" 3400 "$ROOT" "NODE_ENV=production KEEP=0" bun benchmarks/fullstack/archlast/server.ts
   bench "archlast-forge (whole-page hydration, like React Router)$SUFFIX" 3400 "$ROOT" "NODE_ENV=production KEEP=0 ISLANDS=0" bun benchmarks/fullstack/archlast/server.ts
+  bench "brust 2.0 alpha (brust start, Rust renderer)$SUFFIX" 3600 "$HERE/brust" "NODE_ENV=production" bun node_modules/.bin/brust start
   bench "React Router 7 (react-router-serve, Node)$SUFFIX" 3500 "$HERE/react-router" "NODE_ENV=production PORT=3500" node node_modules/@react-router/serve/dist/cli.js ./build/server/index.js
   bench "Next.js 16 (next start, Node)$SUFFIX" 3300 "$HERE/next" "NODE_ENV=production" node node_modules/next/dist/bin/next start -p 3300
 done

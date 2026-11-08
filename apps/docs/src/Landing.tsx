@@ -2,6 +2,7 @@ import { type CSSProperties, Fragment, type PointerEvent, type ReactNode, useEff
 import { Link } from "react-router";
 import { Code, CopyButton } from "./Code";
 import { Arrow, Mark } from "./icons";
+import { Perf } from "./Perf";
 import { GITHUB, GROUPS, NPM, type Slug, reading, titleOf } from "./nav";
 import { snippets } from "./snippets" with { type: "macro" };
 
@@ -192,7 +193,7 @@ function Footer() {
           <Link className="btn" to="/getting-started">Get started <Arrow /></Link>
         </div>
         {stack("Start", "Project modes")}
-        {stack("Data and functions")}
+        {stack("Data and functions", "Performance")}
         {stack("Server features", "Clients and guides")}
         {stack("Run", "Reference")}
         {col("Project", [["GitHub", GITHUB], ["Issues", `${GITHUB}/issues`], ["npm", NPM], ["License", `${GITHUB}/blob/master/LICENSE`], ["llms.txt", "/llms.txt"], ["llms-full.txt", "/llms-full.txt"]].map(([t, h]) => <a key={t} href={h}>{t}</a>))}
@@ -298,6 +299,13 @@ export function Landing() {
                 </div>
               ))}
             </div>
+          </div>
+        </section>
+
+        <section className="sec">
+          <div className="wrap">
+            <div className="sec-head" data-reveal><Tag>Built for speed, measured</Tag><h2>Rust where the time goes, TypeScript where you write</h2><p>The HTTP engine, the page renderer and the thread pool are written in Rust and native code, so your app keeps its functions in TypeScript. Every number below was measured on one machine with the same limits for every contender, and the harness is in the repository.</p><More to="/benchmarks">The benchmarks, the machine and the method</More></div>
+            <Perf pool={code.pool} />
           </div>
         </section>
 

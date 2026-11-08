@@ -14,7 +14,7 @@ const fmt = (n: number) => (n >= 100 ? Math.round(n).toLocaleString("en-US") : n
 const table = (path: string, suffix: string, title: string) => {
   const mine = rows.filter((r) => r.path === path && r.label.endsWith(suffix));
   const best = Math.max(...mine.map((r) => r.rps));
-  const lines = [`### ${title}`, "", "| | requests/s | p50 ms | p99 ms | server RSS MB | HTML KB | JS to download (gzip KB) |", "|---|---:|---:|---:|---:|---:|---:|"];
+  const lines = [`### ${title}`, "", "| | requests/s | p50 ms | p99 ms | peak memory MB | HTML KB | JS to download (gzip KB) |", "|---|---:|---:|---:|---:|---:|---:|"];
   for (const r of mine) lines.push(`| ${r.label.replace(suffix, "")} | ${r.rps === best ? "**" + fmt(r.rps) + "**" : fmt(r.rps)} | ${fmt(r.p50)} | ${fmt(r.p99)} | ${r.rss} | ${(r.htmlBytes / 1024).toFixed(1)} | ${r.jsGzKB} |`);
   return lines.join("\n");
 };
@@ -22,7 +22,7 @@ const table = (path: string, suffix: string, title: string) => {
 const md = [
   `# Results`,
   "",
-  `Machine: ${cpus()[0]?.model.trim()}, ${cpus().length} threads; servers pinned to 4 cores, load from 4 others. oha, 64 connections, 5 s per run, median of 3. ${new Date().toISOString().slice(0, 10)}.`,
+  `Machine: ${cpus()[0]?.model.trim()}, ${cpus().length} threads; each server pinned to 4 cores and limited to 2 GiB of memory, load from 8 other threads. oha, 64 connections, 5 s per run, median of 3. ${new Date().toISOString().slice(0, 10)}.`,
   "",
   table("/", " [formatters per call]", "Home page (no data)"),
   "",
@@ -33,3 +33,12 @@ const md = [
 ].join("\n");
 writeFileSync(new URL("results.md", import.meta.url), md);
 console.log(md);
+
+// the same numbers for the docs site
+const json: Record<string, Record<string, Record<string, unknown>>> = {};
+for (const r of rows) {
+  const variant = r.label.endsWith(" [formatters shared]") ? "shared" : "perCall";
+  const label = r.label.replace(" [formatters shared]", "").replace(" [formatters per call]", "");
+  ((json[variant] ??= {})[r.path] ??= {})[label] = { rps: r.rps, p50ms: r.p50, p99ms: r.p99, peakMiB: r.rss, htmlKB: +(r.htmlBytes / 1024).toFixed(1), jsGzKB: r.jsGzKB };
+}
+writeFileSync(new URL("results.json", import.meta.url), `${JSON.stringify(json, null, 2)}\n`);
