@@ -192,7 +192,9 @@ ${mounts.map((m) => `  ${JSON.stringify(islandId(appRoot, m))}: () => import(${J
 
   const version = Date.now().toString(36);
   const dir = join(buildDirOf(root), version);
-  const common = { root, publicPath: "/_app/", sourcemap: dev ? ("linked" as const) : ("none" as const), drop: dev ? [] : ["debugger"], throw: false };
+  // `jsx.development` is the build's own say: Bun otherwise follows NODE_ENV of the shell that builds, and a production build made in a shell without it calls
+  // the development JSX runtime, which React's production build does not have ("jsxDEV is not a function" on every page).
+  const common = { root, publicPath: "/_app/", jsx: { development: dev }, sourcemap: dev ? ("linked" as const) : ("none" as const), drop: dev ? [] : ["debugger"], throw: false };
 
   const client = await Bun.build({
     ...common,

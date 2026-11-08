@@ -5,7 +5,8 @@ import { dehydrate, QueryClient } from "@tanstack/react-query";
 import { stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { preinit, preloadModule } from "react-dom";
-import { renderToReadableStream } from "react-dom/server";
+import type { ReactElement } from "react";
+import { renderToReadableStream, renderToString } from "react-dom/server";
 import { createStaticHandler, createStaticRouter, isRouteErrorResponse, matchRoutes, RouterContextProvider, StaticRouterProvider, type StaticHandlerContext } from "react-router";
 import { BuildError, buildApp, readBuild, type BuildManifest, type BuildResult } from "./build";
 import { createViewerStore, forgeContext, type LoaderContext, type Viewer } from "./context";
@@ -114,6 +115,29 @@ function inlineScriptHashes(html: string): string[] {
     hashes.add(`sha256-${new Bun.CryptoHasher("sha256").update(m[2]!).digest("base64")}`);
   }
   return [...hashes];
+}
+
+/**
+ * The page as HTML, rendered in one go. `renderToString` is about a third cheaper than the stream (no chunks to count and write, no Web stream to read back),
+ * and every page here is waited for to the end anyway. It cannot wait for a component that suspends (it writes the fallback and a marker for the browser to retry),
+ * so a page that does, or one that throws, returns null and is rendered again as a stream, which waits and reports errors the usual way.
+ */
+function renderInOnePass(element: ReactElement): string | null {
+  try {
+    const html = renderToString(element);
+    if (/<!--\$[!?]-->/.test(html)) return null;
+    return html.startsWith("<html") ? `<!DOCTYPE html>${html}` : html;
+  } catch {
+    return null;
+  }
+}
+
+/** The scripts of a page that is rendered and hydrated as a whole, put into the HTML the way React's `bootstrapScriptContent` and `bootstrapModules` do. */
+function withBootstrap(html: string, o: { entry: string; state: PageState; nonce?: string; dev: boolean }): string {
+  const nonce = o.nonce ? ` nonce="${escapeAttr(o.nonce)}"` : "";
+  const module = (file: string) => `<script type="module" src="/_app/${escapeAttr(file)}" async=""${nonce}></script>`;
+  const scripts = `<script${nonce}>window.__FORGE__=${scriptJson(o.state)};</script>${module(o.entry)}${o.dev ? module("__dev.js") : ""}`;
+  return insertBefore(insertBefore(html, "</head>", `<link rel="modulepreload" fetchPriority="low" href="/_app/${escapeAttr(o.entry)}"/>`), "</body>", scripts);
 }
 
 const escapeAttr = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
@@ -279,20 +303,21 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     const meter: IslandCount | null = withIslands ? { count: 0 } : null;
 
     try {
-      const stream = await renderToReadableStream(
-        <Page islands={meter} router={router} context={context} client={client} queryClient={queryClient} viewer={viewer} time={time} dev={dev} css={build.manifest.css} preload={preload} nonce={env.nonce} />,
-        {
-          // React's own inline scripts (the page's state, streamed boundaries) carry the engine's CSP nonce.
+      const element = <Page islands={meter} router={router} context={context} client={client} queryClient={queryClient} viewer={viewer} time={time} dev={dev} css={build.manifest.css} preload={preload} nonce={env.nonce} />;
+      let body = renderInOnePass(element);
+      if (body === null) {
+        const stream = await renderToReadableStream(element, {
+          // React's own inline scripts (streamed boundaries) carry the engine's CSP nonce.
           ...(env.nonce && { nonce: env.nonce }),
-          // With islands, the scripts are added below, and only if the page has an island.
-          ...(!withIslands && { bootstrapScriptContent: `window.__FORGE__=${scriptJson(state)};`, bootstrapModules: [`/_app/${build.manifest.entry}`, ...(dev ? ["/_app/__dev.js"] : [])] }),
           signal: req.signal,
           onError: (e) => log("error", `render failed (request ${env.requestId}): ${(e as Error)?.stack ?? e}`),
-        },
-      );
-      await stream.allReady;
-      if (!meter) return new Response(stream, { status, headers: { ...HTML_HEADERS, "x-request-id": env.requestId } });
-      const document = withScripts(await new Response(stream).text(), { islands: islands!, meter, state, nonce: env.nonce, dev });
+        });
+        await stream.allReady;
+        body = await new Response(stream).text();
+      }
+      // The scripts are added here, not by React: a page with islands has them only if an island rendered.
+      if (!meter) return new Response(withBootstrap(body, { entry: build.manifest.entry, state, nonce: env.nonce, dev }), { status, headers: { ...HTML_HEADERS, "x-request-id": env.requestId } });
+      const document = withScripts(body, { islands: islands!, meter, state, nonce: env.nonce, dev });
       // A page a route asks to have kept (`handle.cache`) is kept for anonymous visitors only: the same HTML would be served to anyone, so nothing in it may be about
       // a person. The engine does the keeping (and drops this note when it cannot), and a hit is served without running the app: the page can be up to `ttl`
       // seconds old, and a request that carries any cookie but the time zone's, or an authorization header, is not served from it.
