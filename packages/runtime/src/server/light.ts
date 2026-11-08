@@ -16,11 +16,14 @@ export interface LightRequest {
 }
 
 export class LightResponse {
-  constructor(
-    readonly status: number,
-    readonly headers: [string, string][],
-    readonly body: string | Uint8Array | null,
-  ) {}
+  readonly status: number;
+  readonly headers: [string, string][];
+  readonly body: string | Uint8Array | null;
+  constructor(status: number, headers: [string, string][], body: string | Uint8Array | null) {
+    this.status = status;
+    this.headers = headers;
+    this.body = body;
+  }
 }
 
 /** A JSON answer: `lightJson({ ok: true })`, `lightJson(item, 201)`. */
