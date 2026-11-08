@@ -65,21 +65,21 @@ The JavaScript servers (Forge, archlast-serve, Express, Bun) use the same store 
 | Go (fasthttp) | 483,527 | 397,865 | 450,130 | 458,484 | 67 MiB |
 | .NET 10 (Minimal APIs) | 399,712 | 347,109 | 341,848 | 306,066 | 70 MiB |
 | Bun.serve | 142,882 | 108,589 | 92,094 | 81,816 | 97 MiB |
-| archlast-forge (NestJS path, archlast-serve, telemetry off) | 35,414 | 33,213 | 30,164 | 27,920 | 215 MiB |
-| archlast-forge (NestJS path, archlast-serve) | 33,602 | 31,122 | 29,605 | 26,680 | 249 MiB |
+| archlast-forge (NestJS path, archlast-serve, telemetry off) | 131,430 | 115,507 | 106,665 | 97,251 | 211 MiB |
+| archlast-forge (NestJS path, archlast-serve) | 114,500 | 102,570 | 100,453 | 90,155 | 247 MiB |
+| archlast-forge (NestJS path, Bun.serve) | 33,995 | 30,861 | 25,740 | 24,322 | 195 MiB |
 | Node.js 24 (Express 5) | 22,408 | 20,694 | 16,090 | 16,925 | 122 MiB |
-| archlast-forge (NestJS path, Bun.serve) | 18,849 | 17,547 | 15,635 | 14,549 | 197 MiB |
 
-Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.11 / 0.22; archlast-serve 0.12 / 0.41; Go 0.11 / 0.54; .NET 10 0.14 / 0.57; Bun.serve 0.43 / 0.86; archlast-forge 1.96 / 3.71; archlast-forge 2.15 / 3.98; Node.js 24 2.81 / 3.29; archlast-forge 3.24 / 6.41.
+Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.11 / 0.22; archlast-serve 0.12 / 0.41; Go 0.11 / 0.54; .NET 10 0.14 / 0.57; Bun.serve 0.43 / 0.86; archlast-forge 0.46 / 1.48; archlast-forge 0.53 / 1.71; archlast-forge 1.79 / 3.57; Node.js 24 2.81 / 3.29.
 
 {/* /bench:rest */}
 
 How to read this:
 
-- **The compiled servers are 12 to 17 times as fast as a Forge app on reads, and that is expected.** A Forge request goes through a NestJS controller, the engine's routing, validation, telemetry and the JavaScript runtime, on one thread: it used about 1.2 of its four cores. Axum, Go and .NET do the same job in a few microseconds across all four. If a route needs that, write it in one of them.
+- **The compiled servers are 3.5 to 5 times as fast as a Forge app on reads.** A Forge request goes through a NestJS controller, the engine's routing, telemetry, security headers and the JavaScript runtime, and your code runs on one JavaScript thread: Forge used about 1.7 of its four cores, the Rust I/O threads taking the rest. Axum, Go and .NET do the same job across all four. If a route needs that, write it in one of them.
 - **archlast-serve on its own is level with the compiled servers.** Its handler is TypeScript on one JavaScript thread, and the engine's Rust threads do the sockets and HTTP around it: it answers about 3.5 times as many reads as `Bun.serve` and sits between Axum and Go. This is the engine's native API, which hands the handler a light context and takes a `Reply` back; the `Bun.serve` server here is one `fetch` handler with Web `Request` and `Response` objects, and a leaner `Bun.serve` (its `routes` option) would be faster than the row shown. The gap between this row and Forge's is what a framework costs: a NestJS controller, routing, validation, telemetry and the runtime between the socket and your code.
-- **Forge on the Nest path is faster than Express** (about 1.5 times on read) and slower than a bare `Bun.serve` (about a quarter of it): it does more per request than either. The engine is what puts it ahead of Express: on `Bun.serve` the same controller is slower than Express.
-- **Telemetry costs about 5%** here. It is on by default; set `TELEMETRY=off` to turn it off.
+- **Forge on the Nest path is about 5 times Express and about four fifths of a bare `Bun.serve`** on reads, with a NestJS controller, telemetry and security headers that neither of those has. On `Bun.serve` the same controller runs at about a third of that: the engine's own request reaches the Nest adapter without a Web `Request` or `Response` in between (see [archlast-serve](archlast-serve.html#what-the-http-path-does-for-a-request)).
+- **Telemetry costs about 13%** here, and it is on by default (every request is counted and a share of them are traced, kept in your own database). `TELEMETRY=off` turns it off; the first row shows what that gains.
 - The state is in memory and in one process, which is why the benchmark runs one function worker. A real Forge app keeps it in the database, which adds the database's time to each of these.
 
 ## A thread pool

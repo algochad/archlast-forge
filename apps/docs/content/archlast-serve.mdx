@@ -25,6 +25,17 @@ You do not install it or call it. The engine image has it, and `HTTP_ENGINE=auto
 
 `ARCHLAST_BACKEND` chooses how Bun loads the Rust core: `napi` (the default, a Node-API addon) or `bun-ffi` (a plain C ABI). Both run the same core and pass the same tests. The engine image ships the `napi` one. See [configuration](configuration.html#server).
 
+## What the HTTP path does for a request
+
+A request to `/http` (the routes of `forge/http.ts` and NestJS controllers) is answered from the engine's own request: the server reads the method, path, headers and body from it, runs the same checks, telemetry and rate limit as for any other request, and writes the answer as bytes. The pieces that took a Forge request from 33,000 to over 110,000 a second on four cores:
+
+- **No Web objects on the way in for Nest.** A NestJS controller's request is handed to the adapter as the fields it reads, and the Web `Request` is made only if a handler asks for `req.raw`. The answer comes back as a status, headers and bytes, not a `Response` that is then read back.
+- **Nest's interceptor machinery stays off HTTP routes.** The interceptor that records microservice and gateway messages goes on the handlers that take messages, so a controller's HTTP route is not run through an Observable and an async-context binding.
+- **Security headers are encoded once.** The REST API's Helmet headers are written as one block of bytes, not encoded name by name for every answer.
+- **Fewer hops.** The server skips its choice of function process when there is one, a request counted but not traced runs untraced, route matches and path names are remembered, and the Rust I/O threads default to one fewer than the cores (at most four): one core is left for the JavaScript thread.
+
+Telemetry, request ids, rate limits and every Nest feature work as before; anything the fast path would do differently (a WebSocket, a streamed body, the firewall, the API docs' paths) takes the old path.
+
 ## How much faster
 
 Two measurements, both in containers limited to 4 CPU cores and 2 GiB of memory, loaded with oha ([method and machine](benchmarks.html)).
@@ -35,19 +46,19 @@ Two measurements, both in containers limited to 4 CPU cores and 2 GiB of memory,
 
 | | `Bun.serve` | archlast-serve | |
 |---|---:|---:|---:|
-| Read one item (requests/s) | 18,849 | 33,602 | 1.8× |
-| List 20 items (requests/s) | 17,547 | 31,122 | 1.8× |
-| Update an item (requests/s) | 15,635 | 29,605 | 1.9× |
-| Create an item (requests/s) | 14,549 | 26,680 | 1.8× |
-| Read, 99th percentile | 6.41 ms | 3.98 ms | |
+| Read one item (requests/s) | 33,995 | 114,500 | 3.4× |
+| List 20 items (requests/s) | 30,861 | 102,570 | 3.3× |
+| Update an item (requests/s) | 25,740 | 100,453 | 3.9× |
+| Create an item (requests/s) | 24,322 | 90,155 | 3.7× |
+| Read, 99th percentile | 3.57 ms | 1.71 ms | |
 
 {/* /bench:engine */}
 
-The engine gives the same Nest controller about 1.8 times the requests per second, because the JavaScript thread no longer parses and frames requests and it is the thread that limits the app.
+The engine gives the same Nest controller about 3.4 times the requests per second, and more than a Nest app costs on `Bun.serve` because of what the engine hands the framework (below).
 
 **The engine on its own**, with no framework, serving the same API with its native `App` API (one JavaScript thread, three Rust I/O threads): about 494,000 reads a second, 3.5 times `Bun.serve`'s and level with Go, .NET and Axum, whose servers are compiled; the handler is TypeScript. It is in the table on the [benchmarks](benchmarks.html) page. The `Bun.serve` server there is a single `fetch` handler, so a leaner one would narrow that gap.
 
-**The same API in other stacks** (Go, Rust, .NET, Node, Bun) is on the [benchmarks](benchmarks.html) page. A Forge app is a framework with a database layer, authentication, telemetry and a dashboard in the request path, and it runs your code in JavaScript; it is not a rival to a hand-written Axum or fasthttp server, and the numbers there say so. The engine's job is to remove the cost the HTTP server adds, not the cost of JavaScript.
+**The same API in other stacks** (Go, Rust, .NET, Node, Bun) is on the [benchmarks](benchmarks.html) page. A Forge app is a framework with telemetry, security headers, authentication and a dashboard in the request path, and it runs your code in JavaScript, so it is not level with a hand-written Axum or fasthttp server (3.5 to 5 times behind on reads) and the numbers there say so.
 
 **Forge RPC echo, a call that does almost nothing** (the engine's own harness, `bench/container/compare.sh`, same limits). The echo handler's cost is so small that this measures the server:
 

@@ -5,10 +5,10 @@
 | Go (fasthttp) | 483,527 | 397,865 | 450,130 | 458,484 | 67 MiB |
 | .NET 10 (Minimal APIs) | 399,712 | 347,109 | 341,848 | 306,066 | 70 MiB |
 | Bun.serve | 142,882 | 108,589 | 92,094 | 81,816 | 97 MiB |
-| archlast-forge (NestJS path, archlast-serve, telemetry off) | 35,414 | 33,213 | 30,164 | 27,920 | 215 MiB |
-| archlast-forge (NestJS path, archlast-serve) | 33,602 | 31,122 | 29,605 | 26,680 | 249 MiB |
+| archlast-forge (NestJS path, archlast-serve, telemetry off) | 131,430 | 115,507 | 106,665 | 97,251 | 211 MiB |
+| archlast-forge (NestJS path, archlast-serve) | 114,500 | 102,570 | 100,453 | 90,155 | 247 MiB |
+| archlast-forge (NestJS path, Bun.serve) | 33,995 | 30,861 | 25,740 | 24,322 | 195 MiB |
 | Node.js 24 (Express 5) | 22,408 | 20,694 | 16,090 | 16,925 | 122 MiB |
-| archlast-forge (NestJS path, Bun.serve) | 18,849 | 17,547 | 15,635 | 14,549 | 197 MiB |
 
 Requests per second, median of the runs. Latency (p50 / p99, ms) and the CPU the server used:
 
@@ -34,19 +34,19 @@ Requests per second, median of the runs. Latency (p50 / p99, ms) and the CPU the
 | Bun.serve | list | 0.568 | 1.121 | 0.82 |
 | Bun.serve | update | 0.664 | 1.331 | 0.84 |
 | Bun.serve | create | 0.683 | 3.045 | 1.06 |
-| archlast-forge (NestJS path, archlast-serve, telemetry off) | read | 1.961 | 3.709 | 1.23 |
-| archlast-forge (NestJS path, archlast-serve, telemetry off) | list | 2.065 | 4.055 | 1.26 |
-| archlast-forge (NestJS path, archlast-serve, telemetry off) | update | 2.166 | 4.382 | 1.25 |
-| archlast-forge (NestJS path, archlast-serve, telemetry off) | create | 2.349 | 7.288 | 1.34 |
-| archlast-forge (NestJS path, archlast-serve) | read | 2.15 | 3.98 | 1.23 |
-| archlast-forge (NestJS path, archlast-serve) | list | 1.885 | 4.022 | 1.22 |
-| archlast-forge (NestJS path, archlast-serve) | update | 2.386 | 4.362 | 1.24 |
-| archlast-forge (NestJS path, archlast-serve) | create | 2.139 | 7.488 | 1.32 |
+| archlast-forge (NestJS path, archlast-serve, telemetry off) | read | 0.463 | 1.48 | 1.76 |
+| archlast-forge (NestJS path, archlast-serve, telemetry off) | list | 0.541 | 1.606 | 1.7 |
+| archlast-forge (NestJS path, archlast-serve, telemetry off) | update | 0.531 | 1.89 | 1.71 |
+| archlast-forge (NestJS path, archlast-serve, telemetry off) | create | 0.563 | 4.786 | 1.82 |
+| archlast-forge (NestJS path, archlast-serve) | read | 0.534 | 1.709 | 1.69 |
+| archlast-forge (NestJS path, archlast-serve) | list | 0.673 | 1.77 | 1.63 |
+| archlast-forge (NestJS path, archlast-serve) | update | 0.605 | 1.856 | 1.66 |
+| archlast-forge (NestJS path, archlast-serve) | create | 0.561 | 5.028 | 1.74 |
+| archlast-forge (NestJS path, Bun.serve) | read | 1.795 | 3.568 | 0.92 |
+| archlast-forge (NestJS path, Bun.serve) | list | 1.981 | 3.866 | 0.91 |
+| archlast-forge (NestJS path, Bun.serve) | update | 2.369 | 4.688 | 0.93 |
+| archlast-forge (NestJS path, Bun.serve) | create | 2.389 | 7.378 | 1.03 |
 | Node.js 24 (Express 5) | read | 2.807 | 3.285 | 0.92 |
 | Node.js 24 (Express 5) | list | 3.068 | 3.546 | 0.91 |
 | Node.js 24 (Express 5) | update | 3.933 | 4.727 | 0.94 |
 | Node.js 24 (Express 5) | create | 3.731 | 4.653 | 0.94 |
-| archlast-forge (NestJS path, Bun.serve) | read | 3.241 | 6.405 | 0.95 |
-| archlast-forge (NestJS path, Bun.serve) | list | 3.499 | 5.154 | 0.94 |
-| archlast-forge (NestJS path, Bun.serve) | update | 3.892 | 7.556 | 0.95 |
-| archlast-forge (NestJS path, Bun.serve) | create | 3.95 | 9.762 | 1.05 |

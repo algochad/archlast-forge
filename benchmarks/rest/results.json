@@ -169,108 +169,6 @@
       }
     }
   },
-  "forge": {
-    "label": "archlast-forge (NestJS path, archlast-serve)",
-    "peakMiB": 249,
-    "scenarios": {
-      "read": {
-        "rps": 33602,
-        "p50ms": 2.15,
-        "p99ms": 3.98,
-        "cores": 1.23,
-        "success": 1
-      },
-      "list": {
-        "rps": 31122,
-        "p50ms": 1.885,
-        "p99ms": 4.022,
-        "cores": 1.22,
-        "success": 1
-      },
-      "update": {
-        "rps": 29605,
-        "p50ms": 2.386,
-        "p99ms": 4.362,
-        "cores": 1.24,
-        "success": 1
-      },
-      "create": {
-        "rps": 26680,
-        "p50ms": 2.139,
-        "p99ms": 7.488,
-        "cores": 1.32,
-        "success": 1
-      }
-    }
-  },
-  "forge-bun": {
-    "label": "archlast-forge (NestJS path, Bun.serve)",
-    "peakMiB": 197,
-    "scenarios": {
-      "read": {
-        "rps": 18849,
-        "p50ms": 3.241,
-        "p99ms": 6.405,
-        "cores": 0.95,
-        "success": 1
-      },
-      "list": {
-        "rps": 17547,
-        "p50ms": 3.499,
-        "p99ms": 5.154,
-        "cores": 0.94,
-        "success": 1
-      },
-      "update": {
-        "rps": 15635,
-        "p50ms": 3.892,
-        "p99ms": 7.556,
-        "cores": 0.95,
-        "success": 1
-      },
-      "create": {
-        "rps": 14549,
-        "p50ms": 3.95,
-        "p99ms": 9.762,
-        "cores": 1.05,
-        "success": 1
-      }
-    }
-  },
-  "forge-notelemetry": {
-    "label": "archlast-forge (NestJS path, archlast-serve, telemetry off)",
-    "peakMiB": 215,
-    "scenarios": {
-      "read": {
-        "rps": 35414,
-        "p50ms": 1.961,
-        "p99ms": 3.709,
-        "cores": 1.23,
-        "success": 1
-      },
-      "list": {
-        "rps": 33213,
-        "p50ms": 2.065,
-        "p99ms": 4.055,
-        "cores": 1.26,
-        "success": 1
-      },
-      "update": {
-        "rps": 30164,
-        "p50ms": 2.166,
-        "p99ms": 4.382,
-        "cores": 1.25,
-        "success": 1
-      },
-      "create": {
-        "rps": 27920,
-        "p50ms": 2.349,
-        "p99ms": 7.288,
-        "cores": 1.34,
-        "success": 1
-      }
-    }
-  },
   "serve": {
     "label": "archlast-serve (native App API, 3 I/O threads)",
     "peakMiB": 106,
@@ -301,6 +199,108 @@
         "p50ms": 0.133,
         "p99ms": 1.277,
         "cores": 2.78,
+        "success": 1
+      }
+    }
+  },
+  "forge": {
+    "label": "archlast-forge (NestJS path, archlast-serve)",
+    "peakMiB": 247,
+    "scenarios": {
+      "read": {
+        "rps": 114500,
+        "p50ms": 0.534,
+        "p99ms": 1.709,
+        "cores": 1.69,
+        "success": 1
+      },
+      "list": {
+        "rps": 102570,
+        "p50ms": 0.673,
+        "p99ms": 1.77,
+        "cores": 1.63,
+        "success": 1
+      },
+      "update": {
+        "rps": 100453,
+        "p50ms": 0.605,
+        "p99ms": 1.856,
+        "cores": 1.66,
+        "success": 1
+      },
+      "create": {
+        "rps": 90155,
+        "p50ms": 0.561,
+        "p99ms": 5.028,
+        "cores": 1.74,
+        "success": 1
+      }
+    }
+  },
+  "forge-bun": {
+    "label": "archlast-forge (NestJS path, Bun.serve)",
+    "peakMiB": 195,
+    "scenarios": {
+      "read": {
+        "rps": 33995,
+        "p50ms": 1.795,
+        "p99ms": 3.568,
+        "cores": 0.92,
+        "success": 1
+      },
+      "list": {
+        "rps": 30861,
+        "p50ms": 1.981,
+        "p99ms": 3.866,
+        "cores": 0.91,
+        "success": 1
+      },
+      "update": {
+        "rps": 25740,
+        "p50ms": 2.369,
+        "p99ms": 4.688,
+        "cores": 0.93,
+        "success": 1
+      },
+      "create": {
+        "rps": 24322,
+        "p50ms": 2.389,
+        "p99ms": 7.378,
+        "cores": 1.03,
+        "success": 1
+      }
+    }
+  },
+  "forge-notelemetry": {
+    "label": "archlast-forge (NestJS path, archlast-serve, telemetry off)",
+    "peakMiB": 211,
+    "scenarios": {
+      "read": {
+        "rps": 131430,
+        "p50ms": 0.463,
+        "p99ms": 1.48,
+        "cores": 1.76,
+        "success": 1
+      },
+      "list": {
+        "rps": 115507,
+        "p50ms": 0.541,
+        "p99ms": 1.606,
+        "cores": 1.7,
+        "success": 1
+      },
+      "update": {
+        "rps": 106665,
+        "p50ms": 0.531,
+        "p99ms": 1.89,
+        "cores": 1.71,
+        "success": 1
+      },
+      "create": {
+        "rps": 97251,
+        "p50ms": 0.563,
+        "p99ms": 4.786,
+        "cores": 1.82,
         "success": 1
       }
     }
