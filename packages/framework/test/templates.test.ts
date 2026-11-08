@@ -46,11 +46,11 @@ describe("pages printed by the engine from templates", () => {
   test("the build compiled the pages it understands and says why it left the others", () => {
     if (!native) return console.warn("skipped: the native engine is not built here");
     const t = readBuild(root)!.manifest.templates!;
-    expect([...t.routes].sort()).toEqual(["routes/index", "routes/items/index"]);
+    expect([...t.routes].sort()).toEqual(["routes/index", "routes/items/index", "routes/report"]);
     expect(t.reasons["routes/odd"]).toContain("call");
   });
 
-  for (const path of ["/", "/items", "/odd", "/nope"]) {
+  for (const path of ["/", "/items", "/odd", "/nope", "/report"]) {
     test(`${path}: the same page as React prints`, async () => {
       if (!native) return console.warn("skipped: the native engine is not built here");
       const [a, b] = await Promise.all([get(templated, path), get(reacted, path)]);

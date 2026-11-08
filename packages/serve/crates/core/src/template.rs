@@ -197,16 +197,46 @@ fn js_string(v: &Val) -> String {
         Val::Bool(b) => b.to_string(),
         Val::Str(s) => s.to_string(),
         Val::Int(i) => i.to_string(),
-        Val::Num(f) => {
-            if f.fract() == 0.0 && f.abs() < 1e21 {
-                format!("{}", *f as i128)
-            } else {
-                format!("{f}")
-            }
-        }
+        Val::Num(f) => number_string(*f),
         Val::Arr(a) => a.iter().map(|x| if matches!(x, Val::Null) { String::new() } else { js_string(x) }).collect::<Vec<_>>().join(","),
         Val::Obj(_) => "[object Object]".into(),
     }
+}
+
+/// JavaScript's `String(n)` for a number: the shortest digits that read back as the same number, in decimal form from 1e-6 up to 1e21 and in exponent form outside.
+fn number_string(f: f64) -> String {
+    if f.is_nan() {
+        return "NaN".into();
+    }
+    if f == 0.0 {
+        return "0".into(); // also -0
+    }
+    if f.is_infinite() {
+        return if f < 0.0 { "-Infinity" } else { "Infinity" }.into();
+    }
+    // `{:e}` gives the shortest round-trip digits as "d.ddde<exp>"
+    let sci = format!("{:e}", f.abs());
+    let (mantissa, exp) = sci.split_once('e').unwrap_or((&sci, "0"));
+    let digits: String = mantissa.chars().filter(|c| *c != '.').collect();
+    let k = digits.len() as i32;
+    let n = exp.parse::<i32>().unwrap_or(0) + 1; // the decimal point sits after the n-th digit
+    let sign = if f < 0.0 { "-" } else { "" };
+    let body = if k <= n && n <= 21 {
+        format!("{digits}{}", "0".repeat((n - k) as usize))
+    } else if 0 < n && n <= 21 {
+        format!("{}.{}", &digits[..n as usize], &digits[n as usize..])
+    } else if -6 < n && n <= 0 {
+        format!("0.{}{digits}", "0".repeat((-n) as usize))
+    } else {
+        let e = n - 1;
+        let es = if e < 0 { format!("-{}", -e) } else { format!("+{e}") };
+        if k == 1 {
+            format!("{digits}e{es}")
+        } else {
+            format!("{}.{}e{es}", &digits[..1], &digits[1..])
+        }
+    };
+    format!("{sign}{body}")
 }
 
 fn num(v: &Val) -> Option<f64> {
@@ -463,6 +493,17 @@ mod tests {
 
     fn run(t: &str, d: &str) -> String {
         Template::parse(t).unwrap().render(&json::parse(d).unwrap()).unwrap()
+    }
+
+    #[test]
+    fn numbers_print_as_javascript_prints_them() {
+        for (n, want) in [
+            (0.0, "0"), (-0.0, "0"), (1.0, "1"), (-12.5, "-12.5"), (0.1 + 0.2, "0.30000000000000004"), (100.0, "100"), (1e20, "100000000000000000000"),
+            (1e21, "1e+21"), (1.5e21, "1.5e+21"), (123456789012345680000.0, "123456789012345680000"), (0.000001, "0.000001"), (1e-7, "1e-7"), (1.5e-7, "1.5e-7"),
+            (-2.5e-10, "-2.5e-10"), (f64::NAN, "NaN"), (f64::INFINITY, "Infinity"), (5e-324, "5e-324"), (1.7976931348623157e308, "1.7976931348623157e+308"),
+        ] {
+            assert_eq!(number_string(n), want, "{n:e}");
+        }
     }
 
     #[test]

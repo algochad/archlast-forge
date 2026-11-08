@@ -97,7 +97,7 @@ describe("pages with islands", () => {
 
   test("a write to a table a kept page read ends it; a write to another table does not", async () => {
     if (!native) return console.warn("skipped: the native engine is not built here");
-    const seen = async () => /(\d+) items, rendered (\d+)/.exec((await fetch(`${srv.url}/cached-items`).then((r) => r.text())).replaceAll("<!-- -->", ""))?.slice(1).map(Number);
+    const seen = async () => /(\d+) items, rendered (\d+)/.exec((await fetch(`${srv.url}/cached-items`).then((r) => r.text())).replaceAll("<!-- -->", ""))?.slice(1).map(Number) as [number, number];
     const rpc = (name: string, args: object) => fetch(`${srv.url}/rpc/${name}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(args) });
     const [n, r] = (await seen())!;
     expect(await seen()).toEqual([n, r]); // kept

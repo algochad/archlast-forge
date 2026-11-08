@@ -58,9 +58,9 @@ export interface Compiled {
 }
 
 const VOID = new Set(["area", "base", "br", "col", "embed", "hr", "img", "input", "link", "meta", "source", "track", "wbr"]);
-const UNSUPPORTED_TAGS = new Set(["script", "style", "textarea", "select", "option", "svg", "math", "iframe", "form", "template", "noscript"]);
+const UNSUPPORTED_TAGS = new Set(["script", "style", "textarea", "select", "option", "svg", "math", "iframe", "template", "noscript"]);
 /** Attributes that print as `name=""` when true. */
-const BOOLEAN = new Set(["disabled", "readOnly", "hidden", "required", "autofocus", "noValidate", "allowFullScreen", "autoPlay", "itemScope", "async", "defer", "open", "loop", "muted", "controls", "multiple", "reversed", "default", "inert", "noModule", "formNoValidate", "playsInline"]);
+const BOOLEAN = new Set(["disabled", "readOnly", "hidden", "required", "autofocus", "noValidate", "allowFullScreen", "autoPlay", "itemScope", "async", "defer", "open", "loop", "muted", "controls", "multiple", "reversed", "default", "inert", "noModule", "formNoValidate", "playsInline", "checked", "selected"]);
 /** Attributes whose true and false print as the text "true" and "false". */
 const ENUMERATED = new Set(["contentEditable", "spellCheck", "draggable"]);
 /** The few names React changes when it prints an attribute; every other name is printed as written. */
@@ -285,6 +285,11 @@ function expression(n: Node, env: Env, ctx: Ctx, mod: Module): Ir {
     }
     case "CallExpression":
       return call(n, env, ctx, mod);
+    case "ArrayExpression":
+    case "ObjectExpression": {
+      const v = literal(n);
+      return v === NOT_A_LITERAL ? no(`${n.type} with something that is not a literal in it`) : ["l", v];
+    }
     default:
       return no(`${n.type} in an expression`);
   }
@@ -431,19 +436,59 @@ function attributeName(raw: string): { name: string; mode: boolean | "enum" } {
   return { name, mode: ENUMERATED.has(raw) ? "enum" : BOOLEAN.has(name) || BOOLEAN.has(raw) };
 }
 
-function styleString(v: Node): string {
+/** What a style value is, when it can be told from the code: a number gets "px" unless it is unitless, a string is printed as it is. */
+function valueKind(n: Node): "string" | "number" | undefined {
+  switch (n.type) {
+    case "Literal":
+      return typeof n.value === "string" ? "string" : typeof n.value === "number" ? "number" : undefined;
+    case "TemplateLiteral":
+      return "string";
+    case "BinaryExpression": {
+      if (["-", "*", "/", "%"].includes(n.operator)) return "number";
+      if (n.operator !== "+") return undefined;
+      const l = valueKind(n.left);
+      const r = valueKind(n.right);
+      return l === "string" || r === "string" ? "string" : l === "number" && r === "number" ? "number" : undefined;
+    }
+    case "ConditionalExpression": {
+      const l = valueKind(n.consequent);
+      return l && l === valueKind(n.alternate) ? l : undefined;
+    }
+    default:
+      return undefined;
+  }
+}
+
+/** A style object as its text when every value is a literal, otherwise as an expression that makes the text. */
+function styleValue(v: Node, env: Env, ctx: Ctx, mod: Module): string | Ir {
   if (v.type !== "ObjectExpression") return no("a style that is not an object literal");
-  return (v.properties as Node[])
-    .map((p) => {
-      if (p.type !== "Property" || p.computed || p.value.type !== "Literal") return no("a style with a value that is not a literal");
-      const key = (p.key.name ?? p.key.value) as string;
+  const parts: (string | Ir)[] = [];
+  for (const p of v.properties as Node[]) {
+    if (p.type !== "Property" || p.computed) return no("a style with a computed or spread property");
+    const key = (p.key.name ?? p.key.value) as string;
+    const name = kebab(key);
+    let value: string | Ir;
+    if (p.value.type === "Literal") {
       const val = p.value.value;
-      if (val === null || typeof val === "boolean") return "";
-      if (typeof val === "number") return `${kebab(key)}:${val === 0 || UNITLESS.has(key) ? val : `${val}px`}`;
-      return `${kebab(key)}:${val}`;
-    })
-    .filter(Boolean)
-    .join(";");
+      if (val === null || typeof val === "boolean") continue;
+      value = typeof val === "number" ? `${val === 0 || UNITLESS.has(key) ? val : `${val}px`}` : String(val);
+    } else {
+      const kind = valueKind(p.value);
+      if (!kind) return no(`a style value for ${key} that may be a number or a string`);
+      const x = expression(p.value, env, ctx, mod);
+      value = kind === "string" || UNITLESS.has(key) ? x : ["?:", ["===", x, ["l", 0]], ["l", "0"], ["`", [x, ["l", "px"]]]];
+    }
+    parts.push(parts.length ? `;${name}:` : `${name}:`, value);
+  }
+  if (parts.every((x) => typeof x === "string")) return parts.join("");
+  // adjacent text is joined so the template stays small
+  const joined: Ir[] = [];
+  for (const x of parts) {
+    const last = joined.at(-1);
+    if (typeof x === "string" && last && last[0] === "l" && typeof last[1] === "string") joined[joined.length - 1] = ["l", last[1] + x];
+    else joined.push(typeof x === "string" ? ["l", x] : x);
+  }
+  return ["`", joined];
 }
 
 /** Attributes of a host element, as nodes. */
@@ -454,13 +499,18 @@ function attributes(props: Node[], env: Env, ctx: Ctx, mod: Module, skip: Set<st
     const raw = (p.key.name ?? p.key.value) as string;
     if (raw === "children" || skip.has(raw)) continue;
     if (raw === "key") continue;
-    if (raw === "ref" || raw === "dangerouslySetInnerHTML" || raw === "suppressHydrationWarning" || raw === "value" || raw === "defaultValue" || raw === "defaultChecked" || /^on[A-Z]/.test(raw)) return no(`the prop ${raw}`);
+    if (raw === "ref" || raw === "dangerouslySetInnerHTML" || raw === "suppressHydrationWarning" || /^on[A-Z]/.test(raw)) return no(`the prop ${raw}`);
     if (raw === "style") {
-      const css = styleString(p.value);
-      if (css) out.push(` style="${escapeText(css)}"`);
+      const css = styleValue(p.value, env, ctx, mod);
+      if (typeof css === "string") {
+        if (css) out.push(` style="${escapeText(css)}"`);
+      } else out.push(["a", "style", css, false]);
       continue;
     }
-    const { name, mode } = attributeName(raw);
+    // A string is an address; anything else may be a function (a server action), which React prints as something else
+    if ((raw === "action" || raw === "formAction") && !(p.value.type === "Literal" && typeof p.value.value === "string")) return no(`${raw} that is not a literal address`);
+    // the form fields an app prints with a value in them: what React prints for a default is the same as for the value
+    const { name, mode } = attributeName(raw === "defaultValue" ? "value" : raw === "defaultChecked" ? "checked" : raw);
     if (p.value.type === "Literal") {
       const v = p.value.value;
       if (v === null) continue;
@@ -489,7 +539,8 @@ function element(n: Node, env: Env, ctx: Ctx, mod: Module): Nodes {
 function host(tag: string, props: Node[], children: Node | undefined, env: Env, ctx: Ctx, mod: Module): Nodes {
   if (UNSUPPORTED_TAGS.has(tag)) return no(`the element <${tag}>`);
   const hoistable = tag === "title" || tag === "meta" || tag === "link";
-  const attrs = attributes(props, env, ctx, mod, new Set());
+  const html = props.find((p) => p.type === "Property" && !p.computed && (p.key.name ?? p.key.value) === "dangerouslySetInnerHTML");
+  const attrs = attributes(props, env, ctx, mod, new Set(html ? ["dangerouslySetInnerHTML"] : []));
   if (tag === "link" && !props.some((p) => (p.key?.name ?? p.key?.value) === "rel")) return no("a <link> without rel");
   if (VOID.has(tag)) {
     if (children) return no(`children of <${tag}>`);
@@ -499,6 +550,14 @@ function host(tag: string, props: Node[], children: Node | undefined, env: Env, 
       return [];
     }
     return node;
+  }
+  if (html) {
+    // `{ __html: text }`: the text goes in as it is, the way the app meant it
+    if (children) return no(`children and dangerouslySetInnerHTML on <${tag}>`);
+    const obj = html.value as Node;
+    const field = obj.type === "ObjectExpression" && obj.properties.length === 1 ? (obj.properties[0] as Node) : undefined;
+    if (!field || field.type !== "Property" || field.computed || (field.key.name ?? field.key.value) !== "__html") return no("a dangerouslySetInnerHTML that is not { __html: … }");
+    return [`<${tag}`, ...attrs, ">", ["raw", ["??", expression(field.value, env, ctx, mod), ["l", ""]]], `</${tag}>`];
   }
   const inner = tag === "head" ? [...childNodes(children, env, ctx, mod), { head: true }] : tag === "body" ? [...childNodes(children, env, ctx, mod), ["raw", path("d", "bodyEnd")]] : childNodes(children, env, ctx, mod);
   const node = [`<${tag}`, ...attrs, ">", ...inner, `</${tag}>`];
@@ -578,6 +637,13 @@ const HOOKS: Record<string, (ctx: Ctx) => Ir> = {
 function declare(id: Node, init: Node, env: Env, ctx: Ctx, mod: Module) {
   if (init.type === "CallExpression" && init.callee.type === "Identifier") {
     const imp = mod.imports.byLocal.get(init.callee.name);
+    // useMemo only saves work for the next render; a page is printed once, so its value is what the function returns
+    if (imp?.source === "react" && imp.imported === "useMemo") {
+      const fn = init.arguments[0] as Node | undefined;
+      if (!fn || (fn.type !== "ArrowFunctionExpression" && fn.type !== "FunctionExpression") || fn.params.length) return no("a useMemo whose first argument is not a function without parameters");
+      const only = fn.body.type === "BlockStatement" ? (fn.body.body.length === 1 && fn.body.body[0].type === "ReturnStatement" ? fn.body.body[0].argument : undefined) : fn.body;
+      return bindIr(id, expression(only ?? no("a useMemo that does more than return a value"), env, ctx, mod), env);
+    }
     const hookName = imp?.imported ?? init.callee.name;
     if (HOOKS[hookName] && (!imp || /^(@archlast\/forge-framework|react-router)$/.test(imp.source))) {
       bindIr(id, HOOKS[hookName]!(ctx), env);
@@ -617,9 +683,18 @@ function run(mod: Module, fn: Node, given: Map<string, Binding>, ctx: Ctx): Node
     if (param.type === "Identifier") env.set(param.name, { kind: "props", props: given });
     else if (param.type === "ObjectPattern") {
       for (const p of param.properties as Node[]) {
-        if (p.type !== "Property" || p.computed || p.value.type !== "Identifier") return no("props destructured with a default, rest or nested pattern");
+        if (p.type !== "Property" || p.computed || (p.value.type !== "Identifier" && !(p.value.type === "AssignmentPattern" && p.value.left.type === "Identifier"))) return no("props destructured with a rest or nested pattern");
         const key = (p.key.name ?? p.key.value) as string;
-        env.set(p.value.name, given.get(key) ?? { kind: "ir", ir: ["l", null] });
+        const target = p.value.type === "Identifier" ? p.value : p.value.left;
+        const got = given.get(key);
+        if (p.value.type === "Identifier") env.set(target.name, got ?? { kind: "ir", ir: ["l", null] });
+        else {
+          // A default applies to what is undefined. That is known when the caller left the prop out or wrote `undefined`; what it passes from data may be undefined or null, which differ in JavaScript and not in the data.
+          const literal = got?.kind === "ir" && got.ir[0] === "l" && got.ir[1] !== null;
+          if (!got) env.set(target.name, { kind: "ir", ir: expression(p.value.right, new Map(), ctx, mod) });
+          else if (literal || got.kind !== "ir") env.set(target.name, got);
+          else return no(`the default of ${key}, given a value that may be undefined`);
+        }
       }
     } else return no("a parameter that is a pattern");
   }
