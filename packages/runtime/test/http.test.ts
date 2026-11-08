@@ -131,6 +131,11 @@ describe("httpRouter", () => {
     expect(m.route.pathPrefix).toBe("/a/b/");
     expect(matchRoute(r.routes, "GET", "/a")).toEqual({ status: 404 });
   });
+  test("a handler that declares only ctx is called without a Request, and one that reads arguments is given it", async () => {
+    expect(await (await http("/ctx-only")).json()).toEqual({ request: "true", who: true });
+    expect(await (await http("/arguments")).json()).toEqual({ url: "/arguments" });
+  });
+
   test("a lightAction route is given the request's fields and answers with bytes, or with a Response if it likes", async () => {
     const res = await http("/light?x=1", { method: "POST", body: "hello bytes" });
     expect(res.status).toBe(201);

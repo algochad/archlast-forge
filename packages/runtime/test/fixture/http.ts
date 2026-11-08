@@ -3,8 +3,19 @@ import { anyApi, ForgeError, httpAction, httpRouter, lightAction, lightJson, Lig
 const api = anyApi;
 const http = httpRouter();
 const json = (body: unknown, init?: ResponseInit) => Response.json(body, init);
+const arguments_ = undefined;
 
 http.route({ method: "GET", path: "/hello", handler: httpAction(async () => new Response("hello", { headers: { "x-custom": "yes" } })) });
+// handlers that declare only ctx are not given a Request (none is made); one that reads `arguments` is
+http.route({ method: "GET", path: "/ctx-only", handler: httpAction(async (ctx) => json({ request: String(arguments_ === undefined), who: (await ctx.auth.getUserIdentity()) === null })) });
+http.route({
+  method: "GET",
+  path: "/arguments",
+  handler: httpAction(async function (_ctx: unknown) {
+    // eslint-disable-next-line prefer-rest-params
+    return json({ url: new URL((arguments[1] as Request).url).pathname });
+  } as never),
+});
 // lightAction: given the request's fields, answering without a Web Request or Response
 http.route({
   method: "POST",

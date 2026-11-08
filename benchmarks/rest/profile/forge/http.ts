@@ -16,6 +16,7 @@ http.route({
     return item ? Response.json(item) : Response.json({ error: "not found" }, { status: 404 });
   }),
 });
+http.route({ method: "GET", path: "/ctx-only", handler: httpAction(async (_ctx) => new Response("ok")) });
 http.route({ method: "GET", path: "/ping", handler: httpAction(async () => new Response("ok")) });
 // a route that takes the light request and answers with bytes: what the pipeline costs without Web objects or Nest
 const lite = httpAction((() => new LightResponse(200, [["content-type", "application/json"]], '{"ok":true}')) as unknown as () => Response);

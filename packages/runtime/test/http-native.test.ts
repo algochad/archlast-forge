@@ -105,6 +105,12 @@ describe("/http on the native engine", () => {
     expect(answers[3]!.headers.get("x-request-id")).toBeTruthy();
   });
 
+  test("a handler that declares only ctx is called without a Request, and one that reads arguments is given it", async () => {
+    if (!native) return console.warn("skipped: the native engine is not built here");
+    expect(await (await http("/ctx-only")).json()).toEqual({ request: "true", who: true });
+    expect(await (await http("/arguments")).json()).toEqual({ url: "/arguments" });
+  });
+
   test("a lightAction route is given the request's fields and answers with bytes, or with a Response if it likes", async () => {
     if (!native) return console.warn("skipped: the native engine is not built here");
     const res = await http("/light?x=1", { method: "POST", body: "hello bytes" });

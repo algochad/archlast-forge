@@ -14,7 +14,7 @@ import type { Db } from "./db/types";
 import type { HttpRoute, UserIdentity } from "../functions";
 import { Executor, logContext, serializeError, type CallHeaders, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
-import { checkHttpRequest, matchRoute, routeName } from "./http";
+import { checkHttpRequest, matchRoute, routeName, takesRequest } from "./http";
 import { buildOpenApi, docsWarnings, NEST_MOUNT, type NestRoute } from "./openapi";
 import { LIGHT, LightResponse } from "./light";
 import type { HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
@@ -390,7 +390,9 @@ export async function startCore(opts: {
             },
             body,
           }
-        : new Request(req.url, { method, headers: req.headers, body }),
+        : takesRequest(route.handler.handler)
+          ? new Request(req.url, { method, headers: req.headers, body })
+          : (undefined as unknown as Request), // a handler that declares only `ctx` cannot use one
       msg.requestId,
       httpAnswer,
       route,
@@ -452,7 +454,9 @@ export async function startCore(opts: {
                   },
                   body,
                 }
-              : new Request(url, { method, headers: req.headers, body }),
+              : takesRequest(route.handler.handler)
+                ? new Request(url, { method, headers: req.headers, body })
+                : (undefined as unknown as Request),
             msg.headers,
             msg.requestId,
           );

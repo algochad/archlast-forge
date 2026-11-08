@@ -56,6 +56,43 @@ function findRoute<R extends RoutePattern>(routes: R[], method: string, path: st
   return best ? { route: best } : { status: 405, allow: [...new Set(here.map((r) => r.method))] };
 }
 
+const wants = new WeakMap<Function, boolean>();
+
+/**
+ * Whether an HTTP action's handler can use the `Request` it is called with: false only for a function that declares nothing but `ctx` (`async (ctx) => …`, a
+ * health check), which has no way to reach it. Then none is made. A function with a second parameter (even one with a default), a rest parameter or a use of
+ * `arguments` gets one, as does anything this cannot read.
+ */
+export function takesRequest(fn: Function): boolean {
+  let known = wants.get(fn);
+  if (known !== undefined) return known;
+  known = true;
+  if (fn.length === 1) {
+    const source = Function.prototype.toString.call(fn);
+    // the parameter list: from the first "(" (or none, for `ctx => …`) to its ")" or to the arrow
+    const arrow = source.indexOf("=>");
+    const open = source.indexOf("(");
+    let params: string | undefined;
+    if (open >= 0 && (arrow < 0 || open < arrow)) {
+      let depth = 0;
+      for (let i = open; i < source.length; i++) {
+        const c = source[i];
+        if (c === "(" || c === "[" || c === "{") depth++;
+        else if (c === ")" || c === "]" || c === "}") {
+          depth--;
+          if (depth === 0) {
+            params = source.slice(open + 1, i);
+            break;
+          }
+        }
+      }
+    } else if (arrow >= 0) params = source.slice(0, arrow).replace(/^\s*async\s+/, "");
+    if (params !== undefined && !/[,=.]/.test(params) && !/\barguments\b/.test(source)) known = false;
+  }
+  wants.set(fn, known);
+  return known;
+}
+
 /** The route as it appears in logs and metrics: patterns, not the paths callers sent. */
 const names = new WeakMap<HttpRoute, string>();
 export const routeName = (r: HttpRoute) => {
