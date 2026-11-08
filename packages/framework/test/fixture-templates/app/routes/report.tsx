@@ -7,8 +7,8 @@ export async function loader() {
     q: 'sales "Q3" & <more>',
     html: "<em>raw</em> &amp; kept",
     rows: [
-      { label: "North", pct: 62.5, tone: "hot", wide: 480, share: 0.1 + 0.2, big: 1e21, tiny: 1.5e-7, neg: -0.000001 },
-      { label: "South", pct: 0, tone: null, wide: "50%", share: 1 / 3, big: 123456789012345680000, tiny: 0.0000001, neg: -2.5e-10 },
+      { label: "North", pct: 62.5, tone: "hot", wide: 480, maybe: null as string | null, share: 0.1 + 0.2, big: 1e21, tiny: 1.5e-7, neg: -0.000001 },
+      { label: "South", pct: 0, tone: null, wide: "50%", maybe: "5", share: 1 / 3, big: 123456789012345680000, tiny: 0.0000001, neg: -2.5e-10 },
       { label: "East", pct: 100, wide: " 3em ", share: 2e-6, big: 5e-324, tiny: 100, neg: 7 },
     ],
   };
@@ -31,6 +31,9 @@ export default function Report() {
           <Bar label={r.label} pct={r.pct} tone={r.tone} wide={r.wide} />
           <Bar label="fixed" pct={10} tone="hot" />
           <Bar label="plain" pct={r.pct} wide={null} />
+          <span id={`n-${r.label}`}>
+            {(r.maybe as unknown as number) + 1} {(r.maybe as unknown as number) - 1} {(r.maybe as unknown as number) * 2} {(r.maybe as unknown as number) > 0 ? "up" : "flat"}
+          </span>
           <span>
             {r.share} {r.big} {r.tiny} {r.neg}
           </span>

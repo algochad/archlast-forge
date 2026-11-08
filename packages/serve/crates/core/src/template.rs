@@ -353,11 +353,7 @@ fn eval<'r, 'a>(e: &'r Expr, data: &'r Val<'a>, scope: &Scope<'r, 'a>) -> Cow<'r
         Expr::Eq(a, b, equal) => Cow::Owned(Val::Bool(strict_eq(&eval(a, data, scope), &eval(b, data, scope)) == *equal)),
         Expr::Add(a, b) => {
             let (l, r) = (eval(a, data, scope), eval(b, data, scope));
-            Cow::Owned(match (num(&l), num(&r), &*l, &*r) {
-                (_, _, Val::Int(x), Val::Int(y)) if x.checked_add(*y).is_some() => Val::Int(x + y),
-                (Some(x), Some(y), _, _) => Val::Num(x + y),
-                _ => Val::Str(Cow::Owned(js_string(&l) + &js_string(&r))),
-            })
+            Cow::Owned(add(&l, &r))
         }
         Expr::Bin(op, a, b) => {
             let (l, r) = (eval(a, data, scope), eval(b, data, scope));
@@ -385,48 +381,112 @@ fn eval<'r, 'a>(e: &'r Expr, data: &'r Val<'a>, scope: &Scope<'r, 'a>) -> Cow<'r
 }
 
 /// The numeric and relational operators with JavaScript's results for numbers (and strings, for the relational ones); anything else is NaN or false, as JavaScript says for most of it.
-fn binary<'a>(op: Op, l: &Val, r: &Val) -> Val<'a> {
-    if let (Val::Str(x), Val::Str(y)) = (l, r) {
-        let ord = x.encode_utf16().cmp(y.encode_utf16());
-        return match op {
-            Op::Lt => Val::Bool(ord.is_lt()),
-            Op::Gt => Val::Bool(ord.is_gt()),
-            Op::Le => Val::Bool(ord.is_le()),
-            Op::Ge => Val::Bool(ord.is_ge()),
-            _ => Val::Num(f64::NAN),
-        };
+/// JavaScript's `Number(string)`: surrounding white space ignored, "" is 0, decimal with a sign, `Infinity`, `0x`/`0o`/`0b` without a sign, anything else NaN.
+fn string_number(s: &str) -> f64 {
+    let t = s.trim_matches(|c: char| c.is_whitespace() || c == '\u{feff}');
+    if t.is_empty() {
+        return 0.0;
     }
-    let (Some(x), Some(y)) = (num(l), num(r)) else {
-        return match op {
-            Op::Lt | Op::Gt | Op::Le | Op::Ge => Val::Bool(false),
-            _ => Val::Num(f64::NAN),
-        };
+    let (sign, body) = match t.as_bytes()[0] {
+        b'+' => (1.0, &t[1..]),
+        b'-' => (-1.0, &t[1..]),
+        _ => (1.0, t),
     };
-    match op {
-        Op::Lt => Val::Bool(x < y),
-        Op::Gt => Val::Bool(x > y),
-        Op::Le => Val::Bool(x <= y),
-        Op::Ge => Val::Bool(x >= y),
-        _ => {
-            if let (Val::Int(a), Val::Int(b)) = (l, r) {
-                let whole = match op {
-                    Op::Sub => a.checked_sub(*b),
-                    Op::Mul => a.checked_mul(*b),
-                    Op::Rem if *b != 0 => a.checked_rem(*b),
-                    _ => None,
-                };
-                if let Some(v) = whole {
-                    return Val::Int(v);
-                }
-            }
-            Val::Num(match op {
-                Op::Sub => x - y,
-                Op::Mul => x * y,
-                Op::Div => x / y,
-                _ => x % y,
-            })
+    if t.len() > 2 && t.starts_with('0') {
+        let radix = match t.as_bytes()[1] {
+            b'x' | b'X' => 16,
+            b'o' | b'O' => 8,
+            b'b' | b'B' => 2,
+            _ => 0,
+        };
+        if radix != 0 {
+            return u64::from_str_radix(&t[2..], radix).map_or(f64::NAN, |n| n as f64);
         }
     }
+    if body == "Infinity" {
+        return sign * f64::INFINITY;
+    }
+    // Rust also reads "inf" and "nan"; JavaScript does not
+    if !body.starts_with(|c: char| c.is_ascii_digit() || c == '.') || !body.bytes().all(|c| c.is_ascii_digit() || matches!(c, b'.' | b'e' | b'E' | b'+' | b'-')) {
+        return f64::NAN;
+    }
+    body.parse::<f64>().map_or(f64::NAN, |v| sign * v)
+}
+
+/// JavaScript's `Number(v)`: null is 0, undefined is NaN, true is 1, text is read as a number, and an array or object by way of its text.
+fn to_number(v: &Val) -> f64 {
+    match v {
+        Val::Null => 0.0,
+        Val::Undef => f64::NAN,
+        Val::Bool(b) => f64::from(u8::from(*b)),
+        Val::Int(i) => *i as f64,
+        Val::Num(f) => *f,
+        Val::Str(s) => string_number(s),
+        other => string_number(&js_string(other)),
+    }
+}
+
+/// An operand of `+` or a comparison after `ToPrimitive`: arrays and objects are their text.
+fn primitive<'v, 'a>(v: &'v Val<'a>) -> std::borrow::Cow<'v, Val<'a>> {
+    match v {
+        Val::Arr(_) | Val::Obj(_) => Cow::Owned(Val::Str(Cow::Owned(js_string(v)))),
+        other => Cow::Borrowed(other),
+    }
+}
+
+/// `a + b`: text if either side is text (or an array or object), otherwise numbers (null is 0, undefined is NaN).
+fn add<'a>(l: &Val, r: &Val) -> Val<'a> {
+    let (pl, pr) = (primitive(l), primitive(r));
+    if matches!(*pl, Val::Str(_)) || matches!(*pr, Val::Str(_)) {
+        return Val::Str(Cow::Owned(js_string(&pl) + &js_string(&pr)));
+    }
+    if let (Val::Int(x), Val::Int(y)) = (&*pl, &*pr) {
+        if let Some(v) = x.checked_add(*y) {
+            return Val::Int(v);
+        }
+    }
+    Val::Num(to_number(&pl) + to_number(&pr))
+}
+
+fn binary<'a>(op: Op, l: &Val, r: &Val) -> Val<'a> {
+    let relational = matches!(op, Op::Lt | Op::Gt | Op::Le | Op::Ge);
+    if relational {
+        let (pl, pr) = (primitive(l), primitive(r));
+        if let (Val::Str(x), Val::Str(y)) = (&*pl, &*pr) {
+            let ord = x.encode_utf16().cmp(y.encode_utf16());
+            return Val::Bool(match op {
+                Op::Lt => ord.is_lt(),
+                Op::Gt => ord.is_gt(),
+                Op::Le => ord.is_le(),
+                _ => ord.is_ge(),
+            });
+        }
+        let (x, y) = (to_number(&pl), to_number(&pr));
+        return Val::Bool(match op {
+            Op::Lt => x < y,
+            Op::Gt => x > y,
+            Op::Le => x <= y,
+            _ => x >= y,
+        });
+    }
+    if let (Val::Int(a), Val::Int(b)) = (l, r) {
+        let whole = match op {
+            Op::Sub => a.checked_sub(*b),
+            Op::Mul => a.checked_mul(*b),
+            Op::Rem if *b != 0 => a.checked_rem(*b),
+            _ => None,
+        };
+        if let Some(v) = whole {
+            return Val::Int(v);
+        }
+    }
+    let (x, y) = (to_number(l), to_number(r));
+    Val::Num(match op {
+        Op::Sub => x - y,
+        Op::Mul => x * y,
+        Op::Div => x / y,
+        _ => x % y,
+    })
 }
 
 fn escape(s: &str, out: &mut String) {
@@ -554,6 +614,39 @@ mod tests {
         assert_eq!(run(r#"[["x",["dflt",["p","d","gone"],["l","D"]]],["x",["dflt",["p","d","a"],["l","D"]]],["x",["dflt",["p","d","b"],["l","D"]]]]"#, d), "Dx");
         assert_eq!(run(r#"[["x",["??",["p","d","a"],["l","D"]]],["x",["??",["p","d","gone"],["l","D"]]]]"#, d), "DD");
         assert_eq!(run(r#"[["a","t",["p","d","gone"],false],["a","u",["p","d","a"],false]]"#, d), "");
+    }
+
+    #[test]
+    fn operators_coerce_as_javascript_does() {
+        let d = r#"{"n":null,"s":" 12 ","e":"","h":"0x1f","t":"abc","a":[5],"b":[1,2],"x":2}"#;
+        let v = |e: &str| run(&format!(r#"[["x",{e}]]"#), d);
+        let truth = |e: &str| run(&format!(r#"[["x",["?:",{e},["l","true"],["l","false"]]]]"#), d);
+        let p = |k: &str| format!(r#"["p","d","{k}"]"#);
+        assert_eq!(v(&format!(r#"["+",{},["l",1]]"#, p("n"))), "1"); // null + 1
+        assert_eq!(v(&format!(r#"["+",{},["l",1]]"#, p("gone"))), "NaN"); // undefined + 1
+        assert_eq!(v(&format!(r#"["+",{},["l",1]]"#, p("s"))), " 12 1"); // text wins
+        assert_eq!(v(&format!(r#"["+",{},["l",1]]"#, p("a"))), "51"); // so does an array's text
+        assert_eq!(v(&format!(r#"["+",["l",true],["l",1]]"#)), "2");
+        assert_eq!(v(&format!(r#"["-",{},["l",1]]"#, p("n"))), "-1");
+        assert_eq!(v(&format!(r#"["*",{},["l",2]]"#, p("s"))), "24");
+        assert_eq!(v(&format!(r#"["-",{},["l",1]]"#, p("e"))), "-1"); // "" is 0
+        assert_eq!(v(&format!(r#"["*",{},["l",1]]"#, p("h"))), "31");
+        assert_eq!(v(&format!(r#"["*",{},["l",1]]"#, p("t"))), "NaN");
+        assert_eq!(v(&format!(r#"["*",{},["l",3]]"#, p("a"))), "15"); // [5] is "5"
+        assert_eq!(v(&format!(r#"["*",{},["l",3]]"#, p("b"))), "NaN");
+        assert_eq!(v(&format!(r#"["/",["l",1],{}]"#, p("n"))), "Infinity");
+        assert_eq!(truth(&format!(r#"["<=",{},["l",0]]"#, p("n"))), "true"); // null <= 0
+        assert_eq!(truth(&format!(r#"["<",{},["l",0]]"#, p("gone"))), "false");
+        assert_eq!(truth(&format!(r#"[">",{},["l",5]]"#, p("s"))), "true"); // " 12 " > 5
+        assert_eq!(truth(&format!(r#"["<",{},["l","b"]]"#, p("t"))), "true"); // text against text
+        assert_eq!(truth(&format!(r#"[">",{},["l",1]]"#, p("x"))), "true");
+        for (text, want) in [("1e3", 1000.0), ("-.5", -0.5), ("5.", 5.0), ("+7", 7.0), ("0b101", 5.0), ("0o17", 15.0)] {
+            assert_eq!(string_number(text), want, "{text}");
+        }
+        for text in ["inf", "nan", "-0x10", "1_0", "e5", ".", "1e", "12px", "Infinit"] {
+            assert!(string_number(text).is_nan(), "{text}");
+        }
+        assert_eq!(string_number("-Infinity"), f64::NEG_INFINITY);
     }
 
     #[test]
