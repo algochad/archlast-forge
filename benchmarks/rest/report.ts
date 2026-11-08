@@ -12,6 +12,7 @@ const LABELS: Record<string, string> = {
   serve: "archlast-serve (native App API, 3 I/O threads)",
   node: "Node.js 24 (Express 5)",
   forge: "archlast-forge (NestJS path, archlast-serve)",
+  "forge-light": "archlast-forge (forge/http.ts light routes, archlast-serve)",
   "forge-bun": "archlast-forge (NestJS path, Bun.serve)",
   "forge-notelemetry": "archlast-forge (NestJS path, archlast-serve, telemetry off)",
 };

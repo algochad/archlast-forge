@@ -45,6 +45,7 @@ export {
   defineAuth,
   getFunctionName,
   httpAction,
+  lightAction,
   httpRouter,
   internalAction,
   internalMutation,
@@ -81,3 +82,5 @@ export {
   type UserIdentity,
   type Visibility,
 } from "./functions";
+
+export { lightJson, lightText, LightResponse, type LightRequest } from "./server/light";

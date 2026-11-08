@@ -69,11 +69,12 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
           <p>Sockets, TLS, HTTP/1.1, HTTP/2, WebSockets and fan-out run on Rust threads. Your functions stay TypeScript on Bun. It is on by default in production, and nothing in your code changes.</p>
           <div className="big">
             <div><b>{x(read("forge"), read("forge-bun"))}</b><span>the same NestJS controller, against Bun.serve</span></div>
-            <div><b>{x(read("forge"), read("node"))}</b><span>Express on Node, same API</span></div>
+            <div><b>{x(read("forge-light"), read("bun"))}</b><span>a Forge light route against Bun.serve</span></div>
+            <div><b>{x(read("forge"), read("node"))}</b><span>a NestJS controller against Express</span></div>
             <div><b>{x(read("serve"), read("bun"))}</b><span>archlast-serve on its own, against Bun.serve</span></div>
           </div>
           <ul className="points">
-            <li><b>The engine alone is level with the compiled servers</b> ({k(read("serve"))} req/s, TypeScript handler). The framework around it costs: Go, Rust and .NET are {x(read("dotnet"), read("forge"))} to {x(read("axum"), read("forge"))} faster than a Forge controller.</li>
+            <li><b>The engine alone is level with the compiled servers</b> ({k(read("serve"))} req/s, TypeScript handler). The framework around it costs: a Forge light route does {k(read("forge-light"))}, a NestJS controller {k(read("forge"))}; .NET does {k(read("dotnet"))}.</li>
             <li><b>Where it loses:</b> one connection at a time, and about 1.5× the CPU of Bun.serve per request.</li>
           </ul>
           <Link className="btn link" to="/archlast-serve">How the engine works <Arrow /></Link>
@@ -85,6 +86,7 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
             { label: "archlast-serve · alone", value: read("serve"), us: true },
             { label: "Go · fasthttp", value: read("go") },
             { label: ".NET 10 · Minimal API", value: read("dotnet") },
+            { label: "Forge · light route", value: read("forge-light"), us: true },
             { label: "Bun.serve", value: read("bun") },
             { label: "Forge · archlast-serve", value: read("forge"), us: true },
             { label: "Node · Express", value: read("node") },

@@ -25,6 +25,7 @@ export interface HttpRequestMessage {
   /** The path of `url` and its query string, when the sender has them already (the receiver skips parsing the URL for them). */
   path?: string;
   search?: string;
+  /** May be a getter that decodes them when first read (a request handed to a runtime in the same process). */
   headers: [string, string][];
   body?: ArrayBuffer;
 }

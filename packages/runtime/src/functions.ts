@@ -1,4 +1,5 @@
 import type { HelmetOptions } from "helmet";
+import { LIGHT, type LightRequest, type LightResponse } from "./server/light";
 import { checkDocsConfig, type ApiDocsConfig, type RouteDocs } from "./api-docs";
 
 /** Helmet's options per surface, or false for no security headers there. */
@@ -488,6 +489,17 @@ export interface HttpAction {
 
 export function httpAction(handler: HttpAction["handler"]): HttpAction {
   return { kind: "httpAction", handler };
+}
+
+/**
+ * An HTTP action that is given the request's fields (`method`, `path`, `search`, `headers`, `body` as bytes) and answers with a `LightResponse` (`lightJson`,
+ * `lightText`) instead of a Web `Request` and `Response`: for routes that answer from memory or a quick query, where making and reading those objects is much
+ * of what a request costs. A `Response` it returns is accepted too. Used in `http.route` as `httpAction` is.
+ */
+export function lightAction(handler: (ctx: ActionCtx, request: LightRequest) => LightResponse | Response | Promise<LightResponse | Response>): HttpAction {
+  const action: HttpAction = { kind: "httpAction", handler: handler as unknown as HttpAction["handler"] };
+  (action as unknown as Record<symbol, unknown>)[LIGHT] = true;
+  return action;
 }
 
 export interface HttpRoute extends RouteDocs {

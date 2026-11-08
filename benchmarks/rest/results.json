@@ -205,102 +205,136 @@
   },
   "forge": {
     "label": "archlast-forge (NestJS path, archlast-serve)",
-    "peakMiB": 247,
+    "peakMiB": 255,
     "scenarios": {
       "read": {
-        "rps": 114500,
-        "p50ms": 0.534,
-        "p99ms": 1.709,
-        "cores": 1.69,
+        "rps": 151079,
+        "p50ms": 0.401,
+        "p99ms": 1.375,
+        "cores": 1.88,
         "success": 1
       },
       "list": {
-        "rps": 102570,
-        "p50ms": 0.673,
-        "p99ms": 1.77,
-        "cores": 1.63,
+        "rps": 133364,
+        "p50ms": 0.428,
+        "p99ms": 1.512,
+        "cores": 1.83,
         "success": 1
       },
       "update": {
-        "rps": 100453,
-        "p50ms": 0.605,
-        "p99ms": 1.856,
-        "cores": 1.66,
+        "rps": 120762,
+        "p50ms": 0.518,
+        "p99ms": 1.653,
+        "cores": 1.78,
         "success": 1
       },
       "create": {
-        "rps": 90155,
-        "p50ms": 0.561,
-        "p99ms": 5.028,
-        "cores": 1.74,
+        "rps": 109043,
+        "p50ms": 0.498,
+        "p99ms": 4.567,
+        "cores": 1.92,
+        "success": 1
+      }
+    }
+  },
+  "forge-light": {
+    "label": "archlast-forge (forge/http.ts light routes, archlast-serve)",
+    "peakMiB": 234,
+    "scenarios": {
+      "read": {
+        "rps": 306078,
+        "p50ms": 0.184,
+        "p99ms": 0.964,
+        "cores": 2.55,
+        "success": 1
+      },
+      "list": {
+        "rps": 237098,
+        "p50ms": 0.237,
+        "p99ms": 0.988,
+        "cores": 2.28,
+        "success": 1
+      },
+      "update": {
+        "rps": 246769,
+        "p50ms": 0.22,
+        "p99ms": 1.21,
+        "cores": 2.49,
+        "success": 1
+      },
+      "create": {
+        "rps": 226972,
+        "p50ms": 0.204,
+        "p99ms": 1.878,
+        "cores": 2.49,
         "success": 1
       }
     }
   },
   "forge-bun": {
     "label": "archlast-forge (NestJS path, Bun.serve)",
-    "peakMiB": 195,
+    "peakMiB": 196,
     "scenarios": {
       "read": {
-        "rps": 33995,
-        "p50ms": 1.795,
-        "p99ms": 3.568,
+        "rps": 34362,
+        "p50ms": 1.776,
+        "p99ms": 3.541,
         "cores": 0.92,
         "success": 1
       },
       "list": {
-        "rps": 30861,
-        "p50ms": 1.981,
-        "p99ms": 3.866,
+        "rps": 30813,
+        "p50ms": 1.984,
+        "p99ms": 3.845,
         "cores": 0.91,
         "success": 1
       },
       "update": {
-        "rps": 25740,
-        "p50ms": 2.369,
-        "p99ms": 4.688,
+        "rps": 25560,
+        "p50ms": 2.38,
+        "p99ms": 4.735,
         "cores": 0.93,
         "success": 1
       },
       "create": {
-        "rps": 24322,
-        "p50ms": 2.389,
-        "p99ms": 7.378,
-        "cores": 1.03,
+        "rps": 24880,
+        "p50ms": 2.332,
+        "p99ms": 7.171,
+        "cores": 0.99,
         "success": 1
       }
     }
   },
   "forge-notelemetry": {
     "label": "archlast-forge (NestJS path, archlast-serve, telemetry off)",
-    "peakMiB": 211,
+    "peakMiB": 210,
     "scenarios": {
       "read": {
-        "rps": 131430,
-        "p50ms": 0.463,
-        "p99ms": 1.48,
-        "cores": 1.76,
+        "rps": 172030,
+        "p50ms": 0.337,
+        "p99ms": 1.315,
+        "cores": 2.03,
         "success": 1
       },
       "list": {
-        "rps": 115507,
-        "p50ms": 0.541,
-        "p99ms": 1.606,
-        "cores": 1.7,
+        "rps": 141447,
+        "p50ms": 0.4,
+        "p99ms": 1.42,
+        "cores": 1.88,
         "success": 1
       },
       "update": {
-        "rps": 106665,
-        "p50ms": 0.531,
-        "p99ms": 1.89,
-        "cores": 1.71,
+        "rps": 127302,
+        "p50ms": 0.447,
+        "p99ms": 1.694,
+        "cores": 1.85,
         "success": 1
       },
       "create": {
-        "rps": 97251,
-        "p50ms": 0.563,
-        "p99ms": 4.786,
-        "cores": 1.82,
+        "rps": 117821,
+        "p50ms": 0.42,
+        "p99ms": 4.474,
+        "cores": 1.97,
         "success": 1
       }
     }

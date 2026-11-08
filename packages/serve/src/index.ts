@@ -24,7 +24,7 @@ export type { TlsOptions } from "./tls.ts";
 
 export { Context, type Handler, type RouteValue } from "./router.ts";
 export { Reply, type Result, type Server, TemplateReply } from "./server.ts";
-export { HeaderBlock } from "./codec.ts";
+export { HeaderBlock, HeaderNames } from "./codec.ts";
 export { html, json, noContent, redirect, status, text } from "./reply.ts";
 export { SseStream, Stream, sse, type SseOptions } from "./stream.ts";
 export { FileReply, file } from "./file.ts";

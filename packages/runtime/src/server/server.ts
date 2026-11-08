@@ -28,6 +28,7 @@ import type { Manifest } from "./project";
 import { toPublicError } from "./public-error";
 import { MemoryRateLimiter, rateKeyOf, RedisRateLimiter, type RateLimiter } from "./ratelimit";
 import { buildRpc, errorResponse, HttpError, readBytes, readText, type Rpc, type RpcOptions, type SocketData } from "./rpc";
+import type { HttpRequestMessage, HttpResponseMessage } from "./protocol";
 import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager, type QueryObserver } from "./subscriptions";
 import { TelemetryClient } from "./telemetry/client";
@@ -37,7 +38,7 @@ import { OtlpExporter } from "./telemetry/export";
 import { telemetryForwarder } from "./telemetry/forward";
 import { spanId as newSpanId } from "./telemetry/ids";
 import { failureOf } from "./telemetry/outcome";
-import { normalizePath, Telemetry } from "./telemetry/recorder";
+import { normalizePath, Telemetry, type Outcome } from "./telemetry/recorder";
 import { processSampler } from "./telemetry/sampler";
 import type { Span, TelemetryBatch } from "./telemetry/types";
 
@@ -178,6 +179,33 @@ export interface RunningServer {
   stop(opts?: { graceful?: boolean; keepApp?: boolean }): Promise<void>;
 }
 
+const pairsOf = (raw: { headerPairs(): string[] }): [string, string][] => {
+  const pairs = raw.headerPairs();
+  const headers: [string, string][] = [];
+  for (let i = 0; i < pairs.length; i += 2) headers.push([pairs[i]!, pairs[i + 1]!]);
+  return headers;
+};
+
+/** A request for a function runtime in this process: its headers are decoded the first time something reads them. */
+class InlineHttpRequest implements HttpRequestMessage {
+  private decoded?: [string, string][];
+  constructor(
+    private readonly raw: { headerPairs(): string[] },
+    readonly method: string,
+    private readonly secure: boolean,
+    private readonly host: string,
+    readonly path: string,
+    readonly search: string,
+    readonly body: ArrayBuffer | undefined,
+  ) {}
+  get url(): string {
+    return `${this.secure ? "https" : "http"}://${this.host}${this.path}${this.search}`;
+  }
+  get headers(): [string, string][] {
+    return (this.decoded ??= pairsOf(this.raw));
+  }
+}
+
 /** What the engine's request offers the server's /http path (see `rawHttp`). */
 interface RawRequestLike {
   method: string;
@@ -189,6 +217,7 @@ interface RawRequestLike {
   ip: string | null;
   header(name: string): string | null;
   headerPairs(): string[];
+  headerValues(want: unknown, out: (string | undefined)[]): void;
 }
 
 const pickAuthHeaders = (get: (name: string) => string | null | undefined): CallHeaders => {
@@ -204,7 +233,18 @@ const REQUEST_ID = /^[\w.-]{1,64}$/;
 // Ids for requests that bring none: a random prefix per process and a counter, which costs far less than a UUID per request.
 const idPrefix = crypto.randomUUID().slice(0, 8);
 let idCount = 0;
-const requestIdOf = (given: string | null | undefined) => (given && REQUEST_ID.test(given) ? given : `${idPrefix}-${(++idCount).toString(36)}`);
+// the counter's low digits come from a table, so an id is two strings joined
+const LOW = Array.from({ length: 1296 }, (_, i) => i.toString(36).padStart(2, "0"));
+let idHigh = `${idPrefix}-0`;
+let idLow = 0;
+const requestIdOf = (given: string | null | undefined) => {
+  if (given && REQUEST_ID.test(given)) return given;
+  if (idLow === LOW.length) {
+    idLow = 0;
+    idHigh = `${idPrefix}-${(++idCount).toString(36)}`;
+  }
+  return idHigh + LOW[idLow++];
+};
 
 /**
  * The client address a trusted proxy saw. A proxy appends the address it got the request from, so the last entry is the one to believe:
@@ -979,7 +1019,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
    * request to that branch) for anything it would do differently: a WebSocket, a streamed body, the firewall, the API docs' paths, Socket.IO's polling,
    * routes at the root, and a server that is shutting down or has not loaded. Telemetry, rate limits, security headers and the request id are the same.
    */
-  const rawHttp = async (raw: RawRequestLike): Promise<unknown> => {
+  let wantedHeaders: unknown;
+  // reused by every request: filled and read before anything is awaited
+  const headerSlots: (string | undefined)[] = [];
+  const rawHttp = (raw: RawRequestLike): unknown => {
     const target = raw.url;
     if (!target.startsWith("/http") || !nativeReply) return undefined;
     const q = target.indexOf("?");
@@ -989,59 +1032,70 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     const method = raw.method;
     const bytes = method === "GET" ? undefined : (raw.body ?? NO_BYTES);
     if (bytes && bytes.byteLength > maxBody) return undefined;
-    // One pass over the headers: the ones the request needs, and the list the function runtime is sent.
-    const pairs = raw.headerPairs();
-    const headers: [string, string][] = [];
-    let host = "localhost";
-    let given: string | undefined, traceparent: string | undefined, forwarded: string | undefined, cookie: string | undefined, authorization: string | undefined;
-    for (let i = 0; i < pairs.length; i += 2) {
-      const name = pairs[i]!;
-      const value = pairs[i + 1]!;
-      headers.push([name, value]);
-      switch (name) {
-        case "host": host = value; break;
-        case "upgrade": return undefined;
-        case "x-request-id": given = value; break;
-        case "traceparent": traceparent = value; break;
-        case "x-forwarded-for": forwarded = value; break;
-        case "cookie": cookie = cookie === undefined ? value : `${cookie}; ${value}`; break; // HTTP/2 may split it
-        case "authorization": authorization = value; break;
-      }
-    }
+    // The headers the request itself needs are read without decoding the rest, which a runtime in this process is given when it asks for them.
+    raw.headerValues(wantedHeaders!, headerSlots);
+    if (headerSlots[1] !== undefined) return undefined; // upgrade
+    const host = headerSlots[0] ?? "localhost";
+    const given = headerSlots[2];
+    const traceparent = headerSlots[3];
+    const forwarded = headerSlots[4];
+    const cookie = headerSlots[5];
+    const authorization = headerSlots[6];
+    // The API docs' plan is settled by the first request that goes the long way round; until then (or when the app changed) that is the way for this one too.
     const plan = docsPlan;
-    const docs = config.apiDocs === false ? null : plan && plan.manifest === runtime.manifest && plan.settled ? plan.at && { at: plan.at, clashes: plan.clashes } : await docsAt();
+    let docs: { at: ApiDocsRouting; clashes: Set<string> } | null = null;
+    if (config.apiDocs !== false) {
+      if (!plan || plan.manifest !== runtime.manifest || !plan.settled) return undefined;
+      docs = plan.at && { at: plan.at, clashes: plan.clashes };
+    }
     if (docs && (docsClaim(docs, path) || (opts.apiDocs && docsMayServe(docs, path, method)))) return undefined;
     const requestId = requestIdOf(given);
     if (config.limits.rateLimitPerMinute) {
       const ip = (config.trustProxy && lastForwarded(forwarded)) || raw.ip || "unknown";
-      const retry = await limitedBy(ip);
-      if (retry) {
-        const res = tooMany(retry);
-        res.headers.set("x-request-id", requestId);
-        return res;
-      }
+      return limitedBy(ip).then((retry) => {
+        if (retry) {
+          const res = tooMany(retry);
+          res.headers.set("x-request-id", requestId);
+          return res;
+        }
+        return loadPending ? loading.then(() => serveRaw(raw, method, target, path, q, bytes, host, requestId, traceparent, cookie, authorization)) : serveRaw(raw, method, target, path, q, bytes, host, requestId, traceparent, cookie, authorization);
+      });
     }
-    if (loadPending) await loading;
+    if (loadPending) return loading.then(() => serveRaw(raw, method, target, path, q, bytes, host, requestId, traceparent, cookie, authorization));
+    return serveRaw(raw, method, target, path, q, bytes, host, requestId, traceparent, cookie, authorization);
+  };
+
+  /** The rest of `rawHttp`, once the request is known to be one it answers and nothing is left to wait for: no promise is made unless the route's handler makes one. */
+  const serveRaw = (raw: RawRequestLike, method: string, target: string, path: string, q: number, bytes: Uint8Array | undefined, host: string, requestId: string, traceparent: string | undefined, cookie: string | undefined, authorization: string | undefined): unknown => {
     const httpPath = path.slice("/http".length) || "/";
     const body = bytes && (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
     const search = q < 0 ? "" : target.slice(q);
+    // To a runtime in this process the headers and the URL are given as getters that make them when read (most routes read neither); to another process, as they are.
+    const message: HttpRequestMessage = runtime.inline
+      ? new InlineHttpRequest(raw, method, raw.secure, host, httpPath, search, body)
+      : { method, url: `${raw.secure ? "https" : "http"}://${host}${httpPath}${search}`, path: httpPath, search, headers: pairsOf(raw), body };
     const root = telemetry?.begin("http", `${method} ${normalizePath(httpPath)}`, method, traceparent ?? null, requestId, { "url.path": httpPath });
+    const callHeaders: CallHeaders = {};
+    if (cookie) callHeaders.cookie = cookie;
+    if (authorization) callHeaders.authorization = authorization;
+    let r: HttpResponseMessage | Promise<HttpResponseMessage>;
     try {
-      const r = await runtime.http(
-        { method, url: `${raw.secure ? "https" : "http"}://${host}${httpPath}${search}`, path: httpPath, search, headers, body },
-        pickAuthHeaders((n) => (n === "cookie" ? cookie : authorization)),
-        requestId,
-        undefined,
-        root && telemetry!.parent(root),
-      );
+      r = runtime.httpDirect(message, callHeaders, requestId, root && telemetry!.parent(root));
+    } catch (e) {
+      return rawFailed(root, e, requestId, path);
+    }
+    if (r instanceof Promise) return r.then((v) => rawAnswered(root, method, v, requestId, path), (e) => rawFailed(root, e, requestId, path));
+    return rawAnswered(root, method, r, requestId, path);
+  };
+
+  const rawAnswered = (root: ReturnType<NonNullable<typeof telemetry>["begin"]> | undefined, method: string, r: HttpResponseMessage, requestId: string, path: string): unknown => {
+    try {
       if (root) {
         const route = r.telemetry?.attrs?.["http.route"];
         root.operation = route ? `${method} ${route}` : r.status === 404 ? `${method} (unmatched)` : root.operation;
-        telemetry!.end(root, {
-          status: r.status,
-          telemetry: r.telemetry,
-          ...(r.status >= 500 && { error: { type: `HTTP ${r.status}`, message: `${root.operation} answered ${r.status}`, handled: false } }),
-        });
+        const outcome: Outcome = { status: r.status, telemetry: r.telemetry };
+        if (r.status >= 500) outcome.error = { type: `HTTP ${r.status}`, message: `${root.operation} answered ${r.status}`, handled: false };
+        telemetry!.end(root, outcome);
       }
       let out = r.headers;
       let block: unknown = null;
@@ -1056,11 +1110,15 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       const bytes = r.body;
       return new nativeReply!(typeof bytes === "string" ? bytes || null : bytes.byteLength ? (bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)) : null, { status: r.status, headers: out, block: block ?? undefined });
     } catch (e) {
-      if (root) telemetry!.end(root, failureOf(e));
-      const res = errorResponse(toPublicError(e, requestId, dev, { path }));
-      res.headers.set("x-request-id", requestId);
-      return res;
+      return rawFailed(undefined, e, requestId, path);
     }
+  };
+
+  const rawFailed = (root: ReturnType<NonNullable<typeof telemetry>["begin"]> | undefined, e: unknown, requestId: string, path: string): Response => {
+    if (root) telemetry!.end(root, failureOf(e));
+    const res = errorResponse(toPublicError(e, requestId, dev, { path }));
+    res.headers.set("x-request-id", requestId);
+    return res;
   };
   const {
     server,
@@ -1547,6 +1605,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     const Reply = native.Reply;
     nativeReply = Reply as typeof nativeReply;
     nativeBlock = (pairs) => new native.HeaderBlock(pairs);
+    // the order `rawHttp` reads them in
+    wantedHeaders = new native.HeaderNames(["host", "upgrade", "x-request-id", "traceparent", "x-forwarded-for", "cookie", "authorization"]);
     rpcOpts.reply = (body, headers) => new Reply(body, { headers }) as unknown as Response;
   }
 

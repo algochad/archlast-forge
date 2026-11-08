@@ -158,6 +158,16 @@ export class ByteWriter {
 
 export type HeaderInit = Record<string, string> | [string, string][];
 
+/** Header names (lower-case) for `RawRequest.headerValues`, made once and reused for every request. */
+export class HeaderNames {
+  readonly lens: number[];
+  readonly bytes: Uint8Array[];
+  constructor(readonly names: readonly string[]) {
+    this.bytes = names.map((n) => encoder.encode(n));
+    this.lens = this.bytes.map((b) => b.length);
+  }
+}
+
 /**
  * Headers encoded once, for a set a server sends on many responses (a security policy): a `Reply` given one as `block` writes its bytes as they are,
  * instead of encoding every name and value again for each response. Names are lower-cased; values should not change.
@@ -418,6 +428,43 @@ export class RawRequest {
       p += 2 + vl;
     }
     return out;
+  }
+
+  /**
+   * The values of a few headers, without decoding the others: `out[i]` is the value of `want.names[i]` (the first one when a name repeats, the rest joined
+   * with ", ", or "; " for a cookie) or undefined. A request that reads only these costs a scan of the header block and a string for each header found.
+   */
+  headerValues(want: HeaderNames, out: (string | undefined)[]): void {
+    out.fill(undefined);
+    const n = want.names.length;
+    const join = (i: number, v: string) => (out[i] = out[i] === undefined ? v : `${out[i]}${want.names[i] === "cookie" ? "; " : ", "}${v}`);
+    if (this.pairs) {
+      const p = this.pairs;
+      for (let k = 0; k < p.length; k += 2) {
+        const i = want.names.indexOf(p[k]);
+        if (i >= 0) join(i, p[k + 1]);
+      }
+      return;
+    }
+    if (this.hEnd <= this.hStart) return;
+    const b = this.src;
+    const slice = Buffer.prototype.latin1Slice;
+    let p = this.hStart;
+    for (let h = 0; h < this.headerCount; h++) {
+      const nl = b[p] | (b[p + 1] << 8);
+      const name = p + 2;
+      p = name + nl;
+      const vl = b[p] | (b[p + 1] << 8);
+      const value = p + 2;
+      p = value + vl;
+      for (let i = 0; i < n; i++) {
+        if (want.lens[i] !== nl) continue;
+        const w = want.bytes[i];
+        let j = 0;
+        while (j < nl && b[name + j] === w[j]) j++;
+        if (j === nl) join(i, slice.call(b, value, value + vl));
+      }
+    }
   }
 
   header(name: string): string | null {

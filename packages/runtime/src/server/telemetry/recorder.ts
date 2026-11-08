@@ -85,7 +85,16 @@ function namespaceOf(s: Span): string {
 
 /** Ids and tokens in a path become `:id`, so `/reset-password/8f2c…` and `/users/41` group as one route. */
 const normalized = new Map<string, string>();
+let lastPath = "";
+let lastNormal = "/";
 export function normalizePath(path: string) {
+  // the same path as the request before is the common case under load: a comparison, not a hash of a new string
+  if (path === lastPath) return lastNormal;
+  const found = normalizedOf(path);
+  lastPath = path;
+  return (lastNormal = found);
+}
+function normalizedOf(path: string) {
   let out = normalized.get(path);
   if (out === undefined) {
     out =
@@ -285,21 +294,28 @@ export class Telemetry {
     return { minute, service: this.o.service, kind, operation, instance: this.o.instance, count: 0, errors: 0, clientErrors: 0, cached: 0, sum: 0, max: 0, hist: {} };
   }
 
+  /** The rollup the last request went into: the next one, in the same minute and under the same name, needs no lookups. */
+  private last?: { minute: number; kind: string; operation: string; rollup: Rollup; all: Rollup };
+
   private count(minute: number, kind: string, operation: string, ms: number, status: number, cached: boolean) {
-    const m = this.minute(minute);
-    let ops = m.ops.get(kind);
-    if (!ops) m.ops.set(kind, (ops = new Map()));
-    let r = ops.get(operation);
-    if (!r) {
-      const name = m.size >= MAX_OPERATIONS ? "(other)" : operation;
-      r = ops.get(name);
-      if (!r) ops.set(name, (r = this.rollupOf(minute, kind, name))), m.size++;
+    let hit = this.last;
+    if (!hit || hit.minute !== minute || hit.kind !== kind || hit.operation !== operation) {
+      const m = this.minute(minute);
+      let ops = m.ops.get(kind);
+      if (!ops) m.ops.set(kind, (ops = new Map()));
+      let r = ops.get(operation);
+      if (!r) {
+        const name = m.size >= MAX_OPERATIONS ? "(other)" : operation;
+        r = ops.get(name);
+        if (!r) ops.set(name, (r = this.rollupOf(minute, kind, name))), m.size++;
+      }
+      hit = this.last = { minute, kind, operation, rollup: r, all: m.all };
     }
     const bucket = bucketOf(ms);
-    add(r, ms, bucket, status, cached);
-    add(m.all, ms, bucket, status, cached);
-    this.dirty.add(r);
-    this.dirty.add(m.all);
+    add(hit.rollup, ms, bucket, status, cached);
+    add(hit.all, ms, bucket, status, cached);
+    this.dirty.add(hit.rollup);
+    this.dirty.add(hit.all);
   }
 
   /** Every span but the root (`skip`), with the time it spent in its own code, counted `weight` times (a sampled request's share). */

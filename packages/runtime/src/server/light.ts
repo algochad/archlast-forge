@@ -22,3 +22,9 @@ export class LightResponse {
     readonly body: string | Uint8Array | null,
   ) {}
 }
+
+/** A JSON answer: `lightJson({ ok: true })`, `lightJson(item, 201)`. */
+export const lightJson = (data: unknown, status = 200, headers: [string, string][] = []) => new LightResponse(status, [["content-type", "application/json"], ...headers], JSON.stringify(data));
+
+/** A text answer: `lightText("ok")`. */
+export const lightText = (text: string, status = 200, headers: [string, string][] = []) => new LightResponse(status, [["content-type", "text/plain;charset=utf-8"], ...headers], text);

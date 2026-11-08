@@ -27,12 +27,12 @@ You do not install it or call it. The engine image has it, and `HTTP_ENGINE=auto
 
 ## What the HTTP path does for a request
 
-A request to `/http` (the routes of `forge/http.ts` and NestJS controllers) is answered from the engine's own request: the server reads the method, path, headers and body from it, runs the same checks, telemetry and rate limit as for any other request, and writes the answer as bytes. The pieces that took a Forge request from 33,000 to over 110,000 a second on four cores:
+A request to `/http` (the routes of `forge/http.ts` and NestJS controllers) is answered from the engine's own request: the server reads the method, path, headers and body from it, runs the same checks, telemetry and rate limit as for any other request, and writes the answer as bytes. The pieces that took a Forge request from 33,000 to about 150,000 a second on four cores (a [light route](http.html#light-routes), which skips the Web objects and Nest, reaches about 306,000):
 
 - **No Web objects on the way in for Nest.** A NestJS controller's request is handed to the adapter as the fields it reads, and the Web `Request` is made only if a handler asks for `req.raw`. The answer comes back as a status, headers and bytes, not a `Response` that is then read back.
 - **Nest's interceptor machinery stays off HTTP routes.** The interceptor that records microservice and gateway messages goes on the handlers that take messages, so a controller's HTTP route is not run through an Observable and an async-context binding.
 - **Security headers are encoded once.** The REST API's Helmet headers are written as one block of bytes, not encoded name by name for every answer.
-- **Fewer hops.** The server skips its choice of function process when there is one, a request counted but not traced runs untraced, route matches and path names are remembered, and the Rust I/O threads default to one fewer than the cores (at most four): one core is left for the JavaScript thread.
+- **Fewer hops, and no promise where none is needed.** A request that is not traced and has no cookie to resolve is answered from the engine's own batch without a promise when its handler's answer is ready; the handler's time limit is one list of deadlines with one timer instead of a timer per call; the headers a request needs are read from the raw bytes and the rest are decoded only if asked for; route matches, path names and the rollups telemetry counts into are remembered; and the Rust I/O threads default to one fewer than the cores (at most four), leaving one core for the JavaScript thread.
 
 Telemetry, request ids, rate limits and every Nest feature work as before; anything the fast path would do differently (a WebSocket, a streamed body, the firewall, the API docs' paths) takes the old path.
 
@@ -46,19 +46,19 @@ Two measurements, both in containers limited to 4 CPU cores and 2 GiB of memory,
 
 | | `Bun.serve` | archlast-serve | |
 |---|---:|---:|---:|
-| Read one item (requests/s) | 33,995 | 114,500 | 3.4× |
-| List 20 items (requests/s) | 30,861 | 102,570 | 3.3× |
-| Update an item (requests/s) | 25,740 | 100,453 | 3.9× |
-| Create an item (requests/s) | 24,322 | 90,155 | 3.7× |
-| Read, 99th percentile | 3.57 ms | 1.71 ms | |
+| Read one item (requests/s) | 34,362 | 151,079 | 4.4× |
+| List 20 items (requests/s) | 30,813 | 133,364 | 4.3× |
+| Update an item (requests/s) | 25,560 | 120,762 | 4.7× |
+| Create an item (requests/s) | 24,880 | 109,043 | 4.4× |
+| Read, 99th percentile | 3.54 ms | 1.38 ms | |
 
 {/* /bench:engine */}
 
-The engine gives the same Nest controller about 3.4 times the requests per second, and more than a Nest app costs on `Bun.serve` because of what the engine hands the framework (below).
+The engine gives the same Nest controller about 4.4 times the requests per second, and more than a Nest app costs on `Bun.serve` because of what the engine hands the framework (below).
 
 **The engine on its own**, with no framework, serving the same API with its native `App` API (one JavaScript thread, three Rust I/O threads): about 494,000 reads a second, 3.5 times `Bun.serve`'s and level with Go, .NET and Axum, whose servers are compiled; the handler is TypeScript. It is in the table on the [benchmarks](benchmarks.html) page. The `Bun.serve` server there is a single `fetch` handler, so a leaner one would narrow that gap.
 
-**The same API in other stacks** (Go, Rust, .NET, Node, Bun) is on the [benchmarks](benchmarks.html) page. A Forge app is a framework with telemetry, security headers, authentication and a dashboard in the request path, and it runs your code in JavaScript, so it is not level with a hand-written Axum or fasthttp server (3.5 to 5 times behind on reads) and the numbers there say so.
+**The same API in other stacks** (Go, Rust, .NET, Node, Bun) is on the [benchmarks](benchmarks.html) page. A Forge app is a framework with telemetry, security headers, authentication and a dashboard in the request path, and it runs your code in JavaScript, so it is not level with a hand-written Axum or fasthttp server (2.6 to 3.7 times behind on reads for a NestJS controller, 1.3 to 1.8 times for a [light route](http.html#light-routes)) and the numbers there say so.
 
 **Forge RPC echo, a call that does almost nothing** (the engine's own harness, `bench/container/compare.sh`, same limits). The echo handler's cost is so small that this measures the server:
 

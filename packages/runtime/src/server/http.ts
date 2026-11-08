@@ -5,18 +5,19 @@ type RoutePattern = Pick<HttpRoute, "method" | "path" | "pathPrefix">;
 export type RouteMatch<R extends RoutePattern = HttpRoute> = { route: R } | { status: 404 } | { status: 405; allow: string[] };
 
 /** Exact paths win over prefixes, and the longest prefix wins. A path that exists under other methods answers 405. */
-const memo = new WeakMap<object, Map<string, RouteMatch<any>>>();
+const memo = new WeakMap<object, Map<string, Map<string, RouteMatch<any>>>>();
 
 export function matchRoute<R extends RoutePattern>(routes: R[], method: string, path: string): RouteMatch<R> {
   // The routes are fixed once loaded, so an answer for a method and path stays right: kept for the paths a server sees most (a bounded few).
-  let seen = memo.get(routes);
-  if (!seen) memo.set(routes, (seen = new Map()));
-  const key = `${method} ${path}`;
-  let found = seen.get(key);
+  let byMethod = memo.get(routes);
+  if (!byMethod) memo.set(routes, (byMethod = new Map()));
+  let seen = byMethod.get(method);
+  if (!seen) byMethod.set(method, (seen = new Map()));
+  let found = seen.get(path);
   if (!found) {
     found = findRoute(routes, method, path);
     if (seen.size >= 512) seen.clear();
-    seen.set(key, found);
+    seen.set(path, found);
   }
   return found as RouteMatch<R>;
 }

@@ -54,6 +54,7 @@ import type { RouteDocs, SecurityRequirement } from "./api-docs";
 import { httpAction, type ActionCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
 import { queryValue } from "./server/http";
 import { LIGHT, LightResponse, type LightRequest } from "./server/light";
+import { simpleMatcher } from "./server/route-match";
 import { NEST_MOUNT, type NestRoute } from "./server/openapi";
 import { validate, validateFields, ValidationError, type PropertyValidators, type Validator } from "./values";
 
@@ -91,7 +92,8 @@ interface TelemetryBridge {
   annotate(attrs: Record<string, string | number | boolean>, request?: boolean): void;
   entry?<T>(kind: "rpc" | "ws", operation: string, traceparent: string | undefined, fn: () => Promise<T>): Promise<T>;
 }
-const telemetry = () => (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.telemetry")] as TelemetryBridge | undefined;
+const TELEMETRY_KEY = Symbol.for("archlast-forge.telemetry");
+const telemetry = () => (globalThis as Record<symbol, unknown>)[TELEMETRY_KEY] as TelemetryBridge | undefined;
 const TIMED = Symbol.for("archlast-forge.timed");
 
 /**
@@ -804,7 +806,22 @@ type CookieOptions = { maxAge?: number; expires?: Date; path?: string; domain?: 
 class ForgeResponse extends EventEmitter {
   statusCode = 200;
   statusMessage = "";
-  readonly headers = new Headers();
+  private _headers?: Headers;
+  private _type?: string;
+  /** The response's headers. Made when something reads them: most answers set only a content type, which is held until then. */
+  get headers(): Headers {
+    if (!this._headers) {
+      this._headers = new Headers();
+      if (this._type !== undefined) this._headers.set("content-type", this._type);
+    }
+    return this._headers;
+  }
+  /** Sets the content type unless one is set (the common case of what `headers.has("content-type")` then `headers.set(...)` did). */
+  defaultType(type: string) {
+    if (this._headers) {
+      if (!this._headers.has("content-type")) this._headers.set("content-type", type);
+    } else if (this._type === undefined) this._type = type;
+  }
   readonly locals: Record<string, unknown> = {};
   body: BodyInit | null = null;
   writableEnded = false;
@@ -944,18 +961,18 @@ class ForgeResponse extends EventEmitter {
     return this.cookie(name, "", { ...options, maxAge: undefined, expires: new Date(1) });
   }
   json(body: unknown) {
-    if (!this.headers.has("content-type")) this.headers.set("content-type", "application/json; charset=utf-8");
+    this.defaultType("application/json; charset=utf-8");
     return this.end(JSON.stringify(body));
   }
   /** Express's `res.send()`: an object as JSON, a string as HTML, bytes as they are. */
   send(body?: unknown) {
     if (body === undefined || body === null) return this.end();
     if (typeof body === "string") {
-      if (!this.headers.has("content-type")) this.headers.set("content-type", "text/html; charset=utf-8");
+      this.defaultType("text/html; charset=utf-8");
       return this.end(body);
     }
     if (body instanceof Uint8Array || body instanceof ArrayBuffer) {
-      if (!this.headers.has("content-type")) this.headers.set("content-type", "application/octet-stream");
+      this.defaultType("application/octet-stream");
       return this.end(body);
     }
     return this.json(body);
@@ -972,9 +989,14 @@ class ForgeResponse extends EventEmitter {
     if (body !== null && typeof body !== "string" && !(body instanceof Uint8Array)) return this.toResponse();
     const headers: [string, string][] = [];
     let typed = false;
-    for (const h of this.headers) {
-      if (h[0] === "content-type") typed = true;
-      headers.push(h);
+    if (this._headers) {
+      for (const h of this._headers) {
+        if (h[0] === "content-type") typed = true;
+        headers.push(h);
+      }
+    } else if (this._type !== undefined) {
+      typed = true;
+      headers.push(["content-type", this._type]);
     }
     // `new Response("text")` says what it is when sent: the same here
     if (typeof body === "string" && !typed) headers.push(["content-type", "text/plain;charset=utf-8"]);
@@ -1008,8 +1030,14 @@ class Router {
   private layer(method: string | undefined, route: boolean, args: unknown[]): Layer {
     const [path, handler] = (typeof args[0] === "function" ? ["/", args[0]] : args) as [string, Handler];
     // Middleware at the root runs for every path: path-to-regexp's prefix match needs a "/" after "/", so it would match only "/".
-    const test = !route && (path === "/" || path === "") ? () => ({ params: {} }) : match(path, { decode: decodeURIComponent, end: route });
-    return { method, route, handler, pattern: path || "/", matches: (p) => test(p) as false | { params: Record<string, string> } };
+    const compile = () => match(path, { decode: decodeURIComponent, end: route }) as (p: string) => false | { params: Record<string, string> };
+    if (!route && (path === "/" || path === "")) return { method, route, handler, pattern: path || "/", matches: () => ({ params: {} }) };
+    // A route made of fixed segments and plain parameters (nearly all of them) is matched without a regular expression; others, and a path that is odd, by path-to-regexp.
+    let compiled: ((p: string) => false | { params: Record<string, string> }) | undefined;
+    const slow = (p: string) => (compiled ??= compile())(p);
+    const fast = route ? simpleMatcher(path, slow) : null;
+    if (!fast) compiled = compile(); // a pattern path-to-regexp rejects fails when the route is added, as it always did
+    return { method, route, handler, pattern: path || "/", matches: fast ?? slow };
   }
   private add(method: string | undefined, route: boolean, args: unknown[]) {
     this.layers.push(this.layer(method, route, args));
@@ -1160,10 +1188,10 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
       return res.end();
     }
     if (typeof body === "object") {
-      if (!res.headers.has("content-type")) res.headers.set("content-type", "application/json; charset=utf-8");
+      res.defaultType("application/json; charset=utf-8");
       return res.end(JSON.stringify(body));
     }
-    if (!res.headers.has("content-type")) res.headers.set("content-type", "text/plain; charset=utf-8");
+    res.defaultType("text/plain; charset=utf-8");
     return res.end(String(body));
   }
   status(res: ForgeResponse, statusCode: number) {

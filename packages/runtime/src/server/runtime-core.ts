@@ -11,7 +11,7 @@ import { openDatabase } from "./db/open";
 import { describePlan } from "./db/pool-size";
 import { serverMemory } from "./db/sqlite";
 import type { Db } from "./db/types";
-import type { UserIdentity } from "../functions";
+import type { HttpRoute, UserIdentity } from "../functions";
 import { Executor, logContext, serializeError, type CallHeaders, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
 import { checkHttpRequest, matchRoute, routeName } from "./http";
@@ -94,6 +94,8 @@ async function checkSchema(exec: Executor, project: Project) {
 export interface RuntimeCore {
   manifest: Manifest;
   handle(msg: HostMessage): Promise<unknown>;
+  /** `handle` for an HTTP request, answering without a promise when nothing needs waiting for (see `httpDirect` in runtime-core.ts). */
+  httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">): HttpResponseMessage | Promise<HttpResponseMessage>;
   /** A socket event: given to whatever registered for them (the Nest bridge), or the socket is closed. */
   event(msg: HostEvent): void;
   shutdown(): Promise<void>;
@@ -304,6 +306,96 @@ export async function startCore(opts: {
     }
   };
 
+  /** The message the server is answered with, for what a route's handler returned. The answer of a `LightResponse` needs no waiting; a `Response`'s body does. */
+  function httpAnswer(route: HttpRoute, res: Response | LightResponse, telemetry: CallTelemetry | undefined): HttpResponseMessage | Promise<HttpResponseMessage> {
+    if (res instanceof LightResponse) {
+      const out = res.headers.filter((h) => h[0] !== "content-length");
+      const reply: HttpResponseMessage = { status: res.status, headers: out, body: res.body ?? EMPTY };
+      if ((route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true) reply.nest = true;
+      if (telemetry) reply.telemetry = telemetry;
+      return reply;
+    }
+    return httpResponseAnswer(route, res, telemetry);
+  }
+
+  async function httpResponseAnswer(route: HttpRoute, res: Response, telemetry: CallTelemetry | undefined): Promise<HttpResponseMessage> {
+    const out: [string, string][] = [];
+    let typed = false;
+    for (const h of res.headers) {
+      if (h[0] === "content-length") continue;
+      if (h[0] === "content-type") typed = true;
+      out.push(h);
+    }
+    const reply: HttpResponseMessage = { status: res.status, headers: out, body: undefined as never };
+    if ((route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true) reply.nest = true;
+    if (telemetry) reply.telemetry = telemetry;
+    if (res.body && ((res as unknown as Record<symbol, unknown>)[STREAM] || res.headers.get("content-type")?.startsWith("text/event-stream"))) {
+      reply.body = res.body;
+      reply.stream = true;
+      return reply;
+    }
+    // `new Response("text")` has no content-type header of its own: Bun.serve adds one when it sends. Passing the bytes along loses that,
+    // so give text bodies the type the platform would have (binary bodies keep the default, and a handler can always set one). A response that
+    // has a type already needs no blob to say so.
+    if (typed) {
+      reply.body = await res.arrayBuffer();
+      return reply;
+    }
+    const blob = await res.blob();
+    const bytes = await blob.arrayBuffer();
+    if (blob.type.startsWith("text/plain") && isText(bytes)) out.push(["content-type", blob.type]);
+    reply.body = bytes;
+    return reply;
+  }
+
+  const textAnswer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({
+    status,
+    headers: [["content-type", "text/plain"], ...extra],
+    body: new TextEncoder().encode(status === 404 ? "Not found" : "Method not allowed").buffer as ArrayBuffer,
+  });
+
+  /**
+   * A request to an HTTP route from an anonymous caller, not traced, answered without a promise when its handler is synchronous: most of what a request costs
+   * is the awaits between the socket and the handler. Anything else (a cookie or an authorization header to resolve, a trace to record) takes `handle`.
+   */
+  function httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">): HttpResponseMessage | Promise<HttpResponseMessage> {
+    if (msg.trace || msg.headers.cookie || msg.headers.authorization) return handle({ ...msg, id: 0 }) as Promise<HttpResponseMessage>;
+    const req = msg.req;
+    const { method, body } = req;
+    const pathname = req.path ?? new URL(req.url).pathname;
+    const found = matchRoute(project.http, method, pathname);
+    if (!("route" in found)) return textAnswer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
+    const route = found.route;
+    const invalid = route.query || route.body ? checkHttpRequest(route, req.url, body) : undefined;
+    if (invalid)
+      return {
+        status: 400,
+        headers: [["content-type", "application/json"]],
+        body: new TextEncoder().encode(JSON.stringify({ error: { code: "BAD_REQUEST", message: invalid, requestId: msg.requestId } })).buffer as ArrayBuffer,
+      };
+    const light = (route.handler as unknown as Record<symbol, unknown>)[LIGHT] === true;
+    const out = exec.runHttpAnonymous(
+      routeName(route),
+      route.handler,
+      light
+        ? {
+            method,
+            get url() {
+              return req.url;
+            },
+            path: pathname,
+            search: req.search ?? new URL(req.url).search,
+            get headers() {
+              return req.headers;
+            },
+            body,
+          }
+        : new Request(req.url, { method, headers: req.headers, body }),
+      msg.requestId,
+    );
+    return out instanceof Promise ? out.then((res) => httpAnswer(route, res, undefined)) : httpAnswer(route, out, undefined);
+  }
+
   async function handle(msg: HostMessage): Promise<unknown> {
     switch (msg.t) {
       case "call":
@@ -323,15 +415,12 @@ export async function startCore(opts: {
         return { status: res.status, headers: [...res.headers], body: text, ...(telemetry && { telemetry }) } satisfies SerializedResponse;
       }
       case "http": {
-        const { method, url, headers, body } = msg.req;
-        const pathname = msg.req.path ?? new URL(url).pathname;
+        // `headers` is read only where it is needed: from a request in this process it may be decoded when asked for
+        const req = msg.req;
+        const { method, url, body } = req;
+        const pathname = req.path ?? new URL(url).pathname;
         const found = matchRoute(project.http, method, pathname);
-        const answer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({
-          status,
-          headers: [["content-type", "text/plain"], ...extra],
-          body: new TextEncoder().encode(status === 404 ? "Not found" : "Method not allowed").buffer as ArrayBuffer,
-        });
-        if (!("route" in found)) return answer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
+        if (!("route" in found)) return textAnswer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
         const route = found.route;
         // A route that declares its query or body answers 400 for a request that doesn't match, before its handler runs.
         const invalid = checkHttpRequest(route, url, body);
@@ -351,7 +440,18 @@ export async function startCore(opts: {
           return exec.runHttp(
             name,
             route.handler,
-            light ? { method, url, path: pathname, search: msg.req.search ?? new URL(url).search, headers, body } : new Request(url, { method, headers, body }),
+            light
+              ? {
+                  method,
+                  url,
+                  path: pathname,
+                  search: req.search ?? new URL(url).search,
+                  get headers() {
+                    return req.headers;
+                  },
+                  body,
+                }
+              : new Request(url, { method, headers: req.headers, body }),
             msg.headers,
             msg.requestId,
           );
@@ -362,40 +462,7 @@ export async function startCore(opts: {
           telemetry = traced_.telemetry;
           res = traced_.value;
         } else res = await run(); // a request that is only counted runs untraced: nothing to collect
-        if (res instanceof LightResponse) {
-          const out = res.headers.filter((h) => h[0] !== "content-length");
-          const reply: HttpResponseMessage = { status: res.status, headers: out, body: res.body ?? EMPTY };
-          if ((route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true) reply.nest = true;
-          if (telemetry) reply.telemetry = telemetry;
-          return reply;
-        }
-        const out: [string, string][] = [];
-        let typed = false;
-        for (const h of res.headers) {
-          if (h[0] === "content-length") continue;
-          if (h[0] === "content-type") typed = true;
-          out.push(h);
-        }
-        const reply: HttpResponseMessage = { status: res.status, headers: out, body: undefined as never };
-        if ((route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true) reply.nest = true;
-        if (telemetry) reply.telemetry = telemetry;
-        if (res.body && ((res as unknown as Record<symbol, unknown>)[STREAM] || res.headers.get("content-type")?.startsWith("text/event-stream"))) {
-          reply.body = res.body;
-          reply.stream = true;
-          return reply;
-        }
-        // `new Response("text")` has no content-type header of its own: Bun.serve adds one when it sends. Passing the bytes along loses that,
-        // so give text bodies the type the platform would have (binary bodies keep the default, and a handler can always set one). A response that
-        // has a type already needs no blob to say so.
-        if (typed) {
-          reply.body = await res.arrayBuffer();
-          return reply;
-        }
-        const blob = await res.blob();
-        const bytes = await blob.arrayBuffer();
-        if (blob.type.startsWith("text/plain") && isText(bytes)) out.push(["content-type", blob.type]);
-        reply.body = bytes;
-        return reply;
+        return httpAnswer(route, res, telemetry);
       }
       case "admin":
         if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });
@@ -454,6 +521,7 @@ export async function startCore(opts: {
   return {
     manifest,
     handle,
+    httpDirect,
     event,
     async shutdown() {
       scheduler?.stop();

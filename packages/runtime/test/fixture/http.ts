@@ -1,10 +1,21 @@
-import { anyApi, ForgeError, httpAction, httpRouter, v } from "../../src/index";
+import { anyApi, ForgeError, httpAction, httpRouter, lightAction, lightJson, LightResponse, v } from "../../src/index";
 
 const api = anyApi;
 const http = httpRouter();
 const json = (body: unknown, init?: ResponseInit) => Response.json(body, init);
 
 http.route({ method: "GET", path: "/hello", handler: httpAction(async () => new Response("hello", { headers: { "x-custom": "yes" } })) });
+// lightAction: given the request's fields, answering without a Web Request or Response
+http.route({
+  method: "POST",
+  path: "/light",
+  handler: lightAction(async (ctx, req) => {
+    if (new URLSearchParams(req.search).has("empty")) return new LightResponse(204, [["x-light", "1"]], null);
+    if (new URLSearchParams(req.search).has("web")) return new Response("from a Response", { headers: { "x-light": "web" } });
+    const who = await ctx.auth.getUserIdentity();
+    return lightJson({ method: req.method, path: req.path, search: req.search, text: new TextDecoder().decode(req.body), host: new Headers(req.headers).get("host") !== null, who: who ? "someone" : null }, 201, [["x-light", "1"]]);
+  }),
+});
 http.route({
   method: "OPTIONS",
   path: "/hello",

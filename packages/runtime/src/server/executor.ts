@@ -116,13 +116,98 @@ function checkReturn<T>(fn: RegisteredFunction, value: T): T {
 }
 
 /** Rejects after `ms`. The handler may keep running; its transaction handle refuses further use once the call ends. */
+/**
+ * An action's `ctx`. Making its storage, scheduler and `run*` functions for every call costs more than most handlers (an HTTP route that answers from memory)
+ * use of them, so they are made the first time one is read.
+ */
+class LazyActionCtx {
+  private parts?: ReturnType<Executor["actionCtxParts"]>;
+  constructor(
+    private readonly exec: Executor,
+    readonly auth: { getUserIdentity(): Promise<UserIdentity | null> },
+    private readonly identity: UserIdentity | null,
+    private readonly requestId: string | undefined,
+  ) {}
+  private get p() {
+    return (this.parts ??= this.exec.actionCtxParts(this.identity, this.requestId));
+  }
+  get storage() {
+    return this.p.storage;
+  }
+  get scheduler() {
+    return this.p.scheduler;
+  }
+  get runQuery() {
+    return this.p.runQuery;
+  }
+  get runMutation() {
+    return this.p.runMutation;
+  }
+  get runAction() {
+    return this.p.runAction;
+  }
+}
+
+/**
+ * Time limits for calls. Every call has one and almost none reaches it, so a timer made and cleared for each is most of what a limit costs: calls with the same
+ * limit wait in a list in the order their deadlines fall, and one timer per list is set for its first.
+ */
+class Deadlines {
+  private lists = new Map<number, { head?: Node; tail?: Node; timer?: Timer }>();
+
+  add(ms: number, fire: () => void): Node {
+    let list = this.lists.get(ms);
+    if (!list) this.lists.set(ms, (list = {}));
+    const node: Node = { at: performance.now() + ms, fire, list, ms };
+    if (list.tail) (list.tail.next = node), (node.prev = list.tail);
+    else list.head = node;
+    list.tail = node;
+    if (!list.timer) list.timer = setTimeout(() => this.tick(ms, list!), ms);
+    return node;
+  }
+
+  remove(node: Node) {
+    if (node.done) return;
+    node.done = true;
+    const list = node.list;
+    if (node.prev) node.prev.next = node.next;
+    else list.head = node.next;
+    if (node.next) node.next.prev = node.prev;
+    else list.tail = node.prev;
+    if (!list.head && list.timer) (clearTimeout(list.timer), (list.timer = undefined));
+  }
+
+  private tick(ms: number, list: { head?: Node; tail?: Node; timer?: Timer }) {
+    list.timer = undefined;
+    const now = performance.now();
+    while (list.head && list.head.at <= now) {
+      const node = list.head;
+      this.remove(node);
+      node.fire();
+    }
+    if (list.head) list.timer = setTimeout(() => this.tick(ms, list), Math.max(1, list.head.at - now));
+  }
+}
+interface Node {
+  at: number;
+  fire: () => void;
+  list: { head?: Node; tail?: Node; timer?: Timer };
+  ms: number;
+  prev?: Node;
+  next?: Node;
+  done?: boolean;
+}
+const deadlines = new Deadlines();
+
+/** The `ctx.auth` of a call with no caller. */
+const ANONYMOUS = { getUserIdentity: async (): Promise<UserIdentity | null> => null };
+
 function withTimeout<T>(promise: Promise<T>, ms: number, name: string): Promise<T> {
-  // One promise and one timer: the answer, or the timeout, whichever comes first.
   return new Promise<T>((resolve, reject) => {
-    const timer = setTimeout(() => reject(new TimeoutError(`${name} timed out after ${ms} ms`)), ms);
+    const node = deadlines.add(ms, () => reject(new TimeoutError(`${name} timed out after ${ms} ms`)));
     promise.then(
-      (value) => (clearTimeout(timer), resolve(value)),
-      (error) => (clearTimeout(timer), reject(error)),
+      (value) => (deadlines.remove(node), resolve(value)),
+      (error) => (deadlines.remove(node), reject(error)),
     );
   });
 }
@@ -358,6 +443,42 @@ export class Executor {
     return res as Response | LightResponse;
   }
 
+  /**
+   * `runHttp` for a caller with no cookie or authorization header and no trace to record: the answer comes back without a promise when the handler's does not
+   * (a handler that waits for something is given its time limit as before). Everything else `runHttp` does is done in the same order.
+   */
+  runHttpAnonymous(name: string, action: HttpAction, req: Request | LightRequest, requestId?: string): Response | LightResponse | Promise<Response | LightResponse> {
+    const start = performance.now();
+    let res: unknown;
+    try {
+      res = logContext.run({ name, requestId, logs: undefined, trace: undefined, spanId: undefined }, () => action.handler(new LazyActionCtx(this, ANONYMOUS, null, requestId) as unknown as ActionCtx, req as Request));
+    } catch (e) {
+      this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
+      throw e;
+    }
+    if (res && typeof (res as PromiseLike<unknown>).then === "function") {
+      return withTimeout(Promise.resolve(res), this.limits.actionTimeoutMs, name).then(
+        (value) => {
+          const checked = this.httpResult(name, value);
+          this.logCall(name, requestId, start, undefined, true, "ok");
+          return checked;
+        },
+        (e) => {
+          this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
+          throw e;
+        },
+      );
+    }
+    const checked = this.httpResult(name, res);
+    this.logCall(name, requestId, start, undefined, true, "ok");
+    return checked;
+  }
+
+  private httpResult(name: string, res: unknown): Response | LightResponse {
+    if (!(res instanceof Response) && !(res instanceof LightResponse)) throw new Error(`${name} must return a Response`);
+    return res as Response | LightResponse;
+  }
+
   /** A function's time limit, for mutations run outside `call` (the scheduler). */
   timed<T>(promise: Promise<T>, name: string): Promise<T> {
     return withTimeout(promise, this.limits.functionTimeoutMs, name);
@@ -381,21 +502,23 @@ export class Executor {
   async logged<T>(name: string, requestId: string | undefined, logs: ConsoleLine[] | undefined, fn: () => Promise<T>, access = false): Promise<T> {
     const start = performance.now();
     const outer = logContext.getStore();
-    const entry = (ok: boolean, message: string) =>
-      (!access || !ok) &&
-      this.o.log({ time: Date.now(), name, level: "call", message, ok, requestId, durationMs: Math.round((performance.now() - start) * 10) / 10, traceId: outer?.trace?.traceId });
     const context = { name, requestId, logs, trace: outer?.trace, spanId: outer?.spanId };
     try {
       // A traced call is a span, and what it does nests under it; the module is its namespace on the time-by-code view.
       const out = context.trace
         ? await logContext.run(context, () => inSpan(access ? `${name} (access)` : name, "function", attrsOfFunction(name), fn, 1))
         : await logContext.run(context, fn);
-      entry(true, "ok");
+      if (!access) this.logCall(name, requestId, start, outer?.trace?.traceId, true, "ok");
       return out;
     } catch (e) {
-      entry(false, (e as Error)?.message ?? String(e));
+      this.logCall(name, requestId, start, outer?.trace?.traceId, false, (e as Error)?.message ?? String(e));
       throw e;
     }
+  }
+
+  /** The log line for one call (its name, whether it worked and how long it took). */
+  private logCall(name: string, requestId: string | undefined, start: number, traceId: string | undefined, ok: boolean, message: string) {
+    this.o.log({ time: Date.now(), name, level: "call", message, ok, requestId, durationMs: Math.round((performance.now() - start) * 10) / 10, traceId });
   }
 
   private s3(): Storage {
@@ -428,9 +551,13 @@ export class Executor {
   }
 
   actionCtx(auth: { getUserIdentity(): Promise<UserIdentity | null> }, identity: UserIdentity | null, requestId?: string) {
+    return new LazyActionCtx(this, auth, identity, requestId);
+  }
+
+  /** What an action's `ctx` is made of: `actionCtx` hands it out piece by piece (see `LazyActionCtx`), since most handlers use few of them. */
+  actionCtxParts(identity: UserIdentity | null, requestId?: string) {
     const runAs = (kind: FunctionKind) => async (ref: any, args?: object) => (await this.call(getFunctionName(ref), kind, args, identity, requestId)).value;
     return {
-      auth,
       storage: {
         getUrl: async (id: string) => (await this.read((s) => this.storage(s).getUrl(id))).value,
         generateUploadUrl: (o?: { contentType?: string }) => this.mutate((s, _tx, after) => this.storage(s, after).generateUploadUrl(o)),

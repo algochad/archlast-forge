@@ -843,11 +843,7 @@ export function serveCompat<D = undefined>(
     },
   };
 
-  router.fallback = async (raw) => {
-    if (opts.rawFetch) {
-      const early = await opts.rawFetch(raw, server);
-      if (early !== undefined) return early as never;
-    }
+  const viaWebRequest = async (raw: RawRequest) => {
     let req: Request;
     try {
       req = toWebRequest(raw);
@@ -861,6 +857,17 @@ export function serveCompat<D = undefined>(
       configurable: true,
     }); // aborts when the client leaves
     return (await respond(req, raw)) as never;
+  };
+  // `rawFetch` answers without a Web `Request` when it can, and without a promise when it can do that too (the engine writes such a result in the batch it is in)
+  router.fallback = (raw) => {
+    if (opts.rawFetch) {
+      const early = opts.rawFetch(raw, server);
+      if (early !== undefined) {
+        if (!(early instanceof Promise)) return early as never;
+        return early.then((r) => (r !== undefined ? (r as never) : viaWebRequest(raw)));
+      }
+    }
+    return viaWebRequest(raw);
   };
 
   const ws = opts.websocket ?? {};
