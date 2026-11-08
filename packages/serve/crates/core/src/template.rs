@@ -26,9 +26,23 @@ enum Expr {
     Cond(Box<Expr>, Box<Expr>, Box<Expr>),
     Eq(Box<Expr>, Box<Expr>, bool),
     Add(Box<Expr>, Box<Expr>),
+    /// Numbers (and, for the relational ones, strings): `< > <= >= - * / %`.
+    Bin(Op, Box<Expr>, Box<Expr>),
     Concat(Vec<Expr>),
     /// A navigation link's active state: the request path (`d.path`) is `to`, or below it unless `end` (React Router's rule, without case).
     Active(String, bool),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum Op {
+    Lt,
+    Gt,
+    Le,
+    Ge,
+    Sub,
+    Mul,
+    Div,
+    Rem,
 }
 
 #[derive(Debug)]
@@ -37,13 +51,21 @@ enum Key {
     Index(usize),
 }
 
+/// How an attribute prints a boolean: omitted unless true (`plain`), as `name=""` when true (`bool`), or as the text "true"/"false" (`enum`, like `contentEditable`).
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum Mode {
+    Plain,
+    Boolean,
+    Enumerated,
+}
+
 #[derive(Debug)]
 enum Node {
     Text(String),
     Print(Expr),
     /// Printed as it is, not escaped: HTML the caller made.
     Raw(Expr),
-    Attr(String, Expr, bool),
+    Attr(String, Expr, Mode),
     If(Expr, Vec<Node>, Vec<Node>),
     Map(Expr, String, Option<String>, Vec<Node>),
 }
@@ -87,6 +109,14 @@ fn expr(v: &Value) -> Result<Expr, String> {
         "===" => Expr::Eq(b(1)?, b(2)?, true),
         "!==" => Expr::Eq(b(1)?, b(2)?, false),
         "+" => Expr::Add(b(1)?, b(2)?),
+        "<" => Expr::Bin(Op::Lt, b(1)?, b(2)?),
+        ">" => Expr::Bin(Op::Gt, b(1)?, b(2)?),
+        "<=" => Expr::Bin(Op::Le, b(1)?, b(2)?),
+        ">=" => Expr::Bin(Op::Ge, b(1)?, b(2)?),
+        "-" => Expr::Bin(Op::Sub, b(1)?, b(2)?),
+        "*" => Expr::Bin(Op::Mul, b(1)?, b(2)?),
+        "/" => Expr::Bin(Op::Div, b(1)?, b(2)?),
+        "%" => Expr::Bin(Op::Rem, b(1)?, b(2)?),
         "`" => Expr::Concat(arg(1)?.as_array().ok_or("`: parts")?.iter().map(expr).collect::<Result<_, _>>()?),
         "act" => Expr::Active(arg(1)?.as_str().ok_or("act: a path")?.to_ascii_lowercase(), arg(2)?.as_bool().unwrap_or(false)),
         other => return Err(format!("unknown operator {other}")),
@@ -107,7 +137,15 @@ fn node(v: &Value) -> Result<Node, String> {
     Ok(match op {
         "x" => Node::Print(expr(arg(1)?)?),
         "raw" => Node::Raw(expr(arg(1)?)?),
-        "a" => Node::Attr(arg(1)?.as_str().ok_or("a: a name")?.to_string(), expr(arg(2)?)?, arg(3)?.as_bool().unwrap_or(false)),
+        "a" => Node::Attr(
+            arg(1)?.as_str().ok_or("a: a name")?.to_string(),
+            expr(arg(2)?)?,
+            match arg(3)? {
+                Value::Bool(true) => Mode::Boolean,
+                Value::String(m) if m == "enum" => Mode::Enumerated,
+                _ => Mode::Plain,
+            },
+        ),
         "if" => Node::If(expr(arg(1)?)?, nodes(arg(2)?)?, nodes(arg(3)?)?),
         "map" => Node::Map(expr(arg(1)?)?, arg(2)?.as_str().ok_or("map: item name")?.to_string(), arg(3)?.as_str().map(str::to_string), nodes(arg(4)?)?),
         other => return Err(format!("unknown node {other}")),
@@ -243,6 +281,10 @@ fn eval<'r, 'a>(e: &'r Expr, data: &'r Val<'a>, scope: &Scope<'r, 'a>) -> Cow<'r
                 _ => Val::Str(Cow::Owned(js_string(&l) + &js_string(&r))),
             })
         }
+        Expr::Bin(op, a, b) => {
+            let (l, r) = (eval(a, data, scope), eval(b, data, scope));
+            Cow::Owned(binary(*op, &l, &r))
+        }
         Expr::Concat(parts) => {
             let mut s = String::new();
             for p in parts {
@@ -260,6 +302,51 @@ fn eval<'r, 'a>(e: &'r Expr, data: &'r Val<'a>, scope: &Scope<'r, 'a>) -> Cow<'r
             };
             let active = here == *to || (!*end && here.starts_with(to.as_str()) && here.as_bytes().get(to.len()) == Some(&b'/'));
             Cow::Owned(Val::Bool(active))
+        }
+    }
+}
+
+/// The numeric and relational operators with JavaScript's results for numbers (and strings, for the relational ones); anything else is NaN or false, as JavaScript says for most of it.
+fn binary<'a>(op: Op, l: &Val, r: &Val) -> Val<'a> {
+    if let (Val::Str(x), Val::Str(y)) = (l, r) {
+        let ord = x.encode_utf16().cmp(y.encode_utf16());
+        return match op {
+            Op::Lt => Val::Bool(ord.is_lt()),
+            Op::Gt => Val::Bool(ord.is_gt()),
+            Op::Le => Val::Bool(ord.is_le()),
+            Op::Ge => Val::Bool(ord.is_ge()),
+            _ => Val::Num(f64::NAN),
+        };
+    }
+    let (Some(x), Some(y)) = (num(l), num(r)) else {
+        return match op {
+            Op::Lt | Op::Gt | Op::Le | Op::Ge => Val::Bool(false),
+            _ => Val::Num(f64::NAN),
+        };
+    };
+    match op {
+        Op::Lt => Val::Bool(x < y),
+        Op::Gt => Val::Bool(x > y),
+        Op::Le => Val::Bool(x <= y),
+        Op::Ge => Val::Bool(x >= y),
+        _ => {
+            if let (Val::Int(a), Val::Int(b)) = (l, r) {
+                let whole = match op {
+                    Op::Sub => a.checked_sub(*b),
+                    Op::Mul => a.checked_mul(*b),
+                    Op::Rem if *b != 0 => a.checked_rem(*b),
+                    _ => None,
+                };
+                if let Some(v) = whole {
+                    return Val::Int(v);
+                }
+            }
+            Val::Num(match op {
+                Op::Sub => x - y,
+                Op::Mul => x * y,
+                Op::Div => x / y,
+                _ => x % y,
+            })
         }
     }
 }
@@ -297,15 +384,21 @@ fn print<'r, 'a>(ns: &'r [Node], data: &'r Val<'a>, scope: &mut Scope<'r, 'a>, o
                 Val::Null | Val::Bool(_) => {}
                 other => out.push_str(&js_string(other)),
             },
-            Node::Attr(name, e, boolean) => match &*eval(e, data, scope) {
-                Val::Null | Val::Bool(false) => {}
-                Val::Bool(true) => {
-                    if *boolean {
+            Node::Attr(name, e, mode) => match &*eval(e, data, scope) {
+                Val::Null => {}
+                Val::Bool(b) => match mode {
+                    Mode::Boolean if *b => {
                         out.push(' ');
                         out.push_str(name);
                         out.push_str("=\"\"");
                     }
-                }
+                    Mode::Enumerated => {
+                        out.push(' ');
+                        out.push_str(name);
+                        out.push_str(if *b { "=\"true\"" } else { "=\"false\"" });
+                    }
+                    _ => {}
+                },
                 v => {
                     out.push(' ');
                     out.push_str(name);
@@ -399,12 +492,28 @@ mod tests {
     fn attributes_are_left_out_when_empty() {
         let t = r#"["<a",["a","href",["p","d","h"],false],["a","class",["p","d","c"],false],["a","disabled",["p","d","off"],true],["a","hidden",["p","d","on"],true],">x</a>"]"#;
         assert_eq!(run(t, r#"{"h":"/a?b=1&c=2","c":null,"off":false,"on":true}"#), r#"<a href="/a?b=1&amp;c=2" hidden="">x</a>"#);
+        assert_eq!(run(r#"["<p",["a","contentEditable",["p","d","t"],"enum"],["a","spellCheck",["p","d","f"],"enum"],">"]"#, r#"{"t":true,"f":false}"#), r#"<p contentEditable="true" spellCheck="false">"#);
     }
 
     #[test]
     fn maps_over_arrays_with_an_index_and_nests() {
         let t = r#"["<ul>",["map",["p","d","rows"],"r","i",["<li>",["x",["p","i"]],":",["x",["p","r","name"]],["map",["p","r","tags"],"t",null,["[",["x",["p","t"]],"]"]],"</li>"]],"</ul>"]"#;
         assert_eq!(run(t, r#"{"rows":[{"name":"a","tags":["x","y"]},{"name":"b","tags":[]}]}"#), "<ul><li>0:a[x][y]</li><li>1:b</li></ul>");
+    }
+
+    #[test]
+    fn arithmetic_and_comparisons() {
+        let d = r#"{"i":7,"f":2.5,"s":"b"}"#;
+        let p = |op: &str, a: &str, b: &str| run(&format!(r#"[["x",["{op}",["p","d","{a}"],["p","d","{b}"]]]]"#), d);
+        assert_eq!(p("-", "i", "f"), "4.5");
+        assert_eq!(p("*", "i", "f"), "17.5");
+        assert_eq!(p("/", "i", "i"), "1");
+        assert_eq!(p("%", "i", "i"), "0");
+        assert_eq!(run(r#"[["x",["%",["l",-7],["l",3]]]]"#, d), "-1"); // the sign of the dividend, as in JavaScript
+        assert_eq!(p("<", "f", "i"), "");
+        assert_eq!(run(r#"[["x",["?:",["<",["p","d","f"],["p","d","i"]],["l","lt"],["l","ge"]]]]"#, d), "lt");
+        assert_eq!(run(r#"[["x",["?:",[">=",["p","d","s"],["l","a"]],["l","after"],["l","before"]]]]"#, d), "after");
+        assert_eq!(run(r#"[["x",["-",["p","d","s"],["l",1]]]]"#, d), "NaN");
     }
 
     #[test]

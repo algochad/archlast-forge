@@ -3,6 +3,7 @@ import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { classifyApp, type ComponentReport } from "./classify";
 import { generate } from "./generate";
+import { compileApp, moduleSource, type AppTemplates } from "./render-compile";
 import { scanRoutes } from "./routes";
 
 export interface BuildManifest {
@@ -20,6 +21,8 @@ export interface BuildManifest {
    * (ids) that can be rendered that way. A page whose routes are not all in `routes` is rendered and hydrated as a whole, as without islands.
    */
   islands?: { entry: string; nav: string; preload: string[]; routes: string[] };
+  /** Routes whose pages the engine can print from a template (see render-compile.ts), and why the others cannot. */
+  templates?: { routes: string[]; reasons: Record<string, string> };
 }
 
 export interface BuildResult {
@@ -157,6 +160,7 @@ export async function buildApp(o: { root: string; dev: boolean; islands?: boolea
   let mounts: ComponentReport[] = [];
   // Islands are on when the app allows it, even with no island in it: its pages then carry only the navigation script.
   let islandsOn = false;
+  let templates: AppTemplates | undefined;
   let islandRoutes: string[] = [];
   // On when asked for: the option, FORGE_ISLANDS=1 (0 turns it off), or `export const islands = true` in app/root.tsx.
   const wantIslands = o.islands ?? (process.env.FORGE_ISLANDS ? process.env.FORGE_ISLANDS === "1" : optsIn(appDir, tree.root));
@@ -176,9 +180,11 @@ export async function buildApp(o: { root: string; dev: boolean; islands?: boolea
     else {
       mounts = report.mounts;
       islandsOn = true;
+      if (process.env.FORGE_TEMPLATES !== "0") templates = compileApp(root, appDir, tree, (id) => (id === "root" ? report.root?.tier : report.routes.find((r) => r.id === id)?.tier));
       islandRoutes = report.routes.filter((r) => r.tier !== "fallback").map((r) => r.id);
     }
   }
+  writeFileSync(join(gen, "render.server.ts"), moduleSource(gen, templates?.compiled ?? new Map()));
   const appRoot = join(root, "app");
   if (islandsOn) {
     writeFileSync(
@@ -263,6 +269,7 @@ ${mounts.map((m) => `  ${JSON.stringify(islandId(appRoot, m))}: () => import(${J
     css,
     routes,
     server: `server/${basename(serverOut.path)}`,
+    ...(templates && { templates: { routes: [...templates.compiled.keys()], reasons: Object.fromEntries(templates.reasons) } }),
     ...(islandsOut && { islands: { entry: basename(islandsOut.path), nav: basename(entryOf("nav")!.path), preload: [...preload(basename(islandsOut.path))], routes: islandRoutes } }),
   };
   writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2));

@@ -8,6 +8,8 @@ The same two pages in three frameworks, each built for production and served the
 | React Router 7 | framework mode, default entry files, `react-router-serve` (Node, one process) | |
 | Next.js 16 | App Router, `next start` (Node, one process) | `/` is prerendered at build time (Next's default for a page with no data); `/products` is `force-dynamic` |
 
+archlast-forge prints both pages from templates (the compiler reads them; see `packages/framework/src/render-compile.ts`), so its numbers include that.
+
 Pages: `/` has a header, three cards and a footer, no data. `/products` renders 100 rows from a loader (a table with a price and a date formatted in every row). The data and the formatting code are shared (`shared/data.ts`) and are built per call, as such code is usually written. A second run builds the formatters once (`CACHE_INTL=1`): archlast-forge also makes formatters once by itself on the server, so the first run shows what that is worth.
 
 Method (`run.sh`): each server is pinned to cores 0-3 and loaded from cores 4-7 with [oha](https://github.com/hatoo/oha), 64 connections, 5 s per run, median of 3, after two warm-up requests. Node servers are single processes, as `react-router-serve` and `next start` run by default; the engine uses Rust threads for I/O and one Bun thread for the app. Memory is the server's resident size after the runs.

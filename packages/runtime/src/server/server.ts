@@ -104,6 +104,8 @@ export interface AppEnv {
    * streaming scripts, the app's own) must carry it, or the browser won't run them.
    */
   nonce?: string;
+  /** Whether the HTTP engine can print a page from a template and JSON (`x-forge-template` on the answer says which template and carries the data as its body). */
+  templates?: boolean;
 }
 
 export interface ServerOptions {
@@ -368,6 +370,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   /** Whether the HTTP engine keeps responses a page asks it to (see `x-forge-cache`). */
   let nativeCache = false;
+  let nativeTemplateReply: (new (template: number, data: string, init: { status: number; headers: [string, string][] }) => unknown) | undefined;
   const rpcOpts: RpcOptions = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
   const maxBody = config.limits.maxRequestBytes;
   // Files kept on this server's disk are served here; uploads to them, and backups uploaded to the dashboard, may be larger than other requests.
@@ -1279,6 +1282,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             requestId,
             dev,
             ...(nonce && { nonce }),
+            ...(nativeCache && { templates: true }),
             headers,
             async call(name, kind, args) {
               const started = clock();
@@ -1347,7 +1351,14 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           const kept = Boolean(note && hashes !== null && nativeCache);
           if (kept) res.headers.set("x-archlast-cache", note!);
           // The nonce is for documents; the app's files and JSON get the policy without it.
-          return security.apply("app", res, kept || !res.headers.get("content-type")?.includes("text/html") ? undefined : nonce, kept ? hashes!.split(",").filter(Boolean) : undefined);
+          const out = security.apply("app", res, kept || !res.headers.get("content-type")?.includes("text/html") ? undefined : nonce, kept ? hashes!.split(",").filter(Boolean) : undefined);
+          // A page the app has the engine print: its body is the data, and the engine prints the template named in `x-forge-template` on its I/O thread.
+          const template = out.headers.get("x-forge-template");
+          if (template !== null && nativeTemplateReply) {
+            const headers = [...out.headers].filter(([k]) => k !== "x-forge-template");
+            return new nativeTemplateReply(Number(template), await out.text(), { status: out.status, headers }) as unknown as Response;
+          }
+          return out;
         }
       }
       return new Response("Not found", { status: 404 });
@@ -1396,7 +1407,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   // On the native engine a successful /rpc call is answered with its Reply, which skips the Web Response (a request before this gets a Response).
   if (httpEngine === "archlast") {
     nativeCache = true;
-    const Reply = (await nativeEngine())!.Reply;
+    const native = (await nativeEngine())!;
+    nativeTemplateReply = native.TemplateReply;
+    const Reply = native.Reply;
     rpcOpts.reply = (body, headers) => new Reply(body, { headers }) as unknown as Response;
   }
 

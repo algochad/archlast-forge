@@ -97,10 +97,10 @@ const PURE_PACKAGE_COMPONENTS: [RegExp, RegExp][] = [
 ];
 const INTERACTIVE_COMPONENTS = new Set(["Form", "ScrollRestoration", "Await"]);
 
-type Node = acorn.Node & Record<string, any>;
+export type Node = acorn.Node & Record<string, any>;
 
 const transpilers = new Map<string, Bun.Transpiler>();
-function toJs(file: string, source: string): string {
+export function toJs(file: string, source: string): string {
   const loader = file.endsWith(".tsx")
     ? "tsx"
     : file.endsWith(".ts")
@@ -125,11 +125,11 @@ function* walk(node: any): Generator<Node> {
   }
 }
 
-const isJsxCall = (n: Node) =>
+export const isJsxCall = (n: Node) =>
   n.type === "CallExpression" &&
   n.callee.type === "Identifier" &&
   /^jsx(s|DEV)?(_\w+)?$/.test(n.callee.name);
-const nameOfCallee = (c: Node): string | undefined =>
+export const nameOfCallee = (c: Node): string | undefined =>
   c.type === "Identifier"
     ? c.name
     : c.type === "MemberExpression" &&
@@ -137,7 +137,7 @@ const nameOfCallee = (c: Node): string | undefined =>
         c.property.type === "Identifier"
       ? c.property.name
       : undefined;
-const keyName = (p: Node): string | undefined =>
+export const keyName = (p: Node): string | undefined =>
   p.type === "Property"
     ? p.key.type === "Identifier"
       ? p.key.name
@@ -146,7 +146,7 @@ const keyName = (p: Node): string | undefined =>
         : undefined
     : undefined;
 
-interface Fn {
+export interface Fn {
   name: string;
   node: Node;
   exported: boolean;
@@ -165,7 +165,7 @@ function wrapped(init: Node): Node | undefined {
 }
 
 /** The functions at the top of a module that are components (an upper-case name) or the default export. */
-function componentsOf(program: Node): Fn[] {
+export function componentsOf(program: Node): Fn[] {
   const out: Fn[] = [];
   const consider = (
     name: string | undefined,
@@ -199,7 +199,7 @@ function componentsOf(program: Node): Fn[] {
 }
 
 /** local name -> the name the module exports it under ("default" for the default export). Direct exports, `export { A as B }` and `export default A`. */
-function exportsOf(program: Node): Map<string, string> {
+export function exportsOf(program: Node): Map<string, string> {
   const out = new Map<string, string>();
   for (const s of program.body as Node[]) {
     if (s.type === "ExportNamedDeclaration") {
@@ -219,12 +219,12 @@ function exportsOf(program: Node): Map<string, string> {
   return out;
 }
 
-interface Imports {
+export interface Imports {
   /** local name -> { source, imported } */
   byLocal: Map<string, { source: string; imported: string }>;
 }
 
-function importsOf(program: Node): Imports {
+export function importsOf(program: Node): Imports {
   const byLocal = new Map<string, { source: string; imported: string }>();
   for (const s of program.body as Node[])
     if (s.type === "ImportDeclaration")
@@ -346,7 +346,7 @@ function ownOf(fn: Node): Own {
   return { tier, reasons: [...reasons], renders };
 }
 
-const EXTS = [
+export const EXTS = [
   "",
   ".tsx",
   ".ts",
@@ -357,7 +357,7 @@ const EXTS = [
   "/index.jsx",
   "/index.js",
 ];
-const resolveRelative = (from: string, spec: string): string | undefined => {
+export const resolveRelative = (from: string, spec: string): string | undefined => {
   const base = resolve(dirname(from), spec);
   return EXTS.map((e) => base + e).find(
     (f) => existsSync(f) && /\.[tj]sx?$/.test(f),

@@ -410,6 +410,14 @@ A new app's `app/root.tsx` says `export const islands = true;`. With it, a page 
 
 **Navigation.** A link to another page of the site fetches that page's HTML and swaps it in. The document, the stylesheets and the shared client survive; the islands of the new page hydrate; back and forward work; `useNavigate()` inside an island does the same. A target that is not a page with islands is loaded in the ordinary way. Add `data-forge-reload` to a link, or to anything around it, to load the page the ordinary way. Loaders run on the server only. `useNavigation()` has no state to report here, and `Link`'s prefetching is not done.
 
+### Pages printed by the engine
+
+With islands on and the native engine ([`HTTP_ENGINE`](configuration.html#server)), a route whose page is only server-rendered HTML (no island, no state, no handler) is not rendered by React at all. The build reads its components and turns them into a template; the loader's data goes to the engine as JSON, and the engine prints the page on its I/O threads while the JavaScript thread starts the next request. For a 100-row table that is 3 to 5 times as many requests a second as React printing it in the handler (about 37,000 against 7,500 in the engine's own test), and the home page of the benchmark app goes from 17,000 to 43,000.
+
+What the compiler understands is small and exact: function components made of `const` declarations (from props, `useViewer()`, `useLoaderData()`, `useTimeZone()`, `useParams()`) and one `return`; elements, fragments, text and expressions made of paths, `&&`, `||`, `??`, `?:`, `!`, `===`, `!==`, `+ - * / %`, `< > <= >=`, template literals and `.length`; `list.map((item, index) => …)` including array and object patterns; `cond && …` and `cond ? … : …`; components of your app (with props and children); `Outlet`; `Link` and `NavLink` with a literal path; `<title>`, `<meta>` and `<link>`, moved to the head as React does; module-level `const` literals; and **calls of your own functions** such as `formatMoney(row.price)`, which run on the server for each row before the page is printed. Anything else (a hook, a handler, a method call like `.sort()`, `style` with a value that is not a literal, `<form>`, `<script>`) leaves that route to React, and the page is the same either way. A page that is a page for one visitor and an island for another (the starters' header shows a menu for a signed-in visitor) is left to React.
+
+See which routes are printed, and why not for the others, with `bun node_modules/@archlast/forge-framework/src/classify-cli.ts .`. `FORGE_TEMPLATES=0` at build time turns it off. The printed page is the page React prints, up to what a browser cannot tell apart (React's `<!-- -->` text separators and image preload hints are not written), and the tests compare the two on every page of a fixture app.
+
 ### Keeping a page for visitors who are not signed in
 
 A route can ask for its page to be kept: `export const handle = { cache: { ttl: 60 } };`. With islands on and the native engine ([`HTTP_ENGINE`](configuration.html#server)), the first request for the page is rendered and the engine keeps the response; for the next `ttl` seconds (1 to 86,400) it answers from memory, without running your app, which is what takes a page from about 7,000 to about 290,000 requests a second on the starter (4 cores). The starters' home pages ask for it for a minute.
@@ -874,6 +882,7 @@ The app has no config file of its own. The environment variables of the engine a
 | `RATE_LIMIT_PER_MINUTE` | applies to page requests too (they count per client IP) |
 | `TRUST_PROXY` | use `X-Forwarded-For` for the client IP; set it behind a proxy |
 | `DASHBOARD` | `on` to serve `/_dashboard` in production |
+| `FORGE_TEMPLATES` | `0` at build time stops the build compiling pages to templates for the engine to print (see [pages printed by the engine](#pages-printed-by-the-engine)) |
 | `FORGE_MEMO_INTL` | `0` stops the server sharing `Intl` formatters between calls (it makes `new Intl.NumberFormat(locale, options)` return the formatter it made for the same locale and options, which pages that build one per table cell pay a lot for) |
 | `FORGE_ISLANDS` | `1` or `0` at build time: turns [islands](#islands-pages-that-ship-only-the-javascript-they-need) on or off, over what `root.tsx` says |
 

@@ -2,6 +2,7 @@ import { ArchlastForgeClient, queryKey } from "@archlast/forge-client";
 import { getFunctionName, isForgeError } from "@archlast/forge-runtime";
 import type { AppEnv, AppHost } from "@archlast/forge-runtime/server";
 import { dehydrate, QueryClient } from "@tanstack/react-query";
+import { existsSync } from "node:fs";
 import { stat } from "node:fs/promises";
 import { join, resolve, sep } from "node:path";
 import { preinit, preloadModule } from "react-dom";
@@ -35,6 +36,8 @@ interface Loaded {
   clientDir: string;
   /** app/root.tsx's `authPlugins`, for the client each render makes. */
   authPlugins?: unknown[];
+  /** Routes whose pages the engine prints (see render-compile.ts): the template's id there and the code that runs the app's functions for it. */
+  templates: Map<string, { id: number; prep?: (d: unknown) => void }>;
 }
 
 const HTML_HEADERS = {
@@ -44,6 +47,23 @@ const HTML_HEADERS = {
   "x-content-type-options": "nosniff",
   "referrer-policy": "strict-origin-when-cross-origin",
 };
+
+/** The engine's template functions, or null where the native engine is not here (not Linux, not built, or this package is used without it). */
+let templateEngine: Promise<{ registerTemplate(name: string, template: unknown): number } | null> | undefined;
+function nativeTemplates() {
+  templateEngine ??= (async () => {
+    try {
+      const url = new URL("../../serve/src/templates.ts", import.meta.url);
+      if (!existsSync(new URL("../native/archlast_serve.node", url))) return null;
+      const mod = await import(url.href);
+      mod.registerTemplate("probe", ["ok"]);
+      return mod;
+    } catch {
+      return null;
+    }
+  })();
+  return templateEngine;
+}
 
 /** JSON that is safe inside a <script> element. */
 const scriptJson = (value: unknown) =>
@@ -205,9 +225,12 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
   let buildError: string | undefined;
 
   async function load(build: BuildResult) {
-    const mod = (await import(join(build.dir, build.manifest.server))) as { manifest: Parameters<typeof toRouteObjects>[0] };
+    const mod = (await import(join(build.dir, build.manifest.server))) as { manifest: Parameters<typeof toRouteObjects>[0]; templates?: { route: string; template: unknown[]; prep?: (d: unknown) => void }[] };
     const routes = toRouteObjects(mod.manifest);
-    loaded = { build, routes, handler: createStaticHandler(routes), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
+    const engine = mod.templates?.length ? await nativeTemplates() : null;
+    const templates = new Map<string, { id: number; prep?: (d: unknown) => void }>();
+    for (const t of mod.templates ?? []) if (engine) templates.set(t.route, { id: engine.registerTemplate(`${root}:${t.route}`, t.template), prep: t.prep });
+    loaded = { build, routes, templates, handler: createStaticHandler(routes), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
   }
 
   async function rebuild(): Promise<boolean> {
@@ -309,6 +332,33 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       hydration: withIslands ? { loaderData: {}, actionData: null, errors: null } : { loaderData: context.loaderData, actionData: context.actionData, errors },
       ...(env.nonce && { nonce: env.nonce }),
     };
+    // A page the engine can print from a template (render-compile.ts) is not rendered here: the data goes to it as JSON, and it prints the page on its I/O thread.
+    const leaf = context.matches.at(-1)?.route.id;
+    const printed = withIslands && env.templates && leaf !== undefined ? loaded.templates.get(leaf) : undefined;
+    const status0 = context.statusCode;
+    if (printed) {
+      const nonce = env.nonce ? ` nonce="${escapeAttr(env.nonce)}"` : "";
+      const d = {
+        l: Object.fromEntries(context.matches.map((m) => [m.route.id, context.loaderData[m.route.id] ?? null])),
+        viewer: viewer.get(),
+        tz: time.timeZone,
+        params: context.matches.at(-1)?.params ?? {},
+        path: url.pathname,
+        headEnd: build.manifest.css.map((href) => `<link rel="stylesheet" href="/_app/${escapeAttr(href)}" data-precedence="forge"/>`).join(""),
+        bodyEnd: `<script type="module" src="/_app/${escapeAttr(islands!.nav)}" async=""${nonce}></script>${dev ? `<script type="module" src="/_app/__dev.js" async=""${nonce}></script>` : ""}`,
+      };
+      printed.prep?.(d);
+      const keepIt = !dev && status0 === 200 && viewer.get() === null && !env.headers.authorization ? cacheRequest(context) : undefined;
+      return new Response(JSON.stringify(d), {
+        status: status0,
+        headers: {
+          ...HTML_HEADERS,
+          "x-forge-page": "islands",
+          "x-forge-template": String(printed.id),
+          ...(keepIt && { "x-forge-cache": `ttl=${keepIt.ttl}; vary-cookie=${ZONE_COOKIE}; only-cookie=; skip-header=authorization${keepIt.tags.length ? `; tag=${keepIt.tags.join(",")}` : ""}`, "x-forge-csp-hashes": "" }),
+        },
+      });
+    }
     const router = createStaticRouter(handler.dataRoutes, context);
     const preload = withIslands ? [] : [...new Set(context.matches.flatMap((m) => build.manifest.routes[m.route.id] ?? []))].filter((f) => f !== build.manifest.entry);
     const client = new ArchlastForgeClient({ url: url.origin, authPlugins });
