@@ -106,3 +106,15 @@ impl Lane {
         self.inner.detach();
     }
 }
+
+/// Registers a page template (JSON; see crates/core/src/template.rs) under a name and returns its id. The registry is process-wide.
+#[napi]
+pub fn register_template(name: String, json: String) -> Result<u32> {
+    core::template_register(&name, &json).map_err(Error::from_reason)
+}
+
+/// Prints a registered template with `data` (JSON) as its variable `d`.
+#[napi]
+pub fn render_template(id: u32, data: String) -> Result<String> {
+    core::template_render(id, &data).map_err(Error::from_reason)
+}

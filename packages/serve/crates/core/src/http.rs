@@ -377,6 +377,17 @@ where
     let mut guard = AbortGuard { sh: sh.clone(), cell, done: false, conn: conn.clone() };
 
     let reply = rx.await;
+    // A page JS asked Rust to print: printed here, on this I/O thread, and from then on it is an ordinary full response.
+    let reply = reply.map(|r| match r {
+        Reply::Template(t) => {
+            let printed = std::str::from_utf8(&t.data).map_err(|e| e.to_string()).and_then(|d| crate::template::render(t.tpl, d));
+            match printed {
+                Ok(html) => Reply::Full(Full { status: t.status, ct: 0, headers: t.headers, header_count: t.header_count, body: html.into_bytes() }),
+                Err(_) => Reply::Full(Full { status: 500, ct: 1, headers: Vec::new(), header_count: 0, body: b"Server error".to_vec() }),
+            }
+        }
+        other => other,
+    });
     guard.done = true;
     let cell_value = guard.cell.v.load(Ordering::Acquire);
     // A per-request timeout override ends with the request, unless the connection now belongs to a stream.
@@ -426,6 +437,7 @@ where
             Some(w) => finish_upgrade(sh, w, &parts, peer, conn, cell_value, headers, header_count, protocol),
             None => empty(StatusCode::INTERNAL_SERVER_ERROR), // JS tried to upgrade a request that was not an upgrade
         },
+        Ok(Reply::Template(_)) => empty(StatusCode::INTERNAL_SERVER_ERROR), // printed into a Full above
         Ok(Reply::File(f)) => crate::file::serve(&parts.method, &parts.headers, f).await,
         Ok(Reply::Stream { lane, id, status, headers, header_count, rx }) => {
             let mut r = Response::new(RBody::Stream(StreamBody { rx, sh, lane, id, finished: false, abort_next: false, consumed: 0 }));

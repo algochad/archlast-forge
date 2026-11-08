@@ -18,7 +18,7 @@ import {
 import { FileReply } from "./file.ts";
 import { type ListenOptions, listen } from "./index.ts";
 import { Router, toWebRequest } from "./router.ts";
-import { Reply, type Server } from "./server.ts";
+import { Reply, type Server, TemplateReply } from "./server.ts";
 import { UpgradeReply, type WebSocket, type WsHandlers } from "./websocket.ts";
 import type { TlsOptions } from "./tls.ts";
 import type { PerMessageDeflate } from "./deflate.ts";
@@ -646,6 +646,7 @@ export function serveCompat<D = undefined>(
         );
       return withCookies(req, out);
     }
+    if (out instanceof TemplateReply) return out as unknown as Reply; // printed by the engine; cookies set on req.cookies do not apply to it
     if (
       out instanceof Reply ||
       out instanceof FileReply ||

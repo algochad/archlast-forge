@@ -39,6 +39,7 @@
 //   7 ws subscribe u32 id, u16 topicLen, topic
 //   8 ws unsubscribe u32 id, u16 topicLen, topic
 //   9 publish      u16 topicLen, topic, u8 binary, u32 len, data, u32 excludeId (0 = none)
+//  22 respond template u32 id, u16 status, u16 headerCount, headers..., u32 template, u32 len, data (JSON): Rust prints the page on the I/O thread
 //  21 cache purge  u16 count, (u16 len, tag)*  (drop cached responses carrying one of the tags; none: all of them)
 //  13 upgrade      u32 requestId, u16 headerCount, headers..., u16 protocolLen, protocol (accept the WebSocket upgrade of that request)
 //  16 ws ping      u32 id, u32 len, data

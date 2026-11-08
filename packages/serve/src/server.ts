@@ -22,6 +22,15 @@ import type { Stream } from "./stream.ts";
 
 export type Body = string | Uint8Array | null;
 
+/** A page for the engine to print: template `template` (see `registerTemplate`) with `data` (JSON text), printed on the I/O thread while this thread goes on to the next request. */
+export class TemplateReply {
+  constructor(
+    readonly template: number,
+    readonly data: string,
+    readonly init: { status?: number; headers?: HeaderInit } = {},
+  ) {}
+}
+
 /** Explicit response: use when you need a status code or headers. */
 export class Reply {
   body: Body;

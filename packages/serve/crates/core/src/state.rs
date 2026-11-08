@@ -17,6 +17,14 @@ use tokio::sync::{mpsc, oneshot, Notify as TokioNotify};
 pub type Notify = Arc<dyn Fn() + Send + Sync>;
 
 /// A complete response as produced by JS; headers stay raw until the tokio thread builds the HTTP response.
+pub struct TemplateReply {
+    pub status: u16,
+    pub headers: Vec<u8>,
+    pub header_count: u16,
+    pub tpl: u32,
+    pub data: Vec<u8>,
+}
+
 pub struct Full {
     pub status: u16,
     /// Content-type code: 0 none (or in `headers`), 1 text, 2 JSON, 3 binary. Saves parsing a header per response.
@@ -43,6 +51,8 @@ pub enum Reply {
     /// JS accepted a WebSocket upgrade: extra response headers and the subprotocol to echo (empty: none).
     Upgrade { headers: Vec<u8>, header_count: u16, protocol: String },
     Full(Full),
+    /// A page to print on the I/O thread: template `tpl` with the JSON `data`; it becomes a `Full` there.
+    Template(TemplateReply),
     Stream { lane: usize, id: u32, status: u16, headers: Vec<u8>, header_count: u16, rx: mpsc::UnboundedReceiver<StreamMsg> },
 }
 
@@ -927,6 +937,29 @@ impl Shared {
                     let d = r.take(dl)?;
                     let exclude = r.u32()?;
                     self.publish(topic, make_message(bin != 0, d)?, exclude, &mut ws_batch);
+                }
+                // RespondTemplate(id, status, headers, template, data): the page is printed by Rust, on the connection's I/O thread
+                22 => {
+                    let (id, status, hc) = (r.u32()?, r.u16()?, r.u16()?);
+                    let headers = skip_headers(&mut r, hc)?.to_vec();
+                    let tpl = r.u32()?;
+                    let dl = r.u32()? as usize;
+                    let data = r.take(dl)?.to_vec();
+                    self.finish_body(l, id);
+                    if let Some(Slot::Response(tx, io, _)) = inflight.remove(&id) {
+                        let reply = Reply::Template(TemplateReply { status, headers, header_count: hc, tpl, data });
+                        match inboxes {
+                            Some(v) if io < v.len() => {
+                                if grouped.len() < v.len() {
+                                    grouped.resize_with(v.len(), Vec::new);
+                                }
+                                grouped[io].push((tx, reply));
+                            }
+                            _ => {
+                                let _ = tx.send(reply);
+                            }
+                        }
+                    }
                 }
                 // CachePurge(count, tags...): drop the cached responses carrying one of the tags, or all of them when there are none
                 21 => {

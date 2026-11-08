@@ -874,6 +874,7 @@ The app has no config file of its own. The environment variables of the engine a
 | `RATE_LIMIT_PER_MINUTE` | applies to page requests too (they count per client IP) |
 | `TRUST_PROXY` | use `X-Forwarded-For` for the client IP; set it behind a proxy |
 | `DASHBOARD` | `on` to serve `/_dashboard` in production |
+| `FORGE_MEMO_INTL` | `0` stops the server sharing `Intl` formatters between calls (it makes `new Intl.NumberFormat(locale, options)` return the formatter it made for the same locale and options, which pages that build one per table cell pay a lot for) |
 | `FORGE_ISLANDS` | `1` or `0` at build time: turns [islands](#islands-pages-that-ship-only-the-javascript-they-need) on or off, over what `root.tsx` says |
 
 Nothing from `process.env` reaches the browser bundle except `NODE_ENV`. To give pages a value, return it from a query or a loader (a public setting) or read it in a function.

@@ -1,6 +1,6 @@
 import { ByteWriter, type HeaderInit } from "./codec.ts";
 import { FileReply } from "./file.ts";
-import { type Body, Reply, type Result, toReply } from "./server.ts";
+import { type Body, Reply, type Result, TemplateReply, toReply } from "./server.ts";
 
 /** Content-type codes understood by the native side (it maps them to static header values). 0 = none. */
 export const CT_TEXT = 1;
@@ -22,12 +22,29 @@ export class Responder {
     if (typeof v === "string") return this.put(id, 200, CT_TEXT, null, v);
     if (v === null || v === undefined) return this.put(id, 200, 0, null, null);
     if (v instanceof FileReply) return this.putFile(id, v);
+    if (v instanceof TemplateReply) return this.putTemplate(id, v);
     if (v instanceof Reply) {
       const r = toReply(v);
       return this.put(id, r.status, 0, r.headers, r.body);
     }
     if (v instanceof Uint8Array) return this.put(id, 200, CT_BINARY, null, v);
     return this.put(id, 200, CT_JSON, null, JSON.stringify(v));
+  }
+
+  /** Writes a `respond template` command (kind 22): the status and headers now, the page printed by Rust. */
+  private putTemplate(id: number, t: TemplateReply): void {
+    const w = this.out;
+    w.u8(22);
+    w.u32(id);
+    w.u16(t.init.status ?? 200);
+    const hcAt = w.pos;
+    w.u16(0);
+    w.setU16(hcAt, this.writeHeaders(null, t.init.headers ?? null));
+    w.u32(t.template);
+    const lenAt = w.pos;
+    w.u32(0);
+    w.setU32(lenAt, w.utf8(t.data));
+    this.count++;
   }
 
   put(

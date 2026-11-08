@@ -23,10 +23,11 @@ export type { PerMessageDeflate } from "./deflate.ts";
 export type { TlsOptions } from "./tls.ts";
 
 export { Context, type Handler, type RouteValue } from "./router.ts";
-export { Reply, type Result, type Server } from "./server.ts";
+export { Reply, type Result, type Server, TemplateReply } from "./server.ts";
 export { html, json, noContent, redirect, status, text } from "./reply.ts";
 export { SseStream, Stream, sse, type SseOptions } from "./stream.ts";
 export { FileReply, file } from "./file.ts";
+export { registerTemplate, renderTemplate } from "./templates.ts";
 export { CACHE_HEADER, cacheHeader, type CacheRules } from "./cache.ts";
 export {
   UpgradeReply,

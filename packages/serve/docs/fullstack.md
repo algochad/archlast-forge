@@ -205,6 +205,148 @@ or with any cookie but the time zone's, never meets the cache. The Content-Secur
 which every visitor would otherwise share. The engine has `purgeCache(tags?)`; Forge does not expose it yet, so a kept page lives until its ttl ends. Only the native engine
 keeps pages; `HTTP_ENGINE=bun` renders every request.
 
+## A real application: archlast-erp (profiled 2026-11-08)
+
+The ERP (a multi-tenant SaaS on the framework: 114 route and component files, 26,000 lines, PostgreSQL in production) was copied to a scratch directory, wired to this checkout's
+packages, seeded with its demo script and served in production mode on SQLite, 4 cores, 32 connections, signed in as the demo owner. The original was not touched.
+
+What the classifier says about it: **every one of its 49 routes is an island** (live queries, forms, handlers), 51 components are pages and 196 are islands, and its layout
+route (`o/[org]/_layout`) is an island that renders an `<Outlet />`. So islands, the page cache and a Rust page renderer all have nothing to work on here: an app of this kind
+renders and hydrates whole pages, and what helps it is a faster whole-page render.
+
+Where a page's time went (CPU profile of `/o/northwind/products`, before any change): a third was `Intl.NumberFormat`/`DateTimeFormat` being *constructed* in every table cell
+(`formatMoney` builds its formatter inside), a tenth was the stream React writes chunk by chunk, an eighth the app's own components, a tenth React Router resolving every link.
+
+What was changed in the framework, each measured on the ERP's pages (requests a second, 4 cores):
+
+| change | dashboard | products | sales | stock |
+| --- | ---: | ---: | ---: | ---: |
+| before | 442 | 403 | 348 | 244 |
+| render in one pass (`renderToString`; the stream only for pages that suspend or throw) | 484 | 450 | 389 | 274 |
+| `Link` and `NavLink` print what React Router's print, for plain paths, without route resolution | 557 | 512 | 443 | 307 |
+| Intl formatters made once per locale and options on the server (`FORGE_MEMO_INTL=0` turns it off) | 933 | 780 | 787 | 449 |
+
+That is 1.8 to 2.3 times, with no change to the app. A remaining profile shows React's string building at a quarter, the app's components at a sixth, and the framework and
+engine glue at a sixth. One more finding: a production build made in a shell without `NODE_ENV` called the development JSX runtime (every page failed with `jsxDEV is not a
+function`); the build now chooses it from `dev`.
+
+## Against React Router and Next.js (`benchmarks/fullstack`)
+
+The same two pages in the three frameworks, each as shipped (see its README for the method). Requests a second on 4 cores, 64 connections:
+
+| | home page | products (100 rows, formatters per call) | products (formatters built once) | JS for the home page (gzip) |
+| --- | ---: | ---: | ---: | ---: |
+| archlast-forge, as scaffolded (islands, home kept by the engine) | 295,884 | 2,164 | 2,962 | 1.3 kB |
+| archlast-forge, home rendered each time | 18,128 | 2,143 | 2,966 | 1.3 kB |
+| archlast-forge, whole-page hydration | 16,981 | 1,915 | 2,636 | 122 kB |
+| React Router 7 (`react-router-serve`, Node) | 2,379 | 114 | 896 | 98 kB |
+| Next.js 16 (`next start`, Node) | 4,031 | 88 | 241 | 170 kB |
+
+The pages have nothing interactive, which is the case where islands send no framework JavaScript; Node servers are single processes, as these two start by default; no database or
+authentication is involved. A first run of this comparison found the Node apps slow in a place that was the benchmark's own doing (`process.env` read per call in Node), which was
+fixed and the numbers redone.
+
+## Step 5: the Rust template renderer
+
+Measured first on the starter's home page (cache bypassed): React and React Router were 64% of the JavaScript thread's busy time, a ceiling of about 2.8 times on a page a
+renderer could print. The ERP shows that pages of that kind are not what an app like it has. What a page of that kind *is* worth was measured next, with a 100-row table.
+
+**Built:** a template interpreter in the engine (`crates/core/src/template.rs`: HTML with holes, JavaScript's truthiness and string rules, React's escaping, `&&` `||` `??` `?:` `===`
+`+` template literals, `.length`, maps over arrays, attributes left out when empty; it borrows from the data instead of copying it), `registerTemplate` / `renderTemplate` through the
+Node-API addon, and a `TemplateReply`: the handler answers with a template id and the loader's JSON, and the **I/O thread** prints the page and writes it while the JavaScript thread
+goes on to the next request. The output of the template equals React's (`renderToString`, minus the `<!-- -->` text separators) for the test page.
+
+**Measured** (same engine, 100-row table, 64 connections, 4 cores; `packages/framework/bench/template-spike.ts`):
+
+| how the page is printed | requests a second |
+| --- | ---: |
+| React `renderToString` in the handler | 7,500 |
+| the Rust template, called from the handler with the data as an object | 10,600 |
+| the Rust template, called from the handler with the data as JSON text | 12,200 |
+| the Rust template, printed on the I/O thread (`TemplateReply`) | **23,600** |
+| a fixed body (the floor of the engine) | 131,000 |
+
+So printing on the I/O thread is three times React for this page. A call from the JavaScript thread into Rust is barely better than React (the time goes to moving a large string in and
+a larger one out and parsing the JSON), which is why the work is placed on the I/O thread.
+
+**Not built:** the part that makes this usable by an app, a compiler from components to templates (JSX to nodes, with the loader data as `d`, a layout around an `<Outlet />`, `<title>`
+hoisted to the head, `Link`/`NavLink` active state, and app helper calls such as `formatMoney(row.price)` lifted into a column the loader computes before printing), and the framework
+route that chooses it. The classifier already finds the components it can take (pages with no island), and anything else stays React. Page-only routes that are not the same for
+everyone (reports, tables of server data) are what it is for; the ERP has none, and pages with islands still need React to print the island.
+
+## Dev experience (unchanged, and how)
+
+- The existing rebuild in `framework/dev.ts` reclassifies and rebuilds the changed files; the engine swaps its route/page table like `reload()`.
+- Stylesheet-only edits swap in place and other edits reload keeping form fields and scroll (already in the dev server); islands add a per-island
+  refresh later, if `Bun.build` output allows it, which it currently does not.
+- A route the classifier cannot place logs one line saying why and renders as it does today. The `archlast-forge` dashboard shows the tier of each
+  route (nothing to write, nothing to configure).
+
+## Security and correctness constraints
+
+- The CSP nonce and `SecurityHeaders` apply to cached pages as well; a cached page is keyed so a nonce is never shared (nonce inserted at serve time,
+  or cached pages served with a header-only policy). Decide before Stage 1 ships.
+- A cache key must include every input a page reads about the viewer. Pages that read cookies other than the session and zone are not cached.
+- Hydration mismatches stay fatal in tests (`hydration.test.ts`), per island.
+
+## Step 1 result: the classifier (`packages/framework/src/classify.ts`, `bun packages/framework/src/classify-cli.ts <app>`)
+
+On the starter, with no change to any file: `index` is a page; `chat` and `sign-in` are islands; the header (`Chrome`) is an island because the sign-out
+button, `useAuth()` and `useNavigate()` live in the same component as the static header and footer. The finding that matters: `Root` passes the page
+(`<Outlet />`, elements) to `Chrome`, and elements cannot cross into an island, so **the root layout is an island and the whole page would hydrate**. Islands
+only pay when the interactive part is its own component. Two ways forward, to decide at step 2:
+
+- split the starter's header so the viewer menu (avatar, sign-out) is a small component of its own. The templates are ours, so the starters ship split;
+  an app that does not split loses nothing, it behaves as today and the report says why.
+- or teach the build to extract an interactive subtree into a synthesized island (a compiler job: the subtree closes over hooks and handlers, so it is only
+  safe for simple cases). Later, if splitting by hand proves a burden.
+
+The classifier fails closed: packages it does not read, members of objects, components chosen at run time and unresolved imports all count as islands (or make
+the component containing them one), a class or `this` is a fallback, and an `action` export makes the route a fallback.
+
+## Step 2 result: islands, end to end, behind a flag (`FORGE_ISLANDS=1`, or `islands: true` to `buildApp`/`createApp`)
+
+Built and tested (`test/islands.test.ts`, with a fixture app and a real browser): the build classifies the app, wraps each island's export for the server bundle
+(`island.tsx`; a wrapper module under its own path, because Bun treats a module of the same path in another namespace as the same module), generates a second
+browser entry that loads each island by id (`islands.client.ts`), and the server renders island markers plus the island's own HTML. In the browser each marker
+hydrates on its own root with the page's shared client, query cache, viewer and clock; `useNavigate` and `<Link>` inside an island load the page (there is no router
+in the browser). A page with an error, or with a route the build cannot place (an `action`, for now), is rendered and hydrated as a whole, exactly as before, and the
+two kinds of page can link to each other. Islands are off when the root layout or the document is itself interactive, with the reason printed at build time.
+
+What the first measurement said: with the starter's header split so that the viewer menu is an island of its own, the home page ships **124.3 KiB gzip instead of
+126.2 KiB**. That is almost nothing, and it is the honest result: the one island that remains (sign-out) needs React, the forge client and Better Auth's client, which
+is most of what the whole-page entry carries. Islands remove JavaScript only from pages where **no island renders**. Two consequences for the next step:
+
+- an island that is only needed in some states should be mounted only then: the starter's menu is an island for a signed-in visitor and a plain link for an anonymous
+  one, so the anonymous home page has no island at all;
+- when a page renders no island, the server leaves out the bootstrap script, the preload links and the `window.__FORGE__` state altogether, so the page has no
+  JavaScript. This is done: the island render is written without scripts, counts the islands it meets, and the scripts are put into the HTML (before `</body>`, with
+  the preloads before `</head>`) only when the count is not zero. Tested: an anonymous visitor's `/about` in the fixture has no `<script>` and no `modulepreload`,
+  while the same site's signed-in pages load the islands entry.
+
+The starter templates are not split yet: splitting changes what `create-archlast-forge` writes (and so the skill and the docs), which should happen when islands are
+opt-in for users, not while they are a flag.
+
+## Step 3 result: navigation by HTML swap (`src/nav.ts`)
+
+Done and tested in a real browser. A click on a link to another page of the site, back and forward, and `useNavigate()` inside an island fetch the target's HTML and
+swap it in: the head's differences, the body, the title; the document, its stylesheets and the shared client survive; the islands of the new page hydrate (the page's state
+is a JSON block, because an inline script would need the new page's nonce, which the document's policy does not know). The server marks island pages with `x-forge-page:
+islands`; a target without it, a non-HTML answer, another origin or `data-forge-reload` is loaded the ordinary way. Starters enable islands with `export const islands =
+true` in `app/root.tsx` and ship the user menu as an island and the shadcn theme switch as part of the page.
+
+Starter home page for a visitor who is not signed in: **126 kB of JavaScript before, 1.3 kB now** (shadcn: 147 kB before, 1.3 kB now); pages with an island are about as heavy as before.
+
+## Step 4 result: pages kept by the engine (`pagecache.rs`, `handle.cache`)
+
+Done and tested (Rust unit tests, engine tests on both backends, the framework with a real browser, the starters). A route with `export const handle = { cache: { ttl: 60 } }`
+has its page for visitors who are not signed in kept by the engine and answered from the I/O threads: the starter's home page went from about 7,000 to about 290,000 requests
+a second on 4 cores; a trivial cached response measured 394k against 113k through the handler. Entries are stored as the handler made them plus a gzip copy made once, with
+an ETag (so `If-None-Match` gets a 304); the key is host, path and query, and the values of the varied cookies (here the time zone's). A request with an `Authorization` header,
+or with any cookie but the time zone's, never meets the cache. The Content-Security-Policy of a kept page names its inline scripts by SHA-256 instead of carrying a nonce,
+which every visitor would otherwise share. The engine has `purgeCache(tags?)`; Forge does not expose it yet, so a kept page lives until its ttl ends. Only the native engine
+keeps pages; `HTTP_ENGINE=bun` renders every request.
+
 ## Step 5: the Rust template renderer, decided
 
 Measured on the starter's home page rendered on every request (the cache bypassed), native engine, islands on, 4 cores: **14.5k requests a second** (it was 7.7k before
