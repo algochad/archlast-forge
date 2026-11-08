@@ -37,7 +37,7 @@ interface Loaded {
   /** app/root.tsx's `authPlugins`, for the client each render makes. */
   authPlugins?: unknown[];
   /** Routes whose pages the engine prints (see render-compile.ts): the template's id there and the code that runs the app's functions for it. */
-  templates: Map<string, { id: number; prep?: (d: unknown) => void }>;
+  templates: Map<string, { id: number; prep?: (d: unknown) => void; bail?: (d: unknown) => boolean }>;
 }
 
 const HTML_HEADERS = {
@@ -225,11 +225,11 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
   let buildError: string | undefined;
 
   async function load(build: BuildResult) {
-    const mod = (await import(join(build.dir, build.manifest.server))) as { manifest: Parameters<typeof toRouteObjects>[0]; templates?: { route: string; template: unknown[]; prep?: (d: unknown) => void }[] };
+    const mod = (await import(join(build.dir, build.manifest.server))) as { manifest: Parameters<typeof toRouteObjects>[0]; templates?: { route: string; template: unknown[]; prep?: (d: unknown) => void; bail?: (d: unknown) => boolean }[] };
     const routes = toRouteObjects(mod.manifest);
     const engine = mod.templates?.length ? await nativeTemplates() : null;
-    const templates = new Map<string, { id: number; prep?: (d: unknown) => void }>();
-    for (const t of mod.templates ?? []) if (engine) templates.set(t.route, { id: engine.registerTemplate(`${root}:${t.route}`, t.template), prep: t.prep });
+    const templates = new Map<string, { id: number; prep?: (d: unknown) => void; bail?: (d: unknown) => boolean }>();
+    for (const t of mod.templates ?? []) if (engine) templates.set(t.route, { id: engine.registerTemplate(`${root}:${t.route}`, t.template), prep: t.prep, bail: t.bail });
     loaded = { build, routes, templates, handler: createStaticHandler(routes), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
   }
 
@@ -336,6 +336,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     const leaf = context.matches.at(-1)?.route.id;
     const printed = withIslands && env.templates && leaf !== undefined ? loaded.templates.get(leaf) : undefined;
     const status0 = context.statusCode;
+    let needsReact = false;
     if (printed) {
       const nonce = env.nonce ? ` nonce="${escapeAttr(env.nonce)}"` : "";
       const d = {
@@ -348,16 +349,20 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
         bodyEnd: `<script type="module" src="/_app/${escapeAttr(islands!.nav)}" async=""${nonce}></script>${dev ? `<script type="module" src="/_app/__dev.js" async=""${nonce}></script>` : ""}`,
       };
       printed.prep?.(d);
+      // A page that shows something the template cannot print for this visitor (the starters' menu for someone signed in) is printed by React.
+      needsReact = Boolean(printed.bail?.(d));
       const keepIt = !dev && status0 === 200 && viewer.get() === null && !env.headers.authorization ? cacheRequest(context) : undefined;
-      return new Response(JSON.stringify(d), {
-        status: status0,
-        headers: {
-          ...HTML_HEADERS,
-          "x-forge-page": "islands",
-          "x-forge-template": String(printed.id),
-          ...(keepIt && { "x-forge-cache": `ttl=${keepIt.ttl}; vary-cookie=${ZONE_COOKIE}; only-cookie=; skip-header=authorization${keepIt.tags.length ? `; tag=${keepIt.tags.join(",")}` : ""}`, "x-forge-csp-hashes": "" }),
-        },
-      });
+      if (!needsReact) {
+        return new Response(JSON.stringify(d), {
+          status: status0,
+          headers: {
+            ...HTML_HEADERS,
+            "x-forge-page": "islands",
+            "x-forge-template": String(printed.id),
+            ...(keepIt && { "x-forge-cache": `ttl=${keepIt.ttl}; vary-cookie=${ZONE_COOKIE}; only-cookie=; skip-header=authorization${keepIt.tags.length ? `; tag=${keepIt.tags.join(",")}` : ""}`, "x-forge-csp-hashes": "" }),
+          },
+        });
+      }
     }
     const router = createStaticRouter(handler.dataRoutes, context);
     const preload = withIslands ? [] : [...new Set(context.matches.flatMap((m) => build.manifest.routes[m.route.id] ?? []))].filter((f) => f !== build.manifest.entry);

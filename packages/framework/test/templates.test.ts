@@ -1,4 +1,5 @@
 import { afterAll, beforeAll, describe, expect, test } from "bun:test";
+import { readFileSync } from "node:fs";
 import { join } from "node:path";
 import type { RunningServer } from "@archlast/forge-runtime/server";
 import { readBuild } from "../src/build";
@@ -69,6 +70,9 @@ describe("pages printed by the engine from templates", () => {
     expect(normal(a.html)).toBe(normal(b.html));
     expect(a.html).toContain("Welcome back, Ada &lt;Lovelace&gt;");
     expect(a.html).toContain('id="member"');
+    // the menu is an island the template cannot print: this visitor's page is React's, the signed-out one is still printed
+    expect(a.html).toContain('id="menu"');
+    expect(readFileSync(join(root, ".forge/gen/render.server.ts"), "utf8")).toContain("bail: (d: any) =>");
     // and the page for a visitor who is not signed in has none of it
     expect((await get(templated, "/")).html).not.toContain("Welcome back");
   });

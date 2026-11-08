@@ -1,5 +1,6 @@
 import { Link, NavLink, Outlet, useViewer } from "@archlast/forge-framework";
 import type { ReactNode } from "react";
+import { Menu } from "./_c/menu";
 
 export const islands = true;
 
@@ -36,6 +37,7 @@ export default function Root() {
           <NavLink to="/odd">Odd</NavLink>
         </nav>
         <span id="who">{viewer ? `Hi ${viewer.name}` : "Signed out"}</span>
+        {viewer ? <Menu name={viewer.name} /> : null}
       </header>
       <Outlet />
       <footer>{viewer ? <small>signed in</small> : null}</footer>

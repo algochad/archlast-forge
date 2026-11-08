@@ -51,6 +51,8 @@ export interface Lift {
 export interface Compiled {
   /** The template: nodes. */
   nodes: Nodes;
+  /** JavaScript conditions over the page's data (`d`), any of which being true means this request needs React: a branch the template cannot print is taken. */
+  bails: string[];
   hosts: Host[];
   lifts: Lift[];
 }
@@ -138,6 +140,10 @@ interface Ctx {
   depth: number;
   /** The loops being compiled, outermost first. */
   loops: { name: string; listIr: Ir }[];
+  /** The conditions of the branches being compiled, outermost first (each as it must hold for the branch to be taken). */
+  guards: Ir[];
+  /** Branches that could not be compiled, with the conditions that lead to them. */
+  bails: Ir[][];
 }
 
 const path = (root: string, ...keys: (string | number)[]): Ir => ["p", root, ...keys];
@@ -148,6 +154,58 @@ function jsPath(ir: Ir): string {
   if (!isPath(ir)) return no("a list must be a path to compile a call over its items");
   const [, root, ...keys] = ir as [string, string, ...(string | number)[]];
   return `${root}${keys.map((k) => (typeof k === "number" ? `?.[${k}]` : `?.[${JSON.stringify(k)}]`)).join("")}`;
+}
+
+/** The JavaScript for an expression over the page's data: the same meaning as the template's, for deciding in JavaScript what the template would decide. */
+function irToJs(ir: Ir): string {
+  const [op, ...a] = ir as [string, ...unknown[]];
+  const x = (i: number) => irToJs(a[i] as Ir);
+  switch (op) {
+    case "l":
+      return JSON.stringify(a[0] ?? null);
+    case "p":
+      return jsPath(ir);
+    case "!":
+      return `!(${x(0)})`;
+    case "&&":
+    case "||":
+    case "??":
+    case "===":
+    case "!==":
+    case "+":
+    case "-":
+    case "*":
+    case "/":
+    case "%":
+    case "<":
+    case ">":
+    case "<=":
+    case ">=":
+      return `(${x(0)} ${op} ${x(1)})`;
+    case "?:":
+      return `(${x(0)} ? ${x(1)} : ${x(2)})`;
+    case "`":
+      return `(${(a[0] as Ir[]).map((p) => `String(${irToJs(p)} ?? "")`).join(" + ") || '""'})`;
+    default:
+      return no(`the operator ${op} in a condition that decides whether React is needed`);
+  }
+}
+
+/** Compiles a branch; if it cannot be, the page needs React whenever the branch is taken, which is decided per request from the conditions around it. */
+function branch(cond: Ir, taken: boolean, ctx: Ctx, compile: () => Nodes): Nodes {
+  const saved = { hoisted: ctx.hoisted.length, lifts: ctx.lifts.length, guards: ctx.guards.length };
+  ctx.guards.push(taken ? cond : ["!", cond]);
+  try {
+    return compile();
+  } catch (e) {
+    if (!(e instanceof Unsupported) || ctx.loops.length > 0) throw e;
+    ctx.bails.push([...ctx.guards]);
+    ctx.hoisted.length = saved.hoisted;
+    ctx.lifts.length = saved.lifts;
+    return [];
+  } finally {
+    ctx.guards.length = saved.guards;
+  }
 }
 
 function resolveModule(from: string, spec: string, appRoot: string): string | undefined {
@@ -306,10 +364,16 @@ function childNodes(c: Node | undefined, env: Env, ctx: Ctx, mod: Module): Nodes
       if (c.callee.type === "MemberExpression" && !c.callee.computed && c.callee.property.name === "map") return mapNodes(c, env, ctx, mod);
       return [["x", call(c, env, ctx, mod)]];
     case "LogicalExpression":
-      if (c.operator === "&&" && mightBeNodes(c.right)) return [["if", expression(c.left, env, ctx, mod), childNodes(c.right, env, ctx, mod), []]];
+      if (c.operator === "&&" && mightBeNodes(c.right)) {
+        const test = expression(c.left, env, ctx, mod);
+        return [["if", test, branch(test, true, ctx, () => childNodes(c.right, env, ctx, mod)), []]];
+      }
       return [["x", expression(c, env, ctx, mod)]];
     case "ConditionalExpression":
-      if (mightBeNodes(c.consequent) || mightBeNodes(c.alternate)) return [["if", expression(c.test, env, ctx, mod), childNodes(c.consequent, env, ctx, mod), childNodes(c.alternate, env, ctx, mod)]];
+      if (mightBeNodes(c.consequent) || mightBeNodes(c.alternate)) {
+        const test = expression(c.test, env, ctx, mod);
+        return [["if", test, branch(test, true, ctx, () => childNodes(c.consequent, env, ctx, mod)), branch(test, false, ctx, () => childNodes(c.alternate, env, ctx, mod))]];
+      }
       return [["x", expression(c, env, ctx, mod)]];
     case "Identifier": {
       const b = env.get(c.name);
@@ -593,7 +657,7 @@ export interface ChainLink {
  * contains the first `Outlet`; each next component is the outlet of the one before.
  */
 export function compileChain(appRoot: string, chain: ChainLink[]): Compiled {
-  const ctx: Ctx = { appRoot, routeId: "", outlet: null, hosts: new Map(), lifts: [], hoisted: [], depth: 0, loops: [] };
+  const ctx: Ctx = { appRoot, routeId: "", outlet: null, hosts: new Map(), lifts: [], hoisted: [], depth: 0, loops: [], guards: [], bails: [] };
   const rootLink = chain[0];
   if (!rootLink || rootLink.id !== "root") return no("the app has no app/root.tsx");
   const rootMod = loadModule(rootLink.file);
@@ -616,7 +680,8 @@ export function compileChain(appRoot: string, chain: ChainLink[]): Compiled {
   ctx.outlet = null;
   const document = run(rootMod, layout.node, new Map([["children", { kind: "nodes", nodes: app }]]), ctx);
   const nodes = withHead(document, ctx.hoisted);
-  return { nodes: ["<!DOCTYPE html>", ...nodes], hosts: [...ctx.hosts.values()], lifts: ctx.lifts };
+  const bails = ctx.bails.map((g) => g.map((c) => `(${irToJs(c)})`).join(" && "));
+  return { nodes: ["<!DOCTYPE html>", ...nodes], bails, hosts: [...ctx.hosts.values()], lifts: ctx.lifts };
 }
 
 /** Puts what React would hoist into the head, and the framework's own head content after the document's. */
@@ -653,12 +718,12 @@ export function moduleSource(genDir: string, compiled: Map<string, Compiled>): s
       const body = `${l.field} = ${rename(l.call, c.hosts)};`;
       return l.loops.reduceRight((inner, loop) => `for (const ${loop.name} of ${loop.list} ?? []) { ${inner} }`, body);
     });
-    return `  { route: ${JSON.stringify(route)}, template: ${JSON.stringify(c.nodes)}, prep: ${prep.length ? `(d: any) => { ${prep.join(" ")} }` : "undefined"} },`;
+    return `  { route: ${JSON.stringify(route)}, template: ${JSON.stringify(c.nodes)}, prep: ${prep.length ? `(d: any) => { ${prep.join(" ")} }` : "undefined"}, bail: ${c.bails.length ? `(d: any) => ${c.bails.map((b) => `(${b})`).join(" || ")}` : "undefined"} },`;
   });
   return `// Generated by archlast-forge from app/. Don't edit; it is rewritten on every build.
 ${imports.join("\n")}
 
-export const templates: { route: string; template: unknown[]; prep?: (d: any) => void }[] = [
+export const templates: { route: string; template: unknown[]; prep?: (d: any) => void; bail?: (d: any) => boolean }[] = [
 ${entries.join("\n")}
 ];
 `;
