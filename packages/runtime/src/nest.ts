@@ -331,7 +331,9 @@ export function nest(http: { route(spec: HttpRoute): void; root?: boolean }, opt
   started.catch(() => {}); // reported to every call that needs the app
 
   // The mount takes a `LightRequest` and may answer with a `LightResponse` (see server/light.ts): a Nest request needs no Web `Request` or `Response` unless a handler asks.
-  const handler = httpAction(async (ctx, request) => (await started!).adapter.handle(request, ctx) as Promise<Response>);
+  let ready: ForgeAdapter | undefined;
+  started.then((s) => void (ready = s.adapter), () => {});
+  const handler = httpAction((ctx, request) => (ready ? ready.handle(request, ctx) : started!.then((s) => s.adapter.handle(request, ctx))) as Promise<Response>);
   (handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] = true;
   (handler as unknown as Record<symbol, unknown>)[LIGHT] = true;
   if (o.helmet !== undefined) (handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-helmet")] = o.helmet;
@@ -1063,6 +1065,8 @@ class Router {
 const unsupported = (what: string) => new Error(`${what} is not available for Nest inside archlast-forge`);
 
 /** The body as Express's parsers would leave it: JSON parsed, forms as an object, text as a string, anything else as bytes. */
+const NO_BODY: { body: unknown; rawBody?: Buffer } = { body: undefined };
+
 async function readBody(request: Request | LightRequest): Promise<{ body: unknown; rawBody?: Buffer }> {
   if (request.method === "GET" || request.method === "HEAD") return { body: undefined };
   let rawBody: Buffer;
@@ -1116,7 +1120,7 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
   async handle(request: Request | LightRequest, ctx: ActionCtx): Promise<Response | LightResponse> {
     let parsed: Awaited<ReturnType<typeof readBody>>;
     try {
-      parsed = await readBody(request);
+      parsed = request.method === "GET" || request.method === "HEAD" ? NO_BODY : await readBody(request); // a read has no body to wait for
     } catch (e) {
       if (!(e instanceof HttpException)) throw e;
       return Response.json(e.getResponse(), { status: e.getStatus() });
@@ -1160,7 +1164,7 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
       );
     };
     await next();
-    await res.done; // handlers answer when they end the response or start streaming it; the action's time limit bounds the wait
+    if (!res.headersSent) await res.done; // handlers answer when they end the response or start streaming it; the action's time limit bounds the wait
     if (res.error) throw res.error; // before the head went out; an error while streaming ends the stream instead
     return res.toAnswer();
   }
