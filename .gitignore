@@ -48,3 +48,9 @@ data/
 # archlast-forge framework mode
 .forge
 packages/create-archlast-forge/test/.tmp-*
+
+# benchmarks/fullstack run files
+benchmarks/fullstack/.pid
+benchmarks/fullstack/.server-*.log
+benchmarks/fullstack/*/.react-router
+benchmarks/fullstack/results.raw
