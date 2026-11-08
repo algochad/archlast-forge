@@ -146,11 +146,33 @@ export default function N() { return <><Plain /><Wrapped /><N /></>; }`,
       ),
     ).toEqual({ index: "page", chat: "island", "sign-in": "island" });
     expect(tierOf(r, "Chrome")).toBe("island"); // the header: the sign-out button is in it
-    // `Root` hands the page (elements) to `Chrome`, which cannot cross to an island: until the interactive part of the header is its own component,
-    // the root layout is an island and the whole page hydrates. The report is how an app finds that out.
+    // The header is an island and lives in the file `Root` is in, and it would also be handed the page: until its interactive part is a
+    // component of its own, in a file of its own, the root layout is an island and the whole page hydrates. The report is how an app finds out.
     expect(r.components.find((c) => c.name === "Root")!.reasons[0]).toContain(
-      "passes a function or elements to Chrome",
+      "renders Chrome, which is an island used in the file that declares it",
     );
+  });
+
+  test("islands are mounted from their own file by the name they export; one used where it is declared, or not exported, cannot be", () => {
+    const r = classifyApp(
+      app({
+        "root.tsx": `import { Menu } from "./_c/menu";
+import { Outlet } from "@archlast/forge-framework";
+export default function Root() { return <div><Menu /><Outlet /></div>; }`,
+        "_c/menu.tsx": `import { useState } from "react";
+export function Menu() { const [o] = useState(false); return <nav>{String(o)}</nav>; }`,
+        "routes/index.tsx": `export default function Home() { return <p>hi</p>; }`,
+        "routes/live.tsx": `import { useState } from "react";
+export default function Live() { const [n] = useState(0); return <p>{n}</p>; }`,
+        "routes/same.tsx": `import { useState } from "react";
+function Inner() { const [n] = useState(0); return <b>{n}</b>; }
+export default function Same() { return <p><Inner /></p>; }`,
+      }),
+    );
+    expect(tierOf(r, "Root")).toBe("page");
+    expect(r.mounts.map((m) => `${m.name}:${m.exportName}`).sort()).toEqual(["Live:default", "Menu:Menu", "Same:default"]);
+    expect(tierOf(r, "Same")).toBe("island"); // Inner cannot be mounted on its own
+    expect(r.components.find((c) => c.name === "Same")!.reasons[0]).toContain("used in the file that declares it");
   });
 
   test("the report reads well", () => {

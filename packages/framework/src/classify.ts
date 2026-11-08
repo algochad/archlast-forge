@@ -22,6 +22,8 @@ export interface ComponentReport {
   reasons: string[];
   /** Islands it renders (they hydrate on their own roots inside this page). */
   islands: string[];
+  /** How its file exports it ("default" or a name), when it does: what an island is loaded by. */
+  exportName?: string;
   /** Set when it cannot be hydrated on its own because it has no module to load (so whoever renders it is an island too). */
   unmountable?: true;
 }
@@ -36,6 +38,8 @@ export interface RouteReport {
 }
 
 export interface AppReport {
+  /** The islands the build mounts: those a page renders, and routes that are islands themselves. */
+  mounts: ComponentReport[];
   root?: RouteReport;
   routes: RouteReport[];
   components: ComponentReport[];
@@ -182,6 +186,27 @@ function componentsOf(program: Node): Fn[] {
       if (d.type === "FunctionDeclaration") consider(d.id?.name, d, true, true);
       else if (wrapped(d)) consider(undefined, wrapped(d)!, true, true);
     } else decl(s, false);
+  }
+  return out;
+}
+
+/** local name -> the name the module exports it under ("default" for the default export). Direct exports, `export { A as B }` and `export default A`. */
+function exportsOf(program: Node): Map<string, string> {
+  const out = new Map<string, string>();
+  for (const s of program.body as Node[]) {
+    if (s.type === "ExportNamedDeclaration") {
+      const d = s.declaration;
+      if (d?.type === "FunctionDeclaration" && d.id) out.set(d.id.name, d.id.name);
+      for (const v of d?.declarations ?? [])
+        if (v.id.type === "Identifier") out.set(v.id.name, v.id.name);
+      if (!s.source)
+        for (const sp of s.specifiers ?? [])
+          out.set(sp.local.name, sp.exported.name ?? sp.exported.value);
+    } else if (s.type === "ExportDefaultDeclaration") {
+      const d = s.declaration;
+      if (d.type === "Identifier") out.set(d.name, "default");
+      else if (d.type === "FunctionDeclaration" && d.id) out.set(d.id.name, "default");
+    }
   }
   return out;
 }
@@ -336,8 +361,15 @@ export class Classifier {
   constructor(private readonly appRoot: string) {}
   private files = new Map<
     string,
-    { comps: Map<string, Fn>; own: Map<string, Own>; imports: Imports } | null
+    {
+      comps: Map<string, Fn>;
+      own: Map<string, Own>;
+      imports: Imports;
+      exports: Map<string, string>;
+    } | null
   >();
+  /** Islands a page renders or a route is: the ones the build mounts. By "file#name". */
+  readonly mounts = new Map<string, ComponentReport>();
   private memo = new Map<string, ComponentReport>();
   private active = new Set<string>();
 
@@ -347,6 +379,7 @@ export class Classifier {
       comps: Map<string, Fn>;
       own: Map<string, Own>;
       imports: Imports;
+      exports: Map<string, string>;
     } | null = null;
     try {
       const program = acorn.parse(toJs(file, readFileSync(file, "utf8")), {
@@ -359,6 +392,7 @@ export class Classifier {
         comps: new Map(fns.map((f) => [f.name, f])),
         own: new Map(fns.map((f) => [f.name, ownOf(f.node)])),
         imports: importsOf(program),
+        exports: exportsOf(program),
       };
     } catch {
       entry = null; // not parseable: callers treat the component as a fallback
@@ -372,7 +406,12 @@ export class Classifier {
     const cached = this.memo.get(key);
     if (cached) return cached;
     const entry = this.load(file);
-    const base = { name, file, islands: [] as string[] };
+    const base = {
+      name,
+      file,
+      islands: [] as string[],
+      ...(entry?.exports.get(name) && { exportName: entry.exports.get(name) }),
+    };
     if (!entry)
       return {
         ...base,
@@ -405,8 +444,13 @@ export class Classifier {
         reasons.push(r.unanalyzable);
         continue;
       }
-      const child = this.child(file, entry, r.name);
+      let child = this.child(file, entry, r.name);
       if (!child) continue;
+      // An island is loaded from its own module by the name it exports; used where it is declared, or not exported, it cannot be.
+      if (child.tier === "island" && !child.unmountable && child.file === file && entry.comps.has(r.name))
+        child = { ...child, unmountable: true, reasons: [`which is an island used in the file that declares it; put it in a file of its own`] };
+      else if (child.tier === "island" && !child.unmountable && entry.comps.has(r.name) && !child.exportName)
+        child = { ...child, unmountable: true, reasons: [`which is an island that its file does not export`] };
       if (child.unmountable) {
         if (tier === "page") tier = "island";
         reasons.push(`renders ${r.name}, ${child.reasons[0]}`);
@@ -420,7 +464,10 @@ export class Classifier {
             reasons.push(
               `passes a function or elements to ${r.name}, an island, which cannot cross to it`,
             );
-          } else islands.push(child.name);
+          } else {
+            islands.push(child.name);
+            this.mounts.set(`${child.file}#${child.name}`, child);
+          }
         } else islands.push(...child.islands);
       }
     }
@@ -592,16 +639,14 @@ export class Classifier {
       notes.push(
         "an action makes the route a fallback until actions have a place in the island model",
       );
-    return {
-      id,
-      file,
-      tier:
-        exported.has("action") || exported.has("clientAction")
-          ? "fallback"
-          : c.tier,
-      component: def.name,
-      notes,
-    };
+    const tier =
+      exported.has("action") || exported.has("clientAction")
+        ? "fallback"
+        : c.tier;
+    // A route that is an island by itself is mounted where the router renders it.
+    if (tier === "island" && id !== "root")
+      this.mounts.set(`${file}#${def.name}`, { ...c, exportName: "default" });
+    return { id, file, tier, component: def.name, notes };
   }
 
   all(): ComponentReport[] {
@@ -622,7 +667,7 @@ export function classifyApp(root: string): AppReport {
     }
   };
   visit(tree.routes);
-  const report: AppReport = { routes, components: [] };
+  const report: AppReport = { routes, components: [], mounts: [] };
   if (tree.root) {
     const rootFile = join(appDir, tree.root);
     report.root = c.route(rootFile, "root");
@@ -632,6 +677,7 @@ export function classifyApp(root: string): AppReport {
     ).load(rootFile);
     for (const name of entry?.comps.keys() ?? []) c.component(rootFile, name);
   }
+  report.mounts = [...c.mounts.values()];
   report.components = c
     .all()
     .sort(
