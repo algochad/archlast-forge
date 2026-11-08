@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer, type RunningServer } from "@archlast/forge-runtime/server";
+import { nativeEngine } from "../../runtime/src/server/engine";
 import { buildApp } from "../src/build";
 import { createApp } from "../src/server";
 
@@ -53,3 +54,6 @@ export const stateOf = (html: string) => {
   if (!m) throw new Error("no window.__FORGE__ in the page");
   return JSON.parse(m[1]!) as import("../src/state").PageState;
 };
+
+/** Whether the native HTTP engine is built here (it is where there is a Rust toolchain): what keeps pages for the cache tests. */
+export const hasNativeEngine = () => nativeEngine().then(Boolean);

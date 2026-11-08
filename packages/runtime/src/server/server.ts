@@ -366,6 +366,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     subs.rerunAll();
   });
 
+  /** Whether the HTTP engine keeps responses a page asks it to (see `x-forge-cache`). */
+  let nativeCache = false;
   const rpcOpts: RpcOptions = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
   const maxBody = config.limits.maxRequestBytes;
   // Files kept on this server's disk are served here; uploads to them, and backups uploaded to the dashboard, may be larger than other requests.
@@ -1327,8 +1329,26 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             ...(res && res.status >= 500 && { error: { type: `HTTP ${res.status}`, message: `${root.operation} answered ${res.status}`, handled: false } }),
           });
         }
-        // The nonce is for documents; the app's files and JSON get the policy without it.
-        if (res) return security.apply("app", res, res.headers.get("content-type")?.includes("text/html") ? nonce : undefined);
+        if (res) {
+          // A page the app wants kept (`x-forge-cache`) is, on the native engine, handed to it to serve again; its inline scripts are then named by hash, since a
+          // nonce would be the same for every visitor. Elsewhere the note is dropped and the page is served as any other.
+          const note = res.headers.get("x-forge-cache");
+          const hashes = res.headers.get("x-forge-csp-hashes"); // "" when the page has no inline script
+          if (note || hashes !== null) {
+            try {
+              res.headers.delete("x-forge-cache");
+              res.headers.delete("x-forge-csp-hashes");
+            } catch {
+              res = new Response(res.body, res);
+              res.headers.delete("x-forge-cache");
+              res.headers.delete("x-forge-csp-hashes");
+            }
+          }
+          const kept = Boolean(note && hashes !== null && nativeCache);
+          if (kept) res.headers.set("x-archlast-cache", note!);
+          // The nonce is for documents; the app's files and JSON get the policy without it.
+          return security.apply("app", res, kept || !res.headers.get("content-type")?.includes("text/html") ? undefined : nonce, kept ? hashes!.split(",").filter(Boolean) : undefined);
+        }
       }
       return new Response("Not found", { status: 404 });
     },
@@ -1375,6 +1395,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   });
   // On the native engine a successful /rpc call is answered with its Reply, which skips the Web Response (a request before this gets a Response).
   if (httpEngine === "archlast") {
+    nativeCache = true;
     const Reply = (await nativeEngine())!.Reply;
     rpcOpts.reply = (body, headers) => new Reply(body, { headers }) as unknown as Response;
   }

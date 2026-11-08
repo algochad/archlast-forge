@@ -115,6 +115,18 @@ connections it switches itself off. Reproduce with
 `SECS=6 bench/container/compare.sh`; `bench/ws-sat.sh`, `bench/http-split.sh` and `bench/thread-split.sh` give per-thread
 CPU on the host, and `--features profile` builds a sampling profiler (`ARCHLAST_PROFILE=file:seconds`).
 
+## Response cache
+
+A handler can have the engine keep a response and answer the same request again from the I/O threads, without waking JavaScript, by adding one header to it:
+
+```ts
+import { cacheHeader } from "archlast-serve";
+
+return new Response(html, { headers: { "content-type": "text/html", "x-archlast-cache": cacheHeader({ ttl: 30, varyCookie: ["tz"], onlyCookie: [], skipHeader: ["authorization"], tags: ["home"] }) } });
+```
+
+The engine removes the header before it sends the response. Only complete `200` responses to `GET` are kept, never one that sets a cookie or says `no-store`. The key is the host, the path and query, and the values of the `varyCookie` cookies. A request carrying a `skipCookie` or `skipHeader`, or (when `onlyCookie` is given) any cookie not listed there or in `varyCookie`, bypasses the cache entirely: nothing is looked up or stored. Hits carry an `ETag` (so `If-None-Match` gets a 304) and a gzip copy made once when the entry was stored. `server.purgeCache(["home"])` drops the entries with those tags (none: all of them); `ARCHLAST_PAGE_CACHE_MB` (default 64) bounds the memory, oldest entries going first. A cached hit on a trivial 2.4 KB page: 394k req/s against 113k through the handler (4 cores). Hits skip your middleware, so do not keep anything that depends on who is asking unless the rules above keep it from them.
+
 ## Layout
 
 - `crates/core` — the hyper/tokio server, lanes, streaming, WebSockets (uWebSockets framing), pub/sub

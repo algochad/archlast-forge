@@ -2,6 +2,10 @@ import { Link, useViewer } from "@archlast/forge-framework";
 import { buttonVariants } from "@/components/ui/button";
 import { Card, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 
+// A visitor who is not signed in gets this page from the engine's cache for a minute, without it being rendered again (the page is the same for everyone). A signed-in visitor is
+// rendered for, every time. Remove the line to render every request; `tags` and the numbers are in the full-stack guide.
+export const handle = { cache: { ttl: 60 } };
+
 const FEATURES = [
   ["Rendered on the server", "Every page arrives as HTML with its data already in it, then the browser takes over without a flicker."],
   ["Live by default", "A query in a component stays current. Open the chat in two windows and watch both update."],

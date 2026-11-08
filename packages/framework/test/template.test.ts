@@ -6,7 +6,7 @@ import { checkFrontendImports, codegen } from "../../cli/src/codegen";
 import type { BaseColor } from "../../create-archlast-forge/src/shadcn";
 import { buildApp } from "../src/build";
 import { launchBrowser } from "./browser";
-import { startFixture } from "./helpers";
+import { hasNativeEngine, startFixture } from "./helpers";
 import { templateProject, TMP } from "./template";
 
 const shots = process.env.SCREENSHOTS;
@@ -16,6 +16,7 @@ function suite(label: string, name: string, shadcn?: BaseColor) {
   describe(label, () => {
     let dir: string;
     let browser: Browser | undefined;
+    let native = false;
     let srv: Awaited<ReturnType<typeof startFixture>>;
 
     beforeAll(async () => {
@@ -24,7 +25,8 @@ function suite(label: string, name: string, shadcn?: BaseColor) {
       browser = await launchBrowser();
       if (!browser) return;
       await buildApp({ root: dir, dev: false });
-      srv = await startFixture({ root: dir });
+      native = await hasNativeEngine();
+      srv = await startFixture({ root: dir, env: { HTTP_ENGINE: native ? "archlast" : "bun" } });
     }, 180_000);
     afterAll(async () => {
       await browser?.close();
@@ -58,6 +60,17 @@ function suite(label: string, name: string, shadcn?: BaseColor) {
       expect(scripts.length).toBe(1);
       expect(scripts[0]).toMatch(/\/nav-[^/]*\.js$/);
       expect(html).not.toContain("forge-state");
+    });
+
+    test("the home page is kept by the engine for anonymous visitors, and its inline scripts run under the hash policy", async () => {
+      if (!native) return console.warn("skipped: the native engine is not built here");
+      await fetch(srv.url);
+      const again = await fetch(srv.url);
+      expect(again.headers.get("etag")).toBeTruthy(); // made by the engine, which answered from its cache
+      const csp = again.headers.get("content-security-policy") ?? "";
+      expect(csp).not.toContain("nonce-");
+      const scripts = [...(await again.text()).matchAll(/<script(?![^>]*\ssrc=)(?![^>]*application\/json)[^>]*>([\s\S]*?)<\/script>/g)];
+      for (const [, body] of scripts) expect(csp).toContain(`'sha256-${new Bun.CryptoHasher("sha256").update(body!).digest("base64")}'`);
     });
 
     describe("the template, in a browser", () => {

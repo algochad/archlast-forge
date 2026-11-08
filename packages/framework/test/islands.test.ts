@@ -4,15 +4,17 @@ import type { RunningServer } from "@archlast/forge-runtime/server";
 import type { Browser } from "playwright-core";
 import { readBuild } from "../src/build";
 import { launchBrowser } from "./browser";
-import { signUp, startFixture } from "./helpers";
+import { hasNativeEngine, signUp, startFixture } from "./helpers";
 
 const root = join(import.meta.dir, "fixture-islands");
 let srv: RunningServer;
 let browser: Browser | undefined;
+let native = false;
 
 beforeAll(async () => {
   browser = await launchBrowser();
-  srv = await startFixture({ root, islands: true });
+  native = await hasNativeEngine();
+  srv = await startFixture({ root, islands: true, env: { HTTP_ENGINE: native ? "archlast" : "bun" } });
 }, 120_000);
 afterAll(async () => {
   await browser?.close();
@@ -27,7 +29,7 @@ describe("pages with islands", () => {
   test("the build records the islands entry and which routes can use it", () => {
     const b = readBuild(root)!;
     expect(b.manifest.islands?.entry).toMatch(/^islands\.client-.*\.js$/);
-    expect([...b.manifest.islands!.routes].sort()).toEqual(["routes/about", "routes/index", "routes/live"]);
+    expect([...b.manifest.islands!.routes].sort()).toEqual(["routes/about", "routes/cached", "routes/index", "routes/live"]);
   });
 
   test("a page renders its static parts as HTML and marks its islands, which load from their own entry", async () => {
@@ -64,6 +66,33 @@ describe("pages with islands", () => {
     expect(markers(page)).toEqual([]);
     expect(scripts(page).some((s) => /entry\.client-/.test(s))).toBe(true);
     expect(scripts(page).some((s) => /islands\.client-/.test(s))).toBe(false);
+  });
+
+  test("a page that asks to be kept is served again to anonymous visitors without being rendered; signed-in visitors and other cookies never meet it", async () => {
+    if (!native) return console.warn("skipped: the native engine is not built here");
+    const renders = async (path: string, init?: RequestInit) => /rendered (?:<!-- -->)?(\d+)/.exec(await fetch(`${srv.url}${path}`, init).then((r) => r.text()))?.[1];
+    const first = await fetch(`${srv.url}/cached`);
+    expect(await first.text()).toMatch(/rendered (<!-- -->)?1/);
+    // the policy carries hashes of the page's inline scripts, not a nonce, and the engine's note is gone
+    const csp = first.headers.get("content-security-policy") ?? "";
+    expect(csp).not.toContain("nonce-");
+    expect(first.headers.get("x-archlast-cache")).toBeNull();
+    expect(first.headers.get("x-forge-cache")).toBeNull();
+    expect(await renders("/cached")).toBe("1"); // from the cache
+    expect(await renders("/cached?x=1")).toBe("2"); // another key
+    expect(await renders("/cached?x=1")).toBe("2");
+    const zone = (tz: string) => ({ headers: { cookie: `forge-tz=${tz}` } });
+    expect(await renders("/cached", zone("Asia/Manila"))).toBe("3"); // the time zone is part of the key
+    expect(await renders("/cached", zone("Asia/Manila"))).toBe("3");
+    expect(await renders("/cached", { headers: { cookie: "analytics=1" } })).toBe("4"); // a cookie nobody named bypasses the cache,
+    expect(await renders("/cached", { headers: { cookie: "analytics=1" } })).toBe("5"); // in both directions
+    const cookie = await signUp(srv, "cache-user@example.com");
+    expect(await renders("/cached", { headers: { cookie } })).toBe("6"); // a signed-in visitor is rendered for, every time
+    expect(await renders("/cached", { headers: { cookie } })).toBe("7");
+    expect(await renders("/cached")).toBe("1"); // and the anonymous entry is as it was
+    // a page without the request in its handle is never kept
+    const about = async () => (await fetch(`${srv.url}/about`).then((r) => r.text())).includes("About");
+    expect(await about()).toBe(true);
   });
 
   test("an unknown page is the error page, rendered as a whole", async () => {

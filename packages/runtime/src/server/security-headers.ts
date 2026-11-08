@@ -297,14 +297,16 @@ export class SecurityHeaders {
     return this.resolved.get(surface)!.headers.some(([, v]) => v.includes(NONCE));
   }
 
-  /** Sets the surface's headers the response doesn't already have. A response whose headers can't change is copied first. */
-  apply(surface: Surface, res: Response, nonce?: string): Response {
+  /** Sets the surface's headers the response doesn't already have. A response whose headers can't change is copied first. `hashes` (`sha256-…`) stand in for the nonce. */
+  apply(surface: Surface, res: Response, nonce?: string, hashes?: string[]): Response {
     const headers = this.resolved.get(surface)!.headers;
     if (!headers.length) return res;
     let out = res;
+    // A page that is kept and served again cannot carry a nonce (every visitor would have the same one): its inline scripts are named by their hashes.
+    const sources = nonce ? `'nonce-${nonce}'` : hashes?.length ? hashes.map((h) => `'${h}'`).join(" ") : undefined;
     for (const [name, value] of headers) {
       if (out.headers.has(name)) continue;
-      const v = nonce ? value.replaceAll(NONCE, `'nonce-${nonce}'`) : value.replaceAll(` ${NONCE}`, "");
+      const v = sources ? value.replaceAll(NONCE, sources) : value.replaceAll(` ${NONCE}`, "");
       try {
         out.headers.set(name, v);
       } catch {

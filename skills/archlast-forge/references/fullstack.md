@@ -309,6 +309,7 @@ New apps have it. A page is server HTML; only components that need the browser l
 - Mount an island only when needed (`{viewer ? <UserMenu name={viewer.name} /> : <Link to="/sign-in">Sign in</Link>}`): a page with none has no framework JS.
 - Routes with an `action`, pages with errors, and an interactive `root.tsx` or `Layout` render and hydrate as a whole; the build logs why when islands turn off.
 - Loaders run on the server only; `useNavigation()` has nothing to report and `Link` does no prefetching.
+- **Keeping a page**: `export const handle = { cache: { ttl: 60 } }` on a route (islands on, native engine) keeps its page for `ttl` seconds (1 to 86,400) and the engine answers anonymous visitors from memory without running the app (~290k req/s vs ~7k on the starter). Never for a signed-in visitor, an `Authorization` request or any cookie but `forge-tz`; keyed by path, query, host and `forge-tz`; skips rate limit/firewall/telemetry on hits; the CSP uses hashes for its inline scripts instead of a nonce. Nothing drops a kept page before `ttl` ends. Only for pages that are the same for everyone. `HTTP_ENGINE=bun` ignores it.
 
 ## Hydration: the browser's first render must equal the server's HTML
 

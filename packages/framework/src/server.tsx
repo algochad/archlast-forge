@@ -14,7 +14,7 @@ import { IslandsContext, type IslandCount } from "./island";
 import { Providers } from "./providers";
 import { toRouteObjects } from "./route-objects";
 import { reviveErrors, type PageState, type SerializedError } from "./state";
-import { DEFAULT_ZONE, zoneFromCookie, type TimeState } from "./time";
+import { DEFAULT_ZONE, ZONE_COOKIE, zoneFromCookie, type TimeState } from "./time";
 
 export interface AppOptions {
   /** The project directory: it holds app/, public/ and forge/. */
@@ -93,6 +93,27 @@ function serializeErrors(errors: StaticHandlerContext["errors"], o: { dev: boole
       return [id, { kind: "error", message: o.dev || meant ? err.message : `Server error (request ${o.requestId})`, ...(o.dev && err.stack && { stack: err.stack }) }];
     }),
   );
+}
+
+/** What a route's `handle.cache` asks for, if it is valid: `export const handle = { cache: { ttl: 30, tags: ["home"] } }`. */
+function cacheRequest(context: StaticHandlerContext): { ttl: number; tags: string[] } | undefined {
+  const c = (context.matches.at(-1)?.route.handle as { cache?: { ttl?: unknown; tags?: unknown } } | undefined)?.cache;
+  if (!c || typeof c.ttl !== "number" || !(c.ttl >= 1) || c.ttl > 86_400) return undefined;
+  const tags = Array.isArray(c.tags) ? c.tags.filter((t): t is string => typeof t === "string" && /^[\w.:-]{1,64}$/.test(t)) : [];
+  return { ttl: Math.floor(c.ttl), tags };
+}
+
+/** The CSP hashes (`sha256-…`) of the inline scripts in some HTML: a page that is kept names them instead of carrying a nonce. */
+function inlineScriptHashes(html: string): string[] {
+  const hashes = new Set<string>();
+  for (const m of html.matchAll(/<script\b([^>]*)>([\s\S]*?)<\/script>/gi)) {
+    const attrs = m[1]!;
+    if (/\ssrc\s*=/i.test(attrs)) continue;
+    const type = /\stype\s*=\s*["']?([^"'\s>]+)/i.exec(attrs)?.[1]?.toLowerCase();
+    if (type && type !== "module" && !type.includes("javascript")) continue; // data blocks are not run
+    hashes.add(`sha256-${new Bun.CryptoHasher("sha256").update(m[2]!).digest("base64")}`);
+  }
+  return [...hashes];
 }
 
 const escapeAttr = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
@@ -271,7 +292,22 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       );
       await stream.allReady;
       if (!meter) return new Response(stream, { status, headers: { ...HTML_HEADERS, "x-request-id": env.requestId } });
-      return new Response(withScripts(await new Response(stream).text(), { islands: islands!, meter, state, nonce: env.nonce, dev }), { status, headers: { ...HTML_HEADERS, "x-forge-page": "islands", "x-request-id": env.requestId } });
+      const document = withScripts(await new Response(stream).text(), { islands: islands!, meter, state, nonce: env.nonce, dev });
+      // A page a route asks to have kept (`handle.cache`) is kept for anonymous visitors only: the same HTML would be served to anyone, so nothing in it may be about
+      // a person. The engine does the keeping (and drops this note when it cannot), and a hit is served without running the app: the page can be up to `ttl`
+      // seconds old, and a request that carries any cookie but the time zone's, or an authorization header, is not served from it.
+      const keep = !dev && status === 200 && viewer.get() === null && !env.headers.authorization ? cacheRequest(context) : undefined;
+      if (keep)
+        return new Response(document, {
+          status,
+          headers: {
+            ...HTML_HEADERS,
+            "x-forge-page": "islands",
+            "x-forge-cache": `ttl=${keep.ttl}; vary-cookie=${ZONE_COOKIE}; only-cookie=; skip-header=authorization${keep.tags.length ? `; tag=${keep.tags.join(",")}` : ""}`,
+            "x-forge-csp-hashes": inlineScriptHashes(document).join(","),
+          },
+        });
+      return new Response(document, { status, headers: { ...HTML_HEADERS, "x-forge-page": "islands", "x-request-id": env.requestId } });
     } catch (e) {
       log("error", `render failed (request ${env.requestId}): ${(e as Error)?.stack ?? e}`);
       return dev ? buildErrorPage(`A page failed to render:\n\n${(e as Error)?.stack ?? e}`, env.nonce) : new Response(`Server error (request ${env.requestId})`, { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });
