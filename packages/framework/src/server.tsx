@@ -7,10 +7,10 @@ import { join, resolve, sep } from "node:path";
 import { preinit, preloadModule } from "react-dom";
 import { renderToReadableStream } from "react-dom/server";
 import { createStaticHandler, createStaticRouter, isRouteErrorResponse, matchRoutes, RouterContextProvider, StaticRouterProvider, type StaticHandlerContext } from "react-router";
-import { BuildError, buildApp, readBuild, type BuildResult } from "./build";
+import { BuildError, buildApp, readBuild, type BuildManifest, type BuildResult } from "./build";
 import { createViewerStore, forgeContext, type LoaderContext, type Viewer } from "./context";
 import { buildErrorPage, DEV_SCRIPT, DevEvents, watchApp } from "./dev";
-import { IslandsContext } from "./island";
+import { IslandsContext, type IslandCount } from "./island";
 import { Providers } from "./providers";
 import { toRouteObjects } from "./route-objects";
 import { reviveErrors, type PageState, type SerializedError } from "./state";
@@ -95,7 +95,29 @@ function serializeErrors(errors: StaticHandlerContext["errors"], o: { dev: boole
   );
 }
 
-function Page(props: { islands: boolean; router: ReturnType<typeof createStaticRouter>; context: StaticHandlerContext; client: ArchlastForgeClient; queryClient: QueryClient; viewer: ReturnType<typeof createViewerStore>; time: TimeState; dev: boolean; css: string[]; preload: string[]; nonce?: string }) {
+const escapeAttr = (v: string) => v.replace(/&/g, "&amp;").replace(/"/g, "&quot;").replace(/</g, "&lt;");
+
+/**
+ * The scripts of a page with islands, put into the HTML React wrote: before `</body>` the page's state and the islands entry, and before `</head>` the
+ * preloads of what the entry loads. A page where no island rendered gets none of them: it needs no JavaScript at all (the dev page still gets its reload script).
+ */
+function withScripts(html: string, o: { islands: NonNullable<BuildManifest["islands"]>; meter: IslandCount; state: PageState; nonce?: string; dev: boolean }): string {
+  const nonce = o.nonce ? ` nonce="${escapeAttr(o.nonce)}"` : "";
+  const dev = o.dev ? `<script type="module" src="/_app/__dev.js" async=""${nonce}></script>` : "";
+  if (o.meter.count === 0) return insertBefore(html, "</body>", dev);
+  const preloads = o.islands.preload.map((f) => `<link rel="modulepreload" href="/_app/${escapeAttr(f)}"${nonce}/>`).join("");
+  const scripts = `<script${nonce}>window.__FORGE__=${scriptJson(o.state)};</script><script type="module" src="/_app/${escapeAttr(o.islands.entry)}" async=""${nonce}></script>${dev}`;
+  return insertBefore(insertBefore(html, "</head>", preloads), "</body>", scripts);
+}
+
+/** `html` with `text` before the last `marker`, or at the end when there is none. */
+function insertBefore(html: string, marker: string, text: string): string {
+  if (!text) return html;
+  const at = html.lastIndexOf(marker);
+  return at < 0 ? html + text : html.slice(0, at) + text + html.slice(at);
+}
+
+function Page(props: { islands: IslandCount | null; router: ReturnType<typeof createStaticRouter>; context: StaticHandlerContext; client: ArchlastForgeClient; queryClient: QueryClient; viewer: ReturnType<typeof createViewerStore>; time: TimeState; dev: boolean; css: string[]; preload: string[]; nonce?: string }) {
   // Float hoists these into <head>, wherever the user's root document puts it.
   for (const href of props.css) preinit(`/_app/${href}`, { as: "style", precedence: "forge" });
   for (const file of props.preload) preloadModule(`/_app/${file}`, { as: "script" });
@@ -227,24 +249,26 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       ...(env.nonce && { nonce: env.nonce }),
     };
     const router = createStaticRouter(handler.dataRoutes, context);
-    const preload = withIslands ? islands!.preload : [...new Set(context.matches.flatMap((m) => build.manifest.routes[m.route.id] ?? []))].filter((f) => f !== build.manifest.entry);
+    const preload = withIslands ? [] : [...new Set(context.matches.flatMap((m) => build.manifest.routes[m.route.id] ?? []))].filter((f) => f !== build.manifest.entry);
     const client = new ArchlastForgeClient({ url: url.origin, authPlugins });
     const status = context.statusCode;
+    const meter: IslandCount | null = withIslands ? { count: 0 } : null;
 
     try {
       const stream = await renderToReadableStream(
-        <Page islands={withIslands} router={router} context={context} client={client} queryClient={queryClient} viewer={viewer} time={time} dev={dev} css={build.manifest.css} preload={preload} nonce={env.nonce} />,
+        <Page islands={meter} router={router} context={context} client={client} queryClient={queryClient} viewer={viewer} time={time} dev={dev} css={build.manifest.css} preload={preload} nonce={env.nonce} />,
         {
           // React's own inline scripts (the page's state, streamed boundaries) carry the engine's CSP nonce.
           ...(env.nonce && { nonce: env.nonce }),
-          bootstrapScriptContent: `window.__FORGE__=${scriptJson(state)};`,
-          bootstrapModules: [`/_app/${withIslands ? islands!.entry : build.manifest.entry}`, ...(dev ? ["/_app/__dev.js"] : [])],
+          // With islands, the scripts are added below, and only if the page has an island.
+          ...(!withIslands && { bootstrapScriptContent: `window.__FORGE__=${scriptJson(state)};`, bootstrapModules: [`/_app/${build.manifest.entry}`, ...(dev ? ["/_app/__dev.js"] : [])] }),
           signal: req.signal,
           onError: (e) => log("error", `render failed (request ${env.requestId}): ${(e as Error)?.stack ?? e}`),
         },
       );
       await stream.allReady;
-      return new Response(stream, { status, headers: { ...HTML_HEADERS, "x-request-id": env.requestId } });
+      if (!meter) return new Response(stream, { status, headers: { ...HTML_HEADERS, "x-request-id": env.requestId } });
+      return new Response(withScripts(await new Response(stream).text(), { islands: islands!, meter, state, nonce: env.nonce, dev }), { status, headers: { ...HTML_HEADERS, "x-request-id": env.requestId } });
     } catch (e) {
       log("error", `render failed (request ${env.requestId}): ${(e as Error)?.stack ?? e}`);
       return dev ? buildErrorPage(`A page failed to render:\n\n${(e as Error)?.stack ?? e}`, env.nonce) : new Response(`Server error (request ${env.requestId})`, { status: 500, headers: { "content-type": "text/plain; charset=utf-8" } });

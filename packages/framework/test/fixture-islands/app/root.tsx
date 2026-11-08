@@ -21,7 +21,7 @@ export default function Root() {
       <nav>
         <Link to="/">Home</Link> <Link to="/live">Live</Link> <Link to="/old">Old</Link>
         <span id="who">{viewer ? `Hi ${viewer.name}` : "Signed out"}</span>
-        <UserMenu label="menu" />
+        {viewer ? <UserMenu label="menu" /> : <Link to="/sign-in">Sign in</Link>}
       </nav>
       <Outlet />
     </>

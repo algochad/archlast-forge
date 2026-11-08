@@ -2,8 +2,11 @@
 // and its props, and the island's own output inside. The browser's islands.tsx finds the markers and hydrates each one alone.
 import { createContext, useContext, type ComponentType } from "react";
 
-/** Whether this render is of a page that has islands. Where it is not (a page rendered and hydrated as a whole) an island is just its component. */
-export const IslandsContext = createContext(false);
+/** Counts the islands a render of a page with islands meets. Where there is none (a page rendered and hydrated as a whole) an island is just its component. */
+export interface IslandCount {
+  count: number;
+}
+export const IslandsContext = createContext<IslandCount | null>(null);
 
 /** Props that can cross to the browser as JSON: data, not functions or elements. */
 function assertPlain(value: unknown, path: string, id: string): void {
@@ -25,7 +28,9 @@ function assertPlain(value: unknown, path: string, id: string): void {
 /** Wraps `Component` as the island `id` ("<file in app/>#<export name>"). */
 export function island<P extends object>(Component: ComponentType<P>, id: string): ComponentType<P> {
   const Island = (props: P) => {
-    if (!useContext(IslandsContext)) return <Component {...props} />;
+    const meter = useContext(IslandsContext);
+    if (!meter) return <Component {...props} />;
+    meter.count++;
     if ("children" in props && (props as { children?: unknown }).children !== undefined) throw new Error(`The island ${id} was given children. An island is hydrated on its own, so it cannot receive elements: render them inside it.`);
     assertPlain(props, "its props", id);
     return (

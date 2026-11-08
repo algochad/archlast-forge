@@ -4,7 +4,7 @@ import type { RunningServer } from "@archlast/forge-runtime/server";
 import type { Browser } from "playwright-core";
 import { readBuild } from "../src/build";
 import { launchBrowser } from "./browser";
-import { startFixture } from "./helpers";
+import { signUp, startFixture } from "./helpers";
 
 const root = join(import.meta.dir, "fixture-islands");
 let srv: RunningServer;
@@ -19,7 +19,7 @@ afterAll(async () => {
   await srv?.stop({ graceful: false });
 });
 
-const html = (path: string) => fetch(`${srv.url}${path}`).then((r) => r.text());
+const html = (path: string, cookie?: string) => fetch(`${srv.url}${path}`, cookie ? { headers: { cookie } } : undefined).then((r) => r.text());
 const markers = (page: string) => [...page.matchAll(/data-forge-island="([^"]+)"/g)].map((m) => m[1]);
 const scripts = (page: string) => [...page.matchAll(/<script[^>]*src="([^"]+)"/g)].map((m) => m[1]!);
 
@@ -33,7 +33,7 @@ describe("pages with islands", () => {
   test("a page renders its static parts as HTML and marks its islands, which load from their own entry", async () => {
     const page = await html("/");
     expect(page).toContain('<h1 id="title">Home</h1>');
-    expect(markers(page).sort()).toEqual(["_c/counter.tsx#Counter", "_c/user-menu.tsx#UserMenu"]);
+    expect(markers(page)).toEqual(["_c/counter.tsx#Counter"]); // the menu is for a signed-in visitor; an anonymous one gets a link
     expect(page).toContain("data-props=\"{&quot;start&quot;:1,&quot;step&quot;:2}\"");
     const entries = scripts(page);
     expect(entries.some((s) => /islands\.client-/.test(s))).toBe(true);
@@ -42,9 +42,20 @@ describe("pages with islands", () => {
     expect(page).toContain('"loaderData":{}');
   });
 
-  test("a route that is an island itself is marked where the router renders it", async () => {
-    const page = await html("/live");
+  test("a route that is an island itself is marked where the router renders it, and a signed-in visitor's menu is an island", async () => {
+    const cookie = await signUp(srv, "islands@example.com");
+    const page = await html("/live", cookie);
     expect(markers(page).sort()).toEqual(["_c/user-menu.tsx#UserMenu", "routes/live.tsx#default"]);
+    expect(scripts(page).some((s) => /islands\.client-/.test(s))).toBe(true);
+  });
+
+  test("a page where no island rendered has no JavaScript at all", async () => {
+    const page = await html("/about");
+    expect(markers(page)).toEqual([]);
+    expect(scripts(page)).toEqual([]);
+    expect(page).not.toContain("__FORGE__");
+    expect(page).not.toContain("modulepreload");
+    expect(page).toContain('<h1 id="title">About</h1>');
   });
 
   test("a route the build could not place renders and hydrates as a whole, as without islands", async () => {
@@ -62,7 +73,10 @@ describe("pages with islands", () => {
 
   test("in a browser: islands hydrate alone, navigate by loading, and the rest of the page is untouched", async () => {
     if (!browser) return console.warn("skipped: no browser");
-    const page = await browser.newPage();
+    const cookie = await signUp(srv, "browser-islands@example.com", "Grace");
+    const context = await browser.newContext();
+    await context.addCookies(cookie.split("; ").map((kv) => ({ name: kv.slice(0, kv.indexOf("=")), value: kv.slice(kv.indexOf("=") + 1), url: srv.url })));
+    const page = await context.newPage();
     const problems: string[] = [];
     page.on("console", (m) => ["error", "warning"].includes(m.type()) && !/WebSocket is closed before/.test(m.text()) && problems.push(m.text()));
     page.on("pageerror", (e) => problems.push(e.message));
@@ -71,7 +85,7 @@ describe("pages with islands", () => {
     await page.click("#counter");
     expect(await page.textContent("#counter")).toBe("count 3");
     await page.click("#menu-button");
-    expect(await page.textContent("#menu-open")).toContain("nobody");
+    expect(await page.textContent("#menu-open")).toContain("Grace");
     await page.evaluate(() => ((window as any).mark = "same document"));
     await page.click("#go-about"); // useNavigate inside an island: a page load
     await page.waitForURL("**/about");
