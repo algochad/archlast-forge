@@ -793,6 +793,17 @@ export class LaneRuntime implements StreamHost, WsHost, SignalHost {
     this.scheduleFlush();
   }
 
+  /** Drops the responses the engine kept for handlers that asked (see `cacheHeader`): those with one of `tags`, or all of them when there are none. */
+  purgeCache(tags: string[] = []): void {
+    if (this.stopped) return;
+    const w = this.rs.out;
+    w.u8(21);
+    w.u16(tags.length);
+    for (const t of tags) w.str16(t);
+    this.rs.count++;
+    this.scheduleFlush();
+  }
+
   // ---------- outbound batching ----------
 
   private scheduleFlush(): void {

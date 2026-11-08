@@ -27,6 +27,7 @@ export { Reply, type Result, type Server } from "./server.ts";
 export { html, json, noContent, redirect, status, text } from "./reply.ts";
 export { SseStream, Stream, sse, type SseOptions } from "./stream.ts";
 export { FileReply, file } from "./file.ts";
+export { CACHE_HEADER, cacheHeader, type CacheRules } from "./cache.ts";
 export {
   UpgradeReply,
   WebSocket,

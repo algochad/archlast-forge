@@ -3,6 +3,7 @@
 //! Static routes are answered entirely on the Rust side. Wire formats are documented in `src/codec.ts`.
 
 mod file;
+mod pagecache;
 mod http;
 #[cfg(feature = "profile")]
 mod profile;

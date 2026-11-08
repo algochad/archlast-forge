@@ -229,13 +229,43 @@ impl Drop for AbortGuard {
 
 /// The request handler, generic over the body so hyper's `Incoming` is used directly (no boxing).
 /// Weak comparison of an `If-None-Match` list (or `*`) against one entity tag.
-fn etag_matches(list: &[u8], tag: &[u8]) -> bool {
+pub(crate) fn etag_matches(list: &[u8], tag: &[u8]) -> bool {
     let strip = |t: &[u8]| -> Vec<u8> {
         let t = t.trim_ascii();
         t.strip_prefix(b"W/").unwrap_or(t).to_vec()
     };
     let tag = strip(tag);
     list.split(|b| *b == b',').any(|t| t.trim_ascii() == b"*" || strip(t) == tag)
+}
+
+/// A response from the cache.
+fn cached(hit: crate::pagecache::Hit) -> Resp {
+    use crate::pagecache::Hit;
+    match hit {
+        Hit::NotModified { etag } => {
+            let mut r = Response::new(RBody::Full(None));
+            *r.status_mut() = StatusCode::NOT_MODIFIED;
+            r.headers_mut().insert(header::ETAG, etag);
+            r
+        }
+        Hit::Full { status, headers, body, gzip, has_gzip, etag } => {
+            let mut r = Response::new(RBody::Full(Some(body)));
+            *r.status_mut() = status;
+            let map = r.headers_mut();
+            for (n, v) in headers {
+                // A varied response keeps its own Vary; the encoding is added below.
+                map.append(n, v);
+            }
+            map.insert(header::ETAG, etag);
+            if has_gzip {
+                map.append(header::VARY, HeaderValue::from_static("accept-encoding"));
+            }
+            if gzip {
+                map.insert(header::CONTENT_ENCODING, HeaderValue::from_static("gzip"));
+            }
+            r
+        }
+    }
 }
 
 pub async fn handle<B>(sh: Arc<Shared>, peer: Option<SocketAddr>, conn: Option<Arc<crate::tpc::ConnState>>, req: http::Request<B>) -> Resp
@@ -267,6 +297,16 @@ where
             *r.status_mut() = s.status;
             *r.headers_mut() = s.headers.clone();
             return r;
+        }
+    }
+
+    // A response a handler asked to have kept (pagecache.rs): answered here, without waking JS.
+    if sh.cache.active.load(Ordering::Acquire) && (parts.method == Method::GET || parts.method == Method::HEAD) {
+        let path_and_query = parts.uri.path_and_query().map_or("/", |p| p.as_str());
+        let host = parts.headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+        let gzip = parts.headers.get(header::ACCEPT_ENCODING).is_some_and(|v| v.to_str().is_ok_and(|v| v.split(',').any(|e| e.trim().split(';').next().is_some_and(|n| n.eq_ignore_ascii_case("gzip")))));
+        if let Some(hit) = sh.cache.lookup(parts.uri.path(), path_and_query, host, &parts.headers, gzip) {
+            return cached(hit);
         }
     }
 
@@ -367,6 +407,17 @@ where
                 r.headers_mut().remove(header::CONTENT_TYPE);
                 if status != 205 {
                     r.headers_mut().remove(header::CONTENT_LENGTH);
+                }
+            }
+            // The cache header is the handler's note to the engine: it is never sent.
+            if let Some(note) = r.headers_mut().remove(crate::pagecache::CONFIG_HEADER) {
+                if parts.method == Method::GET && !no_body && !r.headers().contains_key(header::SET_COOKIE) && !r.headers().get(header::CACHE_CONTROL).is_some_and(|v| v.as_bytes().windows(8).any(|w| w.eq_ignore_ascii_case(b"no-store"))) {
+                    if let (Some(cfg), RBody::Full(Some(b))) = (note.to_str().ok().and_then(crate::pagecache::parse_config), r.body()) {
+                        let headers: Vec<_> = r.headers().iter().filter(|(n, _)| *n != header::CONTENT_LENGTH).map(|(n, v)| (n.clone(), v.clone())).collect();
+                        let path_and_query = parts.uri.path_and_query().map_or("/", |p| p.as_str());
+                        let host = parts.headers.get(header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+                        sh.cache.store(parts.uri.path(), path_and_query, host, &parts.headers, cfg, r.status(), headers, b.clone());
+                    }
                 }
             }
             r

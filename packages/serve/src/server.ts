@@ -79,6 +79,11 @@ export interface Server {
   readonly ready: Promise<void>;
   /** Sends to every WebSocket subscribed to `topic`, on any thread. */
   publish(topic: string, data: string | Uint8Array): void;
+  /**
+   * Drops the responses the engine kept because a handler sent `x-archlast-cache` (see `cacheHeader`): those carrying one of `tags`, or all of them
+   * when there are none.
+   */
+  purgeCache(tags?: string[]): void;
   /** Reaches any open WebSocket by id (`ws.id`), from anywhere in the process, e.g. a timer or another handler. */
   readonly sockets: {
     send(id: number, data: string | Uint8Array): void;
@@ -196,6 +201,7 @@ const inertServer: Server = {
   workers: 0,
   ready: Promise.resolve(),
   publish() {},
+  purgeCache() {},
   pendingRequests: 0,
   pendingWebSockets: 0,
   subscriberCount: () => 0,
@@ -243,6 +249,9 @@ abstract class BaseServer implements Server {
 
   publish(topic: string, data: string | Uint8Array): void {
     this.runtime.publish(topic, data, 0);
+  }
+  purgeCache(tags?: string[]): void {
+    this.runtime.purgeCache(tags);
   }
   get sockets() {
     const rt = this.runtime;

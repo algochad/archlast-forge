@@ -169,6 +169,8 @@ export interface CompatServer<D = undefined> {
     compress?: boolean,
   ): number;
   subscriberCount(topic: string): number;
+  /** Drops the responses kept for handlers that sent `x-archlast-cache` (see `cacheHeader`): those with one of `tags`, or all of them. */
+  purgeCache(tags?: string[]): void;
   ref(): void;
   unref(): void;
   [Symbol.dispose](): void;
@@ -823,6 +825,7 @@ export function serveCompat<D = undefined>(
         : bytes.length;
     },
     subscriberCount: (topic) => engine.subscriberCount(topic),
+    purgeCache: (tags) => engine.purgeCache(tags),
     ref: () => engine.ref(),
     unref: () => engine.unref(),
     [Symbol.dispose]() {

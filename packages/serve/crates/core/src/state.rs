@@ -280,6 +280,8 @@ pub struct Shared {
     pub spin_max_conns: usize,
     /// Per-I/O-thread response inboxes (thread-per-core engine only).
     pub io: std::sync::OnceLock<Vec<Arc<IoInbox>>>,
+    /// Complete responses handlers asked to have kept (see pagecache.rs).
+    pub cache: crate::pagecache::PageCache,
     ws_conns: Mutex<IdMap<WsConn>>,
     topics: Mutex<HashMap<String, Vec<u32>>>,
 }
@@ -307,6 +309,7 @@ impl Shared {
             spin_ns: spin_us * 1000,
             spin_max_conns,
             io: std::sync::OnceLock::new(),
+            cache: crate::pagecache::PageCache::new(std::env::var("ARCHLAST_PAGE_CACHE_MB").ok().and_then(|v| v.parse::<usize>().ok()).unwrap_or(64) << 20),
             ws_conns: Mutex::new(IdMap::default()),
             topics: Mutex::new(HashMap::new()),
         }
@@ -924,6 +927,16 @@ impl Shared {
                     let d = r.take(dl)?;
                     let exclude = r.u32()?;
                     self.publish(topic, make_message(bin != 0, d)?, exclude, &mut ws_batch);
+                }
+                // CachePurge(count, tags...): drop the cached responses carrying one of the tags, or all of them when there are none
+                21 => {
+                    let n = r.u16()?;
+                    let mut tags = Vec::with_capacity(n as usize);
+                    for _ in 0..n {
+                        let len = r.u16()? as usize;
+                        tags.push(r.str(len)?.to_string());
+                    }
+                    self.cache.purge(&tags);
                 }
                 k => return Err(format!("unknown command {k}")),
             }
