@@ -30,6 +30,34 @@ Reading the starter by hand: `index.tsx` is a page, nothing to hydrate. `root.ts
 That is the shape brust gives its pages, and it needs no authoring change because the classifier reads what the code already says
 (hooks and `on*` props), the way the React compiler reads it.
 
+## What rari adds (read 2026-11-08, `rari-build/rari` 0.17.9, MIT, cloned read-only at `~/http-bench/vendor/rari`)
+
+rari is a different bet from brust: **React Server Components with V8 embedded in a Rust server** (deno_core). Rust does HTTP, routing, caching, image
+optimization and OG images; React itself still renders, in a pool of V8 runtimes picked round-robin. It has no template compiler. Its headline numbers (89k
+req/s against Next.js's 1.7k) are from its own benchmark app; its response cache serves prebuilt bodies, so they are best read as the cache-hit path, not as a
+dynamic render rate. I have not reproduced them.
+
+What is useful to us:
+
+- **The cache entry shape.** `PrebuiltResponse` holds the body already encoded as identity, gzip, brotli and zstd, the ETag, content type and `Cache-Control`;
+  freshness comes from the entry's own `max-age`; a hit picks the encoding from `Accept-Encoding` and copies nothing else. That is the right form for our Rust page
+  cache (brust's L1 kept a gzip variant only). Encode once when the entry is made, off the hot path.
+- **Caching below the page.** A `use cache` directive (`crates/rari_use_cache`, `packages/use-cache`) caches a function or component result by key and tag, so a
+  page whose parts differ in freshness is not all-or-nothing. Worth keeping in mind for Forge's query results, which already have this in `cache.ts`.
+- **A pool of render runtimes in the server process.** Ours is the lane model (Bun Workers), which already exists in archlast-serve.
+- **Streaming with Suspense and loading states** as a first-class path, which the framework's `allReady` render does not use today.
+
+What does not carry over:
+
+- **V8 embedded in Rust is a different runtime from Bun.** Forge's server code uses `bun:sqlite`, `Bun.file`, Bun's S3 and password APIs; none of it runs in deno_core. We stay Bun-only.
+- **RSC as the island mechanism.** React Server Components would give us the page/island split without a classifier: server components by default, `'use client'` marks
+  the islands, and the flight payload carries the tree. It needs a bundler pass that splits the server and client module graphs and emits a client manifest
+  (rari uses Vite with a plugin); `Bun.build` has none. It also changes how a route is written (async server components instead of `loader` + hooks, a boundary
+  directive in client files), which the "nothing changes" rule excludes for existing apps. Kept as a possible later model, not part of Stage 1.
+
+Change to the plan: the Stage 1 page cache stores prebuilt multi-encoding entries as above, and its freshness uses the response's own `Cache-Control`
+together with Forge's topic invalidation.
+
 ## Two stages, in this order
 
 ### Stage 1: islands in JS, caching and delivery in Rust (no template compiler)
