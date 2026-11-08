@@ -66,16 +66,16 @@ The JavaScript servers (Forge, archlast-serve, NestJS, Express, Bun) use the sam
 | archlast-serve (native App API, 3 I/O threads) | 493,662 | 361,024 | 392,359 | 352,873 | 106 MiB |
 | Go (fasthttp) | 483,527 | 397,865 | 450,130 | 458,484 | 67 MiB |
 | .NET 10 (Minimal APIs) | 399,712 | 347,109 | 341,848 | 306,066 | 70 MiB |
-| archlast-forge (forge/http.ts light routes, archlast-serve) | 306,078 | 237,098 | 246,769 | 226,972 | 234 MiB |
-| archlast-forge (NestJS path, archlast-serve, telemetry off) | 172,030 | 141,447 | 127,302 | 117,821 | 210 MiB |
-| archlast-forge (NestJS path, archlast-serve) | 151,079 | 133,364 | 120,762 | 109,043 | 255 MiB |
+| archlast-forge (forge/http.ts light routes, archlast-serve) | 328,080 | 249,418 | 260,617 | 240,264 | 247 MiB |
+| archlast-forge (NestJS path, archlast-serve, telemetry off) | 177,181 | 158,322 | 130,741 | 121,959 | 238 MiB |
+| archlast-forge (NestJS path, archlast-serve) | 152,116 | 140,668 | 122,569 | 117,999 | 278 MiB |
 | Bun.serve | 142,882 | 108,589 | 92,094 | 81,816 | 97 MiB |
 | NestJS on Bun (Express adapter) | 38,122 | 34,027 | 22,919 | 21,135 | 138 MiB |
-| archlast-forge (NestJS path, Bun.serve) | 34,362 | 30,813 | 25,560 | 24,880 | 196 MiB |
+| archlast-forge (NestJS path, Bun.serve) | 35,667 | 32,302 | 26,826 | 26,278 | 198 MiB |
 | NestJS on Node.js 24 (Express adapter) | 22,670 | 19,896 | 15,566 | 17,090 | 123 MiB |
 | Node.js 24 (Express 5) | 22,408 | 20,694 | 16,090 | 16,925 | 122 MiB |
 
-Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.11 / 0.22; archlast-serve 0.12 / 0.41; Go 0.11 / 0.54; .NET 10 0.14 / 0.57; archlast-forge 0.18 / 0.96; archlast-forge 0.34 / 1.31; archlast-forge 0.40 / 1.38; Bun.serve 0.43 / 0.86; NestJS on Bun 1.60 / 2.56; archlast-forge 1.78 / 3.54; NestJS on Node.js 24 2.77 / 3.49; Node.js 24 2.81 / 3.29.
+Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.11 / 0.22; archlast-serve 0.12 / 0.41; Go 0.11 / 0.54; .NET 10 0.14 / 0.57; archlast-forge 0.17 / 0.89; archlast-forge 0.34 / 1.27; archlast-forge 0.41 / 1.42; Bun.serve 0.43 / 0.86; NestJS on Bun 1.60 / 2.56; archlast-forge 1.72 / 3.40; NestJS on Node.js 24 2.77 / 3.49; Node.js 24 2.81 / 3.29.
 
 {/* /bench:rest */}
 

@@ -196,7 +196,7 @@ http.route({
 - **The request** has `method`, `url` (absolute), `path`, `search` (with the `?`, or empty), `headers` (a list of `[name, value]` pairs with lower-case names), and `body` (an `ArrayBuffer`, or `undefined` for a GET). The headers are decoded when you first read them, so a route that reads none does not pay for them. `ctx` is the same as for `httpAction` (`ctx.auth`, `ctx.runQuery`, ...).
 - **The answer** is a `LightResponse(status, headers, body)` with a string, bytes or `null` body, or `lightJson(data, status?, headers?)` and `lightText(text, status?, headers?)`. A `Response` is accepted too, for the odd route that needs one.
 - **Everything else is as for `httpAction`**: telemetry, the request id, rate limits, CORS you set yourself, validators and the OpenAPI document, errors, time limits. Only the objects differ.
-- **When to use it.** For a hot route. On the benchmark API (reading one item from memory, 4 cores) a `lightAction` route answers about 306,000 requests a second against about 150,000 for the same route as a NestJS controller; see [benchmarks](benchmarks.html). A route that reads a body as JSON, forwards the `Request`, or uses a library that wants one should stay an `httpAction`.
+- **When to use it.** For a hot route. On the benchmark API (reading one item from memory, 4 cores) a `lightAction` route answers about 328,000 requests a second against about 150,000 for the same route as a NestJS controller; see [benchmarks](benchmarks.html). A route that reads a body as JSON, forwards the `Request`, or uses a library that wants one should stay an `httpAction`.
 
 ## Who is calling
 
