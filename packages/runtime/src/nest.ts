@@ -51,7 +51,8 @@ import { Readable } from "node:stream";
 import { match } from "path-to-regexp";
 import { EMPTY, filter, fromEvent, mergeMap, Observable, takeUntil, type Subscription } from "rxjs";
 import type { RouteDocs, SecurityRequirement } from "./api-docs";
-import { httpAction, type ActionCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
+import { httpAction, type ActionCtx, type HttpCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { queryValue } from "./server/http";
 import { LIGHT, LightResponse, type LightRequest } from "./server/light";
 import { simpleMatcher } from "./server/route-match";
@@ -61,7 +62,7 @@ import { validate, validateFields, ValidationError, type PropertyValidators, typ
 export * from "@nestjs/common";
 export { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE, BaseExceptionFilter, ModuleRef, Reflector } from "@nestjs/core";
 export * as rxjs from "rxjs";
-export type { ActionCtx, MutationCtx, QueryCtx } from "./functions";
+export type { ActionCtx, HttpCtx, MutationCtx, QueryCtx } from "./functions";
 /** What Nest's handlers and middleware get as `req` and `res`: Express's API on top of the engine's request (see the docs' NestJS page). */
 export type { ForgeRequest as NestRequest, ForgeResponse as NestResponse };
 
@@ -256,6 +257,63 @@ export abstract class ForgeService<C extends AnyCtx = AnyCtx> {
 }
 Inject(CTX)(ForgeService.prototype, "ctx");
 
+// ---- services that work in a transaction of their own: DbService, @Read(), @Write() ----
+
+interface TxScope {
+  /** The route's (or socket's) ctx, which opens the transaction. */
+  action: HttpCtx;
+  /** The transaction the code is running in, if it is in one. */
+  tx?: { kind: "read" | "write"; ctx: QueryCtx | MutationCtx };
+}
+const txScope = new AsyncLocalStorage<TxScope>();
+/** Set once a `@Read()` or `@Write()` method exists: from then on each HTTP request runs with its ctx in `txScope`, which costs nothing for an app that has none. */
+let scoped = false;
+
+/**
+ * A service for the database that a controller (or a gateway, or a message handler) calls directly, with no function of the reactive system in between. It is
+ * a plain singleton: its `@Read()` methods run in one read transaction and its `@Write()` methods in one write transaction, and inside them `this.ctx.db` is that
+ * transaction's database. A method called from another one joins its transaction (a `@Write()` can call `@Read()` ones; the other way is refused).
+ *
+ * ```ts
+ * @Injectable()
+ * class Items extends DbService<MutationCtx> {
+ *   @Read() async get(id: number) { return this.ctx.db.query("items").withIndex("by_item", (q) => q.eq("itemId", id)).first(); }
+ *   @Write() async add(name: string) { return this.ctx.db.insert("items", { name }); }
+ * }
+ * ```
+ *
+ * Methods must be `async` (they return a promise whatever they declare), and, as for a query or a mutation, a transaction can run again: keep side effects
+ * such as a `fetch` outside them. The caller is the one of the HTTP request (`this.ctx.auth`). It is for code that starts from a route, a socket or a message; inside
+ * a query or a mutation use `ForgeService` with `inject()`, since those already are in a transaction.
+ */
+export abstract class DbService<C extends QueryCtx | MutationCtx = MutationCtx> {
+  protected get ctx(): C {
+    const tx = txScope.getStore()?.tx;
+    if (!tx) throw new Error(`${this.constructor.name}: this.ctx is only available inside a method marked @Read() or @Write()`);
+    return tx.ctx as C;
+  }
+}
+
+function inTransaction(kind: "read" | "write") {
+  return (_target: object, key: string | symbol, descriptor: PropertyDescriptor) => {
+    scoped = true;
+    const original = descriptor.value as (...args: unknown[]) => unknown;
+    descriptor.value = function (this: unknown, ...args: unknown[]) {
+      const scope = txScope.getStore();
+      if (scope?.tx) {
+        if (kind === "write" && scope.tx.kind === "read") throw new Error(`${String(key)} is @Write(), but it was called from a @Read() method, which cannot write`);
+        return original.apply(this, args); // already in a transaction: join it
+      }
+      const action = scope?.action ?? (engine().actionCtx(null) as unknown as HttpCtx);
+      return (action[kind] as (fn: (ctx: QueryCtx & MutationCtx) => unknown) => Promise<unknown>)((ctx) => txScope.run({ action, tx: { kind, ctx } }, () => original.apply(this, args)));
+    };
+  };
+}
+/** Runs the method in one read transaction (see `DbService`). */
+export const Read = () => inTransaction("read");
+/** Runs the method in one write transaction (see `DbService`); topics are published after the commit, so live queries update. */
+export const Write = () => inTransaction("write");
+
 /** Gives every provider the CTX token: what `inject()` or the HTTP request put on Nest's request object, or for a microservice message an anonymous ActionCtx. */
 class ForgeCtxModule {}
 Global()(ForgeCtxModule);
@@ -333,7 +391,8 @@ export function nest(http: { route(spec: HttpRoute): void; root?: boolean }, opt
   // The mount takes a `LightRequest` and may answer with a `LightResponse` (see server/light.ts): a Nest request needs no Web `Request` or `Response` unless a handler asks.
   let ready: ForgeAdapter | undefined;
   started.then((s) => void (ready = s.adapter), () => {});
-  const handler = httpAction((ctx, request) => (ready ? ready.handle(request, ctx) : started!.then((s) => s.adapter.handle(request, ctx))) as Promise<Response>);
+  const serve = (ctx: HttpCtx, request: Parameters<ForgeAdapter["handle"]>[0]) => (ready ? ready.handle(request, ctx) : started!.then((s) => s.adapter.handle(request, ctx))) as Promise<Response>;
+  const handler = httpAction((ctx, request) => (scoped ? txScope.run({ action: ctx }, () => serve(ctx, request)) : serve(ctx, request)));
   (handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] = true;
   (handler as unknown as Record<symbol, unknown>)[LIGHT] = true;
   if (o.helmet !== undefined) (handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-helmet")] = o.helmet;

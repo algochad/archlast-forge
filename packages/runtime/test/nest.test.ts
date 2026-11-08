@@ -194,6 +194,15 @@ describe("in production, with functions inline in the server", () => {
     expect(await boom.text()).not.toContain("secret internal detail");
   });
 
+  test("the database straight from a controller works inline too", async () => {
+    const at = (path: string, init?: RequestInit) => fetch(`${prod.url}/http${path}`, init);
+    const added = await at("/direct/notes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "inline" }) });
+    expect(await added.json()).toEqual(["prod", "inline"]);
+    expect((await at("/direct/fail", { method: "POST" })).status).toBe(500);
+    expect(await (await at("/direct/notes")).json()).toEqual(["prod", "inline"]);
+    expect(await (await at("/light-notes")).json()).toEqual(["prod", "inline"]);
+  });
+
   test("gateway sockets, streamed writes and GraphQL work inline too", async () => {
     const ws = await socket(prod.url, "/ws");
     expect(await ws.ask("echo", "inline")).toEqual({ event: "echo", data: "inline" });
@@ -636,5 +645,44 @@ describe("schema-first GraphQL, mounted as nest(http, AppModule)", () => {
     const gql = async (query: string) => (await (await http0(sdl, "/graphql", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ query }) })).json()) as any;
     expect(typeof (await gql('mutation { addNote(text: "sdl") }')).data.addNote).toBe("string");
     expect((await gql("{ notes { text } }")).data.notes).toEqual([{ text: "sdl" }]);
+  });
+});
+
+describe("the database straight from a route", () => {
+  const text = async (r: Response) => ({ status: r.status, body: await r.json().catch(() => null) });
+  test("a DbService in a controller reads and writes in transactions, and a method called inside one joins it", async () => {
+    await http("/direct/notes", { method: "DELETE" });
+    expect((await text(await http("/direct/notes"))).body).toEqual([]);
+    const added = await text(await http("/direct/notes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "direct" }) }));
+    expect(added.body).toEqual(["direct"]);
+    expect((await text(await http("/direct/notes"))).body).toEqual(["direct"]);
+  });
+
+  test("a write is published: a query that was cached sees it", async () => {
+    await http("/direct/notes", { method: "DELETE" });
+    expect(await call("notes:list")).toEqual([]);
+    await http("/direct/notes", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ text: "seen" }) });
+    expect(((await call("notes:list")) as any[]).map((n) => n.text)).toEqual(["seen"]);
+  });
+
+  test("an error rolls the transaction back, and a read cannot write", async () => {
+    await http("/direct/notes", { method: "DELETE" });
+    expect((await http("/direct/fail", { method: "POST" })).status).toBe(500);
+    expect((await text(await http("/direct/notes"))).body).toEqual([]);
+    expect((await http("/direct/read-write")).status).toBe(500);
+    expect((await http("/direct/write-in-read")).status).toBe(500);
+    expect((await text(await http("/direct/notes"))).body).toEqual([]);
+    expect((await http("/direct/no-tx")).status).toBe(500); // this.ctx outside a transactional method
+  });
+
+  test("the caller is the request's: anonymous here", async () => {
+    expect((await text(await http("/direct/who"))).body).toBeNull();
+  });
+
+  test("lightAction routes use ctx.read and ctx.write", async () => {
+    await http("/direct/notes", { method: "DELETE" });
+    const added = await http("/light-notes", { method: "POST", body: "lite" });
+    expect(await added.json()).toBe(1);
+    expect(await (await http("/light-notes")).json()).toEqual(["lite"]);
   });
 });

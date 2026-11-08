@@ -289,6 +289,20 @@ export interface ActionCtx {
   runAction<R extends FunctionReference<"action">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
 }
 
+/**
+ * What an HTTP route's handler gets (`httpAction`, `lightAction`, a NestJS controller's `@Ctx()`): an action's ctx and direct access to the database.
+ * `read` runs `fn` in one read transaction and `write` in one write transaction, as a query and a mutation run, without calling a function by name: no
+ * argument validation, no access check or result cache, no function span or log line of its own (the database spans are recorded). Writes publish their
+ * topics after the commit, so live queries update as for any mutation.
+ *
+ * Like a query or a mutation, `fn` can be run again (the database may re-run a read; a write that loses a serialization conflict is retried): keep side
+ * effects such as a `fetch` or an email outside it, and return what the route needs. Both end at `FUNCTION_TIMEOUT_MS`.
+ */
+export interface HttpCtx extends ActionCtx {
+  read<T>(fn: (ctx: QueryCtx) => Promise<T> | T): Promise<T>;
+  write<T>(fn: (ctx: MutationCtx) => Promise<T> | T): Promise<T>;
+}
+
 type CtxFor<K extends FunctionKind> = K extends "query" ? QueryCtx : K extends "mutation" ? MutationCtx : ActionCtx;
 
 // ---- registration ----
@@ -481,10 +495,10 @@ export function cronJobs() {
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 const HTTP_METHODS: readonly string[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
-/** A handler for a raw HTTP request. It gets the action context, so it can call queries, mutations and actions. */
+/** A handler for a raw HTTP request. It gets the action context, so it can call queries, mutations and actions, and read and write the database directly (`ctx.read`, `ctx.write`: see HttpCtx). */
 export interface HttpAction {
   kind: "httpAction";
-  handler: (ctx: ActionCtx, request: Request) => Response | Promise<Response>;
+  handler: (ctx: HttpCtx, request: Request) => Response | Promise<Response>;
 }
 
 export function httpAction(handler: HttpAction["handler"]): HttpAction {
@@ -496,7 +510,7 @@ export function httpAction(handler: HttpAction["handler"]): HttpAction {
  * `lightText`) instead of a Web `Request` and `Response`: for routes that answer from memory or a quick query, where making and reading those objects is much
  * of what a request costs. A `Response` it returns is accepted too. Used in `http.route` as `httpAction` is.
  */
-export function lightAction(handler: (ctx: ActionCtx, request: LightRequest) => LightResponse | Response | Promise<LightResponse | Response>): HttpAction {
+export function lightAction(handler: (ctx: HttpCtx, request: LightRequest) => LightResponse | Response | Promise<LightResponse | Response>): HttpAction {
   const action: HttpAction = { kind: "httpAction", handler: handler as unknown as HttpAction["handler"] };
   (action as unknown as Record<symbol, unknown>)[LIGHT] = true;
   return action;

@@ -1,7 +1,7 @@
 import { SnapshotMoved, type ReadCache } from "./read-cache";
 import { LightResponse, type LightRequest } from "./light";
 import { isForgeError, TimeoutError } from "../errors";
-import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, type RegisteredFunction, type UserIdentity } from "../functions";
+import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, type HttpCtx, type RegisteredFunction, type UserIdentity } from "../functions";
 import { validate, validateFields, ValidationError } from "../values";
 import type { Limits } from "./config";
 import { isRetryableConflict, type Db, type DbTx } from "./db/types";
@@ -145,6 +145,12 @@ class LazyActionCtx {
   }
   get runAction() {
     return this.p.runAction;
+  }
+  get read() {
+    return this.p.read;
+  }
+  get write() {
+    return this.p.write;
   }
 }
 
@@ -437,7 +443,7 @@ export class Executor {
     this.ranAs(identity);
     const auth = { getUserIdentity: async () => identity };
     const res: unknown = await this.logged(name, requestId, undefined, () =>
-      withTimeout(Promise.resolve(action.handler(this.actionCtx(auth, identity, requestId) as unknown as ActionCtx, req as Request)), this.limits.actionTimeoutMs, name),
+      withTimeout(Promise.resolve(action.handler(this.actionCtx(auth, identity, requestId) as unknown as HttpCtx, req as Request)), this.limits.actionTimeoutMs, name),
     );
     if (!(res instanceof Response) && !(res instanceof LightResponse)) throw new Error(`${name} must return a Response`);
     return res as Response | LightResponse;
@@ -451,7 +457,7 @@ export class Executor {
     const start = performance.now();
     let res: unknown;
     try {
-      res = logContext.run({ name, requestId, logs: undefined, trace: undefined, spanId: undefined }, () => action.handler(new LazyActionCtx(this, ANONYMOUS, null, requestId) as unknown as ActionCtx, req as Request));
+      res = logContext.run({ name, requestId, logs: undefined, trace: undefined, spanId: undefined }, () => action.handler(new LazyActionCtx(this, ANONYMOUS, null, requestId) as unknown as HttpCtx, req as Request));
     } catch (e) {
       this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
       throw e;
@@ -589,6 +595,31 @@ export class Executor {
       runQuery: runAs("query"),
       runMutation: runAs("mutation"),
       runAction: runAs("action"),
+      // An HTTP route's direct access to the database (HttpCtx): the transaction of a query or a mutation around a function that is not registered by name.
+      read: async (fn: (ctx: any) => unknown) => {
+        const auth = { getUserIdentity: async () => identity };
+        const { value } = await this.read((store) => withTimeout(Promise.resolve(fn({ db: store.reader(), auth, storage: this.storage(store) })), this.limits.functionTimeoutMs, "ctx.read"));
+        return value;
+      },
+      write: (fn: (ctx: any) => unknown) =>
+        this.mutate((store, tx, after) =>
+          withTimeout(
+            Promise.resolve(
+              fn({
+                db: store.writer(),
+                auth: { getUserIdentity: async () => identity },
+                storage: this.storage(store, after),
+                scheduler: {
+                  runAfter: (ms: number, ref: any, a?: object) => schedule(tx, this.o.functions, Date.now() + ms, ref, a),
+                  runAt: (at: number, ref: any, a?: object) => schedule(tx, this.o.functions, at, ref, a),
+                  cancel: (id: string) => cancelScheduled(tx, id),
+                },
+              }),
+            ),
+            this.limits.functionTimeoutMs,
+            "ctx.write",
+          ),
+        ),
     };
   }
 }

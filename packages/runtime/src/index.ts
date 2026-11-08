@@ -64,6 +64,7 @@ export {
   type FunctionReference,
   type FunctionReturn,
   type HttpAction,
+  type HttpCtx,
   type HttpMethod,
   type HttpRouterOptions,
   type HelmetConfig,
