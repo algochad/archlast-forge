@@ -29,7 +29,7 @@ describe("pages with islands", () => {
   test("the build records the islands entry and which routes can use it", () => {
     const b = readBuild(root)!;
     expect(b.manifest.islands?.entry).toMatch(/^islands\.client-.*\.js$/);
-    expect([...b.manifest.islands!.routes].sort()).toEqual(["routes/about", "routes/cached", "routes/cached-items", "routes/index", "routes/live"]);
+    expect([...b.manifest.islands!.routes].sort()).toEqual(["routes/about", "routes/cached", "routes/cached-items", "routes/index", "routes/live", "routes/nested"]);
   });
 
   test("a page renders its static parts as HTML and marks its islands, which load from their own entry", async () => {
@@ -49,6 +49,13 @@ describe("pages with islands", () => {
     const page = await html("/live", cookie);
     expect(markers(page).sort()).toEqual(["_c/user-menu.tsx#UserMenu", "routes/live.tsx#default"]);
     expect(scripts(page).some((s) => /islands\.client-/.test(s))).toBe(true);
+  });
+
+  test("an island inside an island is part of it: only the outer one is marked, so the browser hydrates the tree the server rendered", async () => {
+    const page = await html("/nested");
+    expect(markers(page)).toEqual(["routes/nested.tsx#default"]);
+    expect(page).toMatch(/outer (<!-- -->)?0/);
+    expect(page).toMatch(/count (<!-- -->)?5/); // (the inner island's output is in the page, inside the outer one)
   });
 
   test("a page where no island rendered has no framework JavaScript: only the small navigation script", async () => {
@@ -164,6 +171,12 @@ describe("pages with islands", () => {
     await page.goto(`${srv.url}/live`, { waitUntil: "networkidle" });
     await page.click("#inc");
     expect(await page.textContent("#inc")).toBe("n = 1");
+    // an island that is a route and has another island in it: one hydration, no mismatch, and both work
+    await page.goto(`${srv.url}/nested`, { waitUntil: "networkidle" });
+    await page.click("#outer");
+    expect(await page.textContent("#outer")).toBe("outer 1");
+    await page.click("#counter");
+    expect(await page.textContent("#counter")).toBe("count 10");
     // the whole-page route still navigates inside the document
     await page.goto(`${srv.url}/old`, { waitUntil: "networkidle" });
     await page.evaluate(() => ((window as any).mark = "same document"));

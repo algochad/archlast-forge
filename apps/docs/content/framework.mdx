@@ -404,6 +404,7 @@ A new app's `app/root.tsx` says `export const islands = true;`. With it, a page 
 - It lives in a file of its own, and that file exports it. A page that renders an island declared in the same file makes that page an island too, and the report says so.
 - Its props are plain data (strings, numbers, booleans, arrays, plain objects), because they cross to the browser as JSON. A function or an element as a prop, or `children`, throws with a message that names the island. Render what an island needs inside it.
 - It does not use `useLoaderData()`, `useParams()`, `useRouteError()` or other hooks that need the router in the browser: there is none. A route that does is rendered as a whole.
+- An island inside another island is part of it. The browser hydrates the outer island as one tree, so the inner one has no marker of its own and its output is hydrated with the outer one (a route that is an island can show a counter or a menu that is an island too).
 - Put an island only where it is needed. The starter renders its menu only for a signed-in visitor, so the pages of a visitor who is not have no island.
 
 **What stays whole.** A page with an error, a route that exports `action`, a layout that is an island and renders `<Outlet />` (there is no router in the browser to fill it; make the interactive part a smaller component, and keep the layout a plain one), and an app whose `root.tsx` is interactive itself are rendered and hydrated as a whole, as without islands, and the build says why when it turns islands off.
