@@ -38,6 +38,9 @@ class Range {
   }
 }
 
+/** `withIndex` of a query, which only the object `ctx.db.query` hands out has (set by NativeQuery, whose method it is). */
+let withIndexOf: (q: NativeQuery, name: string, range?: (b: any) => unknown) => NativeQuery;
+
 export class NativeQuery {
   index?: string;
   rangeFn?: (b: any) => unknown;
@@ -75,12 +78,11 @@ export class NativeQuery {
 
   /** What `ctx.db.query(table)` returns: `withIndex` and `withSearchIndex` beside the chain, and the chain's own methods, which answer the query without them (the bun layer's shape). */
   static root(store: NativeStore, table: string) {
-    const q = new NativeQuery(store, table);
-    const root: Record<string, unknown> = {};
-    for (const name of Object.getOwnPropertyNames(NativeQuery.prototype)) if (name !== "constructor") root[name] = (...args: unknown[]) => (q as any)[name](...args);
-    root.withIndex = (name: string, range?: (b: any) => unknown) => q.#withIndex(name, range);
-    root.withSearchIndex = (name: string, filter: (b: any) => unknown) => new NativeSearch(store, table, name, filter);
-    return root;
+    return new QueryRoot(new NativeQuery(store, table), store, table);
+  }
+
+  static {
+    withIndexOf = (q, name, range) => q.#withIndex(name, range);
   }
 
   order(o: "asc" | "desc") {
@@ -243,6 +245,31 @@ export class NativeQuery {
 }
 
 /** `withSearchIndex("name", (q) => q.search("field", "words").eq("filterField", v))`: the engine matches, ranks and adds related documents. */
+/** What `ctx.db.query(table)` returns. Its methods are made once, here, not per call: a query is made for every read of a function. */
+class QueryRoot {
+  readonly #q: NativeQuery;
+  readonly #store: NativeStore;
+  readonly #table: string;
+  constructor(q: NativeQuery, store: NativeStore, table: string) {
+    this.#q = q;
+    this.#store = store;
+    this.#table = table;
+  }
+  withIndex(name: string, range?: (b: any) => unknown) {
+    return withIndexOf(this.#q, name, range);
+  }
+  withSearchIndex(name: string, filter: (b: any) => unknown) {
+    return new NativeSearch(this.#store, this.#table, name, filter);
+  }
+  /** The chain's own method of that name, on this root's query. */
+  static forward(name: string) {
+    return function (this: QueryRoot, ...args: unknown[]) {
+      return (this.#q as any)[name](...args);
+    };
+  }
+}
+for (const name of Object.getOwnPropertyNames(NativeQuery.prototype)) if (name !== "constructor") (QueryRoot.prototype as any)[name] = QueryRoot.forward(name);
+
 class NativeSearch {
   private text?: string;
   private eqs: [string, unknown][] = [];
@@ -297,6 +324,9 @@ class NativeSearch {
 
 /** A patch's value as JSON: a top-level field set to `undefined` is removed, which JSON cannot say, so it is marked. */
 function patchJson(value: Record<string, unknown>): string {
+  let removes = false;
+  for (const k in value) if (value[k] === undefined) removes = true;
+  if (!removes) return JSON.stringify(value); // (a replacer makes stringify several times slower)
   return JSON.stringify(value, function (this: unknown, _k, x) {
     return x === undefined && this === value ? UNDEF : x;
   });
