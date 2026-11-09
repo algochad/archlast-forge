@@ -1,4 +1,5 @@
 // The function runtime: forge/ modules, the database, auth and the scheduler. See startCore().
+import type { HttpFinish } from "./executor";
 import { docsRouting } from "../api-docs";
 import { mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -95,7 +96,7 @@ export interface RuntimeCore {
   manifest: Manifest;
   handle(msg: HostMessage): Promise<unknown>;
   /** `handle` for an HTTP request, answering without a promise when nothing needs waiting for (see `httpDirect` in runtime-core.ts). */
-  httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">): HttpResponseMessage | Promise<HttpResponseMessage>;
+  httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">, finish?: HttpFinish): any;
   /** A socket event: given to whatever registered for them (the Nest bridge), or the socket is closed. */
   event(msg: HostEvent): void;
   shutdown(): Promise<void>;
@@ -367,21 +368,29 @@ export async function startCore(opts: {
    * A request to an HTTP route from an anonymous caller, not traced, answered without a promise when its handler is synchronous: most of what a request costs
    * is the awaits between the socket and the handler. Anything else (a cookie or an authorization header to resolve, a trace to record) takes `handle`.
    */
-  function httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">): HttpResponseMessage | Promise<HttpResponseMessage> {
-    if (msg.trace || msg.headers.cookie || msg.headers.authorization) return handle({ ...msg, id: 0 }) as Promise<HttpResponseMessage>;
+  function httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">, finish?: HttpFinish): any {
+    if (msg.trace || msg.headers.cookie || msg.headers.authorization) {
+      const answered = handle({ ...msg, id: 0 }) as Promise<HttpResponseMessage>;
+      return finish ? answered.then((m) => finish.ok(m), (e) => finish.fail(e)) : answered;
+    }
     const req = msg.req;
     const { method, body } = req;
     const pathname = req.path ?? new URL(req.url).pathname;
     const found = matchRoute(project.http, method, pathname);
-    if (!("route" in found)) return textAnswer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
+    if (!("route" in found)) {
+      const answer = textAnswer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
+      return finish ? finish.ok(answer) : answer;
+    }
     const route = found.route;
     const invalid = route.query || route.body ? checkHttpRequest(route, req.url, body) : undefined;
-    if (invalid)
-      return {
+    if (invalid) {
+      const answer: HttpResponseMessage = {
         status: 400,
         headers: [["content-type", "application/json"]],
         body: new TextEncoder().encode(JSON.stringify({ error: { code: "BAD_REQUEST", message: invalid, requestId: msg.requestId } })).buffer as ArrayBuffer,
       };
+      return finish ? finish.ok(answer) : answer;
+    }
     const light = (route.handler as unknown as Record<symbol, unknown>)[LIGHT] === true;
     return exec.runHttpAnonymous(
       routeName(route),
@@ -405,7 +414,8 @@ export async function startCore(opts: {
       msg.requestId,
       httpAnswer,
       route,
-    ) as HttpResponseMessage | Promise<HttpResponseMessage>; // a promise of an answer that is itself a promise is one promise
+      finish,
+    ); // a promise of an answer that is itself a promise is one promise
   }
 
   async function handle(msg: HostMessage): Promise<unknown> {

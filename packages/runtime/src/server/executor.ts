@@ -121,6 +121,14 @@ function checkReturn<T>(fn: RegisteredFunction, value: T): T {
  * An action's `ctx`. Making its storage, scheduler and `run*` functions for every call costs more than most handlers (an HTTP route that answers from memory)
  * use of them, so they are made the first time one is read.
  */
+/** What a caller that sends the answer itself makes of it (`ok`), and of a failure (`fail`): see `runHttpAnonymous`. */
+export interface HttpFinish {
+  ok(message: any): unknown;
+  fail(error: unknown): unknown;
+}
+/** `finish.ok` of an answer that may be a promise of one. */
+const finished = (finish: HttpFinish, out: unknown) => (out instanceof Promise ? out.then((m) => finish.ok(m), (e) => finish.fail(e)) : finish.ok(out));
+
 const routeOf = (ctx: LazyActionCtx) => ((ctx as unknown as Record<symbol, unknown>)[ROUTE] as string | null | undefined) ?? undefined;
 
 /** Where an untraced HTTP call's handler may leave the route it matched (Nest's controller route): the call has no trace to annotate. null: asked for; a string: given. */
@@ -501,7 +509,15 @@ export class Executor {
    * `runHttp` for a caller with no cookie or authorization header and no trace to record: the answer comes back without a promise when the handler's does not
    * (a handler that waits for something is given its time limit as before). Everything else `runHttp` does is done in the same order.
    */
-  runHttpAnonymous<R, T>(name: string, action: HttpAction, req: Request | LightRequest, requestId: string | undefined, answer: (route: R, res: Response | LightResponse, telemetry: undefined, named?: string) => T, route: R): T | Promise<T> {
+  runHttpAnonymous<R, T>(
+    name: string,
+    action: HttpAction,
+    req: Request | LightRequest,
+    requestId: string | undefined,
+    answer: (route: R, res: Response | LightResponse, telemetry: undefined, named?: string) => T,
+    route: R,
+    finish?: HttpFinish,
+  ): any {
     const start = performance.now();
     let res: unknown;
     let ctx: LazyActionCtx;
@@ -514,39 +530,42 @@ export class Executor {
       throw e;
     }
     if (res && typeof (res as PromiseLike<unknown>).then === "function") {
-      // One promise for the wait: the answer, the call's log line and the time limit are settled in the one step that sees the handler's result.
-      return new Promise<T>((resolve, reject) => {
+      // One promise for the wait: the answer, the call's log line and the time limit are settled in the one step that sees the handler's result. With `finish`, that step also
+      // makes what the caller sends, and a failure is answered by it too, so the caller has no promise of its own to wait on.
+      return new Promise<unknown>((resolve, reject) => {
+        const fail = (e: unknown) => (finish ? resolve(finish.fail(e)) : reject(e));
         const node = deadlines.add(this.limits.actionTimeoutMs, () => {
           this.logCall(name, requestId, start, undefined, false, `${name} timed out after ${this.limits.actionTimeoutMs} ms`);
-          reject(new TimeoutError(`${name} timed out after ${this.limits.actionTimeoutMs} ms`));
+          fail(new TimeoutError(`${name} timed out after ${this.limits.actionTimeoutMs} ms`));
         });
         (res as PromiseLike<unknown>).then(
           (value) => {
             if (node.done) return; // the time limit came first
             deadlines.remove(node);
-            let out: T;
+            let out: unknown;
             try {
               out = answer(route, this.httpResult(name, value), undefined, routeOf(ctx));
             } catch (e) {
               this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
-              reject(e);
+              fail(e);
               return;
             }
             this.logCall(name, requestId, start, undefined, true, "ok");
-            resolve(out);
+            resolve(finish ? finished(finish, out) : out);
           },
           (e) => {
             if (node.done) return;
             deadlines.remove(node);
             this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
-            reject(e);
+            fail(e);
           },
         );
       });
     }
     const checked = this.httpResult(name, res);
     this.logCall(name, requestId, start, undefined, true, "ok");
-    return answer(route, checked, undefined, routeOf(ctx));
+    const out = answer(route, checked, undefined, routeOf(ctx));
+    return finish ? finished(finish, out) : out;
   }
 
   private httpResult(name: string, res: unknown): Response | LightResponse {

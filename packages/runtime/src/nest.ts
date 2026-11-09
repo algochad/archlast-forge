@@ -393,7 +393,7 @@ export function nest(http: { route(spec: HttpRoute): void; root?: boolean }, opt
   // The mount takes a `LightRequest` and may answer with a `LightResponse` (see server/light.ts): a Nest request needs no Web `Request` or `Response` unless a handler asks.
   let ready: ForgeAdapter | undefined;
   started.then((s) => void (ready = s.adapter), () => {});
-  const serve = (ctx: HttpCtx, request: Parameters<ForgeAdapter["handle"]>[0]) => (ready ? ready.handle(request, ctx) : started!.then((s) => s.adapter.handle(request, ctx))) as Promise<Response>;
+  const serve = (ctx: HttpCtx, request: Parameters<ForgeAdapter["handle"]>[0]) => (ready ? ready.handle(request, ctx) : started!.then((s) => s.adapter.handle(request, ctx))) as Promise<Response>; // (a promise or, for a controller that answers at once, the answer)
   const handler = httpAction((ctx, request) => (scoped ? txScope.run({ action: ctx }, () => serve(ctx, request)) : serve(ctx, request)));
   (handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] = true;
   (handler as unknown as Record<symbol, unknown>)[LIGHT] = true;
@@ -1131,6 +1131,12 @@ const unsupported = (what: string) => new Error(`${what} is not available for Ne
 
 /** The body as Express's parsers would leave it: JSON parsed, forms as an object, text as a string, anything else as bytes. */
 const NO_BODY: { body: unknown; rawBody?: Buffer } = { body: undefined };
+const noop = () => {};
+/** The response as the answer, or its error thrown (before the head went out; an error while streaming ends the stream instead). */
+function answerOf(res: ForgeResponse): Response | LightResponse {
+  if (res.error) throw res.error;
+  return res.toAnswer();
+}
 
 async function readBody(request: Request | LightRequest): Promise<{ body: unknown; rawBody?: Buffer }> {
   if (request.method === "GET" || request.method === "HEAD") return { body: undefined };
@@ -1181,17 +1187,31 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
     this.router = router;
   }
 
-  /** Runs one request through Nest. Errors that are not HttpExceptions are thrown, so the engine answers them like an HTTP action's. */
-  async handle(request: Request | LightRequest, ctx: ActionCtx): Promise<Response | LightResponse> {
+  /**
+   * Runs one request through Nest. Errors that are not HttpExceptions are thrown, so the engine answers them like an HTTP action's. The answer comes back without a
+   * promise when the controller's does not (a request with a body waits for it first), and with exactly one when it is: each promise made between the socket and the
+   * handler is a turn of the event loop's microtasks.
+   */
+  handle(request: Request | LightRequest, ctx: ActionCtx): Promise<Response | LightResponse> | Response | LightResponse {
+    if (request.method === "GET" || request.method === "HEAD") return this.dispatch(request, ctx, NO_BODY); // a read has no body to wait for
+    return this.withBody(request, ctx);
+  }
+
+  private async withBody(request: Request | LightRequest, ctx: ActionCtx): Promise<Response | LightResponse> {
     let parsed: Awaited<ReturnType<typeof readBody>>;
     try {
-      parsed = request.method === "GET" || request.method === "HEAD" ? NO_BODY : await readBody(request); // a read has no body to wait for
+      parsed = await readBody(request);
     } catch (e) {
       if (!(e instanceof HttpException)) throw e;
       return Response.json(e.getResponse(), { status: e.getStatus() });
     }
+    return this.dispatch(request, ctx, parsed);
+  }
+
+  private dispatch(request: Request | LightRequest, ctx: ActionCtx, parsed: { body: unknown; rawBody?: Buffer }): Promise<Response | LightResponse> | Response | LightResponse {
     // Nest sees paths below the mount point, so `prefix: "/api/"` with `@Controller("users")` serves /http/api/users.
-    const { pathname, search } = request instanceof Request ? splitUrl(request.url) : { pathname: request.path, search: request.search };
+    const pathname = request instanceof Request ? splitUrl(request.url).pathname : request.path;
+    const search = request instanceof Request ? splitUrl(request.url).search : request.search;
     const path = "/" + pathname.slice(this.prefix.length);
     const req = new ForgeRequest(request, request.method, path, parsed.body, parsed.rawBody, ctx, search);
     const res = new ForgeResponse();
@@ -1199,8 +1219,9 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
 
     const layers = this.router.layers;
     let i = 0;
-    const next = (err?: unknown): Promise<void> | void => {
-      if (err) return res.fail(err);
+    /** Runs the next layer that matches and answers what its handler returned (a promise, or not): errors it throws go to the response. */
+    const run = (err?: unknown): unknown => {
+      if (err) return void res.fail(err);
       while (i < layers.length) {
         const layer = layers[i++]!;
         if (layer.method && layer.method !== req.method) continue;
@@ -1215,26 +1236,32 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
           else telemetry()?.annotate({ "http.route": named }, true);
         }
         try {
-          const out = layer.handler(req, res, next);
-          return out && typeof (out as PromiseLike<unknown>).then === "function"
-            ? (out as Promise<unknown>).then(
-                () => {},
-                (e) => res.fail(e),
-              )
-            : undefined;
+          return layer.handler(req, res, next);
         } catch (e) {
-          return res.fail(e);
+          return void res.fail(e);
         }
       }
-      return Promise.resolve(this.notFound?.(req, res, next)).then(
-        () => {},
-        (e) => res.fail(e),
-      );
+      try {
+        return this.notFound?.(req, res, next);
+      } catch (e) {
+        return void res.fail(e);
+      }
     };
-    await next();
-    if (!res.headersSent) await res.done; // handlers answer when they end the response or start streaming it; the action's time limit bounds the wait
-    if (res.error) throw res.error; // before the head went out; an error while streaming ends the stream instead
-    return res.toAnswer();
+    /** What a layer calls to hand the request on (Express's `next`): it answers a promise that never rejects. */
+    const next = (err?: unknown): Promise<void> | void => {
+      const out = run(err);
+      return out && typeof (out as PromiseLike<unknown>).then === "function" ? (out as Promise<unknown>).then(noop, (e) => res.fail(e)) : undefined;
+    };
+    const out = run();
+    if (out && typeof (out as PromiseLike<unknown>).then === "function") {
+      // one promise: Nest's own, followed by the answer (or by the response's `done`, for a handler that answers after it returned)
+      return (out as Promise<unknown>).then(
+        () => (res.headersSent ? answerOf(res) : res.done.then(() => answerOf(res))),
+        (e) => (res.fail(e), answerOf(res)),
+      );
+    }
+    // handlers answer when they end the response or start streaming it; the action's time limit bounds the wait
+    return res.headersSent ? answerOf(res) : res.done.then(() => answerOf(res));
   }
 
   // Nest calls these while it handles a request.

@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import type { FunctionKind, UserIdentity } from "../functions";
-import { serializeError, type CallHeaders, type CallResult, type ErrorKind, type IdentityDetail, type LogEntry, type SerializedError } from "./executor";
+import { serializeError, type CallHeaders, type HttpFinish, type CallResult, type ErrorKind, type IdentityDetail, type LogEntry, type SerializedError } from "./executor";
 import type { Manifest } from "./project";
 import type { Batch, HostEvent, HostMessage, HttpRequestMessage, HttpResponseMessage, RuntimeMessage, SerializedRequest, SerializedResponse, SocketMessage } from "./protocol";
 import { startCore, type RuntimeCore } from "./runtime-core";
@@ -143,13 +143,13 @@ export class InlineWorker implements Worker {
    * the caller says it is over with `settled()`: for an answer that is a promise, that is when the promise is, and the caller already is at that moment, so no
    * promise is made here to find out. A failure is `RuntimeCallError.from(serializeError(e))` as `request` throws it: `failed(e)` does that for the caller's.
    */
-  httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">): HttpResponseMessage | Promise<HttpResponseMessage> {
+  httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">, finish?: HttpFinish): any {
     const core = this.proc;
     if (!core) throw new RuntimeCallError("Function runtime is not running", "internal");
     if (this.inFlight >= (this.opts.maxPending ?? 1000)) throw new RuntimeCallError("Server is busy, try again", "overloaded");
     this.inFlight++;
     try {
-      const answer = core.httpDirect(msg);
+      const answer = core.httpDirect(msg, finish);
       if (!(answer instanceof Promise)) this.inFlight--;
       return answer;
     } catch (e) {

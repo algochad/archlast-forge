@@ -1081,26 +1081,42 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (cookie) callHeaders.cookie = cookie;
     if (authorization) callHeaders.authorization = authorization;
     const trace = root && telemetry!.parent(root);
-    let r: HttpResponseMessage | Promise<HttpResponseMessage>;
+    let r: any;
+    // For a runtime in this process the answer is made where its promise is settled, so the one promise the request has is not waited on twice
+    const finish = inline ? new RawFinish(inline, root, method, requestId, path) : undefined;
     try {
-      r = inline ? inline.httpDirect({ t: "http", req: message, headers: callHeaders, requestId, trace }) : runtime.http(message, callHeaders, requestId, undefined, trace);
+      r = inline ? inline.httpDirect({ t: "http", req: message, headers: callHeaders, requestId, trace }, finish) : runtime.http(message, callHeaders, requestId, undefined, trace);
     } catch (e) {
       return rawFailed(root, e, requestId, path);
     }
-    if (r instanceof Promise) {
-      return r.then(
-        (v) => {
-          inline?.settled();
-          return rawAnswered(root, method, v, requestId, path);
-        },
-        (e) => {
-          inline?.settled();
-          return rawFailed(root, inline ? inline.failed(e) : e, requestId, path);
-        },
-      );
+    if (finish) {
+      if (r instanceof Promise) finish.async = true; // it counts as in flight until it settles (see `RawFinish`)
+      return r;
     }
+    if (r instanceof Promise) return r.then((v) => rawAnswered(root, method, v, requestId, path), (e) => rawFailed(root, e, requestId, path));
     return rawAnswered(root, method, r, requestId, path);
   };
+
+  /** What `serveRaw` does with a runtime's answer or failure, as an object (no closures made per request). */
+  class RawFinish {
+    /** The answer was a promise: the request stops being in flight when it settles. */
+    async = false;
+    constructor(
+      private readonly inline: NonNullable<ReturnType<typeof runtime.inlineWorker>>,
+      private readonly root: ReturnType<NonNullable<typeof telemetry>["begin"]> | undefined,
+      private readonly method: string,
+      private readonly requestId: string,
+      private readonly path: string,
+    ) {}
+    ok(message: HttpResponseMessage) {
+      if (this.async) this.inline.settled();
+      return rawAnswered(this.root, this.method, message, this.requestId, this.path);
+    }
+    fail(error: unknown) {
+      if (this.async) this.inline.settled();
+      return rawFailed(this.root, this.inline.failed(error), this.requestId, this.path);
+    }
+  }
 
   const rawAnswered = (root: ReturnType<NonNullable<typeof telemetry>["begin"]> | undefined, method: string, r: HttpResponseMessage, requestId: string, path: string): unknown => {
     try {
