@@ -1,6 +1,6 @@
-// The API on archlast-serve alone: its native App API (a light context instead of a Web Request, and Reply instead of Response), no framework around it.
+// The API on Tuyere alone: its native App API (a light context instead of a Web Request, and Reply instead of Response), no framework around it.
 // One JavaScript thread, because the store is in memory; the Rust I/O threads are what THREADS sets.
-import { App, Reply } from "/engine/packages/serve/src/index.ts";
+import { App, Reply } from "/engine/packages/tuyere/src/index.ts";
 import { create, get, idOf, limitOf, list, parse, remove, update } from "./store.ts";
 
 const headers = { "content-type": "application/json" };

@@ -1,6 +1,6 @@
 # An API with blocking work, with and without Anvil
 
-One Forge app (a NestJS controller, served by archlast-serve) with three routes:
+One Forge app (a NestJS controller, served by Tuyere) with three routes:
 
 - `GET /http/work/inline?rounds=N`: a chain of `N` SHA-256 hashes (20,000 by default, about 8 ms of CPU) on the thread that serves requests;
 - `GET /http/work/pool?rounds=N`: the same function, run by [Anvil](../../apps/docs/content/thread-pool.mdx) (`computePool`, made right in the controller file from a plain function);

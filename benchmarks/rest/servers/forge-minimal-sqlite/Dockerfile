@@ -1,7 +1,7 @@
-# The light-routes API on the engine image with the items in the engine's own database, ctx.db on SQLite (build context: benchmarks/rest).
+# The minimal-routes API on the engine image with the items in the engine's own database, ctx.db on SQLite (build context: benchmarks/rest).
 ARG ENGINE_IMAGE=ghcr.io/algochad/archlast-forge-engine:0.17.0
 FROM ${ENGINE_IMAGE}
-ARG SERVER=forge-light-sqlite
+ARG SERVER=forge-minimal-sqlite
 COPY servers/${SERVER} /src
 # the API's rules (a valid body, `limit`, an id) are the other servers'; items.ts holds the functions that read and write the items through a transaction's db
 COPY servers/shared/rules.ts /src/forge/store.ts

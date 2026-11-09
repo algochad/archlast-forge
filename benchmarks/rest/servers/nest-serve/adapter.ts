@@ -1,10 +1,10 @@
-// A basic NestJS HTTP adapter for archlast-serve's native App API, with no archlast-forge around it: Nest registers its routes here, and each request becomes
+// A basic NestJS HTTP adapter for Tuyere's native App API, with no archlast-forge around it: Nest registers its routes here, and each request becomes
 // a light context in, a `Reply` out (no Web Request or Response, no Express, no EventEmitters). It is what the benchmark needs and no more: JSON and text bodies,
 // path params, the query string, headers, status codes and Nest's own exception filter; no static files, views, CORS, versioning or streaming.
 import { EventEmitter } from "node:events";
 import { BadRequestException } from "@nestjs/common";
 import { AbstractHttpAdapter } from "@nestjs/core";
-import { App, Reply, type Context } from "/engine/packages/serve/src/index.ts";
+import { App, Reply, type Context } from "/engine/packages/tuyere/src/index.ts";
 
 type Handler = (req: Req, res: Res, next: (err?: unknown) => void) => unknown;
 
@@ -166,7 +166,7 @@ export class ArchlastNestAdapter extends AbstractHttpAdapter<unknown, Req, Res> 
     this.httpServer = Object.assign(new EventEmitter(), { address: () => ({ address: "0.0.0.0", family: "IPv4", port: this.port }) });
   }
   getType() {
-    return "archlast-serve";
+    return "tuyere";
   }
   close() {}
   override listen(port: number | string, hostnameOrCb?: string | (() => void), maybeCb?: () => void) {

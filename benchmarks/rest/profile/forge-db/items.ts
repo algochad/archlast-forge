@@ -1,5 +1,5 @@
 // The items on Forge's own database (ctx.db, SQLite): one document per item, found by its number through an index. These take the transaction's `db`, and are
-// called by routes that read and write it directly: `ctx.read((c) => getItem(c.db, id))` in a light route, a DbService's @Read() and @Write() methods in a
+// called by routes that read and write it directly: `ctx.read((c) => getItem(c.db, id))` in a minimal route, a DbService's @Read() and @Write() methods in a
 // controller. No function of the reactive system is called.
 import type { DatabaseReader, DatabaseWriter } from "@archlast/forge-runtime";
 import { CAP } from "./store";

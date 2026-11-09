@@ -1,6 +1,6 @@
 # A REST API in nine setups, in memory and on SQLite
 
-The same in-memory CRUD API, built in archlast-forge (NestJS path and light routes), archlast-serve alone (its native `App` API), plain NestJS on Node and on Bun, Node.js (Express), Bun (`Bun.serve`), Go (fasthttp), .NET (Minimal APIs) and Rust (Axum), each in a Docker container with the same limits, loaded with [oha](https://github.com/hatoo/oha). The results and how to read them are on the docs site's [Benchmarks](../../apps/docs/content/benchmarks.mdx) page.
+The same in-memory CRUD API, built in archlast-forge (NestJS path and minimal routes), Tuyere alone (its native `App` API), plain NestJS on Node and on Bun, Node.js (Express), Bun (`Bun.serve`), Go (fasthttp), .NET (Minimal APIs) and Rust (Axum), each in a Docker container with the same limits, loaded with [oha](https://github.com/hatoo/oha). The results and how to read them are on the docs site's [Benchmarks](../../apps/docs/content/benchmarks.mdx) page.
 
 ## The API
 
@@ -28,10 +28,10 @@ archlast-forge serves its routes under `/http` (a Forge rule), so the harness us
 | Rust (Axum) | `rusqlite` (bundled SQLite), one writer connection behind a mutex and four reader connections |
 | Go (fasthttp) | `mattn/go-sqlite3` through `database/sql`: one writer connection, four readers |
 | .NET | `Microsoft.Data.Sqlite`: pooled connections for reads, one connection behind a lock for writes |
-| Bun.serve, NestJS on Bun, archlast-serve | `bun:sqlite`, one connection (one JavaScript thread) |
+| Bun.serve, NestJS on Bun, Tuyere | `bun:sqlite`, one connection (one JavaScript thread) |
 | Express, NestJS on Node | `node:sqlite`, one connection |
-| archlast-forge (two more rows) | the same routes with the items in `bun:sqlite` through the store the other JavaScript servers use (`forge-bunsqlite`, `forge-light-bunsqlite`), to show what the engine's database costs over a bare connection |
-| archlast-forge (four rows) | the engine's own database, directly from the route: `ctx.read` / `ctx.write` (a transaction with `ctx.db`) in the light routes, and a `DbService` with `@Read()` / `@Write()` methods in the NestJS controller. No `ctx.runQuery`, so no function of the reactive system is called |
+| archlast-forge (two more rows) | the same routes with the items in `bun:sqlite` through the store the other JavaScript servers use (`forge-bunsqlite`, `forge-minimal-bunsqlite`), to show what the engine's database costs over a bare connection |
+| archlast-forge (four rows) | the engine's own database, directly from the route: `ctx.read` / `ctx.write` (a transaction with `ctx.db`) in the minimal routes, and a `DbService` with `@Read()` / `@Write()` methods in the NestJS controller. No `ctx.runQuery`, so no function of the reactive system is called |
 
 Every server uses the same table (`items(id INTEGER PRIMARY KEY AUTOINCREMENT, name, quantity)`), WAL and `synchronous = NORMAL` (Forge: `SQLITE_SYNCHRONOUS=NORMAL`). A trigger enforces the cap (inserting item *n* deletes item *n − 100,000*), so a create is one `INSERT`. Forge's items are documents with an indexed `itemId` (`by_item`; `servers/shared/forge-items.ts`), and its create reads the highest id, inserts, and deletes `itemId − 100,000` itself; the one difference from the SQL servers is that a deleted highest id is reused. The Forge rows are seeded by `POST /seed` once the server is up (a setup route in the benchmark app, not part of the measured API).
 
@@ -60,6 +60,6 @@ Choose `SERVER_CPUS` and `CLIENT_CPUS` so the two do not share a core or its SMT
 ## Layout
 
 - `servers/shared/store.ts`: the store the JavaScript servers share. `rules.ts`, `store-sqlite.ts` and `driver-bun.ts` / `driver-node.ts` are the SQLite suite's (the Dockerfiles join them into a `store.ts`, so the servers' code is the same); `forge-items.ts` is Forge's `ctx.db` functions.
-- `servers/nest-serve`: the NestJS controller on archlast-serve with no Forge, through a basic Nest HTTP adapter (`adapter.ts`, about 150 lines, JSON bodies and Nest's guards, pipes and exception filter only), in memory (`Dockerfile`) and on SQLite (`Dockerfile.sqlite`).
-- `servers/axum-sqlite`, `go-sqlite`, `dotnet-sqlite`, `forge-sqlite`, `forge-light-sqlite` and the `Dockerfile.sqlite` beside each JavaScript server: the SQLite suite's builds.
-- `servers/forge`, `archlast-serve`, `express`, `bun`, `go`, `dotnet`, `axum`: one server each, with its `Dockerfile` (build context: this folder).
+- `servers/nest-serve`: the NestJS controller on Tuyere with no Forge, through a basic Nest HTTP adapter (`adapter.ts`, about 150 lines, JSON bodies and Nest's guards, pipes and exception filter only), in memory (`Dockerfile`) and on SQLite (`Dockerfile.sqlite`).
+- `servers/axum-sqlite`, `go-sqlite`, `dotnet-sqlite`, `forge-sqlite`, `forge-minimal-sqlite` and the `Dockerfile.sqlite` beside each JavaScript server: the SQLite suite's builds.
+- `servers/forge`, `Tuyere`, `express`, `bun`, `go`, `dotnet`, `axum`: one server each, with its `Dockerfile` (build context: this folder).

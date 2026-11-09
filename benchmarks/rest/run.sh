@@ -1,6 +1,6 @@
 #!/bin/bash
 # The benchmark's CRUD API in six stacks, each in a container with the same limits, loaded with oha from outside.
-#   ./run.sh [server...]        servers: axum go dotnet bun node nest-node nest-bun serve forge forge-light forge-bun forge-notelemetry   (default: all; a run of some servers keeps the others' results)
+#   ./run.sh [server...]        servers: axum go dotnet bun node nest-node nest-bun serve forge forge-minimal forge-bun forge-notelemetry   (default: all; a run of some servers keeps the others' results)
 #   env: SERVER_CPUS (0-3)  SERVER_MEM (2g)  CLIENT_CPUS (4-7,12-15)  CONNS (64)  SECS (5)  RUNS (3)
 # Builds the images first (docker build, context: this folder), checks each server with conformance.ts, then for each scenario warms up for 2 s and
 # measures RUNS runs of SECS seconds: requests/s, latency, the CPU the container used (cgroup cpu.stat) and its peak memory (memory.peak).
@@ -11,7 +11,8 @@ CONNS=${CONNS:-64}; SECS=${SECS:-5}; RUNS=${RUNS:-3}; PORT=4600
 OUT=$HERE/results.raw
 TMP=${TMPDIR:-/tmp}/rest-bench.$$; mkdir -p "$TMP"
 BODY='{"name":"widget","quantity":7}'
-FORGE_ENV=(-e RATE_LIMIT_PER_MINUTE=0 -e BETTER_AUTH_SECRET=ssssssssssssssssssssssssssssssss -e ALLOW_INSECURE_HTTP=1 --tmpfs /data:rw,uid=1000,gid=1000,size=256m)
+# (SERVER_PROCESSES=1: the items live in the memory of one process, which a cluster of servers would split in two)
+FORGE_ENV=(-e RATE_LIMIT_PER_MINUTE=0 -e BETTER_AUTH_SECRET=ssssssssssssssssssssssssssssssss -e ALLOW_INSECURE_HTTP=1 -e SERVER_PROCESSES=1 --tmpfs /data:rw,uid=1000,gid=1000,size=256m)
 
 # name | image | url prefix | docker arguments
 declare -A IMAGE PREFIX ARGS LABEL
@@ -22,17 +23,17 @@ def dotnet bench-rest-dotnet "" "" ".NET 10 (Minimal APIs)"
 def bun bench-rest-bun "" "" "Bun.serve"
 def nest-node bench-rest-nest-node "" "" "NestJS on Node.js 24 (Express adapter)"
 def nest-bun bench-rest-nest-bun "" "" "NestJS on Bun (Express adapter)"
-def serve bench-rest-archlast-serve "" "-e THREADS=3" "archlast-serve (native App API, 3 I/O threads)"
-def nest-serve bench-rest-nest-serve "" "-e THREADS=3" "NestJS on archlast-serve (no Forge, a basic adapter)"
+def serve bench-rest-tuyere "" "-e THREADS=3" "Tuyere (native App API, 3 I/O threads)"
+def nest-serve bench-rest-nest-serve "" "-e THREADS=3" "NestJS on Tuyere (no Forge, a basic adapter)"
 def node bench-rest-express "" "" "Node.js 24 (Express 5)"
-def forge bench-rest-forge /http "${FORGE_ENV[*]}" "archlast-forge (NestJS path, archlast-serve)"
-def forge-light bench-rest-forge-light /http "${FORGE_ENV[*]}" "archlast-forge (forge/http.ts light routes, archlast-serve)"
+def forge bench-rest-forge /http "${FORGE_ENV[*]}" "archlast-forge (NestJS path, Tuyere)"
+def forge-minimal bench-rest-forge-minimal /http "${FORGE_ENV[*]}" "archlast-forge (forge/http.ts minimal routes, Tuyere)"
 def forge-bun bench-rest-forge /http "${FORGE_ENV[*]} -e HTTP_ENGINE=bun" "archlast-forge (NestJS path, Bun.serve)"
-def forge-notelemetry bench-rest-forge /http "${FORGE_ENV[*]} -e TELEMETRY=off" "archlast-forge (NestJS path, archlast-serve, telemetry off)"
-SERVERS=${*:-axum go dotnet bun node nest-node nest-bun serve nest-serve forge forge-light forge-bun forge-notelemetry}
+def forge-notelemetry bench-rest-forge /http "${FORGE_ENV[*]} -e TELEMETRY=off" "archlast-forge (NestJS path, Tuyere, telemetry off)"
+SERVERS=${*:-axum go dotnet bun node nest-node nest-bun serve nest-serve forge forge-minimal forge-bun forge-notelemetry}
 
 build() {
-  for s in axum go dotnet bun express nest-node nest-bun archlast-serve nest-serve forge forge-light; do
+  for s in axum go dotnet bun express nest-node nest-bun Tuyere nest-serve forge forge-minimal; do
     docker image inspect bench-rest-$s >/dev/null 2>&1 || docker build -q -f "$HERE/servers/$s/Dockerfile" -t bench-rest-$s "$HERE" >/dev/null || exit 1
   done
 }
@@ -50,20 +51,20 @@ if [ "${SUITE:-memory}" = sqlite ]; then
   def node bench-rest-sqlite-node "" "" "Node.js 24 (Express 5, node:sqlite)"
   def nest-node bench-rest-sqlite-nest-node "" "" "NestJS on Node.js 24 (Express adapter, node:sqlite)"
   def nest-bun bench-rest-sqlite-nest-bun "" "" "NestJS on Bun (Express adapter, bun:sqlite)"
-  def serve bench-rest-sqlite-serve "" "-e THREADS=3" "archlast-serve (native App API, 3 I/O threads, bun:sqlite)"
-  def nest-serve bench-rest-sqlite-nest-serve "" "-e THREADS=3" "NestJS on archlast-serve (no Forge, a basic adapter, bun:sqlite)"
-  def forge bench-rest-sqlite-forge /http "${SQLITE_ENV[*]}" "archlast-forge (NestJS path, archlast-serve, ctx.db)"
-  def forge-light bench-rest-sqlite-forge-light /http "${SQLITE_ENV[*]}" "archlast-forge (forge/http.ts light routes, archlast-serve, ctx.db)"
+  def serve bench-rest-sqlite-serve "" "-e THREADS=3" "Tuyere (native App API, 3 I/O threads, bun:sqlite)"
+  def nest-serve bench-rest-sqlite-nest-serve "" "-e THREADS=3" "NestJS on Tuyere (no Forge, a basic adapter, bun:sqlite)"
+  def forge bench-rest-sqlite-forge /http "${SQLITE_ENV[*]}" "archlast-forge (NestJS path, Tuyere, ctx.db)"
+  def forge-minimal bench-rest-sqlite-forge-minimal /http "${SQLITE_ENV[*]}" "archlast-forge (forge/http.ts minimal routes, Tuyere, ctx.db)"
   def forge-bun bench-rest-sqlite-forge /http "${SQLITE_ENV[*]} -e HTTP_ENGINE=bun" "archlast-forge (NestJS path, Bun.serve, ctx.db)"
-  def forge-notelemetry bench-rest-sqlite-forge /http "${SQLITE_ENV[*]} -e TELEMETRY=off" "archlast-forge (NestJS path, archlast-serve, telemetry off, ctx.db)"
-  def forge-bunsqlite bench-rest-sqlite-forge-bunsqlite /http "${SQLITE_ENV[*]}" "archlast-forge (NestJS path, archlast-serve, bun:sqlite)"
-  def forge-light-bunsqlite bench-rest-sqlite-forge-light-bunsqlite /http "${SQLITE_ENV[*]}" "archlast-forge (forge/http.ts light routes, archlast-serve, bun:sqlite)"
-  [ $# -eq 0 ] && SERVERS="$SERVERS forge-bunsqlite forge-light-bunsqlite"   # the Forge routes on the same bun:sqlite store as the other JavaScript servers, beside the rows on the engine's own database
-  SEEDED=" forge forge-light forge-bun forge-notelemetry "   # the Forge rows start with an empty database: the harness seeds it (items 1 to 1000) through POST /seed
+  def forge-notelemetry bench-rest-sqlite-forge /http "${SQLITE_ENV[*]} -e TELEMETRY=off" "archlast-forge (NestJS path, Tuyere, telemetry off, ctx.db)"
+  def forge-bunsqlite bench-rest-sqlite-forge-bunsqlite /http "${SQLITE_ENV[*]}" "archlast-forge (NestJS path, Tuyere, bun:sqlite)"
+  def forge-minimal-bunsqlite bench-rest-sqlite-forge-minimal-bunsqlite /http "${SQLITE_ENV[*]}" "archlast-forge (forge/http.ts minimal routes, Tuyere, bun:sqlite)"
+  [ $# -eq 0 ] && SERVERS="$SERVERS forge-bunsqlite forge-minimal-bunsqlite"   # the Forge routes on the same bun:sqlite store as the other JavaScript servers, beside the rows on the engine's own database
+  SEEDED=" forge forge-minimal forge-bun forge-notelemetry "   # the Forge rows start with an empty database: the harness seeds it (items 1 to 1000) through POST /seed
   OUT=$HERE/results-sqlite.raw
   build() {
     local name dockerfile
-    for pair in axum:axum/Dockerfile go:go/Dockerfile dotnet:dotnet/Dockerfile bun:bun/Dockerfile.sqlite node:express/Dockerfile.sqlite nest-node:nest-node/Dockerfile.sqlite nest-bun:nest-bun/Dockerfile.sqlite serve:archlast-serve/Dockerfile.sqlite nest-serve:nest-serve/Dockerfile.sqlite forge:forge-sqlite/Dockerfile forge-light:forge-light-sqlite/Dockerfile forge-bunsqlite:forge/Dockerfile.sqlite forge-light-bunsqlite:forge-light/Dockerfile.sqlite; do
+    for pair in axum:axum/Dockerfile go:go/Dockerfile dotnet:dotnet/Dockerfile bun:bun/Dockerfile.sqlite node:express/Dockerfile.sqlite nest-node:nest-node/Dockerfile.sqlite nest-bun:nest-bun/Dockerfile.sqlite serve:tuyere/Dockerfile.sqlite nest-serve:nest-serve/Dockerfile.sqlite forge:forge-sqlite/Dockerfile forge-minimal:forge-minimal-sqlite/Dockerfile forge-bunsqlite:forge/Dockerfile.sqlite forge-minimal-bunsqlite:forge-minimal/Dockerfile.sqlite; do
       name=${pair%%:*}; dockerfile=${pair#*:}
       case $name in axum|go|dotnet) dockerfile=${dockerfile%/Dockerfile}-sqlite/Dockerfile ;; esac
       docker image inspect bench-rest-sqlite-$name >/dev/null 2>&1 || docker build -q -f "$HERE/servers/$dockerfile" -t bench-rest-sqlite-$name "$HERE" >/dev/null || exit 1

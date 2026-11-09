@@ -18,7 +18,7 @@ const out = {
     docker: sh("docker version --format '{{.Server.Version}}'"),
     oha: sh("oha --version").replace("oha ", ""),
   },
-  limits: { serverCpus: "0-3", serverThreads: 4, serverMemory: "2 GiB", swap: "none", clientCpus: "4-7,12-15", clientThreads: 8, connections: 64 },
+  limits: { serverCpus: "0-3", serverThreads: 4, serverMemory: "2 GiB", swap: "none", clientCpus: "4-7", clientThreads: 4, connections: 64, secs: 10 },
   versions: {
     node: sh("docker run --rm --entrypoint node bench-rest-express --version").replace(/^v/, ""),
     nodeForFullstack: sh("node --version").replace(/^v/, ""),

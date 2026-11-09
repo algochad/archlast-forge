@@ -1,4 +1,4 @@
-# The NestJS controller on archlast-serve with no archlast-forge: the engine image's copy of archlast-serve, and a basic Nest HTTP adapter over its App API (build context: benchmarks/rest).
+# The NestJS controller on Tuyere with no archlast-forge: the engine image's copy of Tuyere, and a basic Nest HTTP adapter over its App API (build context: benchmarks/rest).
 ARG ENGINE_IMAGE=ghcr.io/algochad/archlast-forge-engine:0.17.0
 FROM ${ENGINE_IMAGE}
 USER root

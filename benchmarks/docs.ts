@@ -19,8 +19,8 @@ blocks.machine = `| | |
 | Memory | ${b.machine.memoryGiB} GiB |
 | OS | Linux ${b.machine.kernel}, Docker ${b.machine.docker} |
 | Server limits | **4 CPU cores** (\`--cpuset-cpus=${b.limits.serverCpus}\`, the first thread of four physical cores) and **${b.limits.serverMemory} of memory** with no swap (\`--memory=2g --memory-swap=2g\`) |
-| Load | [oha](https://github.com/hatoo/oha) ${b.machine.oha} on 8 other threads (\`${b.limits.clientCpus}\`, the four other physical cores), ${b.limits.connections} connections, outside the server's container |
-| Runs | 2 s warm-up, then 3 runs of 5 s per case; the median is reported |`;
+| Load | [oha](https://github.com/hatoo/oha) ${b.machine.oha} on 4 other threads (\`${b.limits.clientCpus}\`, the first thread of four other physical cores), ${b.limits.connections} connections, outside the server's container |
+| Runs | 2 s warm-up, then 3 runs of ${b.limits.secs} s per case; the median is reported |`;
 
 const ordered = Object.entries(rest).sort((a, c) => (c[1].scenarios.read?.rps ?? 0) - (a[1].scenarios.read?.rps ?? 0));
 blocks.rest = `| Server | Read | List (20) | Update | Create | Peak memory |
@@ -38,7 +38,7 @@ ${orderedSqlite.map(([, r]) => `| ${r.label} | ${SCEN.map((s) => k(r.scenarios[s
 Requests per second. Latency in milliseconds (p50 / p99) for the read case: ${orderedSqlite.map(([, r]) => `${r.label.replace(/ \(.*/, "")} ${ms(r.scenarios.read!.p50ms)} / ${ms(r.scenarios.read!.p99ms)}`).join("; ")}.`;
 
 const fa = rest.forge!, fb = rest["forge-bun"]!;
-blocks.engine = `| | \`Bun.serve\` | archlast-serve | |
+blocks.engine = `| | \`Bun.serve\` | Tuyere | |
 |---|---:|---:|---:|
 ${SCEN.map((s) => `| ${{ read: "Read one item", list: "List 20 items", update: "Update an item", create: "Create an item" }[s]} (requests/s) | ${k(fb.scenarios[s]!.rps)} | ${k(fa.scenarios[s]!.rps)} | ${times(fa.scenarios[s]!.rps, fb.scenarios[s]!.rps)} |`).join("\n")}
 | Read, 99th percentile | ${ms(fb.scenarios.read!.p99ms)} ms | ${ms(fa.scenarios.read!.p99ms)} ms | |`;

@@ -4,31 +4,65 @@
     "peakMiB": 6,
     "scenarios": {
       "read": {
-        "rps": 362227,
-        "p50ms": 0.172,
-        "p99ms": 0.319,
-        "cores": 3.21,
+        "rps": 338464,
+        "p50ms": 0.184,
+        "p99ms": 0.363,
+        "cores": 3.16,
         "success": 1
       },
       "list": {
-        "rps": 196657,
-        "p50ms": 0.324,
-        "p99ms": 0.582,
-        "cores": 3.43,
+        "rps": 199323,
+        "p50ms": 0.315,
+        "p99ms": 0.633,
+        "cores": 3.41,
         "success": 1
       },
       "update": {
-        "rps": 182745,
-        "p50ms": 0.337,
-        "p99ms": 0.707,
-        "cores": 2.52,
+        "rps": 177611,
+        "p50ms": 0.348,
+        "p99ms": 0.733,
+        "cores": 2.57,
         "success": 1
       },
       "create": {
-        "rps": 27281,
-        "p50ms": 1.344,
-        "p99ms": 8.184,
+        "rps": 26477,
+        "p50ms": 1.382,
+        "p99ms": 8.333,
         "cores": 0.91,
+        "success": 1
+      }
+    }
+  },
+  "serve": {
+    "label": "Tuyere (native App API, 3 I/O threads, bun:sqlite)",
+    "peakMiB": 31,
+    "scenarios": {
+      "read": {
+        "rps": 332438,
+        "p50ms": 0.169,
+        "p99ms": 0.566,
+        "cores": 2.65,
+        "success": 1
+      },
+      "list": {
+        "rps": 136423,
+        "p50ms": 0.417,
+        "p99ms": 1.071,
+        "cores": 1.75,
+        "success": 1
+      },
+      "update": {
+        "rps": 265413,
+        "p50ms": 0.225,
+        "p99ms": 0.526,
+        "cores": 2.47,
+        "success": 1
+      },
+      "create": {
+        "rps": 30817,
+        "p50ms": 0.972,
+        "p99ms": 7.481,
+        "cores": 0.76,
         "success": 1
       }
     }
@@ -38,30 +72,30 @@
     "peakMiB": 12,
     "scenarios": {
       "read": {
-        "rps": 181957,
-        "p50ms": 0.274,
-        "p99ms": 1.235,
-        "cores": 3.44,
+        "rps": 175354,
+        "p50ms": 0.283,
+        "p99ms": 1.356,
+        "cores": 3.37,
         "success": 1
       },
       "list": {
-        "rps": 88679,
-        "p50ms": 0.554,
-        "p99ms": 2.846,
+        "rps": 87521,
+        "p50ms": 0.561,
+        "p99ms": 2.86,
         "cores": 3.56,
         "success": 1
       },
       "update": {
-        "rps": 63319,
-        "p50ms": 0.711,
-        "p99ms": 4.504,
-        "cores": 1.72,
+        "rps": 61790,
+        "p50ms": 0.728,
+        "p99ms": 4.605,
+        "cores": 1.7,
         "success": 1
       },
       "create": {
-        "rps": 19761,
-        "p50ms": 1.669,
-        "p99ms": 15.294,
+        "rps": 19487,
+        "p50ms": 1.691,
+        "p99ms": 15.709,
         "cores": 0.98,
         "success": 1
       }
@@ -72,31 +106,31 @@
     "peakMiB": 33,
     "scenarios": {
       "read": {
-        "rps": 189697,
-        "p50ms": 0.308,
-        "p99ms": 1.513,
+        "rps": 188158,
+        "p50ms": 0.312,
+        "p99ms": 1.556,
         "cores": 3.36,
         "success": 1
       },
       "list": {
-        "rps": 120579,
-        "p50ms": 0.503,
-        "p99ms": 1.366,
-        "cores": 3.56,
+        "rps": 118485,
+        "p50ms": 0.513,
+        "p99ms": 1.472,
+        "cores": 3.55,
         "success": 1
       },
       "update": {
-        "rps": 97017,
-        "p50ms": 0.621,
-        "p99ms": 1.728,
-        "cores": 2.23,
+        "rps": 94543,
+        "p50ms": 0.639,
+        "p99ms": 1.817,
+        "cores": 2.24,
         "success": 1
       },
       "create": {
-        "rps": 10985,
-        "p50ms": 3.191,
-        "p99ms": 142.548,
-        "cores": 0.79,
+        "rps": 10505,
+        "p50ms": 3.362,
+        "p99ms": 205.299,
+        "cores": 0.8,
         "success": 1
       }
     }
@@ -106,405 +140,201 @@
     "peakMiB": 21,
     "scenarios": {
       "read": {
-        "rps": 101684,
-        "p50ms": 0.604,
-        "p99ms": 1.21,
-        "cores": 0.83,
+        "rps": 102001,
+        "p50ms": 0.591,
+        "p99ms": 1.208,
+        "cores": 0.84,
         "success": 1
       },
       "list": {
-        "rps": 63859,
-        "p50ms": 0.975,
-        "p99ms": 1.91,
+        "rps": 62078,
+        "p50ms": 0.983,
+        "p99ms": 1.929,
         "cores": 0.87,
         "success": 1
       },
       "update": {
-        "rps": 60555,
-        "p50ms": 1.023,
-        "p99ms": 2.03,
-        "cores": 0.86,
+        "rps": 49413,
+        "p50ms": 1.165,
+        "p99ms": 2.671,
+        "cores": 0.87,
         "success": 1
       },
       "create": {
-        "rps": 19528,
-        "p50ms": 2.216,
-        "p99ms": 8.128,
+        "rps": 18988,
+        "p50ms": 2.247,
+        "p99ms": 8.699,
         "cores": 0.67,
-        "success": 1
-      }
-    }
-  },
-  "node": {
-    "label": "Node.js 24 (Express 5, node:sqlite)",
-    "peakMiB": 96,
-    "scenarios": {
-      "read": {
-        "rps": 18845,
-        "p50ms": 3.341,
-        "p99ms": 3.903,
-        "cores": 0.93,
-        "success": 1
-      },
-      "list": {
-        "rps": 14302,
-        "p50ms": 4.398,
-        "p99ms": 6.299,
-        "cores": 0.96,
-        "success": 1
-      },
-      "update": {
-        "rps": 14329,
-        "p50ms": 4.436,
-        "p99ms": 5.228,
-        "cores": 0.94,
-        "success": 1
-      },
-      "create": {
-        "rps": 10016,
-        "p50ms": 5.455,
-        "p99ms": 12.03,
-        "cores": 0.83,
         "success": 1
       }
     }
   },
   "nest-node": {
     "label": "NestJS on Node.js 24 (Express adapter, node:sqlite)",
-    "peakMiB": 101,
+    "peakMiB": 103,
     "scenarios": {
       "read": {
-        "rps": 18424,
-        "p50ms": 3.417,
-        "p99ms": 4.073,
+        "rps": 18432,
+        "p50ms": 3.408,
+        "p99ms": 4.236,
         "cores": 0.93,
         "success": 1
       },
       "list": {
-        "rps": 13632,
-        "p50ms": 4.604,
-        "p99ms": 6.581,
+        "rps": 13643,
+        "p50ms": 4.605,
+        "p99ms": 6.7,
         "cores": 0.97,
         "success": 1
       },
       "update": {
-        "rps": 13558,
-        "p50ms": 4.646,
-        "p99ms": 5.546,
-        "cores": 0.95,
-        "success": 1
-      },
-      "create": {
-        "rps": 9969,
-        "p50ms": 5.533,
-        "p99ms": 12.273,
-        "cores": 0.85,
-        "success": 1
-      }
-    }
-  },
-  "nest-bun": {
-    "label": "NestJS on Bun (Express adapter, bun:sqlite)",
-    "peakMiB": 85,
-    "scenarios": {
-      "read": {
-        "rps": 30720,
-        "p50ms": 2.009,
-        "p99ms": 2.914,
-        "cores": 0.92,
-        "success": 1
-      },
-      "list": {
-        "rps": 25997,
-        "p50ms": 2.378,
-        "p99ms": 3.234,
-        "cores": 0.91,
-        "success": 1
-      },
-      "update": {
-        "rps": 20008,
-        "p50ms": 3.116,
-        "p99ms": 4.077,
-        "cores": 0.93,
-        "success": 1
-      },
-      "create": {
-        "rps": 11910,
-        "p50ms": 4.302,
-        "p99ms": 10.678,
-        "cores": 0.8,
-        "success": 1
-      }
-    }
-  },
-  "serve": {
-    "label": "archlast-serve (native App API, 3 I/O threads, bun:sqlite)",
-    "peakMiB": 34,
-    "scenarios": {
-      "read": {
-        "rps": 369695,
-        "p50ms": 0.161,
-        "p99ms": 0.417,
-        "cores": 2.74,
-        "success": 1
-      },
-      "list": {
-        "rps": 156134,
-        "p50ms": 0.389,
-        "p99ms": 0.703,
-        "cores": 1.79,
-        "success": 1
-      },
-      "update": {
-        "rps": 266164,
-        "p50ms": 0.226,
-        "p99ms": 0.514,
-        "cores": 2.5,
-        "success": 1
-      },
-      "create": {
-        "rps": 31326,
-        "p50ms": 0.96,
-        "p99ms": 7.306,
-        "cores": 0.76,
-        "success": 1
-      }
-    }
-  },
-  "forge-bunsqlite": {
-    "label": "archlast-forge (NestJS path, archlast-serve, bun:sqlite)",
-    "peakMiB": 139,
-    "scenarios": {
-      "read": {
-        "rps": 119299,
-        "p50ms": 0.486,
-        "p99ms": 1.442,
-        "cores": 1.61,
-        "success": 1
-      },
-      "list": {
-        "rps": 73461,
-        "p50ms": 0.793,
-        "p99ms": 1.968,
-        "cores": 1.42,
-        "success": 1
-      },
-      "update": {
-        "rps": 92026,
-        "p50ms": 0.669,
-        "p99ms": 1.873,
-        "cores": 1.59,
-        "success": 1
-      },
-      "create": {
-        "rps": 24994,
-        "p50ms": 1.554,
-        "p99ms": 8.176,
-        "cores": 0.85,
-        "success": 1
-      }
-    }
-  },
-  "forge-light-bunsqlite": {
-    "label": "archlast-forge (forge/http.ts light routes, archlast-serve, bun:sqlite)",
-    "peakMiB": 103,
-    "scenarios": {
-      "read": {
-        "rps": 214328,
-        "p50ms": 0.268,
-        "p99ms": 0.934,
-        "cores": 2.13,
-        "success": 1
-      },
-      "list": {
-        "rps": 108078,
-        "p50ms": 0.542,
-        "p99ms": 1.397,
-        "cores": 1.58,
-        "success": 1
-      },
-      "update": {
-        "rps": 150983,
-        "p50ms": 0.38,
-        "p99ms": 1.317,
-        "cores": 1.93,
-        "success": 1
-      },
-      "create": {
-        "rps": 26788,
-        "p50ms": 1.21,
-        "p99ms": 8.21,
-        "cores": 0.8,
-        "success": 1
-      }
-    }
-  },
-  "forge": {
-    "label": "archlast-forge (NestJS path, archlast-serve, ctx.db)",
-    "peakMiB": 212,
-    "scenarios": {
-      "read": {
-        "rps": 66457,
-        "p50ms": 0.866,
-        "p99ms": 2.183,
-        "cores": 1.62,
-        "success": 1
-      },
-      "list": {
-        "rps": 47199,
-        "p50ms": 1.225,
-        "p99ms": 2.76,
-        "cores": 1.49,
-        "success": 1
-      },
-      "update": {
-        "rps": 39043,
-        "p50ms": 1.742,
-        "p99ms": 3.383,
-        "cores": 1.33,
-        "success": 1
-      },
-      "create": {
-        "rps": 8526,
-        "p50ms": 4.153,
-        "p99ms": 205.497,
-        "cores": 0.73,
-        "success": 1
-      }
-    }
-  },
-  "forge-light": {
-    "label": "archlast-forge (forge/http.ts light routes, archlast-serve, ctx.db)",
-    "peakMiB": 180,
-    "scenarios": {
-      "read": {
-        "rps": 86895,
-        "p50ms": 0.656,
-        "p99ms": 1.692,
-        "cores": 1.65,
-        "success": 1
-      },
-      "list": {
-        "rps": 56963,
-        "p50ms": 1.023,
-        "p99ms": 2.14,
-        "cores": 1.45,
-        "success": 1
-      },
-      "update": {
-        "rps": 46731,
-        "p50ms": 1.298,
-        "p99ms": 2.767,
-        "cores": 1.31,
-        "success": 1
-      },
-      "create": {
-        "rps": 10474,
-        "p50ms": 4.27,
-        "p99ms": 21.396,
-        "cores": 0.85,
-        "success": 1
-      }
-    }
-  },
-  "forge-bun": {
-    "label": "archlast-forge (NestJS path, Bun.serve, ctx.db)",
-    "peakMiB": 198,
-    "scenarios": {
-      "read": {
-        "rps": 21227,
-        "p50ms": 2.895,
-        "p99ms": 5.552,
+        "rps": 13769,
+        "p50ms": 4.588,
+        "p99ms": 5.647,
         "cores": 0.94,
         "success": 1
       },
-      "list": {
-        "rps": 17975,
-        "p50ms": 3.44,
-        "p99ms": 4.865,
-        "cores": 0.94,
-        "success": 1
-      },
-      "update": {
-        "rps": 25100,
-        "p50ms": 2.277,
-        "p99ms": 5.67,
-        "cores": 1.01,
-        "success": 1
-      },
       "create": {
-        "rps": 8792,
-        "p50ms": 4.945,
-        "p99ms": 127.756,
-        "cores": 0.79,
-        "success": 1
-      }
-    }
-  },
-  "forge-notelemetry": {
-    "label": "archlast-forge (NestJS path, archlast-serve, telemetry off, ctx.db)",
-    "peakMiB": 184,
-    "scenarios": {
-      "read": {
-        "rps": 72162,
-        "p50ms": 0.8,
-        "p99ms": 2.02,
-        "cores": 1.64,
-        "success": 1
-      },
-      "list": {
-        "rps": 48672,
-        "p50ms": 1.187,
-        "p99ms": 2.615,
-        "cores": 1.5,
-        "success": 1
-      },
-      "update": {
-        "rps": 40447,
-        "p50ms": 1.503,
-        "p99ms": 3.359,
-        "cores": 1.33,
-        "success": 1
-      },
-      "create": {
-        "rps": 9736,
-        "p50ms": 4.662,
-        "p99ms": 29.456,
-        "cores": 0.91,
+        "rps": 9322,
+        "p50ms": 5.686,
+        "p99ms": 12.906,
+        "cores": 0.82,
         "success": 1
       }
     }
   },
   "nest-serve": {
-    "label": "NestJS on archlast-serve (no Forge, a basic adapter, bun:sqlite)",
-    "peakMiB": 56,
+    "label": "NestJS on Tuyere (no Forge, a basic adapter, bun:sqlite)",
+    "peakMiB": 54,
     "scenarios": {
       "read": {
-        "rps": 201986,
-        "p50ms": 0.282,
-        "p99ms": 0.784,
-        "cores": 1.78,
+        "rps": 208072,
+        "p50ms": 0.293,
+        "p99ms": 0.787,
+        "cores": 1.87,
         "success": 1
       },
       "list": {
-        "rps": 102041,
-        "p50ms": 0.565,
-        "p99ms": 1.307,
-        "cores": 1.41,
+        "rps": 109526,
+        "p50ms": 0.537,
+        "p99ms": 1.19,
+        "cores": 1.44,
         "success": 1
       },
       "update": {
-        "rps": 149604,
-        "p50ms": 0.381,
-        "p99ms": 0.977,
-        "cores": 1.67,
+        "rps": 166448,
+        "p50ms": 0.367,
+        "p99ms": 0.87,
+        "cores": 1.78,
         "success": 1
       },
       "create": {
-        "rps": 27676,
-        "p50ms": 1.162,
-        "p99ms": 7.793,
-        "cores": 0.75,
+        "rps": 27655,
+        "p50ms": 1.142,
+        "p99ms": 8.421,
+        "cores": 0.74,
+        "success": 1
+      }
+    }
+  },
+  "forge-minimal": {
+    "label": "archlast-forge (forge/http.ts minimal routes, Tuyere, ctx.db)",
+    "peakMiB": 266,
+    "scenarios": {
+      "read": {
+        "rps": 175013,
+        "p50ms": 0.325,
+        "p99ms": 1.266,
+        "cores": 2.9,
+        "success": 1
+      },
+      "list": {
+        "rps": 127149,
+        "p50ms": 0.443,
+        "p99ms": 1.474,
+        "cores": 2.8,
+        "success": 1
+      },
+      "update": {
+        "rps": 73650,
+        "p50ms": 0.797,
+        "p99ms": 1.959,
+        "cores": 1.82,
+        "success": 1
+      },
+      "create": {
+        "rps": 19722,
+        "p50ms": 2.933,
+        "p99ms": 6.997,
+        "cores": 1.63,
+        "success": 1
+      }
+    }
+  },
+  "forge": {
+    "label": "archlast-forge (NestJS path, Tuyere, ctx.db)",
+    "peakMiB": 337,
+    "scenarios": {
+      "read": {
+        "rps": 143756,
+        "p50ms": 0.389,
+        "p99ms": 1.553,
+        "cores": 2.91,
+        "success": 1
+      },
+      "list": {
+        "rps": 106740,
+        "p50ms": 0.55,
+        "p99ms": 1.777,
+        "cores": 2.8,
+        "success": 1
+      },
+      "update": {
+        "rps": 61441,
+        "p50ms": 0.947,
+        "p99ms": 2.448,
+        "cores": 1.85,
+        "success": 1
+      },
+      "create": {
+        "rps": 18708,
+        "p50ms": 3.012,
+        "p99ms": 8.023,
+        "cores": 1.69,
+        "success": 1
+      }
+    }
+  },
+  "forge-bunsqlite": {
+    "label": "archlast-forge (NestJS path, Tuyere, bun:sqlite)",
+    "peakMiB": 269,
+    "scenarios": {
+      "read": {
+        "rps": 157236,
+        "p50ms": 0.376,
+        "p99ms": 1.329,
+        "cores": 2.01,
+        "success": 1
+      },
+      "list": {
+        "rps": 107637,
+        "p50ms": 0.572,
+        "p99ms": 1.734,
+        "cores": 1.99,
+        "success": 1
+      },
+      "update": {
+        "rps": 86377,
+        "p50ms": 0.483,
+        "p99ms": 2.979,
+        "cores": 1.44,
+        "success": 1
+      },
+      "create": {
+        "rps": 20451,
+        "p50ms": 1.675,
+        "p99ms": 11.85,
+        "cores": 0.94,
         "success": 1
       }
     }

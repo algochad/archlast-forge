@@ -1,11 +1,11 @@
-# The forge-light app on the engine image with the items in SQLite through bun:sqlite (the same store as the other JavaScript servers), not the engine's database (build context: benchmarks/rest).
+# The forge-minimal app on the engine image with the items in SQLite through bun:sqlite (the same store as the other JavaScript servers), not the engine's database (build context: benchmarks/rest).
 ARG ENGINE_IMAGE=ghcr.io/algochad/archlast-forge-engine:0.17.0
 FROM alpine:3.22 AS store
 COPY servers/shared/driver-bun.ts servers/shared/rules.ts servers/shared/store-sqlite.ts /s/
 RUN cat /s/driver-bun.ts /s/rules.ts /s/store-sqlite.ts > /store.ts
 
 FROM ${ENGINE_IMAGE}
-COPY servers/forge-light /src
+COPY servers/forge-minimal /src
 COPY --from=store /store.ts /src/forge/store.ts
 RUN bun /engine/packages/cli/src/index.ts engine prepare
 ENV NODE_ENV=production

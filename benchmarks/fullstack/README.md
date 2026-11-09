@@ -25,6 +25,6 @@ Method (`run.sh`): each server runs in a systemd scope limited to 2 GiB of memor
 Read it with these in mind:
 
 - The pages have nothing interactive. That is the case where islands send no framework JavaScript (the pages carry a 1.3 kB navigation script); a page with an island ships about what whole-page hydration does (about 120 kB gzip). React Router and Next send their runtime for every page.
-- No database, no authentication and no streaming are involved: this measures rendering and serving, not the app around it. Real pages cost more (see the ERP numbers in `packages/serve/docs/fullstack.md`).
+- No database, no authentication and no streaming are involved: this measures rendering and serving, not the app around it. Real pages cost more (see the ERP numbers in `packages/tuyere/docs/fullstack.md`).
 - One machine, one run of three medians. Latency under 64 connections on a single JS thread is mostly queueing; compare the requests per second.
 - A kept page is the same bytes for everyone who is not signed in, up to its `ttl`. That is its whole point, and also why it is only for pages that are the same for everyone.
