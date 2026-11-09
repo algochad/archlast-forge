@@ -418,7 +418,7 @@ What the compiler understands is small and exact: function components made of `c
 
 A page that shows something the template cannot print only to some visitors (the starters' header shows a menu island for a signed-in visitor) is still printed from its template for everyone else: the build records the condition, and a request that meets it is rendered by React. (Inside a `.map` this does not work, and that route is left to React.)
 
-How it works and how fast it is, against React Router, Next.js and brust: [Rust page rendering](rust-renderer.html). See which routes are printed, and why not for the others, with `bun node_modules/@archlast/forge-framework/src/classify-cli.ts .`. `FORGE_TEMPLATES=0` at build time turns it off. The printed page is the page React prints, up to what a browser cannot tell apart (React's `<!-- -->` text separators and image preload hints are not written), and the tests compare the two on every page of a fixture app.
+How it works and how fast it is, against React Router, Next.js and brust: [Crucible](rust-renderer.html). See which routes are printed, and why not for the others, with `bun node_modules/@archlast/forge-framework/src/classify-cli.ts .`. `FORGE_TEMPLATES=0` at build time turns it off. The printed page is the page React prints, up to what a browser cannot tell apart (React's `<!-- -->` text separators and image preload hints are not written), and the tests compare the two on every page of a fixture app.
 
 ### Keeping a page for visitors who are not signed in
 

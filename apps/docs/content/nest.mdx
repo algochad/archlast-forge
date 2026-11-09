@@ -178,7 +178,7 @@ Register the service in `nest(http, { providers: [Items] })`. A `@Read()` method
 - **It is a singleton, so the controller stays a singleton** and Nest builds nothing per request. A `ForgeService` is request-scoped, which makes everything that injects it request-scoped too; that is right inside a query or a mutation, and costly for a route.
 - **For routes, gateways and message handlers.** Inside a query or a mutation you already are in a transaction: use a `ForgeService` with `inject()`.
 
-The same thing without a class is `ctx.read(fn)` and `ctx.write(fn)` on the `HttpCtx` that a controller gets with `@Ctx() ctx: HttpCtx`, and that `httpAction` and `lightAction` handlers get: see [HTTP endpoints](http.html#the-database-from-a-route).
+The same thing without a class is `ctx.read(fn)` and `ctx.write(fn)` on the `HttpCtx` that a controller gets with `@Ctx() ctx: HttpCtx`, and that `httpAction` and `minimalAction` handlers get: see [HTTP endpoints](http.html#the-database-from-a-route).
 
 ### Contract: validators and the OpenAPI document
 

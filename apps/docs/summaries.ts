@@ -74,10 +74,12 @@ export const DESCRIPTIONS: Record<Slug, string> = {
     "Built-in tracing, issues, logs, SLOs and alerts; custom spans and metrics; OpenTelemetry ingest and export; one dashboard for a monorepo.",
   limits:
     "Every limit the engine enforces and what a caller sees at each, plus the security model and checklist.",
-  "archlast-serve":
+  "tuyere":
     "The Rust HTTP engine that replaces Bun.serve: what runs on Rust threads and what stays in JavaScript, HTTP_ENGINE, measured against Bun.serve, and where it loses.",
   "rust-renderer":
-    "Pages printed by Rust: islands, templates compiled from components, kept pages, what the compiler reads, and measured against React Router, Next.js and brust.",
+    "Crucible, Forge's Rust page renderer: islands, templates compiled from components, kept pages, what the compiler reads, and measured against React Router, Next.js and brust.",
+  hearth:
+    "Hearth, the native database layer: ctx.db implemented in Rust on SQLite (DB_ENGINE=native), one call per operation, what it costs per operation, and how it works with Bellows.",
   "thread-pool":
     "Anvil, the built-in thread pool: computePool from plain functions anywhere (forge/, NestJS), task modules, rules, and the measured gain for blocking work.",
   benchmarks:
@@ -114,7 +116,7 @@ export const TASKS: [task: string, pages: Slug[]][] = [
     ["deployment", "configuration", "backups", "dashboard", "observability"],
   ],
   ["Fix a failure", ["troubleshooting", "errors", "limits"]],
-  ["Make a route faster: the Rust engine, rendering, threads", ["archlast-serve", "rust-renderer", "thread-pool"]],
+  ["Make a route faster: the Rust engine, rendering, threads", ["tuyere", "rust-renderer", "hearth", "thread-pool"]],
   ["See the benchmarks and how they were run", ["benchmarks"]],
   ["See how it compares with Convex", ["convex"]],
   ["Look up an exact signature", ["reference"]],

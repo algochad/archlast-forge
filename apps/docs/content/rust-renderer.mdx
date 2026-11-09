@@ -1,6 +1,6 @@
-# Rust page rendering
+# Crucible: Rust page rendering
 
-A full-stack page is React, but most pages do not need React to be shown: they read data and print markup. With islands on and the native engine ([archlast-serve](archlast-serve.html)), the build finds those pages, turns them into templates, and the engine prints them in Rust on its I/O threads. The JavaScript thread runs the loader and starts the next request while the page is being written. Pages that need React are rendered by React, with the same output, and nothing about how you write a component changes.
+Crucible is Forge's page renderer: the part of the engine that melts a page's data and its template into HTML on Rust threads. A full-stack page is React, but most pages do not need React to be shown: they read data and print markup. With islands on and the native engine ([Tuyere](tuyere.html)), the build finds those pages, turns them into templates, and the engine prints them in Rust on its I/O threads. The JavaScript thread runs the loader and starts the next request while the page is being written. Pages that need React are rendered by React, with the same output, and nothing about how you write a component changes.
 
 Three pieces make this work, and each is worth having by itself:
 

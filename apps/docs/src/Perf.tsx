@@ -14,8 +14,9 @@ const ms = (n: number) => (n >= 100 ? `${Math.round(n)} ms` : n >= 10 ? `${n.toF
 interface BarRow { label: string; value: number; us?: boolean }
 
 /** Horizontal bars that grow when the chart scrolls into view (the page's [data-reveal] adds .in). `log` draws the length by the number's logarithm, for a range of 1,000 to 1. */
-function Bars({ title, rows, log = false, note, unit = "req/s" }: { title: string; rows: BarRow[]; log?: boolean; note?: ReactNode; unit?: string }) {
-  const max = Math.max(...rows.map((r) => r.value));
+function Bars({ title, rows: given, log = false, note, unit = "req/s" }: { title: string; rows: BarRow[]; log?: boolean; note?: ReactNode; unit?: string }) {
+  const rows = [...given].sort((a, b) => b.value - a.value); // highest first, whatever order the rows were written in
+  const max = rows[0]!.value;
   const width = (v: number) => (log ? (Math.log10(v) / Math.log10(max)) * 100 : (v / max) * 100);
   return (
     <div className="chart" data-reveal>
@@ -53,8 +54,8 @@ export function Env() {
     <p className="env" data-reveal>
       <span>Measured on a <b>{m.cpu}</b>, {m.memoryGiB} GiB</span>
       <span>every server limited to <b>4 CPU cores and 2 GiB</b> of memory</span>
-      <span>load by <b>oha</b> {m.oha} from 8 other threads, 64 connections</span>
-      <span>median of 3 runs · {bench.date}</span>
+      <span>load by <b>oha</b> {m.oha} from 4 other threads, 64 connections</span>
+      <span>median of 3 runs of 10 s · {bench.date}</span>
     </p>
   );
 }
@@ -66,37 +67,37 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
     <>
       <div className="perf">
         <div data-reveal>
-          <span className="label">archlast-serve</span>
+          <span className="label">Tuyere</span>
           <h3>A Rust HTTP engine in place of Bun.serve</h3>
           <p>Sockets, TLS, HTTP/1.1, HTTP/2, WebSockets and fan-out run on Rust threads. Your functions stay TypeScript on Bun. It is on by default in production, and nothing in your code changes.</p>
           <div className="big">
             <div><b>{x(read("forge"), read("forge-bun"))}</b><span>the same NestJS controller, against Bun.serve</span></div>
-            <div><b>{x(read("forge-light"), read("bun"))}</b><span>a Forge light route against Bun.serve</span></div>
+            <div><b>{x(read("forge-minimal"), read("bun"))}</b><span>a Forge minimal route against Bun.serve</span></div>
             <div><b>{x(read("forge"), read("node"))}</b><span>a NestJS controller against Express</span></div>
-            <div><b>{x(read("serve"), read("bun"))}</b><span>archlast-serve on its own, against Bun.serve</span></div>
+            <div><b>{x(read("serve"), read("bun"))}</b><span>Tuyere on its own, against Bun.serve</span></div>
           </div>
           <ul className="points">
-            <li><b>The engine alone is level with the compiled servers</b> ({k(read("serve"))} req/s, TypeScript handler). The framework around it costs: a Forge light route does {k(read("forge-light"))}, a NestJS controller {k(read("forge"))}; .NET does {k(read("dotnet"))}.</li>
-            <li><b>NestJS on archlast-serve alone</b> (a basic adapter, no Forge) does {k(read("nest-serve"))} req/s, {x(read("nest-serve"), read("nest-bun"))} NestJS on Bun and {x(read("nest-serve"), read("forge"))} the Forge Nest path: the difference to Forge is what it adds around every request.</li>
-            <li><b>With the items in SQLite</b>, archlast-serve alone does {k(sql("serve"))} reads a second (Axum {k(sql("axum"))}, .NET {k(sql("dotnet"))}). Forge through <code>ctx.db</code> does {k(sql("forge-light"))} on a light route and {k(sql("forge"))} on the Nest path; on <code>bun:sqlite</code> the same routes do {k(sql("forge-light-bunsqlite"))} and {k(sql("forge-bunsqlite"))}. <code>ctx.db</code> adds schema checks, indexes, transactions and reactivity.</li>
+            <li><b>The engine alone is level with the compiled servers</b> ({k(read("serve"))} req/s, TypeScript handler). The framework around it costs: a Forge minimal route does {k(read("forge-minimal"))}, a NestJS controller {k(read("forge"))}; .NET does {k(read("dotnet"))}.</li>
+            <li><b>NestJS on Tuyere alone</b> (a basic adapter, no Forge) does {k(read("nest-serve"))} req/s, {x(read("nest-serve"), read("nest-bun"))} NestJS on Bun and {x(read("nest-serve"), read("forge"))} the Forge Nest path: the difference to Forge is what it adds around every request.</li>
+            <li><b>With the items in SQLite</b>, Tuyere alone does {k(sql("serve"))} reads a second (Axum {k(sql("axum"))}, .NET {k(sql("dotnet"))}). Forge through <code>ctx.db</code> does {k(sql("forge-minimal"))} on a minimal route and {k(sql("forge"))} on the Nest path; on <code>bun:sqlite</code> the Nest path does {k(sql("forge-bunsqlite"))}. These are the production setup: Hearth, the native database layer, on two Bellows servers. <code>ctx.db</code> adds schema checks, indexes, transactions and reactivity.</li>
             <li><b>Where it loses:</b> one connection at a time, and about 1.5× the CPU of Bun.serve per request.</li>
           </ul>
-          <Link className="btn link" to="/archlast-serve">How the engine works <Arrow /></Link>
+          <Link className="btn link" to="/Tuyere">How the engine works <Arrow /></Link>
         </div>
         <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
           <Bars
             title="GET /items/:id · in-memory CRUD API"
             rows={[
               { label: "Rust · Axum", value: read("axum") },
-              { label: "archlast-serve · alone", value: read("serve"), us: true },
+              { label: "Tuyere · alone", value: read("serve"), us: true },
               { label: "Go · fasthttp", value: read("go") },
               { label: ".NET 10 · Minimal API", value: read("dotnet") },
-              { label: "Forge · light route", value: read("forge-light"), us: true },
-              { label: "NestJS · archlast-serve, no Forge", value: read("nest-serve"), us: true },
+              { label: "Forge · minimal route", value: read("forge-minimal"), us: true },
+              { label: "NestJS · Tuyere, no Forge", value: read("nest-serve"), us: true },
               { label: "Bun.serve", value: read("bun") },
               { label: "NestJS · Bun", value: read("nest-bun") },
               { label: "NestJS · Node", value: read("nest-node") },
-              { label: "Forge · archlast-serve", value: read("forge"), us: true },
+              { label: "Forge · Tuyere", value: read("forge"), us: true },
               { label: "Node · Express", value: read("node") },
               { label: "Forge · on Bun.serve", value: read("forge-bun"), us: true },
             ]}
@@ -105,29 +106,25 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
           <Bars
             title="GET /items/:id · the same API on SQLite"
             rows={[
-              { label: "archlast-serve · alone", value: sql("serve"), us: true },
+              { label: "Tuyere · alone", value: sql("serve"), us: true },
               { label: "Rust · Axum", value: sql("axum") },
-              { label: "Forge · light route · bun:sqlite", value: sql("forge-light-bunsqlite"), us: true },
-              { label: "NestJS · archlast-serve, no Forge", value: sql("nest-serve"), us: true },
+              { label: "NestJS · Tuyere, no Forge", value: sql("nest-serve"), us: true },
               { label: ".NET 10 · Minimal API", value: sql("dotnet") },
               { label: "Go · fasthttp", value: sql("go") },
               { label: "Forge · Nest · bun:sqlite", value: sql("forge-bunsqlite"), us: true },
               { label: "Bun.serve", value: sql("bun") },
-              { label: "Forge · light route · ctx.db", value: sql("forge-light"), us: true },
+              { label: "Forge · minimal route · ctx.db", value: sql("forge-minimal"), us: true },
               { label: "Forge · Nest · ctx.db", value: sql("forge"), us: true },
-              { label: "NestJS · Bun", value: sql("nest-bun") },
-              { label: "Node · Express", value: sql("node") },
               { label: "NestJS · Node", value: sql("nest-node") },
-              { label: "Forge · on Bun.serve", value: sql("forge-bun"), us: true },
             ]}
-            note={<>Each in its own SQLite driver; Forge through <code>ctx.db</code> and through <code>bun:sqlite</code>. <Link to="/benchmarks#the-same-api-on-sqlite">Method, writes and what Forge adds</Link></>}
+            note={<>Each in its own SQLite driver; Forge in production (two servers), through <code>ctx.db</code> and through <code>bun:sqlite</code>. <Link to="/benchmarks#the-same-api-on-sqlite">Method, writes and what Forge adds</Link></>}
           />
         </div>
       </div>
 
       <div className="perf flip">
         <div data-reveal>
-          <span className="label">Rust page rendering</span>
+          <span className="label">Crucible · Rust page rendering</span>
           <h3>Pages printed by Rust, not rendered by React</h3>
           <p>The build turns pages that only show data into templates. The loader's JSON goes to Rust and the HTML comes back from an I/O thread. A page with no island ships a 1.3 kB script.</p>
           <div className="pipe rust" aria-hidden="true">
