@@ -80,6 +80,7 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
             <li><b>The engine alone is level with the compiled servers</b> ({k(read("serve"))} req/s, TypeScript handler). The framework around it costs: a Forge minimal route does {k(read("forge-minimal"))}, a NestJS controller {k(read("forge"))}; .NET does {k(read("dotnet"))}.</li>
             <li><b>NestJS on Tuyere alone</b> (a basic adapter, no Forge) does {k(read("nest-serve"))} req/s, {x(read("nest-serve"), read("nest-bun"))} NestJS on Bun and {x(read("nest-serve"), read("forge"))} the Forge Nest path: the difference to Forge is what it adds around every request.</li>
             <li><b>With the items in SQLite</b>, Tuyere alone does {k(sql("serve"))} reads a second (Axum {k(sql("axum"))}, .NET {k(sql("dotnet"))}). Forge through <code>ctx.db</code> does {k(sql("forge-minimal"))} on a minimal route and {k(sql("forge"))} on the Nest path; on <code>bun:sqlite</code> the Nest path does {k(sql("forge-bunsqlite"))}. These are the production setup: Hearth, the native database layer, on two Bellows servers. <code>ctx.db</code> adds schema checks, indexes, transactions and reactivity.</li>
+            <li><b>.NET with comparable work.</b> A Web API with controllers and the middleware a service carries (request ids, security headers, telemetry, a rate limiter) does {k(read("dotnet-webapi"))} reads a second in memory and {k(sql("dotnet-webapi"))} on SQLite, {k(read("dotnet-controllers"))} and {k(sql("dotnet-controllers"))} with controllers alone, against {k(read("dotnet"))} and {k(sql("dotnet"))} as Minimal APIs. Forge's NestJS path does {k(read("forge"))} and {k(sql("forge"))}. <Link to="/benchmarks#what-a-net-web-api-costs">What it costs and why it was measured</Link></li>
             <li><b>Where it loses:</b> one connection at a time, and about 1.5× the CPU of Bun.serve per request.</li>
           </ul>
           <Link className="btn link" to="/Tuyere">How the engine works <Arrow /></Link>
@@ -92,6 +93,8 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
               { label: "Tuyere · alone", value: read("serve"), us: true },
               { label: "Go · fasthttp", value: read("go") },
               { label: ".NET 10 · Minimal API", value: read("dotnet") },
+              { label: ".NET 10 · Web API, controllers only", value: read("dotnet-controllers") },
+              { label: ".NET 10 · Web API, with middleware", value: read("dotnet-webapi") },
               { label: "Forge · minimal route", value: read("forge-minimal"), us: true },
               { label: "NestJS · Tuyere, no Forge", value: read("nest-serve"), us: true },
               { label: "Bun.serve", value: read("bun") },
@@ -110,6 +113,8 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
               { label: "Rust · Axum", value: sql("axum") },
               { label: "NestJS · Tuyere, no Forge", value: sql("nest-serve"), us: true },
               { label: ".NET 10 · Minimal API", value: sql("dotnet") },
+              { label: ".NET 10 · Web API, controllers only", value: sql("dotnet-controllers") },
+              { label: ".NET 10 · Web API, with middleware", value: sql("dotnet-webapi") },
               { label: "Go · fasthttp", value: sql("go") },
               { label: "Forge · Nest · bun:sqlite", value: sql("forge-bunsqlite"), us: true },
               { label: "Bun.serve", value: sql("bun") },
