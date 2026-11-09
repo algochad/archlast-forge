@@ -1,0 +1,7 @@
+target
+node_modules
+native
+bench/client/target
+bench/spike
+*.log
+.git

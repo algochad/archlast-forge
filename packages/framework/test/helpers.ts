@@ -2,6 +2,7 @@ import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { startServer, type RunningServer } from "@archlast/forge-runtime/server";
+import { nativeEngine } from "../../runtime/src/server/engine";
 import { buildApp } from "../src/build";
 import { createApp } from "../src/server";
 
@@ -16,10 +17,10 @@ export const tempDir = () => {
 };
 
 /** An engine serving the fixture app, built the way production builds it. */
-export async function startFixture(o: { root?: string; dev?: boolean; env?: Record<string, string> } = {}): Promise<RunningServer> {
+export async function startFixture(o: { root?: string; dev?: boolean; islands?: boolean; env?: Record<string, string> } = {}): Promise<RunningServer> {
   const root = o.root ?? fixture;
   const dev = o.dev ?? false;
-  if (!dev) await buildApp({ root, dev });
+  if (!dev) await buildApp({ root, dev, islands: o.islands });
   return startServer({
     forgeDir: join(root, "forge"),
     dev,
@@ -33,7 +34,7 @@ export async function startFixture(o: { root?: string; dev?: boolean; env?: Reco
       LOG_FORMAT: "json",
       ...o.env,
     },
-    app: await createApp({ root, dev, log: () => {} }),
+    app: await createApp({ root, dev, islands: o.islands, log: process.env.FORGE_TEST_LOG ? (_, m) => console.error(m) : () => {} }),
   });
 }
 
@@ -53,3 +54,6 @@ export const stateOf = (html: string) => {
   if (!m) throw new Error("no window.__FORGE__ in the page");
   return JSON.parse(m[1]!) as import("../src/state").PageState;
 };
+
+/** Whether the native HTTP engine is built here (it is where there is a Rust toolchain): what keeps pages for the cache tests. */
+export const hasNativeEngine = () => nativeEngine().then(Boolean);

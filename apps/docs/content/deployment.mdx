@@ -176,6 +176,27 @@ spec:
 
 The ingress must pass WebSocket upgrades on `/rpc` and keep idle connections open longer than `IDLE_TIMEOUT_SECONDS`. Sessions are cookies, so no sticky routing is needed.
 
+## Development and production
+
+The two are set up differently on purpose: development optimizes for the change you just saved, production for requests a second and for staying up.
+
+| | `archlast-forge dev` | Production (the image, `archlast-forge start`) |
+|---|---|---|
+| Changes to `forge/` | taken live while it runs | none: a change is a new image |
+| Servers | one | two on 4 or more cores ([Bellows](configuration.html#bellows-a-cluster-of-servers), a cluster), one below; `SERVER_PROCESSES` |
+| Function runtime | child processes, restarted alone | inline in each server by default (`RUNTIME_WORKERS` gives each server a pool of runtime processes) |
+| Data | kept across every change | the database on the volume |
+
+**In development, everything under `forge/` is live.** Save a file and the running server takes it, with your data kept and no restart of the process:
+
+- **Functions** (queries, mutations, actions), and the modules they import, such as the `_modules/` of your NestJS code, `http.ts` routes, `crons.ts` and `auth.ts`. A query's cached result from the old code is not served.
+- **The schema.** A new table or index is created on the reload, and the documents already there stay.
+- **In a full-stack app, the pages and routes under `app/`.** The app rebuilds and the browser reloads; a build error shows in the page and in connected browsers, and goes when you fix it.
+
+The function runtime runs in its own process, which is stopped and started again with fresh modules on each change (and when a function hangs). A file that does not load is reported in the terminal, and the next good save brings the app back.
+
+**In production, the app is built as an image and clustered.** Nothing watches files: new code is a new image, rolled out as in [Zero-downtime considerations](#zero-downtime-considerations). On 4 or more cores the image runs two servers on one port and one database file, which is what the [benchmarks](benchmarks.html#the-same-api-on-sqlite) measure. A variable changed with `archlast-forge env set` is read by a reload of the function runtime (the CLI sends it), which reaches both servers.
+
 ## Environment for production
 
 | Variable | Set it to | Why |

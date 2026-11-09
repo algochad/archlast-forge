@@ -1,0 +1,93 @@
+# Anvil: the thread pool
+
+A function runs on one thread, and so does the server's HTTP handling around it. A request that hashes a large file, resizes an image or parses a big document keeps that thread busy, and every other request waits behind it, including `/health`. **Anvil**, Forge's built-in thread pool, moves that work to worker threads: `computePool` from `@archlast/forge-runtime/pool` takes plain functions, runs them on workers, and your code awaits the result like any async call.
+
+It is [knitting](https://js.knitting.run) underneath (a worker-thread pool for Bun, MIT), re-exported from the same entry as `task`, `createPool` and `importTask`. Anvil is what Forge adds: a pool you can make from any file, sized to the cores the process may use, started on the first call.
+
+## Make a pool where you use it
+
+```ts
+// forge/files.ts: any module of forge/, or a NestJS service
+import { action, v } from "@archlast/forge-runtime";
+import { computePool } from "@archlast/forge-runtime/pool";
+
+const work = computePool({
+  digest: (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex"),
+});
+
+export const checksum = action({
+  args: { url: v.string() },
+  handler: async (ctx, { url }) => work.call.digest(new Uint8Array(await (await fetch(url)).arrayBuffer())),
+});
+```
+
+There is no task module, no `task()` call and no `isMain` guard. Anvil writes the functions' source to a small generated module in the temp folder (named by a hash of its content, so the same functions are written once) and the workers load only that. The file that made the pool is never run again in a thread, so it can hold decorators, side effects and a database connection without any of them reaching a worker.
+
+A function given this way sees **only its own argument**. A variable, helper or import of the file around it is not there on the worker; if the function uses one, the call fails with `x is not defined` and a hint. Import what it needs inside it:
+
+```ts
+const work = computePool({
+  async parse(text: string) {
+    const { parse } = await import("node:path");
+    return parse(text);
+  },
+});
+```
+
+If the work needs a helper module of your own, or a lot of setup, use a task module instead.
+
+## A task module
+
+A function in a module of its own, defined with `task({ f })`, can import anything. Every worker imports that module again, so keep its imports few.
+
+```ts
+// forge/_work/hash.ts
+import { task } from "@archlast/forge-runtime/pool";
+import { frame } from "../lib/frames"; // a helper of yours: fine here
+
+export const digest = task({ f: (bytes: Uint8Array) => frame(new Bun.CryptoHasher("sha256").update(bytes).digest("hex")) });
+```
+
+```ts
+// forge/files.ts
+import * as hash from "./_work/hash";
+const work = computePool(hash);
+```
+
+Plain functions and `task()` entries can be mixed in one `computePool({ … })`.
+
+## What it does
+
+- **Threads.** One fewer than the cores the process may use (a container's CPU quota counts), at least one, so the server keeps a core. `computePool(tasks, { threads: 8 })` sets it. They start with the first call and stay for the life of the process; `await work.shutdown()` ends them once the calls under way are done.
+- **Arguments and results** are plain data: one value in, one value out. `await work.call.name(arg)` accepts the argument or a promise of it.
+- **Errors** reject with the task's message. The pool is still there afterwards.
+- **A timeout** (`task({ f, timeout })`) bounds the wait, not the work.
+
+## What a task must not do
+
+A task cannot use `ctx`, a transaction or the database. They belong to the thread that called, and a read made on a worker is not part of the call's snapshot and records no topics, so live queries would not see it. Do the work in the task and write from the action: `action → pool → ctx.runMutation`. Don't wait on the pool inside a mutation, which would hold the writer (SQLite) or a transaction (Postgres) meanwhile.
+
+## How much it helps
+
+The benchmark is a REST API on the NestJS path with one route that hashes 20,000 times (about 8 ms of CPU) on the serving thread, the same route with the work in Anvil, and a `/ping` that does nothing. Each ran in a container limited to 4 CPU cores and 2 GiB of memory, loaded with oha ([method and machine](benchmarks.html)).
+
+{/* bench:pool */}
+
+| | requests/s | p50 | p99 | CPU cores used |
+|---|---:|---:|---:|---:|
+| The work on the serving thread | 133 | 239 ms | 318 ms | 1.02 |
+| The work in Anvil (3 workers) | **401** (3.0×) | 80.7 ms | 105 ms | 3.14 |
+
+`/ping` (does nothing), measured while the work route is under load from 32 connections:
+
+| | requests/s | p50 | p99 |
+|---|---:|---:|---:|
+| Idle server | 23,519 | 0.16 ms | 0.29 ms |
+| Work on the serving thread | 17 | 242 ms | 340 ms |
+| Work in Anvil | **14,543** | 0.24 ms | 0.71 ms |
+
+{/* /bench:pool */}
+
+Three workers do three times the work in the same four cores, which is the throughput row. The `/ping` rows are the point of the pool: with the work on the serving thread, a request that costs nothing waits behind the work in front of it; with Anvil it is answered as if the server were idle. The first row shows what a single thread can do, so the pool's gain is bounded by the cores you give it. Work that is not CPU-bound (waiting on a network call) does not need it: `await` already lets the thread go on.
+
+Run it yourself: `benchmarks/pool/` in the repository (`./run.sh`).

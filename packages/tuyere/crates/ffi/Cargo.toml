@@ -1,0 +1,16 @@
+[package]
+name = "tuyere-ffi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+tuyere-core = { path = "../core" }
+mimalloc = { version = "0.1", default-features = false, optional = true }
+
+[features]
+default = []
+mimalloc = ["dep:mimalloc"]
+profile = ["tuyere-core/profile"]

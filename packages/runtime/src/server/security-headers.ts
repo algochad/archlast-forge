@@ -297,14 +297,16 @@ export class SecurityHeaders {
     return this.resolved.get(surface)!.headers.some(([, v]) => v.includes(NONCE));
   }
 
-  /** Sets the surface's headers the response doesn't already have. A response whose headers can't change is copied first. */
-  apply(surface: Surface, res: Response, nonce?: string): Response {
+  /** Sets the surface's headers the response doesn't already have. A response whose headers can't change is copied first. `hashes` (`sha256-…`) stand in for the nonce. */
+  apply(surface: Surface, res: Response, nonce?: string, hashes?: string[]): Response {
     const headers = this.resolved.get(surface)!.headers;
     if (!headers.length) return res;
     let out = res;
+    // A page that is kept and served again cannot carry a nonce (every visitor would have the same one): its inline scripts are named by their hashes.
+    const sources = nonce ? `'nonce-${nonce}'` : hashes?.length ? hashes.map((h) => `'${h}'`).join(" ") : undefined;
     for (const [name, value] of headers) {
       if (out.headers.has(name)) continue;
-      const v = nonce ? value.replaceAll(NONCE, `'nonce-${nonce}'`) : value.replaceAll(` ${NONCE}`, "");
+      const v = sources ? value.replaceAll(NONCE, sources) : value.replaceAll(` ${NONCE}`, "");
       try {
         out.headers.set(name, v);
       } catch {
@@ -313,6 +315,34 @@ export class SecurityHeaders {
       }
     }
     return out;
+  }
+
+  private plain = new WeakMap<object, [string, string][]>();
+  private blocks = new WeakMap<object, { names: Set<string>; block: unknown } | null>();
+
+  /** The surface's headers as one object encoded ahead of time by `encode`, when none of them is among `have` (the answer's own header names, lower-case): else null. */
+  blockFor(surface: Surface, have: [string, string][], encode: (headers: [string, string][]) => unknown): unknown {
+    const resolved = this.resolved.get(surface)!;
+    let entry = this.blocks.get(resolved);
+    if (entry === undefined) {
+      const headers = this.applyPairs(surface, []);
+      this.blocks.set(resolved, (entry = headers.length ? { names: new Set(headers.map((h) => h[0])), block: encode(headers) } : null));
+    }
+    if (!entry) return null;
+    for (const h of have) if (entry.names.has(h[0])) return null;
+    return entry.block;
+  }
+
+  /** `apply` for an answer that is header pairs (an engine `Reply`): the surface's headers it lacks, added to a copy. Without a nonce, so for answers that are not pages. */
+  applyPairs(surface: Surface, pairs: [string, string][]): [string, string][] {
+    const resolved = this.resolved.get(surface)!;
+    let headers = this.plain.get(resolved);
+    if (!headers) this.plain.set(resolved, (headers = resolved.headers.map(([name, value]) => [name.toLowerCase(), value.replaceAll(` ${NONCE}`, "")] as [string, string])));
+    if (!headers.length) return pairs;
+    const have = new Set<string>();
+    for (const [name] of pairs) have.add(name.toLowerCase());
+    for (const h of headers) if (!have.has(h[0])) pairs.push(h);
+    return pairs;
   }
 
   /** A browser's violation report: `application/csp-report` or the Reporting API's `application/reports+json`. Kept in memory, the latest 200. */

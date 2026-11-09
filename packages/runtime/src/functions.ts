@@ -1,4 +1,5 @@
 import type { HelmetOptions } from "helmet";
+import { MINIMAL, type MinimalRequest, type MinimalResponse } from "./server/minimal";
 import { checkDocsConfig, type ApiDocsConfig, type RouteDocs } from "./api-docs";
 
 /** Helmet's options per surface, or false for no security headers there. */
@@ -154,6 +155,10 @@ export interface Query<D, T extends TableNames = TableNames> {
   skip(n: number): Query<D, T>;
   collect(): Promise<D[]>;
   first(): Promise<D | null>;
+  /** `collect()`, `first()` and `take()` as JSON text, for a route that sends the documents on as they are. A query with `filter()`, `include()` or `select()` needs the objects and is written out. */
+  collectJson(): Promise<string>;
+  firstJson(): Promise<string>;
+  takeJson(n: number): Promise<string>;
   /** The one matching document, `null` if there is none, an error if there are several. */
   unique(): Promise<D | null>;
   take(n: number): Promise<D[]>;
@@ -202,6 +207,8 @@ export interface QueryInitializer<T extends TableNames> extends Query<Doc<T>, T>
 
 export interface DatabaseReader {
   get<T extends TableNames>(id: Id<T>): Promise<Doc<T> | null>;
+  /** `get()` as JSON text (`"null"` where there is none), for a route that sends the document on as it is: nothing is parsed or written out again where the database keeps documents as text. */
+  getJson<T extends TableNames>(id: Id<T>): Promise<string>;
   /** Many documents by id in one round trip, in the order given; `null` where one doesn't exist. */
   getMany<T extends TableNames>(ids: readonly Id<T>[]): Promise<(Doc<T> | null)[]>;
   query<T extends TableNames>(table: T): QueryInitializer<T>;
@@ -286,6 +293,20 @@ export interface ActionCtx {
   runQuery<R extends FunctionReference<"query">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
   runMutation<R extends FunctionReference<"mutation">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
   runAction<R extends FunctionReference<"action">>(ref: R, ...args: OptionalArgs<R>): Promise<FunctionReturn<R>>;
+}
+
+/**
+ * What an HTTP route's handler gets (`httpAction`, `minimalAction`, a NestJS controller's `@Ctx()`): an action's ctx and direct access to the database.
+ * `read` runs `fn` in one read transaction and `write` in one write transaction, as a query and a mutation run, without calling a function by name: no
+ * argument validation, no access check or result cache, no function span or log line of its own (the database spans are recorded). Writes publish their
+ * topics after the commit, so live queries update as for any mutation.
+ *
+ * Like a query or a mutation, `fn` can be run again (the database may re-run a read; a write that loses a serialization conflict is retried): keep side
+ * effects such as a `fetch` or an email outside it, and return what the route needs. Both end at `FUNCTION_TIMEOUT_MS`.
+ */
+export interface HttpCtx extends ActionCtx {
+  read<T>(fn: (ctx: QueryCtx) => Promise<T> | T): Promise<T>;
+  write<T>(fn: (ctx: MutationCtx) => Promise<T> | T): Promise<T>;
 }
 
 type CtxFor<K extends FunctionKind> = K extends "query" ? QueryCtx : K extends "mutation" ? MutationCtx : ActionCtx;
@@ -480,14 +501,25 @@ export function cronJobs() {
 export type HttpMethod = "GET" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS";
 const HTTP_METHODS: readonly string[] = ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"];
 
-/** A handler for a raw HTTP request. It gets the action context, so it can call queries, mutations and actions. */
+/** A handler for a raw HTTP request. It gets the action context, so it can call queries, mutations and actions, and read and write the database directly (`ctx.read`, `ctx.write`: see HttpCtx). */
 export interface HttpAction {
   kind: "httpAction";
-  handler: (ctx: ActionCtx, request: Request) => Response | Promise<Response>;
+  handler: (ctx: HttpCtx, request: Request) => Response | Promise<Response>;
 }
 
 export function httpAction(handler: HttpAction["handler"]): HttpAction {
   return { kind: "httpAction", handler };
+}
+
+/**
+ * An HTTP action that is given the request's fields (`method`, `path`, `search`, `headers`, `body` as bytes) and answers with a `MinimalResponse` (`minimalJson`,
+ * `minimalText`) instead of a Web `Request` and `Response`: for routes that answer from memory or a quick query, where making and reading those objects is much
+ * of what a request costs. A `Response` it returns is accepted too. Used in `http.route` as `httpAction` is.
+ */
+export function minimalAction(handler: (ctx: HttpCtx, request: MinimalRequest) => MinimalResponse | Response | Promise<MinimalResponse | Response>): HttpAction {
+  const action: HttpAction = { kind: "httpAction", handler: handler as unknown as HttpAction["handler"] };
+  (action as unknown as Record<symbol, unknown>)[MINIMAL] = true;
+  return action;
 }
 
 export interface HttpRoute extends RouteDocs {

@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, expect, test } from "bun:test";
 import { join } from "node:path";
-import { createSqliteDb } from "../src/server/db/sqlite";
+import { createBunSqliteDb as createSqliteDb } from "../src/server/db/sqlite";
 import type { Db } from "../src/server/db/types";
 import { Executor } from "../src/server/executor";
 import { loadProject, tableSpecs } from "../src/server/project";

@@ -133,6 +133,11 @@ export interface RpcOptions {
   maxSubscriptionBytes?: number;
   maxRequestBytes?: number;
   telemetry?: Telemetry;
+  /**
+   * Builds the answer to a successful call. Set when the HTTP engine has a type cheaper than Web `Response` (Tuyere's `Reply`); it
+   * is read at each call. Such an answer is returned with the CORS headers of `ctx.cors` already on it, since it has no `Headers` to add to.
+   */
+  reply?: (body: string | Uint8Array, headers: Record<string, string>) => Response;
 }
 
 /** The calls and subscriptions of every public function in the manifest. Internal functions aren't reachable. */
@@ -144,7 +149,7 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
 
   return {
     /** Args are validated in the function runtime. */
-    async call(name: string, req: Request, url: URL, ctx: Context): Promise<Response> {
+    async call(name: string, req: Request, url: URL, ctx: Context & { cors?: Record<string, string> }): Promise<Response> {
       const kind = kinds.get(name);
       // Each call to a function that exists is a request (calls to unknown names are not, so they can't flood the operation list).
       const tel = opts.telemetry;
@@ -176,6 +181,7 @@ export function buildRpc(manifest: Manifest, runtime: FunctionRuntime, queries: 
         };
         const body = await run();
         if (root) opts.telemetry!.end(root, { status: 200, telemetry: obs.telemetry, cache: obs.cache, user: obs.user });
+        if (opts.reply) return opts.reply(body, { "content-type": JSON_TYPE, "x-request-id": ctx.requestId, ...ctx.cors });
         return new Response(body, { headers: { "content-type": JSON_TYPE, "x-request-id": ctx.requestId } });
       } catch (e) {
         if (root) opts.telemetry!.end(root, { ...failureOf(e), cache: obs.cache, user: obs.user });

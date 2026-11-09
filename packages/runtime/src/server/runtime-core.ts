@@ -1,4 +1,5 @@
 // The function runtime: forge/ modules, the database, auth and the scheduler. See startCore().
+import type { HttpFinish } from "./executor";
 import { docsRouting } from "../api-docs";
 import { mkdirSync, readFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
@@ -10,12 +11,14 @@ import { loadConfig } from "./config";
 import { openDatabase } from "./db/open";
 import { describePlan } from "./db/pool-size";
 import { serverMemory } from "./db/sqlite";
+import { unlock } from "./db/unlock";
 import type { Db } from "./db/types";
-import type { UserIdentity } from "../functions";
+import type { HttpRoute, UserIdentity } from "../functions";
 import { Executor, logContext, serializeError, type CallHeaders, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
-import { checkHttpRequest, matchRoute, routeName } from "./http";
+import { checkHttpRequest, matchRoute, routeName, takesRequest } from "./http";
 import { buildOpenApi, docsWarnings, NEST_MOUNT, type NestRoute } from "./openapi";
+import { MINIMAL, MinimalResponse } from "./minimal";
 import type { HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
 import { createStorage } from "./storage";
@@ -93,6 +96,8 @@ async function checkSchema(exec: Executor, project: Project) {
 export interface RuntimeCore {
   manifest: Manifest;
   handle(msg: HostMessage): Promise<unknown>;
+  /** `handle` for an HTTP request, answering without a promise when nothing needs waiting for (see `httpDirect` in runtime-core.ts). */
+  httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">, finish?: HttpFinish): any;
   /** A socket event: given to whatever registered for them (the Nest bridge), or the socket is closed. */
   event(msg: HostEvent): void;
   shutdown(): Promise<void>;
@@ -205,18 +210,24 @@ export async function startCore(opts: {
   const health = opts.sample ? processSampler() : undefined;
   const sampleTimer = health && setInterval(() => send({ t: "sample", sample: { time: Date.now(), instance, role: "runtime", ...health() } }), 10_000);
   const config = loadConfig(opts.env, opts.dev);
+  // What happens once for the app (the scheduler, crons, backups, the schema check, the log's keeper) belongs to the first runtime process of the first server.
+  const owner = worker === 0 && config.clusterIndex === 0;
+  /** Whether this process keeps a read cache: on the native layer always (its commit counters, shared by every process on the file, keep it right), else only while it is the database's one writer. */
+  const readCacheFor = (workers: number) => (config.databaseKind === "sqlite" && (config.dbEngine === "native" || (workers === 1 && config.clusterSize === 1)) ? new ReadCache() : undefined);
 
   if (config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
   // Every function runtime process holds its own connections, so they share the RAM SQLite is given.
   // On Postgres the first process says what the pools hold against what the database allows, and warns when that is close to the limit.
-  const db = await openDatabase(config, serverMemory() / config.runtimeWorkers, {
+  const db = await openDatabase(config, serverMemory() / (config.runtimeWorkers * config.clusterSize), {
+    keeper: owner,
     plan: (plan) => {
-      if (worker !== 0) return;
+      if (!owner) return;
       const { level, message } = describePlan(plan);
       if (level === "warn") console.warn(message);
       else console.log(message);
     },
   });
+  if (owner && config.databaseKind === "sqlite" && config.dbEngine === "native") console.log("database: SQLite on Hearth, the native layer (DB_ENGINE=native)");
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);
@@ -230,12 +241,12 @@ export async function startCore(opts: {
     limits: config.limits,
     publish: (topics) => send({ t: "publish", topics }),
     log: emit,
-    // Only this process writes the local database when it is the one function runtime, so its own writes keep the cache exact.
-    readCache: config.databaseKind === "sqlite" && config.runtimeWorkers === 1 ? new ReadCache() : undefined,
+    // Only this process writes the local database when it is the one function runtime (and the one server), so its own writes keep the cache exact.
+    readCache: readCacheFor(config.runtimeWorkers), // (a cluster: the native layer's caches learn of the other servers' commits)
     // Inside a call, so the warning is listed with the function that ran the query.
     devWarn: config.dev ? (message) => console.warn(message) : undefined,
   });
-  if (config.schemaCheck && worker === 0) await checkSchema(exec, project);
+  if (config.schemaCheck && owner) await checkSchema(exec, project);
   // What @archlast/forge-runtime/nest reaches the engine through, for work that doesn't start as a call: gateway sockets and microservice messages.
   (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.host")] = {
     identityOf: (headers: CallHeaders) => exec.identityOf(headers),
@@ -251,7 +262,7 @@ export async function startCore(opts: {
   const auth = createAuth(exec, project.tables, project.authOptions, config);
   // One scheduler per server: in a runtime pool only the first process polls.
   const scheduler =
-    worker === 0
+    owner
       ? new SchedulerLoop(
           exec,
           db,
@@ -265,7 +276,7 @@ export async function startCore(opts: {
       : undefined;
   const release = releaseOf(forgeDir, opts.env);
   // Backups run in the first process, next to the scheduler: one place per server makes them, so the scheduled one runs once.
-  const backups = worker === 0 ? new Backups({ db, exec, tables: project.tables, forgeDir, storage, config, env: opts.env, serverId, release }) : undefined;
+  const backups = owner ? new Backups({ db, exec, tables: project.tables, forgeDir, storage, config, env: opts.env, serverId, release }) : undefined;
   await backups?.recover();
   const backupTimer =
     backups &&
@@ -292,14 +303,126 @@ export async function startCore(opts: {
     return out;
   }
 
+  const EMPTY = new Uint8Array(0);
+  const strict = new TextDecoder("utf-8", { fatal: true });
   const isText = (bytes: ArrayBuffer) => {
     try {
-      new TextDecoder("utf-8", { fatal: true }).decode(bytes);
+      strict.decode(bytes);
       return true;
     } catch {
       return false;
     }
   };
+
+  /** The message the server is answered with, for what a route's handler returned. The answer of a `MinimalResponse` needs no waiting; a `Response`'s body does. */
+  function httpAnswer(route: HttpRoute, res: Response | MinimalResponse, telemetry: CallTelemetry | undefined, named?: string): HttpResponseMessage | Promise<HttpResponseMessage> {
+    if (res instanceof MinimalResponse) {
+      // a copy of the headers only when one has to go (a handler sets no content-length of its own, nearly always)
+      let out = res.headers;
+      for (let i = 0; i < out.length; i++)
+        if (out[i]![0] === "content-length") {
+          out = out.filter((h) => h[0] !== "content-length");
+          break;
+        }
+      const reply: HttpResponseMessage = { status: res.status, headers: out, body: res.body ?? EMPTY };
+      if ((route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true) reply.nest = true;
+      if (telemetry) reply.telemetry = telemetry;
+      const routeName = named ?? route.path;
+      if (routeName !== undefined && !telemetry) reply.route = routeName;
+      return reply;
+    }
+    return httpResponseAnswer(route, res, telemetry);
+  }
+
+  async function httpResponseAnswer(route: HttpRoute, res: Response, telemetry: CallTelemetry | undefined): Promise<HttpResponseMessage> {
+    const out: [string, string][] = [];
+    let typed = false;
+    for (const h of res.headers) {
+      if (h[0] === "content-length") continue;
+      if (h[0] === "content-type") typed = true;
+      out.push(h);
+    }
+    const reply: HttpResponseMessage = { status: res.status, headers: out, body: undefined as never };
+    if ((route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true) reply.nest = true;
+    if (telemetry) reply.telemetry = telemetry;
+    if (res.body && ((res as unknown as Record<symbol, unknown>)[STREAM] || res.headers.get("content-type")?.startsWith("text/event-stream"))) {
+      reply.body = res.body;
+      reply.stream = true;
+      return reply;
+    }
+    // `new Response("text")` has no content-type header of its own: Bun.serve adds one when it sends. Passing the bytes along loses that,
+    // so give text bodies the type the platform would have (binary bodies keep the default, and a handler can always set one). A response that
+    // has a type already needs no blob to say so.
+    if (typed) {
+      reply.body = await res.arrayBuffer();
+      return reply;
+    }
+    const blob = await res.blob();
+    const bytes = await blob.arrayBuffer();
+    if (blob.type.startsWith("text/plain") && isText(bytes)) out.push(["content-type", blob.type]);
+    reply.body = bytes;
+    return reply;
+  }
+
+  const textAnswer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({
+    status,
+    headers: [["content-type", "text/plain"], ...extra],
+    body: new TextEncoder().encode(status === 404 ? "Not found" : "Method not allowed").buffer as ArrayBuffer,
+  });
+
+  /**
+   * A request to an HTTP route from an anonymous caller, not traced, answered without a promise when its handler is synchronous: most of what a request costs
+   * is the awaits between the socket and the handler. Anything else (a cookie or an authorization header to resolve, a trace to record) takes `handle`.
+   */
+  function httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">, finish?: HttpFinish): any {
+    if (msg.trace || msg.headers.cookie || msg.headers.authorization) {
+      const answered = handle({ ...msg, id: 0 }) as Promise<HttpResponseMessage>;
+      return finish ? answered.then((m) => finish.ok(m), (e) => finish.fail(e)) : answered;
+    }
+    const req = msg.req;
+    const { method, body } = req;
+    const pathname = req.path ?? new URL(req.url).pathname;
+    const found = matchRoute(project.http, method, pathname);
+    if (!("route" in found)) {
+      const answer = textAnswer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
+      return finish ? finish.ok(answer) : answer;
+    }
+    const route = found.route;
+    const invalid = route.query || route.body ? checkHttpRequest(route, req.url, body) : undefined;
+    if (invalid) {
+      const answer: HttpResponseMessage = {
+        status: 400,
+        headers: [["content-type", "application/json"]],
+        body: new TextEncoder().encode(JSON.stringify({ error: { code: "BAD_REQUEST", message: invalid, requestId: msg.requestId } })).buffer as ArrayBuffer,
+      };
+      return finish ? finish.ok(answer) : answer;
+    }
+    const minimal = (route.handler as unknown as Record<symbol, unknown>)[MINIMAL] === true;
+    return exec.runHttpAnonymous(
+      routeName(route),
+      route.handler,
+      minimal
+        ? {
+            method,
+            get url() {
+              return req.url;
+            },
+            path: pathname,
+            search: req.search ?? new URL(req.url).search,
+            get headers() {
+              return req.headers;
+            },
+            body,
+          }
+        : takesRequest(route.handler.handler)
+          ? new Request(req.url, { method, headers: req.headers, body })
+          : (undefined as unknown as Request), // a handler that declares only `ctx` cannot use one
+      msg.requestId,
+      httpAnswer,
+      route,
+      finish,
+    ); // a promise of an answer that is itself a promise is one promise
+  }
 
   async function handle(msg: HostMessage): Promise<unknown> {
     switch (msg.t) {
@@ -320,14 +443,12 @@ export async function startCore(opts: {
         return { status: res.status, headers: [...res.headers], body: text, ...(telemetry && { telemetry }) } satisfies SerializedResponse;
       }
       case "http": {
-        const { method, url, headers, body } = msg.req;
-        const found = matchRoute(project.http, method, new URL(url).pathname);
-        const answer = (status: number, extra: [string, string][] = []): HttpResponseMessage => ({
-          status,
-          headers: [["content-type", "text/plain"], ...extra],
-          body: new TextEncoder().encode(status === 404 ? "Not found" : "Method not allowed").buffer as ArrayBuffer,
-        });
-        if (!("route" in found)) return answer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
+        // `headers` is read only where it is needed: from a request in this process it may be decoded when asked for
+        const req = msg.req;
+        const { method, url, body } = req;
+        const pathname = req.path ?? new URL(url).pathname;
+        const found = matchRoute(project.http, method, pathname);
+        if (!("route" in found)) return textAnswer(found.status, found.status === 405 ? [["allow", found.allow.join(", ")]] : []);
         const route = found.route;
         // A route that declares its query or body answers 400 for a request that doesn't match, before its handler runs.
         const invalid = checkHttpRequest(route, url, body);
@@ -338,21 +459,42 @@ export async function startCore(opts: {
             body: new TextEncoder().encode(JSON.stringify({ error: { code: "BAD_REQUEST", message: invalid, requestId: msg.requestId } })).buffer as ArrayBuffer,
           };
         let telemetry: CallTelemetry | undefined;
-        const res = await traced(msg.trace, routeName(route), () => {
+        const name = routeName(route);
+        const routeOut: { route?: string } | undefined = msg.trace ? undefined : {}; // an untraced request is named by the route its handler leaves
+        const run = () => {
           // The route's pattern, for the request's name; a Nest controller names its own, finer one.
           annotate({ "http.route": route.path ?? `${route.pathPrefix}*` }, true);
-          return exec.runHttp(routeName(route), route.handler, new Request(url, { method, headers, body }), msg.headers, msg.requestId);
-        }).then((r) => ((telemetry = r.telemetry), r.value));
-        const out = [...res.headers].filter(([k]) => k !== "content-length");
-        const nest = (route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true ? { nest: true as const } : {};
-        if (res.body && ((res as unknown as Record<symbol, unknown>)[STREAM] || res.headers.get("content-type")?.startsWith("text/event-stream")))
-          return { status: res.status, headers: out, body: res.body, stream: true, ...nest, ...(telemetry && { telemetry }) } satisfies HttpResponseMessage;
-        const blob = await res.blob();
-        const bytes = await blob.arrayBuffer();
-        // `new Response("text")` has no content-type header of its own: Bun.serve adds one when it sends. Passing the bytes along loses that,
-        // so give text bodies the type the platform would have (binary bodies keep the default, and a handler can always set one).
-        if (!out.some(([k]) => k === "content-type") && blob.type.startsWith("text/plain") && isText(bytes)) out.push(["content-type", blob.type]);
-        return { status: res.status, headers: out, body: bytes, ...nest, ...(telemetry && { telemetry }) } satisfies HttpResponseMessage;
+          // A route that can do without Web objects (Nest's mount) is given the fields of the request and answers with its own.
+          const minimal = (route.handler as unknown as Record<symbol, unknown>)[MINIMAL] === true;
+          return exec.runHttp(
+            name,
+            route.handler,
+            minimal
+              ? {
+                  method,
+                  url,
+                  path: pathname,
+                  search: req.search ?? new URL(url).search,
+                  get headers() {
+                    return req.headers;
+                  },
+                  body,
+                }
+              : takesRequest(route.handler.handler)
+                ? new Request(url, { method, headers: req.headers, body })
+                : (undefined as unknown as Request),
+            msg.headers,
+            msg.requestId,
+            routeOut,
+          );
+        };
+        let res: Response | MinimalResponse;
+        if (msg.trace) {
+          const traced_ = await traced(msg.trace, name, run);
+          telemetry = traced_.telemetry;
+          res = traced_.value;
+        } else res = await run(); // a request that is only counted runs untraced: nothing to collect
+        return httpAnswer(route, res, telemetry, routeOut?.route);
       }
       case "admin":
         if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });
@@ -402,7 +544,8 @@ export async function startCore(opts: {
   };
   function event(msg: HostEvent) {
     // Another process writing would make cached rows stale: a fresh cache only once this one is the only writer again.
-    if (msg.t === "pool") return exec.setReadCache(config.databaseKind === "sqlite" && msg.workers === 1 ? new ReadCache() : undefined);
+    if (msg.t === "unlock") return unlock.notify();
+    if (msg.t === "pool") return exec.setReadCache(readCacheFor(msg.workers));
     const take = (globalThis as Record<symbol, unknown>)[msg.t === "relay" ? RELAY : SOCKETS] as ((msg: HostEvent) => void) | undefined;
     if (take) return take(msg);
     if (msg.t === "ws" && msg.op === "open") send({ t: "ws", op: "close", sid: msg.sid, code: 1008, reason: "No WebSocket gateway at this path" });
@@ -411,6 +554,7 @@ export async function startCore(opts: {
   return {
     manifest,
     handle,
+    httpDirect,
     event,
     async shutdown() {
       scheduler?.stop();

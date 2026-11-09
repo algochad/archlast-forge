@@ -1,0 +1,16 @@
+# NestJS (its Express adapter) on Node with the store in SQLite (node:sqlite) (build context: benchmarks/rest).
+FROM node:24-alpine AS build
+WORKDIR /app
+COPY servers/nest/package.json .
+RUN npm install --no-audit --no-fund
+COPY servers/nest/*.ts servers/nest/tsconfig.json ./
+COPY servers/shared/driver-node.ts servers/shared/rules.ts servers/shared/store-sqlite.ts ./
+RUN cat driver-node.ts rules.ts store-sqlite.ts > store.ts && rm driver-node.ts rules.ts store-sqlite.ts && npx tsc
+
+FROM node:24-alpine
+WORKDIR /app
+COPY servers/nest/package.json .
+RUN npm install --omit=dev --no-audit --no-fund
+COPY --from=build /app/dist ./dist
+ENV NODE_ENV=production NODE_NO_WARNINGS=1
+CMD ["node", "dist/main.js"]

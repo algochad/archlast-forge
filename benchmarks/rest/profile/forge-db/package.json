@@ -1,0 +1,1 @@
+{ "name": "prof-forge", "private": true, "type": "module", "dependencies": { "@archlast/forge-runtime": "workspace:*" } }

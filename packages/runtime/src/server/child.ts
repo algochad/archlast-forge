@@ -2,6 +2,7 @@
 // and kill it if a call hangs.
 import { serializeError, type CallResult } from "./executor";
 import type { Batch, HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage } from "./protocol";
+import { unlock } from "./db/unlock";
 import { startCore } from "./runtime-core";
 import { toWire } from "./wire";
 
@@ -45,6 +46,8 @@ const flush = () => {
 const send = (msg: RuntimeMessage) => {
   if (outbox.push(msg) === 1) setImmediate(flush);
 };
+// A commit here frees the write lock for the other processes on the file: they hear of it through the server.
+unlock.send = () => send({ t: "unlock" });
 process.on("disconnect", () => process.exit(0)); // the server is gone
 
 async function main() {
@@ -158,7 +161,7 @@ async function main() {
   // Cancelling the reader cancels the body, which is how the handler hears that its client left (`res` and `req` emit "close").
   const take = (m: HostMessage | HostEvent) => {
     if (m.t === "cancel") return void pumps.get(m.id)?.cancel().catch(() => {});
-    if (m.t === "ws" || m.t === "relay" || m.t === "pool") return core.event(m);
+    if (m.t === "ws" || m.t === "relay" || m.t === "pool" || m.t === "unlock") return core.event(m);
     if (!short(m)) return void answer(m);
     queue.push(m);
     if (!purging) purge();

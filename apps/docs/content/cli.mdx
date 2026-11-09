@@ -220,6 +220,8 @@ archlast-forge dev [--port <n>] [--with postgres,redis,s3] [--no-docker] [--run 
 
 What it does depends on the project's mode (`archlast-forge.json`).
 
+Whatever the mode, `dev` takes your changes live: functions, the modules they import, HTTP routes, the schema and (in a full-stack app) the pages. See [Development and production](deployment.html#development-and-production).
+
 ### A full-stack app
 
 Runs the engine and the app in this one process, on your machine:

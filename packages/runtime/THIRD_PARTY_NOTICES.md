@@ -39,7 +39,7 @@ SOFTWARE.
 
 `src/forge-rpc/` (Forge RPC's server and client) speaks the HTTP batch protocol of [tRPC](https://github.com/trpc/trpc) v11 and is written from it:
 
-- the wire format: a batch as `POST /a.b,c.d?batch=1` with `{"0": input, …}`, answered by an array of `{"result":{"data"}}` or `{"error":{"message","code","data"}}`, and the rule for the status of a batch (the common status, or 207), from `packages/server/src/unstable-core-do-not-import/http/resolveResponse.ts`;
+- the wire format: a batch as `POST /a.b,c.d?batch=1` with `{"0": input, …}`, answered by an array of `{"result":{"data"}}` or `{"error":{"message","code","data"}}`, and the rule for the status of a batch (the common status, or 207), from `packages/tuyerer/src/unstable-core-do-not-import/http/resolveResponse.ts`;
 - the table of error codes with their JSON-RPC numbers and HTTP statuses, from `rpc/codes.ts` and `http/getHTTPStatusCode.ts` in the same package;
 - the message of a Zod input error (Zod's own JSON text of the issues), as tRPC sends it.
 

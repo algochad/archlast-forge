@@ -22,6 +22,11 @@ export interface HandlerOptions {
   maxBatch?: number;
   /** Most bytes in a WebSocket frame. */
   maxPayload?: number;
+  /**
+   * Builds the answer to a call. A server whose engine has a cheaper type than Web `Response` (Tuyere's `Reply`) says so here; it is
+   * read at each call, so it may be set after the server has started. Default: `new Response`.
+   */
+  respond?: (body: string, status: number, headers: Record<string, string>) => Response;
 }
 
 /** Input or output that failed its schema. */
@@ -140,6 +145,8 @@ export function createRpc(options: HandlerOptions): Rpc {
     }
   }
 
+  const answer = (body: string, status: number): Response => (options.respond ? options.respond(body, status, JSON_HEADERS) : new Response(body, { status, headers: JSON_HEADERS }));
+
   async function handle(req: Request): Promise<Response> {
     const url = req.url;
     const method = req.method;
@@ -155,7 +162,7 @@ export function createRpc(options: HandlerOptions): Rpc {
     const fail = (f: RpcFailure) => {
       const json = names.map((name) => errorJson(f, name));
       const status = (CODES[f.code] ?? CODES.INTERNAL_SERVER_ERROR!)[1];
-      return new Response(batch ? `[${json.join(",")}]` : json[0], { status, headers: JSON_HEADERS });
+      return answer(batch ? `[${json.join(",")}]` : json[0]!, status);
     };
 
     const get = method === "GET";
@@ -180,7 +187,7 @@ export function createRpc(options: HandlerOptions): Rpc {
     // The status: 200 when every call worked; the one status every call failed with; else 207.
     let status = outcomes[0]!.status;
     for (let i = 1; i < n; i++) if (outcomes[i]!.status !== status) status = 207;
-    return new Response(batch ? `[${outcomes.map((o) => o.json).join(",")}]` : outcomes[0]!.json, { status, headers: JSON_HEADERS });
+    return answer(batch ? `[${outcomes.map((o) => o.json).join(",")}]` : outcomes[0]!.json, status);
   }
 
   interface Socket {

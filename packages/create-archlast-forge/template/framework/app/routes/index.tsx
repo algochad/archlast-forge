@@ -1,5 +1,9 @@
 import { Link, useViewer } from "@archlast/forge-framework";
 
+// A visitor who is not signed in gets this page from the engine's cache for a minute, without it being rendered again (the page is the same for everyone). A signed-in visitor is
+// rendered for, every time. Remove the line to render every request; `tags` and the numbers are in the full-stack guide.
+export const handle = { cache: { ttl: 60 } };
+
 export default function Home() {
   const viewer = useViewer();
   return (

@@ -16,6 +16,26 @@ RUN cd node_modules/.bun \
   && find . -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' -o -iname 'readme*' -o -iname 'changelog*' -o -iname 'history.md' \) -delete \
   && cd /engine && find node_modules packages -xtype l -delete
 
+# The native HTTP engine (packages/tuyere: Rust I/O threads, HTTP_ENGINE=archlast). Built on Debian 12 like the image below, so the library
+# links the glibc it runs on. It is only the .node file that is carried over: no compiler reaches the image.
+FROM rust:1.90-bookworm AS native
+WORKDIR /serve
+COPY packages/tuyere/Cargo.toml packages/tuyere/Cargo.lock ./
+COPY packages/tuyere/crates crates
+RUN cargo build --release --locked -p tuyere-napi \
+  && mkdir native && cp target/release/libtuyere_napi.so native/tuyere.node \
+  && ldd native/tuyere.node
+
+# The native database layer (packages/db: DB_ENGINE=native, Rust and a bundled SQLite). Built the same way and for the same reason.
+FROM rust:1.90-bookworm AS native-db
+WORKDIR /db
+COPY packages/db/Cargo.toml packages/db/Cargo.lock ./
+COPY packages/db/.cargo .cargo
+COPY packages/db/crates crates
+RUN cargo build --release --locked -p archlast-db-napi \
+  && mkdir native && cp target/release/libarchlast_db_napi.so native/archlast_db.node \
+  && ldd native/archlast_db.node
+
 # The image: Bun on distroless (glibc, CA certificates, no package manager), BusyBox for /bin/sh and the usual commands
 # (projects' Dockerfiles RUN through a shell, and packages' install scripts need one), the engine's packages as source
 # (projects run /engine/packages/cli/src/index.ts) and those dependencies.
@@ -32,6 +52,14 @@ COPY --from=install /engine/packages/framework packages/framework
 COPY --from=install /engine/packages/client packages/client
 COPY --from=install /engine/packages/react packages/react
 COPY --from=install /engine/packages/create-archlast-forge packages/create-archlast-forge
+# The native engine: its TypeScript, and the library built above (the runtime picks it from HTTP_ENGINE=auto on 4 or more cores).
+COPY --from=install /engine/packages/tuyere/package.json /engine/packages/tuyere/tsconfig.json packages/tuyere/
+COPY --from=install /engine/packages/tuyere/src packages/tuyere/src
+COPY --from=native /serve/native packages/tuyere/native
+# The native database layer: the library built above, where the runtime looks for it (used when DB_ENGINE=native).
+COPY --from=native-db /db/native packages/db/native
+# The one library the native engine needs that distroless does not have (Rust's unwinder).
+COPY --from=native /lib/x86_64-linux-gnu/libgcc_s.so.1 /lib/x86_64-linux-gnu/libgcc_s.so.1
 # The user the engine runs as (below): distroless has no `bun` user, so it is added here, uid 1000 like the slim image's, with a home
 # for bun's install cache (`engine prepare` and the dev engine run `bun install`). It owns /app and /data; /engine stays root's.
 RUN ["/bin/sh", "-c", "echo 'bun:x:1000:1000:bun:/home/bun:/bin/sh' >> /etc/passwd && echo 'bun:x:1000:' >> /etc/group && mkdir -p /home/bun /app/forge/node_modules /data && chown -R 1000:1000 /home/bun /app /data"]

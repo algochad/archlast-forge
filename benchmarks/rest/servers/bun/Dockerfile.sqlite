@@ -1,0 +1,8 @@
+# Bun.serve with the store in SQLite (bun:sqlite): the same server.ts, and a store.ts made of the driver, the rules and the SQLite store (build context: benchmarks/rest).
+FROM oven/bun:1.4.4-alpine
+WORKDIR /app
+COPY servers/shared/driver-bun.ts servers/shared/rules.ts servers/shared/store-sqlite.ts shared/
+RUN cd shared && cat driver-bun.ts rules.ts store-sqlite.ts > store.ts && rm driver-bun.ts rules.ts store-sqlite.ts
+COPY servers/bun/server.ts bun/server.ts
+ENV NODE_ENV=production
+CMD ["bun", "bun/server.ts"]

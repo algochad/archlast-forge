@@ -1,0 +1,206 @@
+{
+  "perCall": {
+    "/": {
+      "archlast-forge (as scaffolded: islands + kept home)": {
+        "rps": 304373.9822,
+        "p50ms": 0.21,
+        "p99ms": 0.31,
+        "peakMiB": 113,
+        "htmlKB": 0.9,
+        "jsGzKB": 1.3
+      },
+      "archlast-forge (islands, home rendered each time)": {
+        "rps": 44620.2971,
+        "p50ms": 1.34,
+        "p99ms": 2.91,
+        "peakMiB": 129,
+        "htmlKB": 0.9,
+        "jsGzKB": 1.3
+      },
+      "archlast-forge (whole-page hydration, like React Router)": {
+        "rps": 16203.1859,
+        "p50ms": 3.66,
+        "p99ms": 7.19,
+        "peakMiB": 136,
+        "htmlKB": 1.3,
+        "jsGzKB": 121.6
+      },
+      "brust 2.0 alpha (brust start, Rust renderer)": {
+        "rps": 211009.5771,
+        "p50ms": 0.3,
+        "p99ms": 0.56,
+        "peakMiB": 52,
+        "htmlKB": 1,
+        "jsGzKB": 4.7
+      },
+      "React Router 7 (react-router-serve, Node)": {
+        "rps": 2261.5149,
+        "p50ms": 27.01,
+        "p99ms": 43.89,
+        "peakMiB": 145,
+        "htmlKB": 3.7,
+        "jsGzKB": 97.9
+      },
+      "Next.js 16 (next start, Node)": {
+        "rps": 3693.7548,
+        "p50ms": 16.83,
+        "p99ms": 26.48,
+        "peakMiB": 143,
+        "htmlKB": 6.4,
+        "jsGzKB": 169.7
+      }
+    },
+    "/products": {
+      "archlast-forge (as scaffolded: islands + kept home)": {
+        "rps": 3339.8464,
+        "p50ms": 18.89,
+        "p99ms": 22.94,
+        "peakMiB": 131,
+        "htmlKB": 10.4,
+        "jsGzKB": 1.3
+      },
+      "archlast-forge (islands, home rendered each time)": {
+        "rps": 3323.6341,
+        "p50ms": 18.95,
+        "p99ms": 22.44,
+        "peakMiB": 159,
+        "htmlKB": 10.4,
+        "jsGzKB": 1.3
+      },
+      "archlast-forge (whole-page hydration, like React Router)": {
+        "rps": 1916.5844,
+        "p50ms": 32.84,
+        "p99ms": 51,
+        "peakMiB": 162,
+        "htmlKB": 21.6,
+        "jsGzKB": 122
+      },
+      "brust 2.0 alpha (brust start, Rust renderer)": {
+        "rps": 358.8614,
+        "p50ms": 183.9,
+        "p99ms": 321.85,
+        "peakMiB": 185,
+        "htmlKB": 10.5,
+        "jsGzKB": 4.7
+      },
+      "React Router 7 (react-router-serve, Node)": {
+        "rps": 115.3655,
+        "p50ms": 362.9,
+        "p99ms": 4255.5,
+        "peakMiB": 553,
+        "htmlKB": 27.1,
+        "jsGzKB": 98.1
+      },
+      "Next.js 16 (next start, Node)": {
+        "rps": 81.7553,
+        "p50ms": 425.5,
+        "p99ms": 4331.8,
+        "peakMiB": 388,
+        "htmlKB": 44.7,
+        "jsGzKB": 169.7
+      }
+    }
+  },
+  "shared": {
+    "/": {
+      "archlast-forge (as scaffolded: islands + kept home)": {
+        "rps": 303616.2257,
+        "p50ms": 0.21,
+        "p99ms": 0.31,
+        "peakMiB": 113,
+        "htmlKB": 0.9,
+        "jsGzKB": 1.3
+      },
+      "archlast-forge (islands, home rendered each time)": {
+        "rps": 44096.7316,
+        "p50ms": 1.4,
+        "p99ms": 2.97,
+        "peakMiB": 130,
+        "htmlKB": 0.9,
+        "jsGzKB": 1.3
+      },
+      "archlast-forge (whole-page hydration, like React Router)": {
+        "rps": 15984.045,
+        "p50ms": 3.72,
+        "p99ms": 6.47,
+        "peakMiB": 136,
+        "htmlKB": 1.3,
+        "jsGzKB": 121.6
+      },
+      "brust 2.0 alpha (brust start, Rust renderer)": {
+        "rps": 212169.8997,
+        "p50ms": 0.3,
+        "p99ms": 0.55,
+        "peakMiB": 53,
+        "htmlKB": 1,
+        "jsGzKB": 4.7
+      },
+      "React Router 7 (react-router-serve, Node)": {
+        "rps": 2206.6659,
+        "p50ms": 27.51,
+        "p99ms": 44.66,
+        "peakMiB": 145,
+        "htmlKB": 3.7,
+        "jsGzKB": 97.9
+      },
+      "Next.js 16 (next start, Node)": {
+        "rps": 3737.5748,
+        "p50ms": 16.65,
+        "p99ms": 26.62,
+        "peakMiB": 137,
+        "htmlKB": 6.4,
+        "jsGzKB": 169.7
+      }
+    },
+    "/products": {
+      "archlast-forge (as scaffolded: islands + kept home)": {
+        "rps": 5875.4283,
+        "p50ms": 10.79,
+        "p99ms": 14.08,
+        "peakMiB": 130,
+        "htmlKB": 10.4,
+        "jsGzKB": 1.3
+      },
+      "archlast-forge (islands, home rendered each time)": {
+        "rps": 5700.7536,
+        "p50ms": 11.13,
+        "p99ms": 14.47,
+        "peakMiB": 165,
+        "htmlKB": 10.4,
+        "jsGzKB": 1.3
+      },
+      "archlast-forge (whole-page hydration, like React Router)": {
+        "rps": 2548.9458,
+        "p50ms": 24.46,
+        "p99ms": 34.96,
+        "peakMiB": 167,
+        "htmlKB": 21.6,
+        "jsGzKB": 122
+      },
+      "brust 2.0 alpha (brust start, Rust renderer)": {
+        "rps": 11261.6335,
+        "p50ms": 5.54,
+        "p99ms": 11.64,
+        "peakMiB": 175,
+        "htmlKB": 10.5,
+        "jsGzKB": 4.7
+      },
+      "React Router 7 (react-router-serve, Node)": {
+        "rps": 848.3984,
+        "p50ms": 72.34,
+        "p99ms": 168.88,
+        "peakMiB": 187,
+        "htmlKB": 27.1,
+        "jsGzKB": 98.1
+      },
+      "Next.js 16 (next start, Node)": {
+        "rps": 228.0853,
+        "p50ms": 269.9,
+        "p99ms": 2457.2,
+        "peakMiB": 207,
+        "htmlKB": 44.7,
+        "jsGzKB": 169.7
+      }
+    }
+  }
+}

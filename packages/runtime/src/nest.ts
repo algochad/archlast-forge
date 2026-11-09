@@ -51,15 +51,18 @@ import { Readable } from "node:stream";
 import { match } from "path-to-regexp";
 import { EMPTY, filter, fromEvent, mergeMap, Observable, takeUntil, type Subscription } from "rxjs";
 import type { RouteDocs, SecurityRequirement } from "./api-docs";
-import { httpAction, type ActionCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
+import { httpAction, type ActionCtx, type HttpCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
+import { AsyncLocalStorage } from "node:async_hooks";
 import { queryValue } from "./server/http";
+import { MINIMAL, MinimalResponse, type MinimalRequest } from "./server/minimal";
+import { simpleMatcher } from "./server/route-match";
 import { NEST_MOUNT, type NestRoute } from "./server/openapi";
 import { validate, validateFields, ValidationError, type PropertyValidators, type Validator } from "./values";
 
 export * from "@nestjs/common";
 export { APP_FILTER, APP_GUARD, APP_INTERCEPTOR, APP_PIPE, BaseExceptionFilter, ModuleRef, Reflector } from "@nestjs/core";
 export * as rxjs from "rxjs";
-export type { ActionCtx, MutationCtx, QueryCtx } from "./functions";
+export type { ActionCtx, HttpCtx, MutationCtx, QueryCtx } from "./functions";
 /** What Nest's handlers and middleware get as `req` and `res`: Express's API on top of the engine's request (see the docs' NestJS page). */
 export type { ForgeRequest as NestRequest, ForgeResponse as NestResponse };
 
@@ -67,6 +70,8 @@ type AnyCtx = QueryCtx | MutationCtx | ActionCtx;
 
 /** Where the function's or request's ctx sits on the object Nest knows as the request (or the socket). */
 const FORGE_CTX = Symbol.for("archlast-forge.ctx");
+/** Where an untraced call is told its route (executor.ts); null means the call asks for it. */
+const ROUTE = Symbol.for("archlast-forge.route");
 /** Marks a Response whose body is sent as it is written: the engine streams it instead of waiting for the end. */
 const STREAM = Symbol.for("archlast-forge.stream");
 
@@ -90,7 +95,8 @@ interface TelemetryBridge {
   annotate(attrs: Record<string, string | number | boolean>, request?: boolean): void;
   entry?<T>(kind: "rpc" | "ws", operation: string, traceparent: string | undefined, fn: () => Promise<T>): Promise<T>;
 }
-const telemetry = () => (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.telemetry")] as TelemetryBridge | undefined;
+const TELEMETRY_KEY = Symbol.for("archlast-forge.telemetry");
+const telemetry = () => (globalThis as Record<symbol, unknown>)[TELEMETRY_KEY] as TelemetryBridge | undefined;
 const TIMED = Symbol.for("archlast-forge.timed");
 
 /**
@@ -100,18 +106,27 @@ const TIMED = Symbol.for("archlast-forge.timed");
  * itself, so the timed method carries the same metadata. `interceptor: false` leaves out the one that records transport messages, for a
  * transport that records them itself (Forge RPC).
  */
+// Nest's metadata keys: a microservice pattern, a gateway's message, and the list of interceptors on a handler.
+const MESSAGE_PATTERN = "microservices:pattern";
+const GATEWAY_MESSAGE = "message";
+const INTERCEPTORS = "__interceptors__";
+
 export function timeClass(target: Function, kind: string, interceptor = true) {
   const bridge = telemetry();
   const proto = target.prototype as Record<string | symbol, unknown> | undefined;
   if (!bridge || !proto || Object.hasOwn(proto, TIMED)) return;
   Object.defineProperty(proto, TIMED, { value: true });
-  if (interceptor && (kind === "controller" || kind === "gateway")) UseInterceptors(EntryInterceptor)(target);
+  // The interceptor that records transport messages goes on the handlers that take them (a message pattern, a gateway's event), not on the class: Nest
+  // runs a request through its interceptors with an Observable and an async-context binding each, which an HTTP route would pay for and gain nothing from.
+  const entries = interceptor && (kind === "controller" || kind === "gateway");
   for (const key of Object.getOwnPropertyNames(proto)) {
     const d = Object.getOwnPropertyDescriptor(proto, key);
     if (key === "constructor" || !d || typeof d.value !== "function" || !d.writable) continue;
     const original = d.value as (...args: unknown[]) => unknown;
     const timed = bridge.wrap(original, `${target.name}.${key}`, { "code.namespace": target.name, "code.function": key, "nest.kind": kind });
     for (const meta of Reflect.getOwnMetadataKeys(original)) Reflect.defineMetadata(meta, Reflect.getOwnMetadata(meta, original), timed);
+    if (entries && (Reflect.hasOwnMetadata(MESSAGE_PATTERN, original) || Reflect.hasOwnMetadata(GATEWAY_MESSAGE, original)))
+      Reflect.defineMetadata(INTERCEPTORS, [EntryInterceptor, ...((Reflect.getOwnMetadata(INTERCEPTORS, timed) as unknown[] | undefined) ?? [])], timed);
     Object.defineProperty(timed, "name", { value: original.name });
     Object.defineProperty(proto, key, { ...d, value: timed });
   }
@@ -244,6 +259,63 @@ export abstract class ForgeService<C extends AnyCtx = AnyCtx> {
 }
 Inject(CTX)(ForgeService.prototype, "ctx");
 
+// ---- services that work in a transaction of their own: DbService, @Read(), @Write() ----
+
+interface TxScope {
+  /** The route's (or socket's) ctx, which opens the transaction. */
+  action: HttpCtx;
+  /** The transaction the code is running in, if it is in one. */
+  tx?: { kind: "read" | "write"; ctx: QueryCtx | MutationCtx };
+}
+const txScope = new AsyncLocalStorage<TxScope>();
+/** Set once a `@Read()` or `@Write()` method exists: from then on each HTTP request runs with its ctx in `txScope`, which costs nothing for an app that has none. */
+let scoped = false;
+
+/**
+ * A service for the database that a controller (or a gateway, or a message handler) calls directly, with no function of the reactive system in between. It is
+ * a plain singleton: its `@Read()` methods run in one read transaction and its `@Write()` methods in one write transaction, and inside them `this.ctx.db` is that
+ * transaction's database. A method called from another one joins its transaction (a `@Write()` can call `@Read()` ones; the other way is refused).
+ *
+ * ```ts
+ * @Injectable()
+ * class Items extends DbService<MutationCtx> {
+ *   @Read() async get(id: number) { return this.ctx.db.query("items").withIndex("by_item", (q) => q.eq("itemId", id)).first(); }
+ *   @Write() async add(name: string) { return this.ctx.db.insert("items", { name }); }
+ * }
+ * ```
+ *
+ * Methods must be `async` (they return a promise whatever they declare), and, as for a query or a mutation, a transaction can run again: keep side effects
+ * such as a `fetch` outside them. The caller is the one of the HTTP request (`this.ctx.auth`). It is for code that starts from a route, a socket or a message; inside
+ * a query or a mutation use `ForgeService` with `inject()`, since those already are in a transaction.
+ */
+export abstract class DbService<C extends QueryCtx | MutationCtx = MutationCtx> {
+  protected get ctx(): C {
+    const tx = txScope.getStore()?.tx;
+    if (!tx) throw new Error(`${this.constructor.name}: this.ctx is only available inside a method marked @Read() or @Write()`);
+    return tx.ctx as C;
+  }
+}
+
+function inTransaction(kind: "read" | "write") {
+  return (_target: object, key: string | symbol, descriptor: PropertyDescriptor) => {
+    scoped = true;
+    const original = descriptor.value as (...args: unknown[]) => unknown;
+    descriptor.value = function (this: unknown, ...args: unknown[]) {
+      const scope = txScope.getStore();
+      if (scope?.tx) {
+        if (kind === "write" && scope.tx.kind === "read") throw new Error(`${String(key)} is @Write(), but it was called from a @Read() method, which cannot write`);
+        return original.apply(this, args); // already in a transaction: join it
+      }
+      const action = scope?.action ?? (engine().actionCtx(null) as unknown as HttpCtx);
+      return (action[kind] as (fn: (ctx: QueryCtx & MutationCtx) => unknown) => Promise<unknown>)((ctx) => txScope.run({ action, tx: { kind, ctx } }, () => original.apply(this, args)));
+    };
+  };
+}
+/** Runs the method in one read transaction (see `DbService`). */
+export const Read = () => inTransaction("read");
+/** Runs the method in one write transaction (see `DbService`); topics are published after the commit, so live queries update. */
+export const Write = () => inTransaction("write");
+
 /** Gives every provider the CTX token: what `inject()` or the HTTP request put on Nest's request object, or for a microservice message an anonymous ActionCtx. */
 class ForgeCtxModule {}
 Global()(ForgeCtxModule);
@@ -318,8 +390,13 @@ export function nest(http: { route(spec: HttpRoute): void; root?: boolean }, opt
   })();
   started.catch(() => {}); // reported to every call that needs the app
 
-  const handler = httpAction(async (ctx, request) => (await started!).adapter.handle(request, ctx));
+  // The mount takes a `MinimalRequest` and may answer with a `MinimalResponse` (see server/minimal.ts): a Nest request needs no Web `Request` or `Response` unless a handler asks.
+  let ready: ForgeAdapter | undefined;
+  started.then((s) => void (ready = s.adapter), () => {});
+  const serve = (ctx: HttpCtx, request: Parameters<ForgeAdapter["handle"]>[0]) => (ready ? ready.handle(request, ctx) : started!.then((s) => s.adapter.handle(request, ctx))) as Promise<Response>; // (a promise or, for a controller that answers at once, the answer)
+  const handler = httpAction((ctx, request) => (scoped ? txScope.run({ action: ctx }, () => serve(ctx, request)) : serve(ctx, request)));
   (handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] = true;
+  (handler as unknown as Record<symbol, unknown>)[MINIMAL] = true;
   if (o.helmet !== undefined) (handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-helmet")] = o.helmet;
   for (const method of METHODS) http.route({ method, pathPrefix: prefix, handler });
   (globalThis as Record<symbol, unknown>)[NEST_ROUTES] = async () => routesOf((await started!).app, http.root ? prefix : `/http${prefix}`);
@@ -476,6 +553,8 @@ const joinPath = (prefix: string, path: string) => (prefix + path.replace(/^\/+/
  */
 export function onSocket(path: string, open: (socket: ForgeSocket) => void) {
   socketPaths.set(joinPath(mountPrefix, path), open);
+  // Sockets (gateways, GraphQL subscriptions) stay with the server that took them: a cluster of servers starts with one for an app that has them (see server.ts)
+  (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.sockets-used")] = true;
 }
 
 type SocketEvent = { op: "open"; sid: string; path: string; headers: [string, string][]; requestId?: string } | { op: "message"; sid: string; data: string | ArrayBuffer } | { op: "close"; sid: string; code: number; reason: string };
@@ -692,17 +771,57 @@ const toObject = (params: URLSearchParams) => {
   return out;
 };
 
+/** The path and the query string of a URL a `Request` serialized (it is already parsed and normalized, so they are the text between the host and the `?` or `#`). */
+function splitUrl(url: string): { pathname: string; search: string } {
+  const start = url.indexOf("/", url.indexOf("://") + 3);
+  const hash = url.indexOf("#");
+  const end = hash < 0 ? url.length : hash;
+  const q = url.indexOf("?", start);
+  if (start < 0) return { pathname: "/", search: q < 0 || q > end ? "" : url.slice(q, end) };
+  return q < 0 || q > end ? { pathname: url.slice(start, end), search: "" } : { pathname: url.slice(start, q), search: q + 1 === end ? "" : url.slice(q, end) };
+}
+
 /** What Nest's handlers see as `req`: the parts its decorators read (`@Body`, `@Query`, `@Param`, `@Headers`, `@Req`), Express's helpers, and the Web Request. */
 class ForgeRequest extends EventEmitter {
   readonly url: string;
   readonly originalUrl: string;
   readonly baseUrl = "";
-  readonly hostname: string;
-  readonly protocol: string;
-  readonly headers: Record<string, string>;
+  // Worked out when a handler asks: most routes read few of them, and each costs a parse.
+  private _headers?: Record<string, string>;
+  private _query?: Record<string, string | string[]>;
+  private _cookies?: Record<string, string>;
+  private _protocol?: string;
+  private _hostname?: string;
+  private readonly search: string;
+  get headers(): Record<string, string> {
+    if (this._headers) return this._headers;
+    const source = this.source;
+    if (source instanceof Request) return (this._headers = Object.fromEntries(source.headers));
+    // as a Headers object gives them: a name that repeats is one value joined with ", " ("; " for cookies)
+    const out: Record<string, string> = {};
+    for (const [name, value] of source.headers) out[name] = name in out ? `${out[name]}${name === "cookie" ? "; " : ", "}${value}` : value;
+    return (this._headers = out);
+  }
+  /** The Web `Request`: the engine's own when this is one, otherwise made now from what the server sent (nothing reads it on most routes). */
+  get raw(): Request {
+    const source = this.source;
+    if (source instanceof Request) return source;
+    return (this._raw ??= new Request(source.url, { method: source.method, headers: source.headers, body: source.method === "GET" || source.method === "HEAD" ? undefined : source.body }));
+  }
+  private _raw?: Request;
   /** As the URL gave them; on a route with a `@Contract`, the fields it names hold their checked values (`?limit=2` is the number 2). */
-  readonly query: Record<string, string | string[]>;
-  readonly cookies: Record<string, string>;
+  get query(): Record<string, string | string[]> {
+    return (this._query ??= this.search ? toObject(new URLSearchParams(this.search)) : {});
+  }
+  get cookies(): Record<string, string> {
+    return (this._cookies ??= Object.fromEntries(new Bun.CookieMap(this.headers.cookie ?? "")));
+  }
+  get hostname(): string {
+    return (this._hostname ??= new URL(this.source.url).hostname);
+  }
+  get protocol(): string {
+    return (this._protocol ??= this.headers["x-forwarded-proto"]?.split(",")[0]?.trim() || this.source.url.slice(0, this.source.url.indexOf(":")));
+  }
   /** Node's connection, as engine.io reads it; the engine's server knows the address, which isn't passed on. */
   readonly connection = { remoteAddress: "", encrypted: false };
   /** What Node's `setEncoding()` asked for: "data" events then carry strings. */
@@ -716,21 +835,17 @@ class ForgeRequest extends EventEmitter {
   [FORGE_CTX]: ActionCtx;
 
   constructor(
-    readonly raw: Request,
+    private readonly source: Request | MinimalRequest,
     readonly method: string,
     readonly path: string,
     readonly body: unknown,
     readonly rawBody: Buffer | undefined,
     ctx: ActionCtx,
+    search: string,
   ) {
     super();
-    const url = new URL(raw.url);
-    this.url = this.originalUrl = path + url.search;
-    this.hostname = url.hostname;
-    this.headers = Object.fromEntries(raw.headers);
-    this.protocol = this.headers["x-forwarded-proto"]?.split(",")[0]?.trim() || url.protocol.slice(0, -1);
-    this.query = toObject(url.searchParams);
-    this.cookies = Object.fromEntries(new Bun.CookieMap(this.headers.cookie ?? ""));
+    this.search = search;
+    this.url = this.originalUrl = path + search;
     this[FORGE_CTX] = ctx;
   }
   get secure() {
@@ -756,7 +871,22 @@ type CookieOptions = { maxAge?: number; expires?: Date; path?: string; domain?: 
 class ForgeResponse extends EventEmitter {
   statusCode = 200;
   statusMessage = "";
-  readonly headers = new Headers();
+  private _headers?: Headers;
+  private _type?: string;
+  /** The response's headers. Made when something reads them: most answers set only a content type, which is held until then. */
+  get headers(): Headers {
+    if (!this._headers) {
+      this._headers = new Headers();
+      if (this._type !== undefined) this._headers.set("content-type", this._type);
+    }
+    return this._headers;
+  }
+  /** Sets the content type unless one is set (the common case of what `headers.has("content-type")` then `headers.set(...)` did). */
+  defaultType(type: string) {
+    if (this._headers) {
+      if (!this._headers.has("content-type")) this._headers.set("content-type", type);
+    } else if (this._type === undefined) this._type = type;
+  }
   readonly locals: Record<string, unknown> = {};
   body: BodyInit | null = null;
   writableEnded = false;
@@ -764,9 +894,13 @@ class ForgeResponse extends EventEmitter {
   request?: ForgeRequest;
   private readable?: ReadableStream<Uint8Array>;
   private stream?: ReadableStreamDefaultController<Uint8Array>;
-  private resolve!: () => void;
+  private resolve?: () => void;
+  private pending?: Promise<void>;
   /** Resolves when the response is ready to go: ended, or streaming. */
-  readonly done = new Promise<void>((r) => (this.resolve = r));
+  get done(): Promise<void> {
+    // made when something waits (a handler that answers after `next()` returned): most answers are over by then
+    return (this.pending ??= new Promise<void>((r) => (this.resolve = r)));
+  }
 
   get headersSent() {
     return Boolean(this.readable) || this.writableEnded;
@@ -787,7 +921,7 @@ class ForgeResponse extends EventEmitter {
         this.request?.emit("close");
       },
     });
-    this.resolve();
+    this.resolve?.();
   }
   write(chunk: unknown, encoding?: BufferEncoding | (() => void), cb?: () => void) {
     if (this.writableEnded) return false;
@@ -805,7 +939,7 @@ class ForgeResponse extends EventEmitter {
       this.stream!.close();
     } else if (chunk !== undefined && chunk !== null) this.body = typeof chunk === "string" || chunk instanceof Uint8Array || chunk instanceof ArrayBuffer ? (chunk as BodyInit) : String(chunk);
     this.writableEnded = true;
-    this.resolve();
+    this.resolve?.();
     this.emit("finish");
     this.emit("close");
     done?.();
@@ -815,7 +949,7 @@ class ForgeResponse extends EventEmitter {
     this.error = error;
     this.stream?.error(error);
     this.writableEnded = true;
-    this.resolve();
+    this.resolve?.();
   }
 
   status(code: number) {
@@ -896,18 +1030,18 @@ class ForgeResponse extends EventEmitter {
     return this.cookie(name, "", { ...options, maxAge: undefined, expires: new Date(1) });
   }
   json(body: unknown) {
-    if (!this.headers.has("content-type")) this.headers.set("content-type", "application/json; charset=utf-8");
+    this.defaultType("application/json; charset=utf-8");
     return this.end(JSON.stringify(body));
   }
   /** Express's `res.send()`: an object as JSON, a string as HTML, bytes as they are. */
   send(body?: unknown) {
     if (body === undefined || body === null) return this.end();
     if (typeof body === "string") {
-      if (!this.headers.has("content-type")) this.headers.set("content-type", "text/html; charset=utf-8");
+      this.defaultType("text/html; charset=utf-8");
       return this.end(body);
     }
     if (body instanceof Uint8Array || body instanceof ArrayBuffer) {
-      if (!this.headers.has("content-type")) this.headers.set("content-type", "application/octet-stream");
+      this.defaultType("application/octet-stream");
       return this.end(body);
     }
     return this.json(body);
@@ -915,6 +1049,27 @@ class ForgeResponse extends EventEmitter {
   redirect(status: number | string, url?: string) {
     const [code, to] = typeof status === "number" ? [status, url!] : [302, status];
     return this.status(code).location(to).end();
+  }
+
+  /** The answer as bytes when that is all it is (a string, bytes or nothing), so the server need not make a `Response` to read it back; otherwise the `Response`. */
+  toAnswer(): Response | MinimalResponse {
+    const empty = this.statusCode === 204 || this.statusCode === 304;
+    const body = this.readable ?? (empty ? null : this.body);
+    if (body !== null && typeof body !== "string" && !(body instanceof Uint8Array)) return this.toResponse();
+    const headers: [string, string][] = [];
+    let typed = false;
+    if (this._headers) {
+      for (const h of this._headers) {
+        if (h[0] === "content-type") typed = true;
+        headers.push(h);
+      }
+    } else if (this._type !== undefined) {
+      typed = true;
+      headers.push(["content-type", this._type]);
+    }
+    // `new Response("text")` says what it is when sent: the same here
+    if (typeof body === "string" && !typed) headers.push(["content-type", "text/plain;charset=utf-8"]);
+    return new MinimalResponse(this.statusCode, headers, body);
   }
 
   toResponse() {
@@ -934,6 +1089,8 @@ interface Layer {
   route: boolean;
   /** The path as the route was declared (`/users/:id`). */
   pattern: string;
+  /** What the request is named after when this route matches (made once). */
+  named?: string;
 }
 
 /** The `instance` Nest's adapter base class hands routes to: an Express-style list of layers, run in order. */
@@ -942,8 +1099,14 @@ class Router {
   private layer(method: string | undefined, route: boolean, args: unknown[]): Layer {
     const [path, handler] = (typeof args[0] === "function" ? ["/", args[0]] : args) as [string, Handler];
     // Middleware at the root runs for every path: path-to-regexp's prefix match needs a "/" after "/", so it would match only "/".
-    const test = !route && (path === "/" || path === "") ? () => ({ params: {} }) : match(path, { decode: decodeURIComponent, end: route });
-    return { method, route, handler, pattern: path || "/", matches: (p) => test(p) as false | { params: Record<string, string> } };
+    const compile = () => match(path, { decode: decodeURIComponent, end: route }) as (p: string) => false | { params: Record<string, string> };
+    if (!route && (path === "/" || path === "")) return { method, route, handler, pattern: path || "/", matches: () => ({ params: {} }) };
+    // A route made of fixed segments and plain parameters (nearly all of them) is matched without a regular expression; others, and a path that is odd, by path-to-regexp.
+    let compiled: ((p: string) => false | { params: Record<string, string> }) | undefined;
+    const slow = (p: string) => (compiled ??= compile())(p);
+    const fast = route ? simpleMatcher(path, slow) : null;
+    if (!fast) compiled = compile(); // a pattern path-to-regexp rejects fails when the route is added, as it always did
+    return { method, route, handler, pattern: path || "/", matches: fast ?? slow };
   }
   private add(method: string | undefined, route: boolean, args: unknown[]) {
     this.layers.push(this.layer(method, route, args));
@@ -969,11 +1132,28 @@ class Router {
 const unsupported = (what: string) => new Error(`${what} is not available for Nest inside archlast-forge`);
 
 /** The body as Express's parsers would leave it: JSON parsed, forms as an object, text as a string, anything else as bytes. */
-async function readBody(request: Request): Promise<{ body: unknown; rawBody?: Buffer }> {
-  if (request.method === "GET" || request.method === "HEAD" || !request.body) return { body: undefined };
-  const rawBody = Buffer.from(await request.arrayBuffer());
+const NO_BODY: { body: unknown; rawBody?: Buffer } = { body: undefined };
+const noop = () => {};
+/** The response as the answer, or its error thrown (before the head went out; an error while streaming ends the stream instead). */
+function answerOf(res: ForgeResponse): Response | MinimalResponse {
+  if (res.error) throw res.error;
+  return res.toAnswer();
+}
+
+async function readBody(request: Request | MinimalRequest): Promise<{ body: unknown; rawBody?: Buffer }> {
+  if (request.method === "GET" || request.method === "HEAD") return { body: undefined };
+  let rawBody: Buffer;
+  let type: string;
+  if (request instanceof Request) {
+    if (!request.body) return { body: undefined };
+    rawBody = Buffer.from(await request.arrayBuffer());
+    type = (request.headers.get("content-type") ?? "").toLowerCase();
+  } else {
+    if (!request.body) return { body: undefined };
+    rawBody = Buffer.from(request.body);
+    type = (request.headers.find((h) => h[0] === "content-type")?.[1] ?? "").toLowerCase();
+  }
   if (!rawBody.length) return { body: undefined, rawBody };
-  const type = (request.headers.get("content-type") ?? "").toLowerCase();
   if (/[/+]json\b/.test(type)) {
     try {
       return { body: JSON.parse(rawBody.toString("utf8")), rawBody };
@@ -1009,8 +1189,17 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
     this.router = router;
   }
 
-  /** Runs one request through Nest. Errors that are not HttpExceptions are thrown, so the engine answers them like an HTTP action's. */
-  async handle(request: Request, ctx: ActionCtx): Promise<Response> {
+  /**
+   * Runs one request through Nest. Errors that are not HttpExceptions are thrown, so the engine answers them like an HTTP action's. The answer comes back without a
+   * promise when the controller's does not (a request with a body waits for it first), and with exactly one when it is: each promise made between the socket and the
+   * handler is a turn of the event loop's microtasks.
+   */
+  handle(request: Request | MinimalRequest, ctx: ActionCtx): Promise<Response | MinimalResponse> | Response | MinimalResponse {
+    if (request.method === "GET" || request.method === "HEAD") return this.dispatch(request, ctx, NO_BODY); // a read has no body to wait for
+    return this.withBody(request, ctx);
+  }
+
+  private async withBody(request: Request | MinimalRequest, ctx: ActionCtx): Promise<Response | MinimalResponse> {
     let parsed: Awaited<ReturnType<typeof readBody>>;
     try {
       parsed = await readBody(request);
@@ -1018,16 +1207,23 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
       if (!(e instanceof HttpException)) throw e;
       return Response.json(e.getResponse(), { status: e.getStatus() });
     }
+    return this.dispatch(request, ctx, parsed);
+  }
+
+  private dispatch(request: Request | MinimalRequest, ctx: ActionCtx, parsed: { body: unknown; rawBody?: Buffer }): Promise<Response | MinimalResponse> | Response | MinimalResponse {
     // Nest sees paths below the mount point, so `prefix: "/api/"` with `@Controller("users")` serves /http/api/users.
-    const path = "/" + new URL(request.url).pathname.slice(this.prefix.length);
-    const req = new ForgeRequest(request, request.method, path, parsed.body, parsed.rawBody, ctx);
+    const pathname = request instanceof Request ? splitUrl(request.url).pathname : request.path;
+    const search = request instanceof Request ? splitUrl(request.url).search : request.search;
+    const path = "/" + pathname.slice(this.prefix.length);
+    const req = new ForgeRequest(request, request.method, path, parsed.body, parsed.rawBody, ctx, search);
     const res = new ForgeResponse();
     res.request = req;
 
     const layers = this.router.layers;
     let i = 0;
-    const next = (err?: unknown): Promise<void> | void => {
-      if (err) return res.fail(err);
+    /** Runs the next layer that matches and answers what its handler returned (a promise, or not): errors it throws go to the response. */
+    const run = (err?: unknown): unknown => {
+      if (err) return void res.fail(err);
       while (i < layers.length) {
         const layer = layers[i++]!;
         if (layer.method && layer.method !== req.method) continue;
@@ -1036,24 +1232,38 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
         if (layer.route) {
           req.params = found.params;
           // The request is named after the route it matched, below /http: the mount prefix and Nest's own path.
-          telemetry()?.annotate({ "http.route": `${this.prefix.slice(0, -1)}${layer.pattern}` }, true);
+          const named = (layer.named ??= `${this.prefix.slice(0, -1)}${layer.pattern}`);
+          // a call with no trace has nothing to annotate: it is named by what it leaves on its ctx
+          if ((ctx as unknown as Record<symbol, unknown>)[ROUTE] === null) (ctx as unknown as Record<symbol, unknown>)[ROUTE] = named;
+          else telemetry()?.annotate({ "http.route": named }, true);
         }
-        return Promise.resolve()
-          .then(() => layer.handler(req, res, next))
-          .then(
-            () => {},
-            (e) => res.fail(e),
-          );
+        try {
+          return layer.handler(req, res, next);
+        } catch (e) {
+          return void res.fail(e);
+        }
       }
-      return Promise.resolve(this.notFound?.(req, res, next)).then(
-        () => {},
-        (e) => res.fail(e),
-      );
+      try {
+        return this.notFound?.(req, res, next);
+      } catch (e) {
+        return void res.fail(e);
+      }
     };
-    await next();
-    await res.done; // handlers answer when they end the response or start streaming it; the action's time limit bounds the wait
-    if (res.error) throw res.error; // before the head went out; an error while streaming ends the stream instead
-    return res.toResponse();
+    /** What a layer calls to hand the request on (Express's `next`): it answers a promise that never rejects. */
+    const next = (err?: unknown): Promise<void> | void => {
+      const out = run(err);
+      return out && typeof (out as PromiseLike<unknown>).then === "function" ? (out as Promise<unknown>).then(noop, (e) => res.fail(e)) : undefined;
+    };
+    const out = run();
+    if (out && typeof (out as PromiseLike<unknown>).then === "function") {
+      // one promise: Nest's own, followed by the answer (or by the response's `done`, for a handler that answers after it returned)
+      return (out as Promise<unknown>).then(
+        () => (res.headersSent ? answerOf(res) : res.done.then(() => answerOf(res))),
+        (e) => (res.fail(e), answerOf(res)),
+      );
+    }
+    // handlers answer when they end the response or start streaming it; the action's time limit bounds the wait
+    return res.headersSent ? answerOf(res) : res.done.then(() => answerOf(res));
   }
 
   // Nest calls these while it handles a request.
@@ -1079,10 +1289,10 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
       return res.end();
     }
     if (typeof body === "object") {
-      if (!res.headers.has("content-type")) res.headers.set("content-type", "application/json; charset=utf-8");
+      res.defaultType("application/json; charset=utf-8");
       return res.end(JSON.stringify(body));
     }
-    if (!res.headers.has("content-type")) res.headers.set("content-type", "text/plain; charset=utf-8");
+    res.defaultType("text/plain; charset=utf-8");
     return res.end(String(body));
   }
   status(res: ForgeResponse, statusCode: number) {

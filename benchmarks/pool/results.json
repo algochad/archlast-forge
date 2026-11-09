@@ -1,0 +1,42 @@
+{
+  "params": {
+    "rounds": 20000,
+    "conns": 32,
+    "secs": 6
+  },
+  "inlineWork": {
+    "rps": 133,
+    "p50ms": 238.68,
+    "p99ms": 318.46,
+    "cores": 1.02,
+    "success": 1
+  },
+  "poolWork": {
+    "rps": 401,
+    "p50ms": 80.73,
+    "p99ms": 105.4,
+    "cores": 3.14,
+    "success": 1
+  },
+  "pingIdle": {
+    "rps": 23519,
+    "p50ms": 0.16,
+    "p99ms": 0.29,
+    "cores": 0,
+    "success": 1
+  },
+  "pingInline": {
+    "rps": 17,
+    "p50ms": 241.8,
+    "p99ms": 339.91,
+    "cores": 0,
+    "success": 1
+  },
+  "pingPool": {
+    "rps": 14543,
+    "p50ms": 0.24,
+    "p99ms": 0.71,
+    "cores": 0,
+    "success": 1
+  }
+}

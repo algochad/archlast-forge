@@ -32,6 +32,15 @@ export const SETTINGS: SettingDef[] = [
   { name: "PORT", group: "Server", type: "int", min: 0, default: "3000", doc: "The port to listen on.", envOnly: "The container's port mapping and health check depend on it." },
   { name: "HOST", group: "Server", type: "string", default: "0.0.0.0", doc: "The interface to bind.", envOnly: "The container's port mapping depends on it." },
   { name: "IDLE_TIMEOUT_SECONDS", group: "Server", type: "int", min: 1, default: "75", doc: "How long an idle keep-alive connection stays open (capped at 255)." },
+  {
+    name: "HTTP_ENGINE",
+    group: "Server",
+    type: "enum",
+    options: ["auto", "bun", "archlast"],
+    default: "auto",
+    doc: "Which HTTP server answers: the native engine (Rust I/O threads, handlers on Bun) or Bun.serve. `auto` uses the native engine on 4 or more CPU cores when it is available (the engine image has it), else Bun.serve.",
+    envOnly: "The server is chosen before the engine can read its stored settings.",
+  },
   { name: "TRUST_PROXY", group: "Server", type: "bool", default: "off", doc: "Take the client IP from X-Forwarded-For for rate limiting. Only behind a proxy that overwrites that header." },
   { name: "TRUSTED_ORIGINS", group: "Server", type: "list", default: "none", doc: "Browser origins other than BETTER_AUTH_URL that may call the engine (comma-separated)." },
   {
@@ -94,6 +103,15 @@ export const SETTINGS: SettingDef[] = [
     default: "FULL",
     doc: "How hard SQLite pushes a commit to the disk. FULL: an answered write survives a power cut. NORMAL: faster for a lone writer, but a power cut or operating-system crash can lose the last few writes (a crash of the engine alone can't).",
   },
+  {
+    name: "DB_ENGINE",
+    group: "Database",
+    type: "enum",
+    options: ["bun", "native"],
+    default: "bun",
+    doc: "What runs the SQLite database: bun (bun:sqlite) or native (Hearth, the engine's Rust layer, packages/db: it owns the connections, the WAL and the document operations). native is for Linux where the layer is built (the engine image); asked for where it is missing, the server does not start.",
+    envOnly: BOOT,
+  },
   { name: "SCHEMA_CHECK", group: "Database", type: "bool", default: "on outside dev", doc: "At startup, refuse to serve when stored documents don't match the schema." },
   {
     name: "REDIS_URL",
@@ -130,6 +148,15 @@ export const SETTINGS: SettingDef[] = [
     type: "string",
     default: "0.5",
     doc: "For RUNTIME_WORKERS=auto: processes per core (0.5: half the cores, rounded down, at least 1).",
+  },
+  {
+    name: "SERVER_PROCESSES",
+    group: "Runtime",
+    type: "int",
+    min: 1,
+    options: ["auto"],
+    default: "auto",
+    doc: "Bellows: servers of this app on this machine, sharing its port, each with one I/O thread and one event loop. `auto`: two servers from 4 cores (one below, and one when the memory could not hold two), when the app runs with `archlast-forge start`, on SQLite with the native engine and Hearth, the native database layer; else 1. The first keeps the scheduler, backups and dashboard; the others answer requests and send what they record to it. Needs SQLite (Hearth, which Bellows switches on) and a production start; RUNTIME_WORKERS gives each server its own runtime processes. 1 runs one server.",
   },
   {
     name: "RUNTIME_MODE",

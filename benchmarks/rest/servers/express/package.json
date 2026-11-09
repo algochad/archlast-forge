@@ -1,0 +1,1 @@
+{ "name": "bench-rest-express", "private": true, "type": "module", "dependencies": { "express": "5.1.0" } }

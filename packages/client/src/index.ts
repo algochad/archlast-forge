@@ -207,8 +207,20 @@ export class ArchlastForgeClient {
     return () => void this.sessionListeners.delete(listener);
   }
 
-  /** Better Auth client for this server; a change of session reconnects the socket. */
+  /**
+   * Better Auth client for this server; a change of session reconnects the socket. Where there is no browser (a server render) it is built on first use, not
+   * at once: a component only has it in hand while rendering (`useAuth()` for a sign-out button), and building it costs about as much as rendering a small
+   * page. The object returned is the same each time and passes everything on to the real client.
+   */
   get auth() {
+    if (this.authClient) return this.authClient;
+    if (typeof document !== "undefined") return this.createAuth();
+    return (this.deferredAuth ??= new Proxy({} as ReturnType<typeof createAuthClient>, { get: (_, key) => Reflect.get(this.createAuth(), key) }));
+  }
+
+  private deferredAuth?: ReturnType<typeof createAuthClient>;
+
+  private createAuth() {
     if (!this.authClient) {
       const auth = (this.authClient = createAuthClient({ baseURL: this.url, fetchOptions: { credentials: "include" }, ...(this.authPlugins && { plugins: this.authPlugins as never }) }));
       let session: string | null | undefined;

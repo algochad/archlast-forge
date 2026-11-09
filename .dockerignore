@@ -10,3 +10,7 @@ docker-compose.yml
 **/test
 **/test-types
 .pack
+packages/tuyere/target
+packages/tuyere/native
+packages/tuyere/bench/client/target
+packages/tuyere/bench/container/forge

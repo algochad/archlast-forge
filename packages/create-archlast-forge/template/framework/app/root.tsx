@@ -1,7 +1,11 @@
-import { isRouteErrorResponse, Link, NavLink, Outlet, useNavigate, useRouteError, useViewer } from "@archlast/forge-framework";
-import { useAuth } from "@archlast/forge-react";
+import { isRouteErrorResponse, Link, NavLink, Outlet, useRouteError, useViewer } from "@archlast/forge-framework";
 import type { ReactNode } from "react";
+import { UserMenu } from "./components/user-menu";
 import "./styles.css";
+
+// Pages ship JavaScript only for the parts that need the browser (here the menu of a signed-in visitor, and the chat and sign-in pages), and a link swaps the next page
+// in. Remove this line to render and hydrate every page as a whole, as a React Router app does.
+export const islands = true;
 
 /** The HTML document around every page, including error pages. */
 export function Layout({ children }: { children: ReactNode }) {
@@ -20,13 +24,6 @@ export function Layout({ children }: { children: ReactNode }) {
 /** The header and footer around a page, and around the error page, so there is always a way back. */
 function Chrome({ children }: { children: ReactNode }) {
   const viewer = useViewer();
-  const auth = useAuth();
-  const navigate = useNavigate();
-
-  async function signOut() {
-    await auth.signOut();
-    await navigate("/");
-  }
 
   return (
     <>
@@ -41,11 +38,7 @@ function Chrome({ children }: { children: ReactNode }) {
             <NavLink to="/chat">Chat</NavLink>
           </nav>
           {viewer ? (
-            <div className="who">
-              <span className="avatar" aria-hidden>{viewer.name.slice(0, 1).toUpperCase()}</span>
-              <span>{viewer.name}</span>
-              <button className="btn small" onClick={signOut}>Sign out</button>
-            </div>
+            <UserMenu name={viewer.name} />
           ) : (
             <Link className="btn small primary" to="/sign-in">Sign in</Link>
           )}

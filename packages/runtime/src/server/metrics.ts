@@ -11,15 +11,35 @@ export class Metrics {
   waf?: () => { inspected: number; blocked: number; detected: number; errors: number; rules: { id: number; count: number }[] } | undefined;
   private fns = new Map<string, { calls: number; errors: number; sum: number; buckets: number[] }>();
 
+  /** The counts since the last call, and starting over (a server of a cluster tells the first what its functions did). */
+  take(): Record<string, { calls: number; errors: number; sum: number; buckets: number[] }> {
+    const out = Object.fromEntries(this.fns);
+    this.fns = new Map();
+    return out;
+  }
+
+  /** Counts another server of the cluster took. */
+  merge(counts: Record<string, { calls: number; errors: number; sum: number; buckets: number[] }>) {
+    for (const [name, c] of Object.entries(counts)) {
+      let m = this.fns.get(name);
+      if (!m) this.fns.set(name, (m = { calls: 0, errors: 0, sum: 0, buckets: BUCKETS.map(() => 0) }));
+      m.calls += c.calls;
+      m.errors += c.errors;
+      m.sum += c.sum;
+      c.buckets.forEach((n, i) => (m!.buckets[i] = (m!.buckets[i] ?? 0) + n));
+    }
+  }
+
   observe(name: string, durationMs: number, ok: boolean) {
     let m = this.fns.get(name);
     if (!m) this.fns.set(name, (m = { calls: 0, errors: 0, sum: 0, buckets: BUCKETS.map(() => 0) }));
     m.calls++;
     if (!ok) m.errors++;
     m.sum += durationMs;
-    BUCKETS.forEach((b, i) => {
-      if (durationMs <= b) m.buckets[i]!++;
-    });
+    // the first bucket that holds it; the cumulative counts of a histogram are made when it is rendered
+    let i = 0;
+    while (i < BUCKETS.length && durationMs > BUCKETS[i]!) i++;
+    if (i < BUCKETS.length) m.buckets[i]!++;
   }
 
   render(gauges: { subscriptions: number; connections: number; workers: number; backlog?: { waiting: number; waitMs: number }[] }, cache?: CacheSnapshot, loops?: LoopDelays) {
@@ -34,7 +54,7 @@ export class Metrics {
       "# HELP forge_function_duration_ms Function call duration.",
       "# TYPE forge_function_duration_ms histogram",
       ...[...this.fns].flatMap(([n, m]) => [
-        ...BUCKETS.map((b, i) => `forge_function_duration_ms_bucket{${label(n)},le="${b}"} ${m.buckets[i]}`),
+        ...BUCKETS.map((b, i) => `forge_function_duration_ms_bucket{${label(n)},le="${b}"} ${m.buckets.slice(0, i + 1).reduce((a, x) => a + x, 0)}`),
         `forge_function_duration_ms_bucket{${label(n)},le="+Inf"} ${m.calls}`,
         `forge_function_duration_ms_sum{${label(n)}} ${m.sum}`,
         `forge_function_duration_ms_count{${label(n)}} ${m.calls}`,

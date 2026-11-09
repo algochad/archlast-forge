@@ -48,3 +48,20 @@ data/
 # archlast-forge framework mode
 .forge
 packages/create-archlast-forge/test/.tmp-*
+
+# benchmarks/fullstack run files
+benchmarks/fullstack/.pid
+benchmarks/fullstack/.server-*.log
+benchmarks/fullstack/*/.react-router
+benchmarks/fullstack/results.raw
+
+# benchmark run files
+benchmarks/rest/results.raw
+benchmarks/rest/results-sqlite.raw
+benchmarks/pool/results.raw
+benchmarks/pool/params.json
+benchmarks/fullstack/brust/dist
+benchmarks/fullstack/brust/node_modules
+benchmarks/fullstack/brust/bun.lock
+benchmarks/rest/profile/server.log
+benchmarks/rest/.bench-data

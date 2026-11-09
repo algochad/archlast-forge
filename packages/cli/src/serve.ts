@@ -24,7 +24,9 @@ export async function serve(opts: ServeOptions): Promise<RunningServer> {
   const apiDocs = await loadApiDocs();
   let current: RunningServer;
   let restarting: Promise<void> | undefined;
-  const start = () => startServer({ forgeDir: opts.forgeDir, dev: opts.dev, env: opts.env, dashboard, apiDocs, app: opts.app, restart });
+  // How another server of this app is started (SERVER_PROCESSES): this command again; it learns its place in the cluster from its environment.
+  const cluster = { command: [process.execPath, ...process.argv.slice(1)] };
+  const start = () => startServer({ forgeDir: opts.forgeDir, dev: opts.dev, env: opts.env, dashboard, apiDocs, app: opts.app, restart, cluster });
   async function restart() {
     if (restarting) return restarting;
     restarting = (async () => {

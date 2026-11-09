@@ -17,7 +17,6 @@ import type { Attrs, ErrorInfo, LogRecord, MetricPoint, RequestKind, RequestReco
  */
 export class Root {
   private ids?: { traceId: string; spanId: string };
-  readonly time = Date.now();
   readonly t0 = performance.now();
 
   constructor(
@@ -31,6 +30,8 @@ export class Root {
     /** Whether this request's spans are recorded; `weight` is how many requests it stands for in span statistics (1 / its chance). */
     readonly detail = true,
     readonly weight = 1,
+    /** When it began (Date.now()); read by the caller who has it already. */
+    readonly time = Date.now(),
   ) {}
 
   get traceId() {
@@ -83,14 +84,61 @@ function namespaceOf(s: Span): string {
   return s.type;
 }
 
+/**
+ * Whether a path segment is an id or a token: all digits; a UUID; 16 or more hex digits; or 20 or more letters, digits, `_` and `-` with a digit among them.
+ * (The same answers as the regular expressions this replaced, without running four of them over every segment of every request.)
+ */
+export function looksLikeId(seg: string): boolean {
+  return idAt(seg, 0, seg.length);
+}
+
+/** `looksLikeId` of the text between `from` and `to` of `path`, without making the segment a string. */
+function idAt(path: string, from: number, to: number): boolean {
+  const n = to - from;
+  if (n === 0) return false;
+  let digits = 0;
+  let hex = 0;
+  let word = 0;
+  for (let i = from; i < to; i++) {
+    const c = path.charCodeAt(i);
+    if (c >= 48 && c <= 57) (digits++, hex++, word++);
+    else if ((c >= 97 && c <= 102) || (c >= 65 && c <= 70)) (hex++, word++);
+    else if ((c >= 103 && c <= 122) || (c >= 71 && c <= 90) || c === 95 || c === 45) word++;
+  }
+  if (digits === n) return true;
+  if (hex === n && n >= 16) return true;
+  if (word === n && n >= 20 && digits > 0) return true;
+  // a UUID: 8 hex digits, a dash, then 27 hex digits and dashes
+  if (n === 36 && path.charCodeAt(from + 8) === 45) {
+    for (let i = from; i < from + 8; i++) if (!isHex(path.charCodeAt(i))) return false;
+    for (let i = from + 9; i < to; i++) {
+      const c = path.charCodeAt(i);
+      if (c !== 45 && !isHex(c)) return false;
+    }
+    return true;
+  }
+  return false;
+}
+const isHex = (c: number) => (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70);
+
 /** Ids and tokens in a path become `:id`, so `/reset-password/8f2c…` and `/users/41` group as one route. */
+let lastPath = "";
+let lastNormal = "/";
 export function normalizePath(path: string) {
-  return (
-    path
-      .split("/")
-      .map((seg) => (/^\d+$|^[0-9a-f]{8}-[0-9a-f-]{27}$|^[0-9a-f]{16,}$|^(?=.*\d)[A-Za-z0-9_-]{20,}$/i.test(seg) ? ":id" : seg))
-      .join("/") || "/"
-  );
+  // the same path as the request before is the common case under load: a comparison, not a scan
+  if (path === lastPath) return lastNormal;
+  let result = "";
+  let copied = 0; // path[0, copied) is in `result` already
+  let start = 0;
+  for (;;) {
+    const slash = path.indexOf("/", start);
+    const end = slash < 0 ? path.length : slash;
+    if (idAt(path, start, end)) (result += path.slice(copied, start) + ":id"), (copied = end);
+    if (slash < 0) break;
+    start = slash + 1;
+  }
+  lastPath = path;
+  return (lastNormal = copied === 0 ? path || "/" : result + path.slice(copied));
 }
 
 /** An HTTP status for a call's outcome, as /rpc would answer it. */
@@ -154,7 +202,8 @@ export class Telemetry {
    */
   begin(kind: RequestKind, operation: string, method?: string, incoming?: string | null, requestId?: string, attrs?: Attrs): Root {
     this.inflight++;
-    const sec = Math.floor(Date.now() / 1000);
+    const time = Date.now();
+    const sec = Math.floor(time / 1000);
     if (sec !== this.rateSecond) {
       this.rate = sec === this.rateSecond + 1 ? this.rateCount : 0;
       this.rateSecond = sec;
@@ -165,7 +214,7 @@ export class Telemetry {
     const budget = this.o.detailPerSecond ?? 200;
     const p = parent?.sampled || this.rate <= budget ? 1 : budget / this.rate;
     const detail = p >= 1 || Math.random() < p;
-    return new Root(kind, operation, method, parent, requestId, attrs, detail, detail ? 1 / p : 1);
+    return new Root(kind, operation, method, parent, requestId, attrs, detail, detail ? 1 / p : 1, time);
   }
 
   /** Where the runtime records the request's spans, under its root; nothing for a request that is only counted. */
@@ -279,21 +328,28 @@ export class Telemetry {
     return { minute, service: this.o.service, kind, operation, instance: this.o.instance, count: 0, errors: 0, clientErrors: 0, cached: 0, sum: 0, max: 0, hist: {} };
   }
 
+  /** The rollup the last request went into: the next one, in the same minute and under the same name, needs no lookups. */
+  private last?: { minute: number; kind: string; operation: string; rollup: Rollup; all: Rollup };
+
   private count(minute: number, kind: string, operation: string, ms: number, status: number, cached: boolean) {
-    const m = this.minute(minute);
-    let ops = m.ops.get(kind);
-    if (!ops) m.ops.set(kind, (ops = new Map()));
-    let r = ops.get(operation);
-    if (!r) {
-      const name = m.size >= MAX_OPERATIONS ? "(other)" : operation;
-      r = ops.get(name);
-      if (!r) ops.set(name, (r = this.rollupOf(minute, kind, name))), m.size++;
+    let hit = this.last;
+    if (!hit || hit.minute !== minute || hit.kind !== kind || hit.operation !== operation) {
+      const m = this.minute(minute);
+      let ops = m.ops.get(kind);
+      if (!ops) m.ops.set(kind, (ops = new Map()));
+      let r = ops.get(operation);
+      if (!r) {
+        const name = m.size >= MAX_OPERATIONS ? "(other)" : operation;
+        r = ops.get(name);
+        if (!r) ops.set(name, (r = this.rollupOf(minute, kind, name))), m.size++;
+      }
+      hit = this.last = { minute, kind, operation, rollup: r, all: m.all };
+      this.dirty.add(r); // marked once: the next requests into the same rollups find them marked (a flush forgets `last`)
+      this.dirty.add(m.all);
     }
     const bucket = bucketOf(ms);
-    add(r, ms, bucket, status, cached);
-    add(m.all, ms, bucket, status, cached);
-    this.dirty.add(r);
-    this.dirty.add(m.all);
+    add(hit.rollup, ms, bucket, status, cached);
+    add(hit.all, ms, bucket, status, cached);
   }
 
   /** Every span but the root (`skip`), with the time it spent in its own code, counted `weight` times (a sampled request's share). */
@@ -367,6 +423,7 @@ export class Telemetry {
     if (this.services.length) batch.services = this.services.splice(0);
     this.dirty.clear();
     this.dirtySpans.clear();
+    this.last = undefined;
     // Minutes that are over were sent in full above; their rows are final.
     for (const m of this.minutes.keys()) if (m < current - 1) this.minutes.delete(m);
     if (Object.keys(batch).length) this.o.sink(batch);

@@ -23,7 +23,7 @@ A plain `http.route()` in `forge/http.ts` is only for a one-off route with no fe
 
 Rules that hold everywhere:
 
-1. **Writes happen in mutations.** A controller, gateway or resolver gets an `ActionCtx` (no `db`). It calls `ctx.runQuery(api.x.y)` / `ctx.runMutation(api.x.z)`, so every write is one transaction and live queries see it.
+1. **Writes happen in mutations.** A controller, gateway or resolver gets an `ActionCtx` (no `db`). It calls `ctx.runQuery(api.x.y)` / `ctx.runMutation(api.x.z)`, so every write is one transaction and live queries see it. Exception for HTTP surfaces: a controller or `http.route()` handler can run its own transaction with `ctx.read(fn)` / `ctx.write(fn)` (its ctx is an `HttpCtx`), and a controller can inject a `DbService` whose `@Read()` / `@Write()` methods are transactions. Use it for hot REST routes; keep `runQuery` / `runMutation` when the function is also called by clients or other functions, or needs its validators and cache. Actions still have no `db`.
 2. **Services do the work, functions and controllers stay thin.** A function's handler is `inject` + one method call. A controller method is validation + one service/function call.
 3. **Queries and mutations never do I/O** (no `fetch`, no RPC). Do I/O in actions, controllers, or services called from them.
 4. **Every `forge/` file whose path has no segment starting with `_` is a function module** (the scanner loads it and `api.<file>` is built from it). Nest classes are not functions, so they go under `_`-prefixed paths, which the scanner, codegen and the client router ignore. See the layout below.
@@ -287,3 +287,23 @@ When this file is not enough, read the page instead of guessing: the docs are th
 | [testing](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/testing.mdx)             | `createTestBackend` with services, testing a running app                                          |
 | [errors](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/errors.mdx)               | how errors reach callers                                                                          |
 | [observability](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/observability.mdx) | class spans and the Services page                                                                 |
+
+## A DbService for the database from a controller
+
+A `ForgeService` is request-scoped (everything that injects it is too), which is right in queries and mutations and costly for a route. For a controller that reads or writes directly, extend `DbService` (a singleton) and mark methods `@Read()` or `@Write()`:
+
+```ts
+import { DbService, Injectable, Read, Write, type MutationCtx } from "@archlast/forge-runtime/nest";
+
+@Injectable()
+export class Items extends DbService<MutationCtx> {
+  @Read() async get(id: number) {
+    return this.ctx.db.query("items").withIndex("by_item", (q) => q.eq("itemId", id)).first();
+  }
+  @Write() async add(name: string) {
+    return this.ctx.db.insert("items", { itemId: 1, name });
+  }
+}
+```
+
+List it in `providers`, inject it in the controller's constructor. Each method is one transaction (one read, one write); a method called from another joins it, and a `@Write()` called from a `@Read()` is refused. Methods must be `async` and free of side effects such as `fetch` (a transaction can run again). `this.ctx` works only inside these methods. Use it from routes, gateways and message handlers, never inside a query or a mutation (use `ForgeService` and `inject()` there).

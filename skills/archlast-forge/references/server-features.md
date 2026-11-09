@@ -270,6 +270,8 @@ export default http; // a bare function as handler is rejected: always httpActio
 - **Handler = an action** with a `Request` and a `Response`, same `ctx` as an action: `runQuery`, `runMutation`, `runAction`, `auth`, `storage`, `scheduler`, and **no `ctx.db`**. Everything runs as the caller. Each `runMutation` is its own transaction; put all-or-nothing writes in one mutation. Time limit `ACTION_TIMEOUT_MS`, so acknowledge a webhook fast and `ctx.scheduler.runAfter(0, internal.x.y, args)` the slow part.
 - **Bodies are bytes and buffered**: `await request.text()` (exact bytes), `arrayBuffer()`, `json()`. Over `MAX_REQUEST_BYTES` (8 MiB) is a 413 before your code. Responses are buffered too, **except** `content-type: text/event-stream`, which streams (verified inline and with child-process runtimes). For big files redirect to a presigned URL.
 - **Return a `Response`**; anything else is a 500. Status and headers pass through (multiple `set-cookie` survive); 204/304 have no body; `Response.redirect(url, 302)` works. `x-request-id` is added (a caller's own, 1-64 chars of `[A-Za-z0-9._-]`, is reused).
+- **Hot routes: `minimalAction`** (`import { minimalAction, minimalJson, MinimalResponse } from "@archlast/forge-runtime"`) is `httpAction` without the Web objects: the handler gets `(ctx, req)` with `req.method`, `url`, `path`, `search` (with `?`), `headers` (lower-case `[name, value]` pairs, decoded when first read) and `body` (`ArrayBuffer`, undefined on GET), and returns `minimalJson(data, status?, headers?)`, `minimalRaw(json, status?, headers?)` (text that already is JSON, e.g. from `db.getJson(id)` / `query(…).firstJson()` inside `ctx.read`), `minimalText(...)`, `new MinimalResponse(status, headers, body)` or a `Response`. Telemetry, request ids, rate limits, validators and errors are the same; about twice the requests per second of an `httpAction` route on the native engine. Keep `httpAction` when the handler needs a `Request` (forwarding it, `formData()`, a library).
+- **`DB_ENGINE=native`, Hearth** (SQLite only, opt-in, Linux; the engine image has it) runs the document database in Rust: each `ctx.db` query terminal and write is one call, validated against the schema's validators (a write it cannot vouch for goes to Zod, so the errors read the same), and the code does not change. `filter(fn)` still runs in JavaScript. The same `ctx.db` API as the default `bun:sqlite` layer, with the database work of lists, `select()`, pages and inserts 40 to 70% shorter (a request 3 to 10% faster); the ids it makes begin with the time; `getJson`, `firstJson`, `takeJson`, `collectJson` return a document as JSON text that is never parsed, for `minimalRaw`.
 - **Errors:** throw `ForgeError` -> 400 `{ error: { message, code: "BAD_REQUEST", data, requestId } }`; any other throw -> 500 `Server error (request <id>)` outside dev (log has the real error); a malformed id passed to a storage call -> 400; past the timeout -> 408 `TIMEOUT`; runtime queue full -> 503 `Retry-After: 1`. A `Response` you return is sent exactly as is.
 - **Caller identity:** the session cookie works on your own origin. Webhooks and server-to-server callers send neither cookie nor bearer, so they are anonymous: authenticate with a signature or shared secret.
 - **CORS is entirely yours.** The engine adds no CORS headers to `/http` and `TRUSTED_ORIGINS` does not apply. Without an `OPTIONS` route a browser preflight gets 405 and the real request is never sent. Add an `OPTIONS` route (`pathPrefix: "/api/"` covers many) returning 204 with `access-control-allow-origin: <the allowed origin>`, `-methods`, `-headers`, and `vary: origin`; set the same origin header on the real responses. Never combine credentials with `*`.
@@ -435,6 +437,23 @@ export const checkout = action({
 - Outside the engine (`createTestBackend`, a browser) spans just run `fn` and metrics do nothing. `console.log` in functions is stored with its trace. `TELEMETRY=off` disables recording.
 - Reading the results (Spans, Hotspots, Errors, request ids, alerts) is in [dashboard-and-observability.md](dashboard-and-observability.md).
 
+## CPU-heavy work (`@archlast/forge-runtime/pool`)
+
+A long calculation in a function stalls the other calls on its thread. Anvil, Forge's thread pool (`computePool(tasks, { threads? })`, docs page `thread-pool`), runs `task({ f })` functions on worker threads (knitting; `task`, `createPool`, `importTask` are re-exported) and `await work.call.name(arg)` answers like any async call. Put tasks in a module of their own with few imports (each worker imports it again), define each with `task({ f })`, give each one plain-data argument and result. Or pass plain functions (`computePool({ digest: (b: Uint8Array) => … })`) from any file, a Nest service with decorators included: no task module, `task()` or `isMain`; they must be self-contained (import inside them with `await import()`), because a worker loads only their source, not the file around them.
+
+```ts
+// forge/_work/hash.ts
+import { task } from "@archlast/forge-runtime/pool";
+export const digest = task({ f: (bytes: Uint8Array) => new Bun.CryptoHasher("sha256").update(bytes).digest("hex") });
+
+// forge/files.ts
+import { computePool } from "@archlast/forge-runtime/pool";
+import * as hash from "./_work/hash";
+const work = computePool(hash); // threads start at the first call: cores - 1 by default
+```
+
+Tasks must not touch `ctx`, a transaction or the database (a read on a worker is outside the snapshot and records no topics). Do the work in a task, then write with `ctx.runMutation` from the action. Never await the pool inside a mutation.
+
 ## Common mistakes
 
 - Creating `forge/auth.ts` without `emailAndPassword: { enabled: true }` (sign-up dies with `EMAIL_PASSWORD_SIGN_UP_DISABLED`).
@@ -467,3 +486,4 @@ When this file is not enough, read the page instead of guessing: the docs are th
 | [limits](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/limits.mdx)               | every limit and the security model                        |
 | [configuration](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/configuration.mdx) | the variables behind these features                       |
 | [recipes](https://raw.githubusercontent.com/algochad/archlast-forge/master/apps/docs/content/recipes.mdx)             | webhooks, cron cleanup, email, rate limits, uploads       |
+- **Bellows, a cluster of servers (`SERVER_PROCESSES`, default `auto`).** On 4+ cores a production start (`archlast-forge start`, the engine image) on SQLite runs two servers (one below 4 cores or when memory is short), each with one I/O thread and one event loop, sharing the port, the file and the native database layer; the first keeps the scheduler, crons, backups, dashboard, `/metrics` and telemetry, and a write through any server is read by the next request through any other. Code needs no change; things that are per server in a cluster: WebSocket gateways and GraphQL subscription sockets (an app with them runs one server under `auto`), anything kept in a module-level variable (use the database), and `createPubSub` listeners' sockets. `SERVER_PROCESSES=1` keeps one server. `RUNTIME_WORKERS` works inside a cluster (a pool of runtime processes in each server; `auto` shares half the cores among the servers, inline by default), and a reload (`env set`, SIGHUP, the dashboard) reaches every server.

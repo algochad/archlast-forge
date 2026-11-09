@@ -393,6 +393,45 @@ const add = useMutation(api.tasks.add);
 
 Because every query on screen is live, there is nothing to revalidate after a mutation. For optimistic updates see [Clients](clients.html). `<form method="post">` to a page URL does nothing: the engine answers only `GET` and `HEAD` for pages.
 
+## Islands: pages that ship only the JavaScript they need
+
+A new app's `app/root.tsx` says `export const islands = true;`. With it, a page is HTML from the server, and only the parts that need the browser load JavaScript and hydrate, each on its own. A page with none of them has no JavaScript but a navigation script of about 1.3 kB (the starter's home page for a visitor who is not signed in: 126 kB before, 1.3 kB now). Without the line (or with `FORGE_ISLANDS=0`) every page is rendered and hydrated as a whole, as before.
+
+**What is an island.** The build reads your components and puts each in one of three groups. A *page* has no state, effects, handlers, refs or browser globals: it reads props, loader data, `useViewer()`, `useTimeZone()` and the like, which the server already knows. An *island* has state, effects, handlers, a ref, a browser global, or a hook such as `useQuery`, `useMutation`, `useAuth`, `useNavigate` or `useNow`. A *fallback* is anything it cannot read. See what it decided with `bun node_modules/@archlast/forge-framework/src/classify-cli.ts .`: it prints every route and component with the reason.
+
+**Rules an island follows.**
+
+- It lives in a file of its own, and that file exports it. A page that renders an island declared in the same file makes that page an island too, and the report says so.
+- Its props are plain data (strings, numbers, booleans, arrays, plain objects), because they cross to the browser as JSON. A function or an element as a prop, or `children`, throws with a message that names the island. Render what an island needs inside it.
+- It does not use `useLoaderData()`, `useParams()`, `useRouteError()` or other hooks that need the router in the browser: there is none. A route that does is rendered as a whole.
+- An island inside another island is part of it. The browser hydrates the outer island as one tree, so the inner one has no marker of its own and its output is hydrated with the outer one (a route that is an island can show a counter or a menu that is an island too).
+- Put an island only where it is needed. The starter renders its menu only for a signed-in visitor, so the pages of a visitor who is not have no island.
+
+**What stays whole.** A page with an error, a route that exports `action`, a layout that is an island and renders `<Outlet />` (there is no router in the browser to fill it; make the interactive part a smaller component, and keep the layout a plain one), and an app whose `root.tsx` is interactive itself are rendered and hydrated as a whole, as without islands, and the build says why when it turns islands off.
+
+**Navigation.** A link to another page of the site fetches that page's HTML and swaps it in. The document, the stylesheets and the shared client survive; the islands of the new page hydrate; back and forward work; `useNavigate()` inside an island does the same. A target that is not a page with islands is loaded in the ordinary way. Add `data-forge-reload` to a link, or to anything around it, to load the page the ordinary way. Loaders run on the server only. `useNavigation()` has no state to report here, and `Link`'s prefetching is not done.
+
+### Pages printed by the engine
+
+With islands on and the native engine ([`HTTP_ENGINE`](configuration.html#server)), a route whose page is only server-rendered HTML (no island, no state, no handler) is not rendered by React at all. The build reads its components and turns them into a template; the loader's data goes to the engine as JSON, and the engine prints the page on its I/O threads while the JavaScript thread starts the next request. For a 100-row table that is 3 to 5 times as many requests a second as React printing it in the handler (about 37,000 against 7,500 in the engine's own test), and the home page of the benchmark app goes from 17,000 to 43,000.
+
+What the compiler understands is small and exact: function components made of `const` declarations (from props, `useViewer()`, `useLoaderData()`, `useTimeZone()`, `useParams()`) and one `return`; elements, fragments, text and expressions made of paths, `&&`, `||`, `??`, `?:`, `!`, `===`, `!==`, `+ - * / %`, `< > <= >=`, template literals and `.length`; `list.map((item, index) => …)` including array and object patterns; `cond && …` and `cond ? … : …`; components of your app (with props and children); `Outlet`; `Link` and `NavLink` with a literal path; `<title>`, `<meta>` and `<link>`, moved to the head as React does; module-level `const` literals and literal arrays and objects; `useMemo(() => value, deps)`; default values for props (they replace `undefined`, not `null`, as in JavaScript); `<form>` with a literal `action` and fields with `defaultValue`/`defaultChecked`; `style` objects with any values (numbers get `px`, and `null`, booleans and empty strings leave the property out, as in React); `dangerouslySetInnerHTML={{ __html: text }}`; and **calls of your own functions** such as `formatMoney(row.price)`, which run on the server for each row before the page is printed. Anything else (a hook, a handler, a method call like `.sort()`, a function as a form's `action`, `<script>`) leaves that route to React, and the page is the same either way.
+
+A page that shows something the template cannot print only to some visitors (the starters' header shows a menu island for a signed-in visitor) is still printed from its template for everyone else: the build records the condition, and a request that meets it is rendered by React. (Inside a `.map` this does not work, and that route is left to React.)
+
+How it works and how fast it is, against React Router, Next.js and brust: [Crucible](rust-renderer.html). See which routes are printed, and why not for the others, with `bun node_modules/@archlast/forge-framework/src/classify-cli.ts .`. `FORGE_TEMPLATES=0` at build time turns it off. The printed page is the page React prints, up to what a browser cannot tell apart (React's `<!-- -->` text separators and image preload hints are not written), and the tests compare the two on every page of a fixture app.
+
+### Keeping a page for visitors who are not signed in
+
+A route can ask for its page to be kept: `export const handle = { cache: { ttl: 60 } };`. With islands on and the native engine ([`HTTP_ENGINE`](configuration.html#server)), the first request for the page is rendered and the engine keeps the response; for the next `ttl` seconds (1 to 86,400) it answers from memory, without running your app, which is what takes a page from about 7,000 to about 290,000 requests a second on the starter (4 cores). The starters' home pages ask for it for a minute.
+
+- **Only visitors who are not signed in.** A signed-in visitor, a request with an `Authorization` header, and a request with any cookie other than the time zone's (`forge-tz`) are rendered for as usual and never served a kept page. So nothing in a kept page may be about a person: keep what is the same for everyone.
+- **Keyed by** the address (path and query), the host and the time zone cookie.
+- **The page can be up to `ttl` seconds old**, and it carries the time it was rendered. A kept page skips rate limits, the firewall and telemetry, because the app is not run.
+- **Content-Security-Policy.** A kept page cannot carry a per-request nonce (everyone would have the same one), so its policy names its inline scripts by hash instead. Inline scripts that are part of the page (like the theme script in the shadcn starter) work as they did.
+- Only complete `200` responses are kept, never one that sets a cookie or says `Cache-Control: no-store`. With the Bun server (`HTTP_ENGINE=bun`, development, or a machine with fewer than 4 cores) the line does nothing: every request is rendered.
+- **A write ends a kept page early.** The server notes which tables the page's loaders queried, and a write to one of them (from this server or another one on the same Redis) drops the page, so the next visitor gets a fresh one. Reads that are not queries (`fetch`, a file) are not tracked, and a deploy restarts the server and empties the cache; `ttl` is the bound for those, so choose one you can live with. `tags` in `handle.cache` (`{ ttl: 60, tags: ["home"] }`) names the page for `purgeCache` in code you write for the engine. With a Redis-backed bus on the native engine, every server receives every write, which is a little more Redis traffic. `ARCHLAST_PAGE_CACHE_MB` (default 64) bounds the memory the engine keeps pages in.
+
 ## Navigation
 
 - `Link` and `NavLink` navigate in the browser, loading only the next page's code. `NavLink` adds `class="active"` and `aria-current="page"` to the link of the current page; pass `end` on `/` so it is not active everywhere.
@@ -793,7 +832,7 @@ The `ErrorBoundary` in `root.tsx` above handles both. To test it: `GET /anything
 - Services you chose (PostgreSQL, Redis, storage) run in Docker with their ports on localhost, and stop when you do; their data stays in Docker volumes. With `--no-docker` they are not started and the app uses SQLite (set `DATABASE_URL`, `REDIS_URL` or `S3_*` yourself to use others).
 - `--port <n>` changes the port. Development trusts `http://localhost:<port>` for sign-in. Setting `TRUSTED_ORIGINS` yourself replaces that default.
 
-See [CLI](cli.html#dev) for every flag. There is no hot module replacement: a save reloads the page, and component state is lost.
+See [CLI](cli.html#dev) for every flag. There is no hot module replacement: a save rebuilds and reloads the page, and component state is lost (the bundler, `Bun.build`, rebuilds an app as a whole, so there is no module to swap; with islands, the page's HTML is printed again by the new template or by React).
 
 ## Production
 
@@ -846,6 +885,9 @@ The app has no config file of its own. The environment variables of the engine a
 | `RATE_LIMIT_PER_MINUTE` | applies to page requests too (they count per client IP) |
 | `TRUST_PROXY` | use `X-Forwarded-For` for the client IP; set it behind a proxy |
 | `DASHBOARD` | `on` to serve `/_dashboard` in production |
+| `FORGE_TEMPLATES` | `0` at build time stops the build compiling pages to templates for the engine to print (see [pages printed by the engine](#pages-printed-by-the-engine)) |
+| `FORGE_MEMO_INTL` | `0` stops the server sharing `Intl` formatters between calls (it makes `new Intl.NumberFormat(locale, options)` return the formatter it made for the same locale and options, which pages that build one per table cell pay a lot for) |
+| `FORGE_ISLANDS` | `1` or `0` at build time: turns [islands](#islands-pages-that-ship-only-the-javascript-they-need) on or off, over what `root.tsx` says |
 
 Nothing from `process.env` reaches the browser bundle except `NODE_ENV`. To give pages a value, return it from a query or a loader (a public setting) or read it in a function.
 
