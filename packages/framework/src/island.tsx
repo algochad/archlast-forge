@@ -8,6 +8,9 @@ export interface IslandCount {
 }
 export const IslandsContext = createContext<IslandCount | null>(null);
 
+/** True in the output of an island. The browser hydrates the outer island as one tree, so an island inside it is part of that tree: no marker of its own. */
+const InsideIsland = createContext(false);
+
 /** Props that can cross to the browser as JSON: data, not functions or elements. */
 function assertPlain(value: unknown, path: string, id: string): void {
   if (value === null || typeof value === "string" || typeof value === "number" || typeof value === "boolean") return;
@@ -29,14 +32,17 @@ function assertPlain(value: unknown, path: string, id: string): void {
 export function island<P extends object>(Component: ComponentType<P>, id: string): ComponentType<P> {
   const Island = (props: P) => {
     const meter = useContext(IslandsContext);
-    if (!meter) return <Component {...props} />;
+    const inside = useContext(InsideIsland);
+    if (!meter || inside) return <Component {...props} />;
     meter.count++;
     if ("children" in props && (props as { children?: unknown }).children !== undefined) throw new Error(`The island ${id} was given children. An island is hydrated on its own, so it cannot receive elements: render them inside it.`);
     assertPlain(props, "its props", id);
     return (
       // `display: contents`: the marker takes no part in layout.
       <div data-forge-island={id} data-props={JSON.stringify(props)} style={{ display: "contents" }}>
-        <Component {...props} />
+        <InsideIsland.Provider value={true}>
+          <Component {...props} />
+        </InsideIsland.Provider>
       </div>
     );
   };
