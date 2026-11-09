@@ -20,6 +20,8 @@ def() { IMAGE[$1]=$2; PREFIX[$1]=$3; ARGS[$1]=$4; LABEL[$1]=$5; }
 def axum bench-rest-axum "" "" "Rust (Axum 0.8, Tokio)"
 def go bench-rest-go "" "" "Go (fasthttp)"
 def dotnet bench-rest-dotnet "" "" ".NET 10 (Minimal APIs)"
+def dotnet-webapi bench-rest-dotnet-webapi "" "-e STORE=memory" ".NET 10 (Web API: controllers and middleware)"
+def dotnet-controllers bench-rest-dotnet-webapi "" "-e STORE=memory -e PIPELINE=controllers" ".NET 10 (Web API: controllers only, no middleware)"
 def bun bench-rest-bun "" "" "Bun.serve"
 def nest-node bench-rest-nest-node "" "" "NestJS on Node.js 24 (Express adapter)"
 def nest-bun bench-rest-nest-bun "" "" "NestJS on Bun (Express adapter)"
@@ -33,7 +35,7 @@ def forge-notelemetry bench-rest-forge /http "${FORGE_ENV[*]} -e TELEMETRY=off" 
 SERVERS=${*:-axum go dotnet bun node nest-node nest-bun serve nest-serve forge forge-minimal forge-bun forge-notelemetry}
 
 build() {
-  for s in axum go dotnet bun express nest-node nest-bun Tuyere nest-serve forge forge-minimal; do
+  for s in axum go dotnet dotnet-webapi bun express nest-node nest-bun tuyere nest-serve forge forge-minimal; do
     docker image inspect bench-rest-$s >/dev/null 2>&1 || docker build -q -f "$HERE/servers/$s/Dockerfile" -t bench-rest-$s "$HERE" >/dev/null || exit 1
   done
 }
@@ -47,6 +49,8 @@ if [ "${SUITE:-memory}" = sqlite ]; then
   def axum bench-rest-sqlite-axum "" "" "Rust (Axum 0.8, Tokio, rusqlite)"
   def go bench-rest-sqlite-go "" "" "Go (fasthttp, go-sqlite3)"
   def dotnet bench-rest-sqlite-dotnet "" "" ".NET 10 (Minimal APIs, Microsoft.Data.Sqlite)"
+  def dotnet-webapi bench-rest-sqlite-dotnet-webapi "" "-e STORE=sqlite" ".NET 10 (Web API: controllers and middleware, Microsoft.Data.Sqlite)"
+  def dotnet-controllers bench-rest-sqlite-dotnet-webapi "" "-e STORE=sqlite -e PIPELINE=controllers" ".NET 10 (Web API: controllers only, no middleware, Microsoft.Data.Sqlite)"
   def bun bench-rest-sqlite-bun "" "" "Bun.serve (bun:sqlite)"
   def node bench-rest-sqlite-node "" "" "Node.js 24 (Express 5, node:sqlite)"
   def nest-node bench-rest-sqlite-nest-node "" "" "NestJS on Node.js 24 (Express adapter, node:sqlite)"
@@ -64,7 +68,7 @@ if [ "${SUITE:-memory}" = sqlite ]; then
   OUT=$HERE/results-sqlite.raw
   build() {
     local name dockerfile
-    for pair in axum:axum/Dockerfile go:go/Dockerfile dotnet:dotnet/Dockerfile bun:bun/Dockerfile.sqlite node:express/Dockerfile.sqlite nest-node:nest-node/Dockerfile.sqlite nest-bun:nest-bun/Dockerfile.sqlite serve:tuyere/Dockerfile.sqlite nest-serve:nest-serve/Dockerfile.sqlite forge:forge-sqlite/Dockerfile forge-minimal:forge-minimal-sqlite/Dockerfile forge-bunsqlite:forge/Dockerfile.sqlite forge-minimal-bunsqlite:forge-minimal/Dockerfile.sqlite; do
+    for pair in axum:axum/Dockerfile go:go/Dockerfile dotnet:dotnet/Dockerfile dotnet-webapi:dotnet-webapi/Dockerfile bun:bun/Dockerfile.sqlite node:express/Dockerfile.sqlite nest-node:nest-node/Dockerfile.sqlite nest-bun:nest-bun/Dockerfile.sqlite serve:tuyere/Dockerfile.sqlite nest-serve:nest-serve/Dockerfile.sqlite forge:forge-sqlite/Dockerfile forge-minimal:forge-minimal-sqlite/Dockerfile forge-bunsqlite:forge/Dockerfile.sqlite forge-minimal-bunsqlite:forge-minimal/Dockerfile.sqlite; do
       name=${pair%%:*}; dockerfile=${pair#*:}
       case $name in axum|go|dotnet) dockerfile=${dockerfile%/Dockerfile}-sqlite/Dockerfile ;; esac
       docker image inspect bench-rest-sqlite-$name >/dev/null 2>&1 || docker build -q -f "$HERE/servers/$dockerfile" -t bench-rest-sqlite-$name "$HERE" >/dev/null || exit 1

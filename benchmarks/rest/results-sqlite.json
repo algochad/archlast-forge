@@ -338,5 +338,73 @@
         "success": 1
       }
     }
+  },
+  "dotnet-controllers": {
+    "label": ".NET 10 (Web API: controllers only, no middleware, Microsoft.Data.Sqlite)",
+    "peakMiB": 36,
+    "scenarios": {
+      "read": {
+        "rps": 117167,
+        "p50ms": 0.512,
+        "p99ms": 1.337,
+        "cores": 3.53,
+        "success": 1
+      },
+      "list": {
+        "rps": 80172,
+        "p50ms": 0.763,
+        "p99ms": 1.679,
+        "cores": 3.62,
+        "success": 1
+      },
+      "update": {
+        "rps": 60732,
+        "p50ms": 1.011,
+        "p99ms": 1.996,
+        "cores": 2.85,
+        "success": 1
+      },
+      "create": {
+        "rps": 5312,
+        "p50ms": 3.369,
+        "p99ms": 157.229,
+        "cores": 0.49,
+        "success": 1
+      }
+    }
+  },
+  "dotnet-webapi": {
+    "label": ".NET 10 (Web API: controllers and middleware, Microsoft.Data.Sqlite)",
+    "peakMiB": 46,
+    "scenarios": {
+      "read": {
+        "rps": 85609,
+        "p50ms": 0.669,
+        "p99ms": 2.054,
+        "cores": 3.47,
+        "success": 1
+      },
+      "list": {
+        "rps": 62764,
+        "p50ms": 0.938,
+        "p99ms": 2.472,
+        "cores": 3.54,
+        "success": 1
+      },
+      "update": {
+        "rps": 52540,
+        "p50ms": 1.117,
+        "p99ms": 2.593,
+        "cores": 3.2,
+        "success": 1
+      },
+      "create": {
+        "rps": 12567,
+        "p50ms": 3.812,
+        "p99ms": 63.044,
+        "cores": 1.36,
+        "success": 1
+      }
+    }
   }
 }

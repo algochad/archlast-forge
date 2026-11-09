@@ -8,7 +8,9 @@
 | archlast-forge (forge/http.ts minimal routes, Tuyere, ctx.db) | 175,013 | 127,149 | 73,650 | 19,722 | 266 MiB |
 | archlast-forge (NestJS path, Tuyere, bun:sqlite) | 157,236 | 107,637 | 86,377 | 20,451 | 269 MiB |
 | archlast-forge (NestJS path, Tuyere, ctx.db) | 143,756 | 106,740 | 61,441 | 18,708 | 337 MiB |
+| .NET 10 (Web API: controllers only, no middleware, Microsoft.Data.Sqlite) | 117,167 | 80,172 | 60,732 | 5,312 | 36 MiB |
 | Bun.serve (bun:sqlite) | 102,001 | 62,078 | 49,413 | 18,988 | 21 MiB |
+| .NET 10 (Web API: controllers and middleware, Microsoft.Data.Sqlite) | 85,609 | 62,764 | 52,540 | 12,567 | 46 MiB |
 | NestJS on Node.js 24 (Express adapter, node:sqlite) | 18,432 | 13,643 | 13,769 | 9,322 | 103 MiB |
 
 Requests per second, median of the runs. Latency (p50 / p99, ms) and the CPU the server used:
@@ -47,10 +49,18 @@ Requests per second, median of the runs. Latency (p50 / p99, ms) and the CPU the
 | archlast-forge (NestJS path, Tuyere, ctx.db) | list | 0.55 | 1.777 | 2.8 |
 | archlast-forge (NestJS path, Tuyere, ctx.db) | update | 0.947 | 2.448 | 1.85 |
 | archlast-forge (NestJS path, Tuyere, ctx.db) | create | 3.012 | 8.023 | 1.69 |
+| .NET 10 (Web API: controllers only, no middleware, Microsoft.Data.Sqlite) | read | 0.512 | 1.337 | 3.53 |
+| .NET 10 (Web API: controllers only, no middleware, Microsoft.Data.Sqlite) | list | 0.763 | 1.679 | 3.62 |
+| .NET 10 (Web API: controllers only, no middleware, Microsoft.Data.Sqlite) | update | 1.011 | 1.996 | 2.85 |
+| .NET 10 (Web API: controllers only, no middleware, Microsoft.Data.Sqlite) | create | 3.369 | 157.229 | 0.49 |
 | Bun.serve (bun:sqlite) | read | 0.591 | 1.208 | 0.84 |
 | Bun.serve (bun:sqlite) | list | 0.983 | 1.929 | 0.87 |
 | Bun.serve (bun:sqlite) | update | 1.165 | 2.671 | 0.87 |
 | Bun.serve (bun:sqlite) | create | 2.247 | 8.699 | 0.67 |
+| .NET 10 (Web API: controllers and middleware, Microsoft.Data.Sqlite) | read | 0.669 | 2.054 | 3.47 |
+| .NET 10 (Web API: controllers and middleware, Microsoft.Data.Sqlite) | list | 0.938 | 2.472 | 3.54 |
+| .NET 10 (Web API: controllers and middleware, Microsoft.Data.Sqlite) | update | 1.117 | 2.593 | 3.2 |
+| .NET 10 (Web API: controllers and middleware, Microsoft.Data.Sqlite) | create | 3.812 | 63.044 | 1.36 |
 | NestJS on Node.js 24 (Express adapter, node:sqlite) | read | 3.408 | 4.236 | 0.93 |
 | NestJS on Node.js 24 (Express adapter, node:sqlite) | list | 4.605 | 6.7 | 0.97 |
 | NestJS on Node.js 24 (Express adapter, node:sqlite) | update | 4.588 | 5.647 | 0.94 |

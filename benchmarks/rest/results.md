@@ -6,8 +6,10 @@
 | .NET 10 (Minimal APIs) | 392,989 | 305,788 | 345,777 | 306,551 | 76 MiB |
 | archlast-forge (forge/http.ts minimal routes, Tuyere) | 336,018 | 251,478 | 261,625 | 234,766 | 267 MiB |
 | NestJS on Tuyere (no Forge, a basic adapter) | 290,605 | 218,327 | 243,649 | 221,570 | 134 MiB |
+| .NET 10 (Web API: controllers only, no middleware) | 219,569 | 198,804 | 152,267 | 157,562 | 83 MiB |
 | archlast-forge (NestJS path, Tuyere, telemetry off) | 188,862 | 147,532 | 137,816 | 122,752 | 224 MiB |
 | archlast-forge (NestJS path, Tuyere) | 175,874 | 133,301 | 127,514 | 113,262 | 270 MiB |
+| .NET 10 (Web API: controllers and middleware) | 154,646 | 136,982 | 108,280 | 109,956 | 101 MiB |
 | Bun.serve | 143,497 | 111,052 | 90,799 | 81,450 | 92 MiB |
 | NestJS on Bun (Express adapter) | 38,744 | 35,168 | 22,949 | 21,416 | 156 MiB |
 | archlast-forge (NestJS path, Bun.serve) | 37,971 | 32,708 | 27,535 | 26,192 | 224 MiB |
@@ -42,6 +44,10 @@ Requests per second, median of the runs. Latency (p50 / p99, ms) and the CPU the
 | NestJS on Tuyere (no Forge, a basic adapter) | list | 0.289 | 0.814 | 1.94 |
 | NestJS on Tuyere (no Forge, a basic adapter) | update | 0.244 | 0.794 | 2.18 |
 | NestJS on Tuyere (no Forge, a basic adapter) | create | 0.228 | 1.992 | 2.14 |
+| .NET 10 (Web API: controllers only, no middleware) | read | 0.254 | 1.091 | 3.22 |
+| .NET 10 (Web API: controllers only, no middleware) | list | 0.3 | 0.833 | 3.37 |
+| .NET 10 (Web API: controllers only, no middleware) | update | 0.366 | 1.312 | 3.28 |
+| .NET 10 (Web API: controllers only, no middleware) | create | 0.346 | 1.729 | 3.21 |
 | archlast-forge (NestJS path, Tuyere, telemetry off) | read | 0.314 | 1.165 | 2.04 |
 | archlast-forge (NestJS path, Tuyere, telemetry off) | list | 0.427 | 1.379 | 1.8 |
 | archlast-forge (NestJS path, Tuyere, telemetry off) | update | 0.431 | 1.615 | 1.88 |
@@ -50,6 +56,10 @@ Requests per second, median of the runs. Latency (p50 / p99, ms) and the CPU the
 | archlast-forge (NestJS path, Tuyere) | list | 0.438 | 1.432 | 1.66 |
 | archlast-forge (NestJS path, Tuyere) | update | 0.452 | 1.641 | 1.76 |
 | archlast-forge (NestJS path, Tuyere) | create | 0.457 | 4.312 | 1.83 |
+| .NET 10 (Web API: controllers and middleware) | read | 0.359 | 1.417 | 3.3 |
+| .NET 10 (Web API: controllers and middleware) | list | 0.411 | 1.457 | 3.31 |
+| .NET 10 (Web API: controllers and middleware) | update | 0.502 | 1.832 | 3.3 |
+| .NET 10 (Web API: controllers and middleware) | create | 0.48 | 2.519 | 3.22 |
 | Bun.serve | read | 0.423 | 0.86 | 0.78 |
 | Bun.serve | list | 0.551 | 1.081 | 0.81 |
 | Bun.serve | update | 0.671 | 1.348 | 0.84 |
