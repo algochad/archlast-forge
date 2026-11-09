@@ -213,7 +213,7 @@ export async function startCore(opts: {
   if (config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
   // Every function runtime process holds its own connections, so they share the RAM SQLite is given.
   // On Postgres the first process says what the pools hold against what the database allows, and warns when that is close to the limit.
-  const db = await openDatabase(config, serverMemory() / config.runtimeWorkers, {
+  const db = await openDatabase(config, serverMemory() / (config.runtimeWorkers * config.clusterSize), {
     plan: (plan) => {
       if (worker !== 0) return;
       const { level, message } = describePlan(plan);
@@ -235,8 +235,8 @@ export async function startCore(opts: {
     limits: config.limits,
     publish: (topics) => send({ t: "publish", topics }),
     log: emit,
-    // Only this process writes the local database when it is the one function runtime, so its own writes keep the cache exact.
-    readCache: config.databaseKind === "sqlite" && config.runtimeWorkers === 1 ? new ReadCache() : undefined,
+    // Only this process writes the local database when it is the one function runtime (and the one server), so its own writes keep the cache exact.
+    readCache: config.databaseKind === "sqlite" && config.runtimeWorkers === 1 && (config.clusterSize === 1 || config.dbEngine === "native") ? new ReadCache() : undefined, // (a cluster: the native layer's caches learn of the other servers' commits)
     // Inside a call, so the warning is listed with the function that ran the query.
     devWarn: config.dev ? (message) => console.warn(message) : undefined,
   });

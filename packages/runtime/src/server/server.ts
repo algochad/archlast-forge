@@ -36,6 +36,8 @@ import { Firewall, settingsOf, type TestRequest } from "./waf/firewall";
 import { now as clock } from "./telemetry/context";
 import { OtlpExporter } from "./telemetry/export";
 import { telemetryForwarder } from "./telemetry/forward";
+import { unlock } from "./db/unlock";
+import { ClusterBus, ClusterHub, ClusterLink, ClusterSupervisor, SharedRateLimiter, clusterDir, isControlPlane, proxy as proxyToFirst, resolveClusterSize, serveControl, type ClusterWire } from "./cluster";
 import { spanId as newSpanId } from "./telemetry/ids";
 import { failureOf } from "./telemetry/outcome";
 import { normalizePath, Telemetry, type Outcome } from "./telemetry/recorder";
@@ -135,6 +137,11 @@ export interface ServerOptions {
    * without it the dashboard asks for a restart of the process.
    */
   restart?: () => Promise<void>;
+  /**
+   * How to start another server of this app on this machine (the command line of this process, which the CLI knows): with it, `SERVER_PROCESSES` can make a cluster of
+   * servers sharing the port (see cluster.ts). Without it the server runs alone.
+   */
+  cluster?: { command: string[] };
 }
 
 /**
@@ -311,6 +318,14 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   if (storedError) log("error", storedError);
   const startedWith = stored;
 
+  // ---- the cluster this server is in: several servers of the app on this machine, sharing the port (cluster.ts) ----
+  const cluster = await resolveClusterSize(config, env, { dev, command: opts.cluster?.command });
+  config.clusterSize = cluster.size;
+  if (cluster.size > 1 && !env.DB_ENGINE) config.dbEngine = "native";
+  const clustered = cluster.size > 1;
+  const follower = clustered && config.clusterIndex > 0;
+  const clusterFolder = clusterDir(config.dataDir);
+
   // Security headers (Helmet) for the REST API, the app's pages and the dashboard: presets, the code's options (each load), and the
   // dashboard's HELMET and HELMET_CONFIG (live settings: the environment's win).
   const storageOrigins = [...new Set([config.s3?.publicEndpoint, config.s3?.endpoint].filter((u): u is string => Boolean(u)).map((u) => new URL(u).origin))];
@@ -338,20 +353,58 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   let pool = runtimeWorkersFor(env);
   const serverId = `${hostname()}:${process.pid}`;
   const ttl = config.cacheTtlMs;
-  const bus: Bus = config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0 || config.httpEngine !== "bun", prefix: config.redisPrefix }) : new MemoryBus();
+  // A cluster's first server is the hub the others connect to: topics and rate-limit counts go through it (with Redis, through Redis).
+  let hub: ClusterHub | undefined;
+  let link: ClusterLink | undefined;
+  if (clustered) {
+    if (follower) link = await ClusterLink.connect(clusterFolder, config.clusterIndex);
+    else (hub = new ClusterHub(clusterFolder)).start();
+  }
+  const wire: ClusterWire | undefined = hub ?? link;
+  const clusterBus = clustered && !config.redisUrl ? new ClusterBus(wire!) : undefined;
+  const bus: Bus = clusterBus ?? (config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0 || config.httpEngine !== "bun", prefix: config.redisPrefix }) : new MemoryBus());
   const cache = ttl > 0 ? (config.redisUrl ? await RedisCache.connect(config.redisUrl, config.redisPrefix) : new MemoryCache(10_000, config.cacheMaxBytes)) : undefined;
   const limiterRedis = config.redisUrl ? await connectRedis(config.redisUrl) : undefined;
-  const limiter: RateLimiter = limiterRedis ? new RedisRateLimiter(limiterRedis, `${config.redisPrefix}rl:`) : new MemoryRateLimiter();
+  const limiter: RateLimiter = limiterRedis ? new RedisRateLimiter(limiterRedis, `${config.redisPrefix}rl:`) : clustered ? new SharedRateLimiter(clusterFolder) : new MemoryRateLimiter();
+  if (wire) unlock.send = () => wire.send({ t: "unlock" });
+  const takeFromOthers = (m: { t: string; topics?: string[]; topic?: string; payload?: unknown }) => {
+    if (m.t === "unlock") unlock.notify();
+    else if (m.t === "topics") clusterBus?.receive(m.topics!);
+    else if (m.t === "relay") runtime.deliverRelay(m.topic!, m.payload);
+  };
+  /** What the other servers hold open now (they tell with their counts), added to this one's in /metrics. */
+  const others = new Map<number, { connections: number; subscriptions: number }>();
+  const sumOthers = (key: "connections" | "subscriptions") => [...others.values()].reduce((a, o) => a + o[key], 0);
+  if (hub)
+    hub.onMessage = (m, from) => {
+      if (m.t === "metrics") {
+        metrics.merge(m.fns);
+        others.set(m.from, { connections: m.connections, subscriptions: m.subscriptions });
+        return;
+      }
+      takeFromOthers(m);
+      hub!.send(m, from); // and to the rest
+    };
+  if (link) {
+    link.onMessage = takeFromOthers;
+    // The first server went away: this one goes with it (its supervisor starts them together again).
+    link.onClose = () => {
+      log("warn", "the first server of the cluster stopped; stopping this one");
+      process.kill(process.pid, "SIGTERM");
+    };
+  }
   // Two apps with one prefix on one Redis would share a cache and wake each other: say so at the start, instead of serving the wrong data silently.
   if (limiterRedis && (await claimPrefix(limiterRedis, config.redisPrefix, redisOwnerOf(config))))
     log("warn", `another app already uses the Redis prefix "${config.redisPrefix}" (it was written with a different BETTER_AUTH_SECRET): apps that share a Redis need their own OTEL_SERVICE_NAME or REDIS_PREFIX, or they share a cache and wake each other's subscriptions. If you just rotated the secret, this goes away once every server has restarted.`);
 
   const runtimeEnv = { ...env }; // gets the bound URL before the runtime starts
+  if (clustered) Object.assign(runtimeEnv, { ARCHLAST_CLUSTER_SIZE: String(cluster.size), ARCHLAST_CLUSTER_INDEX: String(config.clusterIndex), ARCHLAST_WORKER: String(config.clusterIndex) });
   const runtime = new FunctionRuntime({
     forgeDir: resolve(opts.forgeDir),
     env: runtimeEnv,
     dev,
     workers: config.runtimeWorkers,
+    worker: config.clusterIndex,
     serverId,
     timeouts: { functionMs: config.limits.functionTimeoutMs, actionMs: config.limits.actionTimeoutMs },
     maxPending: config.limits.maxPendingCalls,
@@ -360,7 +413,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const metrics = new Metrics();
   // Telemetry: the store's worker when it is on, and an exporter when a collector is configured; either needs the recorder.
   // A microservice keeps no store: what it records goes to the main app's (DASHBOARD_URL), whose dashboard shows it.
-  const forward = config.telemetry && config.dashboardUrl ? telemetryForwarder(config.dashboardUrl, config.dashboardToken!) : undefined;
+  // A server of a cluster that is not the first sends what it records to the first, whose store and dashboard are the cluster's.
+  const forward =
+    config.telemetry && follower
+      ? telemetryForwarder("http://localhost", "", { unix: join(clusterFolder, "control.sock"), path: "/_cluster/telemetry" })
+      : config.telemetry && config.dashboardUrl
+        ? telemetryForwarder(config.dashboardUrl, config.dashboardToken!)
+        : undefined;
   if (config.telemetry && !forward && config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
   const store =
     config.telemetry && !forward
@@ -406,6 +465,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     loops.set(s.instance, { role: s.role, p99: s.loopP99, max: s.loopMax });
     telemetry?.sample(s);
   };
+  // `createPubSub` events reach the runtimes of the other servers of a cluster
+  if (wire) runtime.onRelay = (topic, payload) => wire.send({ t: "relay", topic, payload });
   runtime.onPublish = (topics) => void bus.publish(topics).catch((e) => log("error", "publish failed", { error: String(e) }));
   /** Sockets of Nest gateways, by id: the function runtime sends to and closes them through runtime.onWs. */
   const gatewaySockets = new Map<string, ServerWebSocket<ServerSocket>>();
@@ -434,6 +495,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
 
   /** Whether the HTTP engine keeps responses a page asks it to (see `x-forge-cache`). */
   let nativeCache = false;
+  /** The handler of requests that come in at the port, kept to answer the ones another server of the cluster passes on. */
+  let mainFetch: ((req: Request, srv: Server<ServerSocket>) => Promise<Response | undefined>) | undefined;
   /** Tags the pages the engine keeps were given (one per table read), so a write purges only for tables a page depends on. */
   const pageTags = new Set<string>();
   let purgePages: ((tags: string[]) => void) | undefined;
@@ -1167,15 +1230,19 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     development: false,
     // For the native engine only (Bun.serve has no such options): the /http fast path, and the Rust I/O threads, of which one core is left to the
     // JavaScript thread and four are all that one JavaScript thread can use.
-    ...(config.httpEngine !== "bun" && { rawFetch: rawHttp, threads: Math.max(1, Number(env.ARCHLAST_THREADS) || Math.min(4, Math.max(2, serverCores() - 1))) }),
+    // In a cluster every server has one I/O thread (the layout that served the most requests per core) and shares the port with the others.
+    ...(config.httpEngine !== "bun" && { rawFetch: rawHttp, threads: Math.max(1, Number(env.ARCHLAST_THREADS) || (clustered ? 1 : Math.min(4, Math.max(2, serverCores() - 1)))) }),
+    ...(clustered && { reusePort: true }),
     routes: config.dashboardUrl
       ? { "/_dashboard": () => Response.redirect(`${config.dashboardUrl}/_dashboard#/microservices`, 302) }
       : {},
-    async fetch(req, srv) {
+    fetch: (mainFetch = async (req: Request, srv: Server<ServerSocket>) => {
       const url = new URL(req.url);
       const path = url.pathname;
       const requestId = requestIdOf(req.headers.get("x-request-id"));
       const withId = (res: Response) => (res.headers.set("x-request-id", requestId), res);
+      // Only the first server of a cluster has the telemetry, the logs, the metrics and the sessions of the dashboard: the others pass these on.
+      if (follower && isControlPlane(path, req.method)) return withId(await proxyToFirst(clusterFolder, req, clientIp(req, srv)));
 
       if (path === "/health") return Response.json({ ok: true });
       if (path === "/ready")
@@ -1263,7 +1330,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const auth = req.headers.get("authorization")?.replace(/^Bearer /, "");
         const token = env.METRICS_TOKEN || config.adminKey;
         if (token ? !(auth && sameSecret(auth, token)) : !dev) return new Response("Not found", { status: 404 });
-        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: runtime.size, backlog: runtime.backlog() }, queries.snapshot(), loops), {
+        return new Response(metrics.render({ subscriptions: subs.size + sumOthers("subscriptions"), connections: connections + sumOthers("connections"), workers: runtime.size, backlog: runtime.backlog() }, queries.snapshot(), loops), {
           headers: { "content-type": "text/plain; version=0.0.4" },
         });
       }
@@ -1586,7 +1653,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         }
       }
       return new Response("Not found", { status: 404 });
-    },
+    }) as never,
     websocket: {
       maxPayloadLength: config.limits.maxRequestBytes,
       // A client that can't keep up is dropped; it reconnects and refetches, instead of buffering without bound.
@@ -1644,6 +1711,24 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   }
 
   log("info", `http engine: ${httpEngine} (${httpEngineWhy})`);
+  // The first server of a cluster answers what the others pass on (the dashboard, the admin API, metrics, telemetry), and starts them once it has loaded.
+  let control: ReturnType<typeof serveControl> | undefined;
+  let supervisor: ClusterSupervisor | undefined;
+  if (clustered && !follower) {
+    log("info", `cluster: ${cluster.why}`);
+    control = serveControl(clusterFolder, async (req, ip) => {
+      const path = new URL(req.url).pathname;
+      if (path === "/_cluster/telemetry" && req.method === "POST") {
+        store?.write((await req.json()) as TelemetryBatch);
+        return new Response(null, { status: 204 });
+      }
+      // as if it had come in at the port, from the address its client had
+      const address = ip ?? "unknown";
+      const srv = { requestIP: () => ({ address, family: address.includes(":") ? "IPv6" : "IPv4", port: 0 }), timeout() {}, upgrade: () => false, port: config.port, hostname: config.hostname };
+      return (await mainFetch!(req, srv as never)) ?? new Response("Not found", { status: 404 });
+    });
+    supervisor = new ClusterSupervisor({ size: cluster.size, command: opts.cluster!.command, env: baseEnv, dir: clusterFolder });
+  } else if (follower) log("info", `cluster: server ${config.clusterIndex} of ${cluster.size}`);
   // Bound to every interface, the local URL is the useful one (Better Auth's default origin, logs).
   const url = ["0.0.0.0", "::"].includes(config.hostname) ? `http://localhost:${server.port}` : server.url.href.replace(/\/$/, "");
   runtimeEnv.BETTER_AUTH_URL ??= url;
@@ -1655,6 +1740,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       await bus.close();
       throw e;
     });
+
+  // Sockets stay with the server that took them, and the long-polling of Socket.IO needs the same server for each of its requests: an app that has gateways or subscriptions
+  // over sockets is started as one server unless the number was asked for.
+  if (supervisor && (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.sockets-used")]) {
+    if (config.serverProcesses === "auto") {
+      log("info", "cluster: the app has WebSocket gateways, whose sockets stay with one server: running one (SERVER_PROCESSES=n runs n anyway)");
+      await supervisor.stop();
+      supervisor = undefined;
+    } else log("warn", "cluster: the app has WebSocket gateways; their sockets stay with the server that took them, and Socket.IO's long-polling needs a server for each session: use WebSocket transports only");
+  }
+  supervisor?.start(); // the others, now that the database is migrated and the first can answer them
 
   // This process's health every 10 seconds, with the connections, subscriptions and cache figures only the server knows. The cache
   // counters are totals since start; a sample carries what happened since the one before.
@@ -1680,6 +1776,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     loops.set(serverId, { role: "server", p99: h.loopP99, max: h.loopMax });
     telemetry?.sample({ time: Date.now(), instance: serverId, role: "server", ...h, connections, subscriptions: subs.size, inflight: telemetry.inflight, ...cache });
   };
+  // A server of a cluster tells the first what its functions did, for /metrics.
+  const reporter = link && setInterval(() => link!.send({ t: "metrics", from: config.clusterIndex, fns: metrics.take(), connections, subscriptions: subs.size }), 2000);
+  reporter?.unref?.();
   const sampler = setInterval(takeSample, 10_000);
   sampler.unref?.();
   // A first sample soon after start, so a node a scaler just added is on the dashboard's Nodes page at once rather than 10 s later.
@@ -1694,11 +1793,16 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     async stop({ graceful = true, keepApp = false } = {}) {
       shuttingDown = true;
       clearInterval(sampler);
+      clearInterval(reporter);
       clearTimeout(firstSample);
       // 1012 "service restart": clients reconnect (to another server, behind a load balancer) and refetch.
       for (const ws of sockets) ws.close(1012, "Server restarting");
       if (graceful) await Promise.race([server.stop(false), Bun.sleep(10_000)]);
       server.stop(true);
+      unlock.send = () => {};
+      await supervisor?.stop();
+      control?.stop(true);
+      hub?.stop();
       if (!keepApp) await opts.app?.dispose?.();
       await runtime.stop();
       await bus.close();

@@ -5,6 +5,7 @@
 mod cache;
 mod checkpoint;
 mod engine;
+mod epochs;
 mod jsjson;
 mod jsonscan;
 mod plan;
@@ -62,7 +63,7 @@ pub struct Engine {
 
 #[napi]
 impl Engine {
-    /// Opens the database file with a writer and `readers` readers; `options` is JSON: { readers, mmapBytes, cacheKiB, cacheEntries, cacheBytes }.
+    /// Opens the database file with a writer and `readers` readers; `options` is JSON: { readers, mmapBytes, cacheKiB, cacheEntries, cacheBytes, checkpoint, shared, epochs }.
     #[napi(constructor)]
     pub fn new(path: String, options: String) -> Result<Self> {
         let o: Value = serde_json::from_str(&options).map_err(bad)?;
@@ -73,9 +74,12 @@ impl Engine {
             cache_kib: num("cacheKiB"),
             cache_entries: num("cacheEntries").unwrap_or(20_000) as usize,
             cache_bytes: num("cacheBytes").unwrap_or(32 << 20) as usize,
+            epochs: o.get("epochs").and_then(Value::as_str).map(String::from),
         };
         let core = Core::open(&path, &opts).map_err(fail)?;
-        let checkpointer = checkpoint::Checkpointer::start(path);
+        // `checkpoint` false: another process keeps the log; `shared`: other processes use the file (a cluster of servers)
+        let flag = |k: &str, default: bool| o.get(k).and_then(Value::as_bool).unwrap_or(default);
+        let checkpointer = checkpoint::Checkpointer::start(path, flag("checkpoint", true), flag("shared", false));
         Ok(Self { core: Some(core), checkpointer: Some(checkpointer) })
     }
 
@@ -110,6 +114,12 @@ impl Engine {
     #[napi]
     pub fn writer_sql(&mut self, sql: String) -> Result<()> {
         self.c()?.writer_sql(&sql).map_err(fail)
+    }
+
+    /// `BEGIN IMMEDIATE` without waiting for the write lock: false when another process has it.
+    #[napi]
+    pub fn writer_begin(&mut self) -> Result<bool> {
+        self.c()?.writer_begin().map_err(fail)
     }
 
     #[napi]

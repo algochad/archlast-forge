@@ -150,6 +150,15 @@ export const SETTINGS: SettingDef[] = [
     doc: "For RUNTIME_WORKERS=auto: processes per core (0.5: half the cores, rounded down, at least 1).",
   },
   {
+    name: "SERVER_PROCESSES",
+    group: "Runtime",
+    type: "int",
+    min: 1,
+    options: ["auto"],
+    default: "auto",
+    doc: "Servers of this app on this machine, sharing its port, each with one I/O thread and one event loop. `auto`: one for every two cores from 4 cores (4 cores: 2, 8: 4, at most 8), when the app runs with `archlast-forge start`, on SQLite with the native engine and the native database layer; else 1. The first keeps the scheduler, backups and dashboard; the others answer requests and send what they record to it. Needs SQLite (the native layer, which a cluster switches on), RUNTIME_WORKERS=1 and a production start. 1 runs one server.",
+  },
+  {
     name: "RUNTIME_MODE",
     group: "Runtime",
     type: "enum",

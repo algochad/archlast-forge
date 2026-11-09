@@ -20,6 +20,8 @@ lru = "0.12"
 base64 = "0.22"
 indexmap = { version = "2", features = ["serde"] }
 getrandom = "0.2"
+# flock, for the pause that every process using the database file sees (checkpoint.rs)
+libc = "0.2"
 
 [build-dependencies]
 napi-build = "2"

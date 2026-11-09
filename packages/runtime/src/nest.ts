@@ -553,6 +553,8 @@ const joinPath = (prefix: string, path: string) => (prefix + path.replace(/^\/+/
  */
 export function onSocket(path: string, open: (socket: ForgeSocket) => void) {
   socketPaths.set(joinPath(mountPrefix, path), open);
+  // Sockets (gateways, GraphQL subscriptions) stay with the server that took them: a cluster of servers starts with one for an app that has them (see server.ts)
+  (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.sockets-used")] = true;
 }
 
 type SocketEvent = { op: "open"; sid: string; path: string; headers: [string, string][]; requestId?: string } | { op: "message"; sid: string; data: string | ArrayBuffer } | { op: "close"; sid: string; code: number; reason: string };

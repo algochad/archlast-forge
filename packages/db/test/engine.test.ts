@@ -12,6 +12,7 @@ interface Engine {
   beginRead(cached: boolean): number;
   beginWrite(): number;
   writerSql(sql: string): void;
+  writerBegin(): boolean;
   endTx(tx: number, ok: boolean): string;
   all(tx: number, sql: string, params: unknown[]): string;
   run(tx: number, sql: string, params: unknown[]): number;
@@ -173,6 +174,25 @@ describe.skipIf(!lib)("the native document engine", () => {
     // the size limit is the engine's own
     expect(() => write(e, (tx) => e.insert(tx, "notes", [JSON.stringify({ body: "x".repeat(100), tag: "t" })], 50, false))).toThrow(/^\u0001V.*bytes/);
     e.close();
+  });
+
+  test("the write lock of another connection is waited for without blocking: writerBegin says false at once", () => {
+    const file = join(dir, `lock${n++}.db`);
+    const a = new lib!.Engine(file, JSON.stringify({ readers: 1, shared: true }));
+    const b = new lib!.Engine(file, JSON.stringify({ readers: 1, shared: true, checkpoint: false }));
+    a.migrate(spec([notes]));
+    expect(a.writerBegin()).toBe(true);
+    const t = performance.now();
+    expect(b.writerBegin()).toBe(false); // SQLite's busy handler would have slept 5 s here
+    expect(performance.now() - t).toBeLessThan(500);
+    a.writerSql("COMMIT");
+    expect(b.writerBegin()).toBe(true);
+    b.writerSql("ROLLBACK");
+    // the pause that processes sharing the file see is not raised by a log that is small
+    expect(a.paused()).toBe(false);
+    expect(b.paused()).toBe(false);
+    a.close();
+    b.close();
   });
 
   test("the checkpoint thread starts and stops with the engine", () => {

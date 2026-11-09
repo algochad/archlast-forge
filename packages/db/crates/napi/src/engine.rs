@@ -44,6 +44,8 @@ pub struct Options {
     pub cache_kib: Option<i64>,
     pub cache_entries: usize,
     pub cache_bytes: usize,
+    /// The file of commit counters shared with the other processes using the database (a cluster), when there are some.
+    pub epochs: Option<String>,
 }
 
 enum Kind {
@@ -98,6 +100,7 @@ pub struct Engine {
     /// The statement a description plans to (its text, parameters and the topic it reads), kept by the description's text: a read that cannot come from the result cache
     /// (a write transaction's, a changed snapshot's) skips parsing, planning and building the statement.
     plans: HashMap<String, Rc<Planned>>,
+    epochs: Option<crate::epochs::Epochs>,
     /// Reads answered from the cache, and reads that reached the database.
     pub hits: u64,
     pub misses: u64,
@@ -215,7 +218,7 @@ impl Engine {
         writer.execute_batch("PRAGMA journal_mode = WAL; PRAGMA synchronous = NORMAL; PRAGMA journal_size_limit = 67108864")?;
         let readers = (0..o.readers).map(|_| open(path, o, true)).collect::<R<Vec<_>>>()?;
         let free = (0..readers.len()).rev().collect();
-        Ok(Self { writer, readers, free, schema: Rc::new(Schema::default()), cache: ReadCache::new(o.cache_entries, o.cache_bytes), txs: Vec::new(), free_txs: Vec::new(), last_creation: 0.0, plans: HashMap::new(), hits: 0, misses: 0 })
+        Ok(Self { writer, readers, free, schema: Rc::new(Schema::default()), cache: ReadCache::new(o.cache_entries, o.cache_bytes), txs: Vec::new(), free_txs: Vec::new(), last_creation: 0.0, plans: HashMap::new(), epochs: o.epochs.as_deref().and_then(crate::epochs::Epochs::open), hits: 0, misses: 0 })
     }
 
     pub fn set_cache(&mut self, on: bool) {
@@ -333,6 +336,19 @@ impl Engine {
         Ok(())
     }
 
+    /// `BEGIN IMMEDIATE` on the writer without waiting: false when another process holds the write lock (the caller waits without blocking its event loop and tries
+    /// again), where SQLite's own busy handler would sleep in this call.
+    pub fn writer_begin(&self) -> R<bool> {
+        self.writer.busy_timeout(Duration::ZERO)?;
+        let r = self.writer.prepare_cached("BEGIN IMMEDIATE").and_then(|mut s| s.execute([]));
+        self.writer.busy_timeout(Duration::from_millis(5000))?;
+        match r {
+            Ok(_) => Ok(true),
+            Err(rusqlite::Error::SqliteFailure(e, _)) if matches!(e.code, rusqlite::ErrorCode::DatabaseBusy | rusqlite::ErrorCode::DatabaseLocked) => Ok(false),
+            Err(e) => Err(e.into()),
+        }
+    }
+
     pub fn writer_in_transaction(&self) -> bool {
         !self.writer.is_autocommit()
     }
@@ -355,6 +371,12 @@ impl Engine {
                 // Committed or rolled back: the tables it wrote can be read and cached again.
                 for t in std::mem::take(&mut tx.writing) {
                     self.cache.settled(&t, tx.writes.iter());
+                    // and the other processes are told of a commit before the writer is answered
+                    if ok {
+                        if let Some(e) = &mut self.epochs {
+                            e.bump(&t);
+                        }
+                    }
                 }
             }
         }
@@ -429,6 +451,12 @@ impl Engine {
     }
 
     fn cached_in(&mut self, tx: &mut Tx, table: &str, key: String, make: impl FnOnce(&Connection) -> R<(String, Vec<String>)>) -> R<Rc<str>> {
+        // another process may have committed to the table: what was read from it is then gone (and a transaction that used it starts over)
+        if let Some(e) = &mut self.epochs {
+            if e.changed(table) {
+                self.cache.external(table);
+            }
+        }
         if self.cache.enabled && tx.cached && !tx.dirty {
             if let Some(hit) = self.cache.get(&key, table, tx.stamp) {
                 tx.used_cache = true;

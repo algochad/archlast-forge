@@ -12,6 +12,7 @@ use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 struct Entry {
+    table: Rc<str>,
     text: Rc<str>,
     topics: Rc<[String]>,
     size: usize,
@@ -26,6 +27,8 @@ pub struct Hit {
 pub struct ReadCache {
     entries: LruCache<String, Entry>,
     by_topic: HashMap<String, HashSet<String>>,
+    /// The keys read from each table, for dropping them when another process commits to it.
+    by_table: HashMap<String, HashSet<String>>,
     /// When each table was last invalidated, on a counter shared by all tables.
     invalidated_at: HashMap<String, u64>,
     /// Tables with writes not yet committed or rolled back, and how many transactions hold them.
@@ -39,7 +42,7 @@ pub struct ReadCache {
 
 impl ReadCache {
     pub fn new(max_entries: usize, max_bytes: usize) -> Self {
-        Self { entries: LruCache::unbounded(), by_topic: HashMap::new(), invalidated_at: HashMap::new(), pending: HashMap::new(), clock: 0, bytes: 0, max_entries, max_bytes, enabled: true }
+        Self { entries: LruCache::unbounded(), by_topic: HashMap::new(), by_table: HashMap::new(), invalidated_at: HashMap::new(), pending: HashMap::new(), clock: 0, bytes: 0, max_entries, max_bytes, enabled: true }
     }
 
     /// The current point on the invalidation counter: a transaction's snapshot stamp.
@@ -70,8 +73,9 @@ impl ReadCache {
         for t in topics {
             self.by_topic.entry(t.clone()).or_default().insert(key.clone());
         }
+        self.by_table.entry(table.to_string()).or_default().insert(key.clone());
         self.bytes += size;
-        self.entries.put(key, Entry { text, topics: Rc::from(topics), size });
+        self.entries.put(key, Entry { text, topics: Rc::from(topics), size, table: table.into() });
         while self.entries.len() > self.max_entries || self.bytes > self.max_bytes {
             let Some((k, e)) = self.entries.pop_lru() else { break };
             self.unlink(&k, &e);
@@ -89,7 +93,19 @@ impl ReadCache {
     pub fn clear(&mut self) {
         self.entries.clear();
         self.by_topic.clear();
+        self.by_table.clear();
         self.bytes = 0;
+    }
+
+    /// Another process committed to `table`, and which topics it wrote is not known: everything read from the table is dropped, and the table counts as written now.
+    pub fn external(&mut self, table: &str) {
+        self.clock += 1;
+        self.invalidated_at.insert(table.to_string(), self.clock);
+        for key in self.by_table.remove(table).unwrap_or_default() {
+            if let Some(e) = self.entries.pop(&key) {
+                self.unlink(&key, &e);
+            }
+        }
     }
 
     /// That transaction committed or rolled back; `topics` are those it wrote (a rolled-back one may pass them too: dropping more is safe).
@@ -121,6 +137,12 @@ impl ReadCache {
 
     fn unlink(&mut self, key: &str, e: &Entry) {
         self.bytes = self.bytes.saturating_sub(e.size);
+        if let Some(keys) = self.by_table.get_mut(&*e.table) {
+            keys.remove(key);
+            if keys.is_empty() {
+                self.by_table.remove(&*e.table);
+            }
+        }
         for t in e.topics.iter() {
             if let Some(keys) = self.by_topic.get_mut(t) {
                 keys.remove(key);

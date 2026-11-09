@@ -15,6 +15,8 @@ export interface NativeEngine {
   /** The state of one function's writes inside the writer's transaction. */
   beginWrite(): number;
   writerSql(sql: string): void;
+  /** `BEGIN IMMEDIATE` without waiting: false when another process holds the write lock. */
+  writerBegin(): boolean;
   writerInTransaction(): boolean;
   /** Ends a transaction; what it read and wrote as one string: the reads and the writes apart by \u0001, their topics apart by \u0000 (empty when neither). */
   endTx(tx: number, ok: boolean): string;

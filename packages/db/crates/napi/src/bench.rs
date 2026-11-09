@@ -5,7 +5,7 @@ use std::time::Instant;
 fn engine() -> Engine {
     let dir = std::env::temp_dir().join(format!("afx-bench-{}", std::process::id()));
     std::fs::create_dir_all(&dir).unwrap();
-    let mut e = Engine::open(dir.join("a.db").to_str().unwrap(), &Options { readers: 2, mmap_bytes: None, cache_kib: None, cache_entries: 20_000, cache_bytes: 32 << 20 }).unwrap();
+    let mut e = Engine::open(dir.join("a.db").to_str().unwrap(), &Options { readers: 2, mmap_bytes: None, cache_kib: None, cache_entries: 20_000, cache_bytes: 32 << 20, epochs: None }).unwrap();
     let spec = r#"{"tables":[{"name":"items","creation":{"fields":[],"sql":"afx_c"},"indexes":[["by_item",{"fields":["itemId"],"sql":"afx_by_item"}]],"search":[],
         "fields":{"itemId":{"kind":"number","optional":false},"name":{"kind":"string","optional":false},"quantity":{"kind":"number","optional":false}},"strict":true}]}"#;
     #[derive(serde::Deserialize)]

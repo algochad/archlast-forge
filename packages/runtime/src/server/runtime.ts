@@ -41,6 +41,8 @@ interface Options {
   env: Record<string, string | undefined>;
   dev: boolean;
   workers?: number;
+  /** The place of this server in its cluster (0 is the first), for the core run in this process. */
+  worker?: number;
   serverId?: string;
   timeouts?: { functionMs: number; actionMs: number };
   /** Calls one process may have waiting; more are refused (see ErrorKind "overloaded"). */
@@ -94,7 +96,7 @@ export class InlineWorker implements Worker {
     this.started = startCore({
       forgeDir: this.opts.forgeDir,
       env: this.opts.env,
-      worker: 0,
+      worker: this.opts.worker ?? 0, // a server of a cluster that is not the first leaves the scheduler, crons and backups to it
       serverId: this.opts.serverId ?? "local",
       dev: this.opts.dev,
       send: (m) => this.events.onMessage(m),
@@ -377,6 +379,12 @@ export class FunctionRuntime {
   manifest?: Manifest;
   loadError?: string;
   onPublish: (topics: string[]) => void = () => {};
+  /** A runtime relayed an event (`createPubSub`): to the other servers of a cluster, which `deliverRelay` it. */
+  onRelay: (topic: string, payload: unknown) => void = () => {};
+  /** An event another server of the cluster relayed: to every runtime process of this one. */
+  deliverRelay(topic: string, payload: unknown) {
+    for (const w of this.workers) if (w.ready) w.event({ t: "relay", topic, payload });
+  }
   onLog: (entry: LogEntry) => void = () => {};
   /** A gateway sends to, or closes, one of the server's sockets. */
   onWs: (msg: SocketMessage) => void = () => {};
@@ -405,7 +413,10 @@ export class FunctionRuntime {
       else if (msg.t === "metrics") this.onMetrics(msg.points, msg.instance);
       else if (msg.t === "sample")
         this.onSample({ ...msg.sample, inflight: this.workers[index]?.load }); // calls waiting in that process, for the Runtime page
-      else if (msg.t === "relay") for (const w of this.workers) if (w.ready) w.event(msg); // to every worker, the sender too: one path for all
+      else if (msg.t === "relay") {
+        for (const w of this.workers) if (w.ready) w.event(msg); // to every worker, the sender too: one path for all
+        this.onRelay(msg.topic, msg.payload); // and to the other servers of a cluster
+      }
     };
     if (this.opts.inline) return new InlineWorker(this.opts, { onMessage });
     const worker: Worker = new RuntimeProcess(index, this.opts, {

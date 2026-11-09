@@ -1,6 +1,8 @@
 // SQLite on the native document engine (packages/db). The engine owns the database file's connections, its tables and indexes, its documents, queries and cache;
 // this file is the part that runs JavaScript's functions between its calls: the writer's queue and group commit, the pool of readers' waiting list, and the fsync
 // that makes an answered write durable. Whatever uses the database in the engine's own terms (the DocStore) finds the engine on `db.native` and on each transaction.
+import { join } from "node:path";
+import { unlock } from "./unlock";
 import { hashName, ftsTable } from "./migrate";
 import { call, NativeHandle, nativeDb, type NativeEngine, type NativeDb } from "./native";
 import { sqliteDialect, sqliteMemory, WalSyncer } from "./sqlite";
@@ -45,10 +47,20 @@ class NativeTx implements DbTx {
   }
 }
 
-export function createNativeSqliteDb(path: string, native: NativeDb, readers = 4, ram?: number, synchronous: "FULL" | "NORMAL" = "FULL"): Db {
+/** The servers of one cluster (several processes on one database file): this one's place in it. */
+export interface ClusterSeat {
+  size: number;
+  index: number;
+  /** The folder the servers' shared files are in (the commit counters of their read caches). */
+  dir?: string;
+}
+
+export function createNativeSqliteDb(path: string, native: NativeDb, readers = 4, ram?: number, synchronous: "FULL" | "NORMAL" = "FULL", cluster?: ClusterSeat): Db {
   const syncer = synchronous === "FULL" ? new WalSyncer(path + "-wal", path) : undefined;
   const sized = ram ? sqliteMemory(ram, readers + 1) : undefined;
-  const engine: NativeEngine = new native.Engine(path, JSON.stringify({ readers, mmapBytes: sized?.mmapBytes, cacheKiB: sized?.cacheKiB }));
+  // In a cluster one process keeps the write-ahead log (the first), and all of them see its pause (a lock beside the file).
+  const shared = cluster !== undefined && cluster.size > 1;
+  const engine: NativeEngine = new native.Engine(path, JSON.stringify({ readers, mmapBytes: sized?.mmapBytes, cacheKiB: sized?.cacheKiB, checkpoint: !shared || cluster.index === 0, shared, epochs: shared && cluster.dir ? join(cluster.dir, "epochs.shm") : undefined }));
 
   // ---- the writer: group commit ----
   // Write transactions run one at a time on the writer, but those that queue up meanwhile run back to back in one SQLite transaction, each in its own savepoint,
@@ -84,6 +96,26 @@ export function createNativeSqliteDb(path: string, native: NativeDb, readers = 4
   /** The transaction handed to a job of the writer: raw statements on the writer, and the engine's operations for the DocStore. */
   const writerTx = () => new NativeTx(engine, new NativeHandle(engine, "write", true));
 
+  /**
+   * Tries for the write lock until it is had, yielding between tries: at once a few times, then until another server says it let go (or 2 ms pass); gives up after 30 s.
+   * False when the log's keeper asked for the lock meanwhile: the caller holds its batch (a writer that kept taking the lock would starve the checkpoint).
+   */
+  async function lockedByAnother(): Promise<boolean> {
+    const until = performance.now() + 30_000;
+    for (let n = 0; ; n++) {
+      if (performance.now() > until) throw new Error("the database is locked by another process (waited 30 s for the write lock)");
+      if (n < 4) await new Promise<void>((resolve) => setImmediate(resolve));
+      else
+        await new Promise<void>((resolve) => {
+          const wake = () => (clearTimeout(timer), unlock.waiters.delete(wake), resolve());
+          const timer = setTimeout(wake, 2);
+          unlock.waiters.add(wake);
+        });
+      if (engine.paused()) return false;
+      if (engine.writerBegin()) return true;
+    }
+  }
+
   async function drain() {
     try {
       while (queue.length) {
@@ -112,7 +144,8 @@ export function createNativeSqliteDb(path: string, native: NativeDb, readers = 4
           continue;
         }
         try {
-          engine.writerSql("BEGIN IMMEDIATE"); // can fail after busy_timeout when another process holds the write lock
+          // The write lock may be another process's (a cluster of servers): wait for it without blocking this event loop, which SQLite's own busy handler would.
+          if (!engine.writerBegin() && !(await lockedByAnother())) continue; // (held: the top of the loop waits out the pause)
         } catch (e) {
           queue.shift()!.reject(e);
           continue;
@@ -145,8 +178,10 @@ export function createNativeSqliteDb(path: string, native: NativeDb, readers = 4
         try {
           if (aborted) throw aborted;
           engine.writerSql("COMMIT");
+          if (shared) unlock.send(); // a server that waits for the write lock may have it
         } catch (e) {
           if (engine.writerInTransaction()) engine.writerSql("ROLLBACK");
+          if (shared) unlock.send();
           for (const [job, , handle] of done) (handle.end(false), job.reject(e));
           continue;
         }

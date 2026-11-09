@@ -1,3 +1,4 @@
+import { join } from "node:path";
 import { sqlitePath, type Config } from "../config";
 import { planPools, readPostgresLimits, type PoolPlan } from "./pool-size";
 import { createPostgresDb } from "./postgres";
@@ -35,7 +36,7 @@ export async function openDatabase(config: Config, memory?: number, opts: { work
   if (config.dbEngine === "native") {
     const native = nativeDb();
     if (!native) throw new Error("DB_ENGINE=native, but the native database layer is not available here (Linux, built with `bun run build` in packages/db, or the engine image)");
-    return createNativeSqliteDb(sqlitePath(config), native, undefined, memory, config.sqliteSynchronous);
+    return createNativeSqliteDb(sqlitePath(config), native, undefined, memory, config.sqliteSynchronous, { size: config.clusterSize, index: config.clusterIndex, dir: join(config.dataDir, ".cluster") }); // (the folder cluster.ts makes)
   }
   return createSqliteDb(sqlitePath(config), undefined, memory, config.sqliteSynchronous);
 }
