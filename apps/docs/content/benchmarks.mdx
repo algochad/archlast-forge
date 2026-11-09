@@ -55,6 +55,7 @@ The store is a map in memory, seeded with 1,000 items, safe for concurrent use, 
 | Bun | `Bun.serve`, one process |
 | Go | fasthttp with `fasthttp/router`, one goroutine per connection |
 | .NET | Minimal APIs on Kestrel, source-generated JSON |
+| .NET Web API | the same API as MVC controllers on Kestrel, once with no middleware and once with the middleware a service usually carries; see [what a .NET Web API costs](#what-a-net-web-api-costs) |
 | Rust | Axum on Tokio, multi-threaded |
 
 These runs are before the cluster: Forge ran as one server (`SERVER_PROCESSES=1`), because the items live in the memory of one process. The [SQLite section](#the-same-api-on-sqlite) below has the setup a deployment runs.
@@ -71,15 +72,17 @@ The JavaScript servers (Forge, Tuyere, NestJS, Express, Bun) use the same store 
 | .NET 10 (Minimal APIs) | 392,989 | 305,788 | 345,777 | 306,551 | 76 MiB |
 | archlast-forge (forge/http.ts minimal routes, Tuyere) | 336,018 | 251,478 | 261,625 | 234,766 | 267 MiB |
 | NestJS on Tuyere (no Forge, a basic adapter) | 290,605 | 218,327 | 243,649 | 221,570 | 134 MiB |
+| .NET 10 (Web API: controllers only, no middleware) | 219,569 | 198,804 | 152,267 | 157,562 | 83 MiB |
 | archlast-forge (NestJS path, Tuyere, telemetry off) | 188,862 | 147,532 | 137,816 | 122,752 | 224 MiB |
 | archlast-forge (NestJS path, Tuyere) | 175,874 | 133,301 | 127,514 | 113,262 | 270 MiB |
+| .NET 10 (Web API: controllers and middleware) | 154,646 | 136,982 | 108,280 | 109,956 | 101 MiB |
 | Bun.serve | 143,497 | 111,052 | 90,799 | 81,450 | 92 MiB |
 | NestJS on Bun (Express adapter) | 38,744 | 35,168 | 22,949 | 21,416 | 156 MiB |
 | archlast-forge (NestJS path, Bun.serve) | 37,971 | 32,708 | 27,535 | 26,192 | 224 MiB |
 | NestJS on Node.js 24 (Express adapter) | 23,057 | 20,131 | 15,605 | 16,749 | 132 MiB |
 | Node.js 24 (Express 5) | 22,579 | 20,528 | 16,311 | 17,282 | 131 MiB |
 
-Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.06 / 2.03; Go 0.08 / 1.46; Tuyere 0.12 / 0.53; .NET 10 0.14 / 1.10; archlast-forge 0.17 / 0.82; NestJS on Tuyere 0.20 / 0.67; archlast-forge 0.31 / 1.17; archlast-forge 0.34 / 1.22; Bun.serve 0.42 / 0.86; NestJS on Bun 1.57 / 2.56; archlast-forge 1.60 / 3.22; NestJS on Node.js 24 2.72 / 3.34; Node.js 24 2.79 / 3.47.
+Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.06 / 2.03; Go 0.08 / 1.46; Tuyere 0.12 / 0.53; .NET 10 0.14 / 1.10; archlast-forge 0.17 / 0.82; NestJS on Tuyere 0.20 / 0.67; .NET 10 0.25 / 1.09; archlast-forge 0.31 / 1.17; archlast-forge 0.34 / 1.22; .NET 10 0.36 / 1.42; Bun.serve 0.42 / 0.86; NestJS on Bun 1.57 / 2.56; archlast-forge 1.60 / 3.22; NestJS on Node.js 24 2.72 / 3.34; Node.js 24 2.79 / 3.47.
 
 {/* /bench:rest */}
 
@@ -96,7 +99,7 @@ How to read this:
 
 The same API, scenarios and limits, with the items in a SQLite database instead of in memory. Each server uses its own driver in the setup you would use: `rusqlite` in Rust, `go-sqlite3` in Go, `Microsoft.Data.Sqlite` in .NET, `bun:sqlite` on Bun and `node:sqlite` on Node. archlast-forge uses what it ships: the items are documents in the engine's database, read and written with `ctx.db` directly from the route, in a transaction of its own (`ctx.read` and `ctx.write` in the minimal routes, a `DbService` with `@Read()` and `@Write()` methods in the NestJS controller). No function of the reactive system is called in between.
 
-**The archlast-forge rows are the production setup**: the engine image, started the way `archlast-forge start` starts it, with its defaults. On the four cores of this benchmark that is two servers sharing the port and one SQLite file ([Bellows](configuration.html#bellows-a-cluster-of-servers), a cluster), each with its own I/O thread and JavaScript event loop and the function runtime inline. The Forge, .NET and NestJS-on-Tuyere rows were measured together on 2026-11-09 on that image, with every other server in the table in the same run.
+**The archlast-forge rows are the production setup**: the engine image, started the way `archlast-forge start` starts it, with its defaults. On the four cores of this benchmark that is two servers sharing the port and one SQLite file ([Bellows](configuration.html#bellows-a-cluster-of-servers), a cluster), each with its own I/O thread and JavaScript event loop and the function runtime inline. The Forge, .NET and NestJS-on-Tuyere rows were measured together on 2026-11-09 on that image, with every other server in the table in the same run except the two .NET Web API rows, which were measured later ([what a .NET Web API costs](#what-a-net-web-api-costs)).
 
 Every server has the same table, WAL mode and `synchronous = NORMAL` (Forge: `SQLITE_SYNCHRONOUS=NORMAL`; its default, `FULL`, is stronger), and the same rules: ids count up from 1001 and a trigger removes item *n − 100,000* when item *n* is inserted. The multi-threaded servers (Rust, Go, .NET) read through a few connections and write through one, as SQLite wants, and the JavaScript servers have one connection because they have one thread. The database is a file on the machine's NVMe disk (a new directory per server, bind-mounted), not tmpfs.
 
@@ -118,10 +121,12 @@ SQLite 3.53.4 is the version in Bun 1.4 (which `bun:sqlite` and the engine use);
 | archlast-forge (forge/http.ts minimal routes, Tuyere, ctx.db) | 175,013 | 127,149 | 73,650 | 19,722 | 266 MiB |
 | archlast-forge (NestJS path, Tuyere, bun:sqlite) | 157,236 | 107,637 | 86,377 | 20,451 | 269 MiB |
 | archlast-forge (NestJS path, Tuyere, ctx.db) | 143,756 | 106,740 | 61,441 | 18,708 | 337 MiB |
+| .NET 10 (Web API: controllers only, no middleware, Microsoft.Data.Sqlite) | 117,167 | 80,172 | 60,732 | 5,312 | 36 MiB |
 | Bun.serve (bun:sqlite) | 102,001 | 62,078 | 49,413 | 18,988 | 21 MiB |
+| .NET 10 (Web API: controllers and middleware, Microsoft.Data.Sqlite) | 85,609 | 62,764 | 52,540 | 12,567 | 46 MiB |
 | NestJS on Node.js 24 (Express adapter, node:sqlite) | 18,432 | 13,643 | 13,769 | 9,322 | 103 MiB |
 
-Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.18 / 0.36; Tuyere 0.17 / 0.57; NestJS on Tuyere 0.29 / 0.79; .NET 10 0.31 / 1.56; Go 0.28 / 1.36; archlast-forge 0.33 / 1.27; archlast-forge 0.38 / 1.33; archlast-forge 0.39 / 1.55; Bun.serve 0.59 / 1.21; NestJS on Node.js 24 3.41 / 4.24.
+Requests per second. Latency in milliseconds (p50 / p99) for the read case: Rust 0.18 / 0.36; Tuyere 0.17 / 0.57; NestJS on Tuyere 0.29 / 0.79; .NET 10 0.31 / 1.56; Go 0.28 / 1.36; archlast-forge 0.33 / 1.27; archlast-forge 0.38 / 1.33; archlast-forge 0.39 / 1.55; .NET 10 0.51 / 1.34; Bun.serve 0.59 / 1.21; .NET 10 0.67 / 2.05; NestJS on Node.js 24 3.41 / 4.24.
 
 {/* /bench:rest-sqlite */}
 
@@ -135,6 +140,35 @@ How to read this:
 - **Writes are limited by the disk and by SQLite's single writer.** Create and update are one transaction each. Every server's create is below its update, because an insert also changes the index and the file grows; the figures for create also depend on what the disk does while the log is checkpointed (the p99 in the full table), so read them as an order of magnitude.
 - **Forge's write-ahead log is bounded under writes that never pause.** The benchmark found that it was not: the engine copied the log into the database from its own thread, but the log restarts only when a write finds nothing left to copy, and 64 connections inserting at once leave no such moment, so the file grew to several gigabytes in a 17-second create run (about 6 KB per insert) and, on a 256 MB tmpfs, every create failed. The checkpointer now holds the writer for the length of one checkpoint when the log passes 64 MiB, so the log restarts and stays near that size ([SQLite durability](https://github.com/algochad/archlast-forge/blob/staging/docs/decisions.md#sqlite-durability) has the details). The suite still keeps the databases on the disk, as measured before the fix, so that the rows stay comparable.
 - Memory is the largest anonymous memory sampled during the run (the page cache is left out, because the log fills it).
+
+## What a .NET Web API costs
+
+The .NET rows above are Minimal APIs, the lightest way to write an HTTP service in .NET, and they are the fair comparison for a server with no framework. Forge is a framework: every request carries a request id, security headers, telemetry, rate limiting and error handling, and a NestJS controller adds a router with guards, pipes and filters. To see what the same kind of work costs in .NET, the harness also runs a **Web API written the way an application writes one** (`benchmarks/rest/servers/dotnet-webapi`), in two forms, measured together with Minimal APIs in one window:
+
+- **Controllers only.** MVC controllers (`[ApiController]`, model binding, validation, JSON through System.Text.Json) with no middleware at all.
+- **Controllers and middleware.** The same controllers behind the middleware a service usually carries: a request id, ten security headers, request telemetry (a counter and a duration histogram per route, collected by a listener the way an exporter's reader would, 10% of requests traced, and a ring of the last 4,096 calls), a token-bucket rate limiter, CORS and an exception handler.
+
+They were run to separate what MVC itself costs from what the middleware costs, and to give Forge's per-request work a comparison in the same language and on the same machine. They are not a claim that a .NET service has to be written this way, and the middleware is this benchmark's own construction, made to carry about the work Forge does for a request (it has none of Forge's architecture: no function runtime, database layer or cluster). The same API, store rules and 22 conformance checks apply, with the items in memory or in SQLite (`Microsoft.Data.Sqlite`).
+
+Requests per second, 4 cores, 64 connections, median of three 10-second runs:
+
+| In memory | Read | List (20) | Update | Create | CPU per read |
+|---|---:|---:|---:|---:|---:|
+| .NET Minimal APIs | 417,005 | 361,991 | 359,817 | 323,966 | 7.5 µs |
+| .NET Web API, controllers only | 219,569 | 198,804 | 152,267 | 157,562 | 14.7 µs |
+| .NET Web API, controllers and middleware | 154,646 | 136,982 | 108,280 | 109,956 | 21.3 µs |
+
+| SQLite | Read | List (20) | Update | Create | CPU per read |
+|---|---:|---:|---:|---:|---:|
+| .NET Minimal APIs | 198,907 | 122,616 | 98,964 | 10,393 | 17.0 µs |
+| .NET Web API, controllers only | 117,167 | 80,172 | 60,732 | 5,312 | 30.1 µs |
+| .NET Web API, controllers and middleware | 85,609 | 62,764 | 52,540 | 12,567 | 40.5 µs |
+
+- **MVC itself takes about half of Minimal APIs' throughput.** In memory, controllers alone do 53% of Minimal's reads and 42% of its updates; on SQLite about 59% to 65% of its reads, lists and updates. A request costs about 7 µs more CPU in memory, and about 13 µs more with SQLite.
+- **The middleware takes a further 13% to 31%** off the controllers: 30% of the reads in memory (220,000 down to 155,000), 27% on SQLite (117,000 down to 86,000). About half of what a Web API costs over Minimal APIs is the controllers and about half is the middleware.
+- **Forge's request path costs less CPU than the Web API's.** A read through Forge's NestJS path costs about 10.9 µs of CPU in memory and 20.2 µs with `ctx.db` on SQLite (from the tables above), against 21.3 µs and 40.5 µs for the Web API with its middleware, and 14.7 µs and 30.1 µs for its controllers alone. A [minimal route](http.html#minimal-routes) costs 7.9 µs in memory, about what Minimal APIs cost with none of the framework's work. Forge's NestJS path is a NestJS controller too, so its router, guards and pipes are in that cost.
+- **Creates on SQLite are not comparable.** They are limited by the disk and by when the write-ahead log is checkpointed (the p99 of .NET's creates is over 200 ms), and the three .NET rows show it: 5,000 with controllers only, 12,000 with the middleware. Read the reads, lists and updates.
+- **Run to run, a row moves by up to 10%** (Minimal APIs read 372,000 in an earlier window and 417,000 in this one). The comparison is within a table. The Web API rows in the tables above were measured in this window, the rest in the earlier run on the same machine.
 
 ## A thread pool
 
