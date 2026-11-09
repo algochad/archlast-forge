@@ -4,6 +4,8 @@ import { SnapshotMoved, type ReadCache } from "./read-cache";
 import { tableOf, validateFields, ValidationError, type Validator } from "../values";
 import type { DbTx, Dialect, MongoFilter, MongoOps } from "./db/types";
 import { ftsTable } from "./db/migrate";
+import { call, type NativeHandle, type Param } from "./db/native";
+import { logContext, nativeOp } from "./telemetry/context";
 import { escapeRegex, searchField as mongoSearchField, searchWords } from "./db/mongodb-search";
 
 export type TablesSpec = Record<
@@ -16,7 +18,7 @@ export type TablesSpec = Record<
   }
 >;
 
-type Doc = Record<string, any> & { _id: string; _creationTime: number };
+export type Doc = Record<string, any> & { _id: string; _creationTime: number };
 
 /**
  * Related documents to add to each result. A string names a field holding an id (or an array of ids) and gives the document(s) it points at.
@@ -37,15 +39,20 @@ const MAX_SEARCH = 1024;
 const SCAN_BATCH = 256;
 /** A batch of a filter's scan: a database a round trip away takes more at a time (a scan of 2,000 documents was 8 round trips). */
 const scanBatchOf = (dialect: Dialect) => (dialect.name === "sqlite" ? SCAN_BATCH : SCAN_BATCH * 4);
-const MAX_SCAN = 100_000;
+export const MAX_SCAN = 100_000;
 /** Ids per `IN (…)` and parents per `OR` chain, to keep statements a sane size. */
 const IN_CHUNK = 500;
 const OR_CHUNK = 100;
 
 type Bound = { op: ">" | ">=" | "<" | "<="; value: unknown };
 /** A where() predicate, compiled: SQL with `?` placeholders and their values. Only the builder makes these (the brand), so no SQL text comes from elsewhere. */
-const PREDICATE = Symbol("predicate");
-type Predicate = { [PREDICATE]: true; sql: string; params: unknown[]; mongo: MongoFilter };
+export const PREDICATE = Symbol("predicate");
+export type Predicate = { [PREDICATE]: true; sql: string; params: unknown[]; mongo: MongoFilter; ast: unknown };
+/** JavaScript's `undefined`, which JSON cannot carry, in a description of a query for the native engine. */
+export const UNDEF = { $undefined: true };
+export const orUndef = (v: unknown) => (v === undefined ? UNDEF : v);
+/** Parameters as the native engine takes them: `undefined` is null. */
+const nativeParams = (params: unknown[]) => params.map((p) => (p === undefined ? null : p)) as Param[];
 /** Where MongoDB keeps a field: `_id` and `_creationTime` beside `doc`, the document's own fields inside it. */
 const mpath = (f: string) => (f === "_id" || f === "_creationTime" ? f : `doc.${f}`);
 /**
@@ -55,9 +62,9 @@ const mpath = (f: string) => (f === "_id" || f === "_creationTime" ? f : `doc.${
 const meq = (value: unknown) => (value === undefined || value === null ? null : { $eq: value });
 /** A filter nothing matches. */
 const NOTHING: MongoFilter = { _id: { $in: [] } };
-const isPredicate = (p: unknown): p is Predicate => typeof p === "object" && p !== null && PREDICATE in p;
+export const isPredicate = (p: unknown): p is Predicate => typeof p === "object" && p !== null && PREDICATE in p;
 /** Field names go into SQL text (a JSON path), so only plain identifiers are accepted. */
-const IDENT = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
+export const IDENT = /^[A-Za-z_][A-Za-z0-9_]{0,99}$/;
 /** SQL statements already explained in this process, so a query that scans is reported once, not on every run. */
 const explained = new Set<string>();
 /** Whether two field values are the same as far as the stored document is concerned (arrays and objects compare by their JSON). */
@@ -89,18 +96,38 @@ export class DocStore {
   constructor(
     private tx: DbTx,
     private dialect: Dialect,
-    private tables: TablesSpec,
+    protected tables: TablesSpec,
     /** Topics this transaction read. */
     readonly reads = new Set<string>(),
     /** Topics this transaction wrote; absent in read-only transactions. */
     readonly writes?: Set<string>,
-    private maxDocumentBytes = 1024 * 1024,
+    protected maxDocumentBytes = 1024 * 1024,
     private cache?: ReadCache,
     /** In dev: told when a where() or orderBy() query has no index to use (SQLite's query plan says it scans or sorts). */
-    private warn?: (message: string) => void,
+    protected warn?: (message: string) => void,
   ) {
     this.stamp = cache?.now() ?? 0;
     this.mongo = tx.mongo;
+    this.nat = tx.native;
+    // What the engine tracked comes to the sets when the transaction ends (a read's, when the function returns; a write's, once it is committed).
+    this.nat?.onEnd((r) => {
+      for (const t of r.reads) this.reads.add(t);
+      if (this.writes) for (const t of r.writes) this.writes.add(t);
+    });
+  }
+
+  /** On the native engine, which answers this store's operations itself: this transaction, as the engine knows it. */
+  protected readonly nat?: NativeHandle;
+
+  /** One call to the native engine: a `db` span when the request is traced, and the engine's errors as JavaScript's own. */
+  protected n<T>(op: string, table: string | undefined, f: () => T): T {
+    if (!logContext.getStore()?.trace) return call(f); // not a traced call (nearly all): no span, no closure
+    return nativeOp("sqlite", op, table, () => call(f));
+  }
+
+  /** Whether the native engine runs this store's operations. */
+  get native() {
+    return this.nat !== undefined;
   }
 
   /** Set on MongoDB: documents are read and written as operations (db/types.ts MongoOps) where the others run SQL. */
@@ -116,6 +143,10 @@ export class DocStore {
 
   /** A read of `table` that reads `topics`: from the read cache when it has the rows as of this transaction's snapshot, else from the database. */
   private async select(table: string, sql: string, params: unknown[], topics: string[]): Promise<Row[]> {
+    if (this.nat) {
+      const nat = this.nat;
+      return JSON.parse(this.n("SELECT", table, () => nat.engine.select(nat.id, table, sql, nativeParams(params), JSON.stringify(topics))));
+    }
     const key = sql + "\u0000" + JSON.stringify(params);
     const hit = this.peek(table, key);
     if (hit) return hit;
@@ -149,9 +180,11 @@ export class DocStore {
     if (this.cache && !this.dirty && !this.writes) this.cache.set(key, table, rows, this.stamp, topics);
   }
 
-  reader() {
+  /** @internal the read side's operations, made once for this store (the ctx of a function takes it, and so may the next call). */
+  makeReader() {
     return {
       get: this.get.bind(this),
+      getJson: this.getJson.bind(this),
       getMany: this.getMany.bind(this),
       query: this.query.bind(this),
       include: async (table: string, docs: Doc | Doc[] | null, spec: IncludeSpec) => {
@@ -162,7 +195,14 @@ export class DocStore {
     };
   }
 
-  writer() {
+  private readerObject?: ReturnType<DocStore["makeReader"]>;
+  reader() {
+    return (this.readerObject ??= this.makeReader());
+  }
+
+  private writerObject?: ReturnType<DocStore["makeWriter"]>;
+  /** @internal */
+  makeWriter() {
     return {
       ...this.reader(),
       insert: this.insert.bind(this),
@@ -173,8 +213,11 @@ export class DocStore {
       delete: this.delete.bind(this),
     };
   }
+  writer() {
+    return (this.writerObject ??= this.makeWriter());
+  }
 
-  private table(name: string) {
+  protected table(name: string) {
     const t = this.tables[name];
     if (!t) throw new ValidationError(`Unknown table "${name}"`);
     return t;
@@ -185,7 +228,7 @@ export class DocStore {
     return { _id: row._id, _creationTime: row._creationTime, ...fields };
   }
 
-  private parseId(id: unknown) {
+  protected parseId(id: unknown) {
     if (typeof id !== "string" || !id.includes(":")) throw new ValidationError(`Invalid id ${JSON.stringify(id)}`);
     const table = tableOf(id);
     this.table(table);
@@ -200,7 +243,7 @@ export class DocStore {
   }
 
   /** A field where(), orderBy() or select() names: an identifier, and a field of the table when the table is validated. */
-  private fieldName(table: string, f: unknown, method: string): string {
+  protected fieldName(table: string, f: unknown, method: string): string {
     const t = this.table(table);
     if (typeof f !== "string" || !IDENT.test(f)) throw new ValidationError(`${method}(): ${JSON.stringify(f)} is not a field name`);
     if (t.strict && f !== "_id" && f !== "_creationTime" && !(f in t.fields)) throw new ValidationError(`${method}(): "${f}" is not a field of "${table}"`);
@@ -208,12 +251,12 @@ export class DocStore {
   }
 
   /** The predicates where() builds: comparisons on the document's fields, compiled to SQL that an index on those fields can serve, and and/or/not. */
-  private predicates(table: string) {
-    const pred = (sql: string, params: unknown[], mongo: MongoFilter = {}): Predicate => ({ [PREDICATE]: true, sql, params, mongo });
+  protected predicates(table: string) {
+    const pred = (sql: string, params: unknown[], mongo: MongoFilter = {}, ast: unknown = null): Predicate => ({ [PREDICATE]: true, sql, params, mongo, ast });
     const col = (f: unknown, method: string) => this.col(this.fieldName(table, f, method));
     const cmp = (op: string, mop: string, method: string) => (f: string, value: unknown) => {
       const c = col(f, method);
-      return pred(`${c.expr} ${op} ${c.param}`, [c.encode(value)], { [mpath(f)]: { [mop]: value } });
+      return pred(`${c.expr} ${op} ${c.param}`, [c.encode(value)], { [mpath(f)]: { [mop]: value } }, { t: "cmp", op, f, v: orUndef(value) });
     };
     const all = (ps: unknown[], method: string) => {
       for (const p of ps) if (!isPredicate(p)) throw new ValidationError(`${method}() takes predicates from the where() builder`);
@@ -222,21 +265,24 @@ export class DocStore {
     const join = (method: string, glue: "AND" | "OR", empty: string) => (...ps: unknown[]) => {
       const list = all(ps, method);
       const mongo: MongoFilter = list.length ? { [glue === "AND" ? "$and" : "$or"]: list.map((p) => p.mongo) } : glue === "AND" ? {} : NOTHING;
-      return list.length ? pred(`(${list.map((p) => p.sql).join(` ${glue} `)})`, list.flatMap((p) => p.params), mongo) : pred(empty, [], mongo);
+      const ast = { t: glue === "AND" ? "and" : "or", ps: list.map((p) => p.ast) };
+      return list.length ? pred(`(${list.map((p) => p.sql).join(` ${glue} `)})`, list.flatMap((p) => p.params), mongo, ast) : pred(empty, [], mongo, ast);
     };
     return {
       eq: (f: string, value: unknown) => {
         const name = this.fieldName(table, f, "eq");
-        if (value === undefined || value === null) return pred(`${this.col(name).expr} IS NULL`, [], { [mpath(name)]: null });
-        if (name === "_id" || name === "_creationTime") return pred(`"${name}" = ?`, [value], { [name]: meq(value) });
+        const ast = { t: "eq", f: name, v: orUndef(value) };
+        if (value === undefined || value === null) return pred(`${this.col(name).expr} IS NULL`, [], { [mpath(name)]: null }, ast);
+        if (name === "_id" || name === "_creationTime") return pred(`"${name}" = ?`, [value], { [name]: meq(value) }, ast);
         const c = this.dialect.fieldEquals(name, value);
-        return pred(c.sql, c.params, { [mpath(name)]: meq(value) });
+        return pred(c.sql, c.params, { [mpath(name)]: meq(value) }, ast);
       },
       /** Not equal, which a document without the field is. */
       neq: (f: string, value: unknown) => {
         const c = col(f, "neq");
-        if (value === undefined || value === null) return pred(`${c.expr} IS NOT NULL`, [], { [mpath(f)]: { $ne: null } });
-        return pred(`(${c.expr} IS NULL OR ${c.expr} <> ${c.param})`, [c.encode(value)], { [mpath(f)]: { $ne: value } });
+        const ast = { t: "neq", f, v: orUndef(value) };
+        if (value === undefined || value === null) return pred(`${c.expr} IS NOT NULL`, [], { [mpath(f)]: { $ne: null } }, ast);
+        return pred(`(${c.expr} IS NULL OR ${c.expr} <> ${c.param})`, [c.encode(value)], { [mpath(f)]: { $ne: value } }, ast);
       },
       gt: cmp(">", "$gt", "gt"),
       gte: cmp(">=", "$gte", "gte"),
@@ -244,29 +290,29 @@ export class DocStore {
       lte: cmp("<=", "$lte", "lte"),
       between: (f: string, low: unknown, high: unknown) => {
         const c = col(f, "between");
-        return pred(`(${c.expr} >= ${c.param} AND ${c.expr} <= ${c.param})`, [c.encode(low), c.encode(high)], { [mpath(f)]: { $gte: low, $lte: high } });
+        return pred(`(${c.expr} >= ${c.param} AND ${c.expr} <= ${c.param})`, [c.encode(low), c.encode(high)], { [mpath(f)]: { $gte: low, $lte: high } }, { t: "between", f, lo: orUndef(low), hi: orUndef(high) });
       },
       in: (f: string, values: unknown) => {
         const c = col(f, "in");
         if (!Array.isArray(values)) throw new ValidationError("in() expects an array of values");
-        if (!values.length) return pred("1 = 0", [], NOTHING);
-        return pred(`${c.expr} IN (${values.map(() => c.param).join(", ")})`, values.map((v) => c.encode(v)), { [mpath(f)]: { $in: values } });
+        if (!values.length) return pred("1 = 0", [], NOTHING, { t: "in", f, vs: [] });
+        return pred(`${c.expr} IN (${values.map(() => c.param).join(", ")})`, values.map((v) => c.encode(v)), { [mpath(f)]: { $in: values } }, { t: "in", f, vs: values.map(orUndef) });
       },
       prefix: (f: string, prefix: unknown) => {
         const name = this.fieldName(table, f, "prefix");
         if (typeof prefix !== "string") throw new ValidationError("prefix() expects a string");
         if (name === "_creationTime") throw new ValidationError("prefix() is for string fields");
         const mongo = { [mpath(name)]: { $regex: "^" + escapeRegex(prefix) } };
-        if (name === "_id") return pred(`("_id" >= ? AND "_id" < ?)`, [prefix, prefix + "\u{10FFFF}"], mongo);
+        if (name === "_id") return pred(`("_id" >= ? AND "_id" < ?)`, [prefix, prefix + "\u{10FFFF}"], mongo, { t: "prefix", f: name, p: prefix });
         const s = this.dialect.startsWith(name, prefix);
-        return pred(s.sql, s.params, mongo);
+        return pred(s.sql, s.params, mongo, { t: "prefix", f: name, p: prefix });
       },
       and: join("and", "AND", "1 = 1"),
       or: join("or", "OR", "1 = 0"),
       /** True where the predicate isn't, a missing field included (CASE rather than NOT, so a NULL comparison counts as false). */
       not: (p: unknown) => {
         const [inner] = all([p], "not");
-        return pred(`(CASE WHEN ${inner!.sql} THEN 1 ELSE 0 END) = 0`, inner!.params, { $nor: [inner!.mongo] });
+        return pred(`(CASE WHEN ${inner!.sql} THEN 1 ELSE 0 END) = 0`, inner!.params, { $nor: [inner!.mongo] }, { t: "not", p: inner!.ast });
       },
     };
   }
@@ -290,7 +336,7 @@ export class DocStore {
    * In dev, on SQLite: says once per statement when its plan reads the whole table, or walks a whole index while where() filters, or sorts
    * without an index. A walk in index order that only serves the order (and stops at a LIMIT) is what an index is for.
    */
-  private async explain(table: string, sql: string, params: unknown[], filtered: boolean, sorted: boolean) {
+  protected async explain(table: string, sql: string, params: unknown[], filtered: boolean, sorted: boolean) {
     if (!this.warn || this.dialect.name !== "sqlite" || explained.has(sql)) return;
     explained.add(sql);
     this.toDb();
@@ -306,11 +352,25 @@ export class DocStore {
   }
 
   async get(id: string): Promise<Doc | null> {
+    if (this.nat) {
+      const nat = this.nat;
+      const text = this.n("SELECT", tableOf(id), () => nat.engine.get(nat.id, id));
+      return text === null ? null : JSON.parse(text);
+    }
     const table = this.parseId(id);
     const read = topic(table, "by_id", [id]);
     this.reads.add(read);
     const [row] = this.mongo ? await this.mongo.find(table, { filter: { _id: id }, limit: 1 }) : await this.select(table, `${SELECT} "${table}" WHERE "_id" = ?`, [id], [read]);
     return row ? this.toDoc(row) : null;
+  }
+
+  /** `get()` as JSON text, for a caller that sends the document on as it is (`"null"` where there is none). */
+  async getJson(id: string): Promise<string> {
+    if (this.nat) {
+      const nat = this.nat;
+      return this.n("SELECT", tableOf(id), () => nat.engine.get(nat.id, id)) ?? "null";
+    }
+    return JSON.stringify(await this.get(id));
   }
 
   query(table: string) {
@@ -338,14 +398,38 @@ export class DocStore {
       return [...fields];
     };
 
-    /** The SQL for the index range, after `after` (the order key of the last document already seen). Also records what the query reads. */
-    const plan = (after?: unknown[]) => {
+    /** Whether the index, its equalities and its range fit together; the index's fields. */
+    const validate = () => {
       const fields = indexFields();
       eqs.forEach(([f], i) => {
         if (fields[i] !== f) throw new ValidationError(`Index "${table}.${index}" field ${i} is "${fields[i]}", not "${f}"`);
       });
       if (boundField !== undefined && fields[eqs.length] !== boundField)
         throw new ValidationError(`Index "${table}.${index}": a range must be on "${fields[eqs.length]}", the field after the equalities`);
+      return fields;
+    };
+
+    /** The same range as a description for the native engine, which plans it, runs it and keeps what it read. */
+    const desc = (limit?: number, after?: unknown[], skip = 0) => {
+      validate();
+      return JSON.stringify({
+        table,
+        index,
+        eqs: eqs.map(([f, value]) => [f, orUndef(value)]),
+        bounds: bounds.map((b) => ({ op: b.op, value: orUndef(b.value) })),
+        boundField,
+        wheres: wheres.map((w) => w.ast),
+        orderKeys,
+        desc: order === "desc",
+        limit,
+        skip,
+        after,
+      });
+    };
+
+    /** The SQL for the index range, after `after` (the order key of the last document already seen). Also records what the query reads. */
+    const plan = (after?: unknown[]) => {
+      const fields = validate();
       const conds: { sql: string; params: unknown[]; mongo: MongoFilter }[] = eqs.map(([f, value]) => ({
         ...(f === "_creationTime" ? { sql: `"_creationTime" = ?`, params: [value] } : this.dialect.fieldEquals(f, value)),
         mongo: { [mpath(f)]: meq(value) },
@@ -396,7 +480,19 @@ export class DocStore {
       return order === "desc" ? keys.map((k) => ({ ...k, desc: !k.desc })) : keys;
     };
 
+    /** The fields the order key is made of (what a cursor holds). */
+    const keyFieldsOf = () => orderKey().map((k) => k.f);
+
     const run = async (limit?: number, after?: unknown[], skip = 0) => {
+      if (this.nat) {
+        const nat = this.nat;
+        const d = desc(limit, after, skip);
+        if (this.warn && (wheres.length || orderKeys)) {
+          const q = JSON.parse(nat.engine.planSql(d)) as { sql: string; params: unknown[] };
+          await this.explain(table, q.sql, q.params, wheres.length > 0, Boolean(orderKeys));
+        }
+        return { docs: JSON.parse(this.n("SELECT", table, () => nat.engine.query(nat.id, table, d))) as Doc[], keyFields: keyFieldsOf() };
+      }
       const p = plan(after);
       // SQLite needs a LIMIT before an OFFSET; Postgres takes any bigint.
       const page = skip ? ` LIMIT ${limit ?? Number.MAX_SAFE_INTEGER} OFFSET ${skip}` : limit === undefined ? "" : ` LIMIT ${limit}`;
@@ -409,6 +505,14 @@ export class DocStore {
       if (wheres.length || orderKeys) await this.explain(table, sql, p.params, wheres.length > 0, Boolean(orderKeys));
       const rows = await this.select(table, sql, p.params, [p.read]);
       return { docs: rows.map((r) => this.toDoc(r)), keyFields: p.keyFields };
+    };
+
+    /** The documents of the range as JSON text when nothing has to look at them (the native engine, no filter(), include() or select()); otherwise the objects, written out. */
+    const jsonOf = async (limit: number | undefined, collect: () => Promise<unknown>): Promise<string> => {
+      if (!this.nat || steps.length || projection) return JSON.stringify(await collect());
+      const nat = this.nat;
+      const d = desc(limit, undefined, offset);
+      return this.n("SELECT", table, () => nat.engine.query(nat.id, table, d));
     };
 
     const keyOf = (keyFields: string[], doc: Doc) => keyFields.map((f) => doc[f] ?? null);
@@ -477,6 +581,11 @@ export class DocStore {
         let n = 0;
         await each(() => n++, 0);
         return n;
+      }
+      if (this.nat) {
+        const nat = this.nat;
+        const d = desc();
+        return this.n("SELECT", table, () => nat.engine.count(nat.id, table, d));
       }
       const p = plan();
       if (this.mongo) return this.mongo.count(table, p.filter);
@@ -571,6 +680,16 @@ export class DocStore {
       },
       collect: async () => finish((await matches(Infinity)).docs),
       first: async () => (await finish((await matches(1)).docs))[0] ?? null,
+      /** collect(), first() and take() as JSON text, for a caller that sends the documents on as they are (`"null"` for no first). The native engine answers with the text it keeps. */
+      collectJson: () => jsonOf(undefined, () => q.collect()),
+      firstJson: async () => {
+        const text = await jsonOf(1, () => q.first().then((d) => [d].filter(Boolean)));
+        return text === "[]" ? "null" : text.slice(1, -1);
+      },
+      takeJson: (n: number) => {
+        if (!Number.isInteger(n) || n < 0) throw new ValidationError(`take() expects a non-negative integer, got ${n}`);
+        return jsonOf(n, () => q.take(n));
+      },
       unique: async () => {
         const { docs } = await matches(2);
         if (docs.length > 1) throw new ValidationError(`unique() found more than one document in "${table}"`);
@@ -720,6 +839,10 @@ export class DocStore {
 
   /** Documents by id, in the order asked for (`null` where one doesn't exist). Ids may belong to different tables. */
   async getMany(ids: readonly string[]): Promise<(Doc | null)[]> {
+    if (this.nat) {
+      const nat = this.nat;
+      return JSON.parse(this.n("SELECT", ids.length ? tableOf(ids[0]!) : undefined, () => nat.engine.getMany(nat.id, ids as string[])));
+    }
     const byTable = new Map<string, Set<string>>();
     for (const id of ids) {
       const table = this.parseId(id);
@@ -757,6 +880,26 @@ export class DocStore {
       throw new ValidationError(`include() "${key}": index "${rule.table}.${rule.index}" must start with a v.id("${table}") field to find the ${rule.table} of a ${table}`);
     if (rule.take !== undefined && (!Number.isInteger(rule.take) || rule.take < 0)) throw new ValidationError(`include() "${key}": take must be a non-negative integer`);
     return { kind: "reverse" as const, field: fields[0]!, rule, child };
+  }
+
+  /** What an include() means for `table`, as the native engine takes it: each rule resolved to the field or index it follows (and checked, like `checkInclude`). */
+  includePlan(table: string, spec: IncludeSpec): unknown[] {
+    if (!spec || typeof spec !== "object") throw new ValidationError('include() expects an object like { list: "listId" }');
+    return Object.entries(spec).map(([key, rule]) => {
+      const r = this.relation(table, key, rule);
+      if (r.kind === "forward") return { key, kind: "forward", field: r.field, many: Boolean(r.many) };
+      return {
+        key,
+        kind: "reverse",
+        field: r.field,
+        table: r.rule.table,
+        index: r.rule.index,
+        take: r.rule.take,
+        orderDesc: r.rule.order === "desc",
+        count: Boolean(r.rule.count),
+        include: r.rule.include ? this.includePlan(r.rule.table, r.rule.include) : [],
+      };
+    });
   }
 
   checkInclude(table: string, spec: IncludeSpec) {
@@ -879,6 +1022,12 @@ export class DocStore {
    * versions share is one topic, built once.
    */
   private written(table: string, doc: Record<string, unknown>, before?: Record<string, unknown>) {
+    if (this.nat) {
+      // a write made with statements of its own (a restore): the engine keeps the topics and the cache's bookkeeping
+      const nat = this.nat;
+      this.n("UPDATE", table, () => nat.engine.noteWritten(nat.id, table, JSON.stringify(doc), before === undefined ? undefined : JSON.stringify(before)));
+      return;
+    }
     const w = this.writes!;
     // From here this transaction reads its own uncommitted writes, so only from the database; and nobody may use the table until it settles.
     this.dirty = true;
@@ -914,7 +1063,7 @@ export class DocStore {
     }
   }
 
-  private checked(table: string, value: Record<string, unknown>) {
+  protected checked(table: string, value: Record<string, unknown>) {
     if (!this.writes) throw new Error("Database is read-only in queries");
     const t = this.table(table);
     const { _id, _creationTime, ...rest } = value ?? {};
@@ -933,6 +1082,11 @@ export class DocStore {
 
   /** Writes documents already validated: one INSERT per 200 rows, each with a fresh id and a creation time after the last. */
   private async insertChecked(table: string, rows: { fields: Record<string, unknown>; json: string }[]) {
+    if (this.nat) {
+      const nat = this.nat;
+      this.table(table);
+      return this.n("INSERT", table, () => nat.engine.insert(nat.id, table, rows.map((r) => r.json), this.maxDocumentBytes, true)); // validated by `checked()` already
+    }
     const docs = rows.map((r) => ({ ...r, _id: `${table}:${crypto.randomUUID().replaceAll("-", "")}`, _creationTime: creationTime() }));
     const bulk = this.dialect.bulkInsert;
     const size = bulk || this.mongo ? 2000 : 200;
@@ -1038,6 +1192,11 @@ export class DocStore {
         await this.tx.execute(q.sql, q.params);
       }
     }
+    if (this.nat) {
+      const nat = this.nat;
+      for (const w of writes) this.n("UPDATE", table, () => nat.engine.replace(nat.id, w.id, w.json));
+      return mode === "all" ? null : { errors };
+    }
     for (const w of writes) {
       if (!this.mongo && !(this.dialect.bulkUpdate && writes.length > 1)) await this.tx.execute(`UPDATE "${table}" SET "doc" = ${this.dialect.jsonParam} WHERE "_id" = ?`, [w.json, w.id]);
       await this.syncSearch(table, w.id, w.fields);
@@ -1048,6 +1207,16 @@ export class DocStore {
 
   private async update(id: string, next: (old: Doc) => Record<string, unknown>) {
     const table = this.parseId(id);
+    if (this.nat) {
+      // The engine reads the stored fields, this validates the merge, the engine writes it (and keeps the topics, the search tables and the cache).
+      const nat = this.nat;
+      const stored = this.n("SELECT", table, () => nat.engine.getRaw(nat.id, id));
+      if (stored === null) throw new ValidationError(`Document ${id} not found`);
+      const { fields, json } = this.checked(table, next({ _id: id, _creationTime: 0, ...JSON.parse(stored) } as Doc));
+      if (stored === json) return; // stored as it is already: nothing to write, nothing for subscribers to re-run
+      this.n("UPDATE", table, () => nat.engine.replace(nat.id, id, json, stored));
+      return;
+    }
     const [row] = this.mongo ? await this.mongo.find(table, { filter: { _id: id }, limit: 1 }) : await this.tx.query(`${SELECT} "${table}" WHERE "_id" = ?`, [id]);
     if (!row) throw new ValidationError(`Document ${id} not found`);
     const old = this.toDoc(row);
@@ -1070,6 +1239,11 @@ export class DocStore {
   async delete(id: string) {
     const table = this.parseId(id);
     if (!this.writes) throw new Error("Database is read-only in queries");
+    if (this.nat) {
+      const nat = this.nat;
+      this.n("DELETE", table, () => nat.engine.delete(nat.id, id));
+      return;
+    }
     const [row] = this.mongo ? await this.mongo.find(table, { filter: { _id: id }, limit: 1 }) : await this.tx.query(`${SELECT} "${table}" WHERE "_id" = ?`, [id]);
     if (!row) return;
     if (this.mongo) await this.mongo.delete(table, id);

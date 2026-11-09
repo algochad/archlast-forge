@@ -29,5 +29,8 @@ export class LightResponse {
 /** A JSON answer: `lightJson({ ok: true })`, `lightJson(item, 201)`. */
 export const lightJson = (data: unknown, status = 200, headers: [string, string][] = []) => new LightResponse(status, [["content-type", "application/json"], ...headers], JSON.stringify(data));
 
+/** A JSON answer from text that already is JSON: `lightRaw(await ctx.read((c) => c.db.getJson(id)))`. Nothing is parsed or written out again. */
+export const lightRaw = (json: string, status = 200, headers: [string, string][] = []) => new LightResponse(status, [["content-type", "application/json"], ...headers], json);
+
 /** A text answer: `lightText("ok")`. */
 export const lightText = (text: string, status = 200, headers: [string, string][] = []) => new LightResponse(status, [["content-type", "text/plain;charset=utf-8"], ...headers], text);

@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, test } from "bun:test";
 import { DocStore, type TablesSpec } from "../src/server/docstore";
+import { NativeStore } from "../src/server/native-store";
 import type { Db, DbTx } from "../src/server/db/types";
 import { v } from "../src/values";
 import { dbAdapters } from "./helpers";
@@ -18,6 +19,8 @@ const tables: TablesSpec = {
     strict: true,
   },
 };
+/** The store the engine uses for this transaction: the native one on the native engine. */
+const openStore = (...a: ConstructorParameters<typeof DocStore>) => new (a[0].native ? NativeStore : DocStore)(...a);
 const specs = Object.entries(tables).map(([name, t]) => ({ name, indexes: t.indexes, searchIndexes: t.searchIndexes }));
 
 for (const [label, make] of dbAdapters) {
@@ -26,8 +29,8 @@ for (const [label, make] of dbAdapters) {
     afterEach(() => db?.close());
 
     const write = <T>(fn: (s: DocStore) => Promise<T>) =>
-      db.transaction("write", (tx) => fn(new DocStore(tx, db.dialect, tables, new Set(), new Set())));
-    const read = <T>(fn: (s: DocStore) => Promise<T>) => db.transaction("read", (tx) => fn(new DocStore(tx, db.dialect, tables)));
+      db.transaction("write", (tx) => fn(openStore(tx, db.dialect, tables, new Set(), new Set())));
+    const read = <T>(fn: (s: DocStore) => Promise<T>) => db.transaction("read", (tx) => fn(openStore(tx, db.dialect, tables)));
 
     test("migrate is idempotent and syncs indexes", async () => {
       db = await make();
@@ -103,7 +106,7 @@ for (const [label, make] of dbAdapters) {
       const listId = await write((s) => s.insert("lists", { name: "x" }));
       const reads = new Set<string>();
       await db.transaction("read", async (tx) => {
-        const s = new DocStore(tx, db.dialect, tables, reads);
+        const s = openStore(tx, db.dialect, tables, reads);
         await s.query("todos").withIndex("by_list", (q: any) => q.eq("listId", listId)).collect();
         await s.query("lists").collect();
         await s.get(listId);
@@ -112,7 +115,7 @@ for (const [label, make] of dbAdapters) {
 
       const writes = new Set<string>();
       const id = await db.transaction("write", (tx) =>
-        new DocStore(tx, db.dialect, tables, new Set(), writes).insert("todos", { listId, title: "t", done: false }),
+        openStore(tx, db.dialect, tables, new Set(), writes).insert("todos", { listId, title: "t", done: false }),
       );
       expect([...writes].sort()).toEqual(
         [
@@ -194,7 +197,7 @@ for (const [label, make] of dbAdapters) {
         const sql: string[] = [];
         let rows = 0;
         const result = await db.transaction("read", (tx) =>
-          fn(new DocStore({ query: async (q: string, p?: unknown[]) => (sql.push(q), tx.query(q, p).then((r) => ((rows += r.length), r))), execute: tx.execute } as DbTx, db.dialect, tables)),
+          fn(openStore({ query: async (q: string, p?: unknown[]) => (sql.push(q), tx.query(q, p).then((r) => ((rows += r.length), r))), execute: tx.execute } as DbTx, db.dialect, tables)),
         );
         return { result, sql, rows };
       };
@@ -300,7 +303,7 @@ for (const [label, make] of dbAdapters) {
       // Only the matching rows come back from the database.
       let rows = 0;
       await db.transaction("read", (tx) =>
-        (new DocStore({ query: (q: string, p?: unknown[]) => tx.query(q, p).then((r) => ((rows += r.length), r)), execute: tx.execute } as DbTx, db.dialect, tables).query("notes") as any)
+        (openStore({ query: (q: string, p?: unknown[]) => tx.query(q, p).then((r) => ((rows += r.length), r)), execute: tx.execute } as DbTx, db.dialect, tables).query("notes") as any)
           .where((q: any) => q.eq("tag", "gamma"))
           .collect(),
       );
@@ -373,7 +376,7 @@ for (const [label, make] of dbAdapters) {
       }
       const listReads: unknown[][] = [];
       const docs: any[] = await db.transaction("read", (tx) =>
-        new DocStore(
+        openStore(
           { query: (q: string, p?: unknown[]) => (q.includes('FROM "lists"') && listReads.push(p ?? []), tx.query(q, p)), execute: tx.execute },
           db.dialect,
           tables,
@@ -411,7 +414,7 @@ for (const [label, make] of dbAdapters) {
     test("documents over the size limit are rejected", async () => {
       db = await make();
       await db.migrate(specs);
-      const store = (tx: any) => new DocStore(tx, db.dialect, tables, new Set(), new Set(), 100);
+      const store = (tx: any) => openStore(tx, db.dialect, tables, new Set(), new Set(), 100);
       await expect(db.transaction("write", (tx) => store(tx).insert("notes", { body: "x".repeat(200), tag: "t", n: 1 }))).rejects.toThrow("MAX_DOCUMENT_BYTES");
     });
 

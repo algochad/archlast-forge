@@ -84,4 +84,4 @@ export {
   type Visibility,
 } from "./functions";
 
-export { lightJson, lightText, LightResponse, type LightRequest } from "./server/light";
+export { lightJson, lightRaw, lightText, LightResponse, type LightRequest } from "./server/light";

@@ -5,6 +5,7 @@ import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, ty
 import { validate, validateFields, ValidationError } from "../values";
 import type { Limits } from "./config";
 import { isRetryableConflict, type Db, type DbTx } from "./db/types";
+import { NativeStore } from "./native-store";
 import { DocStore, RESET_TOPIC, type TablesSpec } from "./docstore";
 import { cancelScheduled, schedule } from "./scheduler";
 import type { Storage } from "./storage";
@@ -122,6 +123,8 @@ function checkReturn<T>(fn: RegisteredFunction, value: T): T {
  */
 class LazyActionCtx {
   private parts?: ReturnType<Executor["actionCtxParts"]>;
+  private readFn?: ReturnType<Executor["ctxRead"]>;
+  private writeFn?: ReturnType<Executor["ctxWrite"]>;
   constructor(
     private readonly exec: Executor,
     readonly auth: { getUserIdentity(): Promise<UserIdentity | null> },
@@ -146,11 +149,44 @@ class LazyActionCtx {
   get runAction() {
     return this.p.runAction;
   }
+  // `ctx.read` and `ctx.write` of a route are most of what a database route uses: they do not make the rest of the ctx.
   get read() {
-    return this.p.read;
+    return (this.readFn ??= this.exec.ctxRead(this.identity));
   }
   get write() {
-    return this.p.write;
+    return (this.writeFn ??= this.exec.ctxWrite(this.identity));
+  }
+}
+
+/** The ctx a `ctx.read` function is given: the database and the caller at once, and the storage only if it is used. */
+class ReadCtx {
+  constructor(
+    readonly db: unknown,
+    readonly auth: { getUserIdentity(): Promise<UserIdentity | null> },
+    private readonly exec: Executor,
+    private readonly store: DocStore,
+  ) {}
+  get storage() {
+    return this.exec.storage(this.store);
+  }
+}
+
+/** The same for `ctx.write`: the storage and the scheduler are made when used. */
+class WriteCtx {
+  constructor(
+    readonly db: unknown,
+    readonly auth: { getUserIdentity(): Promise<UserIdentity | null> },
+    private readonly exec: Executor,
+    private readonly store: DocStore,
+    private readonly tx: DbTx,
+    private readonly after: AfterCommit,
+  ) {}
+  get storage() {
+    return this.exec.storage(this.store, this.after);
+  }
+  get scheduler() {
+    const { exec, tx } = this;
+    return exec.schedulerOf(tx);
   }
 }
 
@@ -243,14 +279,18 @@ export class Executor {
   /** Replaces the read cache (undefined turns it off): a transaction already running keeps the one it started with. */
   setReadCache(cache?: ReadCache) {
     this.o.readCache = cache;
+    this.o.db.engine?.setCache(cache !== undefined); // the native engine keeps its own cache: the object is only the switch
   }
 
   constructor(private o: ExecutorOptions) {
     this.limits = o.limits ?? { functionTimeoutMs: 10_000, actionTimeoutMs: 600_000, maxResultBytes: 8 << 20, maxDocumentBytes: 1 << 20 };
+    this.o.db.engine?.setCache(o.readCache !== undefined);
   }
 
   private store(tx: DbTx, writes?: Set<string>, cached = true) {
-    return new DocStore(tracedTx(tx, this.system), this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes, cached ? this.o.readCache : undefined, this.o.devWarn);
+    // On the native engine the cache is the engine's (a transaction says whether it may use it); a store there is given none of its own.
+    const Store = tx.native ? NativeStore : DocStore;
+    return new Store(tracedTx(tx, this.system), this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes, cached && !this.o.db.engine ? this.o.readCache : undefined, this.o.devWarn);
   }
 
   /** OpenTelemetry's name for the database, on db spans. */
@@ -266,9 +306,10 @@ export class Executor {
           "read",
           async (tx) => {
             const store = this.store(tx, undefined, attempt < 3); // the last tries go straight to the database
-            return { value: await fn(store, tx), reads: store.reads };
+            const value = await fn(store, tx);
+            return { value, reads: store.reads }; // (the native engine adds what it tracked when the transaction ends, just after this)
           },
-          { rerunnable: true }, // a query is deterministic and writes nothing, so a database may run it again where that is cheaper than a transaction
+          { rerunnable: true, cached: attempt < 3 }, // a query is deterministic and writes nothing, so a database may run it again where that is cheaper than a transaction
         );
       } catch (e) {
         if (!(e instanceof SnapshotMoved)) throw e;
@@ -287,6 +328,7 @@ export class Executor {
     } finally {
       for (const t of store?.writing ?? []) this.o.readCache?.settled(t, []);
       this.o.readCache?.clear();
+      this.o.db.engine?.clearCache();
       this.o.publish([RESET_TOPIC]);
     }
   }
@@ -324,7 +366,7 @@ export class Executor {
           // benchmark's 99th percentile five times longer at the same throughput.
           value = attempt > 1 && this.o.db.serializeRetries ? await this.retrying(run) : await run();
         } finally {
-          // Committed or rolled back: the tables it wrote can be read and cached again.
+          // Committed or rolled back: the tables it wrote can be read and cached again (the native engine settles its own cache when the transaction ends, before this).
           for (const t of store?.writing ?? []) this.o.readCache?.settled(t, writes);
         }
         if (writes.size) this.o.publish([...writes]);
@@ -578,6 +620,30 @@ export class Executor {
     return new LazyActionCtx(this, auth, identity, requestId);
   }
 
+  /** `ctx.read` of a route: a read transaction around `fn`, which is given the database, the caller and the storage. */
+  ctxRead(identity: UserIdentity | null) {
+    const auth = { getUserIdentity: async () => identity };
+    return async (fn: (ctx: any) => unknown) => {
+      const { value } = await this.read((store) => withTimeout(Promise.resolve(fn(new ReadCtx(store.reader(), auth, this, store))), this.limits.functionTimeoutMs, "ctx.read"));
+      return value;
+    };
+  }
+
+  /** `ctx.write` of a route: a write transaction (topics are published after the commit) around `fn`. */
+  ctxWrite(identity: UserIdentity | null) {
+    const auth = { getUserIdentity: async () => identity };
+    return (fn: (ctx: any) => unknown) =>
+      this.mutate((store, tx, after) => withTimeout(Promise.resolve(fn(new WriteCtx(store.writer(), auth, this, store, tx, after))), this.limits.functionTimeoutMs, "ctx.write"));
+  }
+
+  schedulerOf(tx: DbTx) {
+    return {
+      runAfter: (ms: number, ref: any, a?: object) => schedule(tx, this.o.functions, Date.now() + ms, ref, a),
+      runAt: (at: number, ref: any, a?: object) => schedule(tx, this.o.functions, at, ref, a),
+      cancel: (id: string) => cancelScheduled(tx, id),
+    };
+  }
+
   /** What an action's `ctx` is made of: `actionCtx` hands it out piece by piece (see `LazyActionCtx`), since most handlers use few of them. */
   actionCtxParts(identity: UserIdentity | null, requestId?: string) {
     const runAs = (kind: FunctionKind) => async (ref: any, args?: object) => (await this.call(getFunctionName(ref), kind, args, identity, requestId)).value;
@@ -596,30 +662,8 @@ export class Executor {
       runMutation: runAs("mutation"),
       runAction: runAs("action"),
       // An HTTP route's direct access to the database (HttpCtx): the transaction of a query or a mutation around a function that is not registered by name.
-      read: async (fn: (ctx: any) => unknown) => {
-        const auth = { getUserIdentity: async () => identity };
-        const { value } = await this.read((store) => withTimeout(Promise.resolve(fn({ db: store.reader(), auth, storage: this.storage(store) })), this.limits.functionTimeoutMs, "ctx.read"));
-        return value;
-      },
-      write: (fn: (ctx: any) => unknown) =>
-        this.mutate((store, tx, after) =>
-          withTimeout(
-            Promise.resolve(
-              fn({
-                db: store.writer(),
-                auth: { getUserIdentity: async () => identity },
-                storage: this.storage(store, after),
-                scheduler: {
-                  runAfter: (ms: number, ref: any, a?: object) => schedule(tx, this.o.functions, Date.now() + ms, ref, a),
-                  runAt: (at: number, ref: any, a?: object) => schedule(tx, this.o.functions, at, ref, a),
-                  cancel: (id: string) => cancelScheduled(tx, id),
-                },
-              }),
-            ),
-            this.limits.functionTimeoutMs,
-            "ctx.write",
-          ),
-        ),
+      read: this.ctxRead(identity),
+      write: this.ctxWrite(identity),
     };
   }
 }

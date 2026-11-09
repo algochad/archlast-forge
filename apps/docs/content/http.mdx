@@ -194,7 +194,7 @@ http.route({
 ```
 
 - **The request** has `method`, `url` (absolute), `path`, `search` (with the `?`, or empty), `headers` (a list of `[name, value]` pairs with lower-case names), and `body` (an `ArrayBuffer`, or `undefined` for a GET). The headers are decoded when you first read them, so a route that reads none does not pay for them. `ctx` is the same as for `httpAction` (`ctx.auth`, `ctx.runQuery`, ...).
-- **The answer** is a `LightResponse(status, headers, body)` with a string, bytes or `null` body, or `lightJson(data, status?, headers?)` and `lightText(text, status?, headers?)`. A `Response` is accepted too, for the odd route that needs one.
+- **The answer** is a `LightResponse(status, headers, body)` with a string, bytes or `null` body, or `lightJson(data, status?, headers?)`, `lightRaw(json, status?, headers?)` (text that already is JSON, such as `await ctx.read((c) => c.db.getJson(id))`: nothing is parsed or written out again) and `lightText(text, status?, headers?)`. A `Response` is accepted too, for the odd route that needs one.
 - **Everything else is as for `httpAction`**: telemetry, the request id, rate limits, CORS you set yourself, validators and the OpenAPI document, errors, time limits. Only the objects differ.
 - **When to use it.** For a hot route. On the benchmark API (reading one item from memory, 4 cores) a `lightAction` route answers about 328,000 requests a second against about 150,000 for the same route as a NestJS controller; see [benchmarks](benchmarks.html). A route that reads a body as JSON, forwards the `Request`, or uses a library that wants one should stay an `httpAction`.
 
@@ -217,6 +217,7 @@ http.route({
 - **It skips what a call by name costs**: the lookup, the argument validation, the access check and result cache, and the span and log line of a function. The database spans are recorded as always, and `FUNCTION_TIMEOUT_MS` ends a transaction that runs too long.
 - **Like a query or a mutation, `fn` can run again.** The database may re-run a read, and a write that loses a serialization conflict is retried, so keep side effects (a `fetch`, an email) outside it and return what the route needs.
 - **Use `ctx.runQuery` and `ctx.runMutation` when you want the function.** A named function is called by clients and other functions too, validates its arguments, is cached and is a span of its own. `ctx.read` and `ctx.write` are for the route's own data access, and for NestJS the same thing is a [`DbService`](nest.html#the-database-straight-from-a-controller).
+- **A document as JSON text.** `db.getJson(id)` and `query(…).firstJson()`, `takeJson(n)` and `collectJson()` give what `get`, `first`, `take` and `collect` give as JSON text (`"null"` for none), for a route that sends the document on as it is, with `lightRaw`. A query with `filter()`, `include()` or `select()` needs the objects, and its text is written out from them. In measurements this saves the parse and the write of a document (a few tenths of a microsecond), not more: the cost of a read is mostly elsewhere.
 - Regular `action`s are unchanged: they have no `db`.
 
 ## Who is calling

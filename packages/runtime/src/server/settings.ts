@@ -103,6 +103,15 @@ export const SETTINGS: SettingDef[] = [
     default: "FULL",
     doc: "How hard SQLite pushes a commit to the disk. FULL: an answered write survives a power cut. NORMAL: faster for a lone writer, but a power cut or operating-system crash can lose the last few writes (a crash of the engine alone can't).",
   },
+  {
+    name: "DB_ENGINE",
+    group: "Database",
+    type: "enum",
+    options: ["bun", "native"],
+    default: "bun",
+    doc: "What runs the SQLite database: bun (bun:sqlite) or native (the engine's Rust layer, packages/db: it owns the connections, the WAL and the document operations). native is for Linux where the layer is built (the engine image); asked for where it is missing, the server does not start.",
+    envOnly: BOOT,
+  },
   { name: "SCHEMA_CHECK", group: "Database", type: "bool", default: "on outside dev", doc: "At startup, refuse to serve when stored documents don't match the schema." },
   {
     name: "REDIS_URL",

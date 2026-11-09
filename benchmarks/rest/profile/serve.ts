@@ -4,7 +4,7 @@ import { join } from "node:path";
 import { startServer } from "../../../packages/runtime/src/server/server";
 
 const server = await startServer({
-  forgeDir: join(import.meta.dir, "forge"),
+  forgeDir: join(import.meta.dir, process.env.FORGE ?? "forge"),
   env: {
     ...process.env,
     NODE_ENV: "production",

@@ -1,0 +1,21 @@
+{
+  "name": "@archlast/forge-db",
+  "version": "0.17.0",
+  "type": "module",
+  "description": "The engine's native database layer for SQLite: a Rust crate (rusqlite) that owns the connections, the write batching, the WAL and the document operations, with the function runtime on Bun's thread. Not published; the engine image builds it, and the runtime falls back to bun:sqlite where it is missing.",
+  "engines": {
+    "bun": ">=1.4"
+  },
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "scripts": {
+    "build": "bun scripts/native.ts",
+    "test": "bun scripts/native.ts --test",
+    "typecheck": "bun check"
+  },
+  "devDependencies": {
+    "@types/bun": "1.4.4"
+  },
+  "private": true
+}

@@ -1075,7 +1075,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     const message: HttpRequestMessage = inline
       ? new InlineHttpRequest(raw, method, raw.secure, host, httpPath, search, body)
       : { method, url: `${raw.secure ? "https" : "http"}://${host}${httpPath}${search}`, path: httpPath, search, headers: pairsOf(raw), body };
-    const root = telemetry?.begin("http", `${method} ${normalizePath(httpPath)}`, method, traceparent ?? null, requestId, { "url.path": httpPath });
+    // Named `METHOD /route` when it ends (the route that matched, or the path with its ids made `:id`): the name is only read then, so the path is not scanned for ids on every request.
+    const root = telemetry?.begin("http", method, method, traceparent ?? null, requestId, { "url.path": httpPath });
     const callHeaders: CallHeaders = {};
     if (cookie) callHeaders.cookie = cookie;
     if (authorization) callHeaders.authorization = authorization;
@@ -1105,7 +1106,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     try {
       if (root) {
         const route = r.telemetry?.attrs?.["http.route"];
-        root.operation = route ? `${method} ${route}` : r.status === 404 ? `${method} (unmatched)` : root.operation;
+        root.operation = route ? `${method} ${route}` : r.status === 404 ? `${method} (unmatched)` : `${method} ${normalizePath(path.slice("/http".length) || "/")}`;
         const outcome: Outcome = { status: r.status, telemetry: r.telemetry };
         if (r.status >= 500) outcome.error = { type: `HTTP ${r.status}`, message: `${root.operation} answered ${r.status}`, handled: false };
         telemetry!.end(root, outcome);
@@ -1128,7 +1129,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   };
 
   const rawFailed = (root: ReturnType<NonNullable<typeof telemetry>["begin"]> | undefined, e: unknown, requestId: string, path: string): Response => {
-    if (root) telemetry!.end(root, failureOf(e));
+    if (root) {
+      if (root.operation === root.method) root.operation = `${root.method} ${normalizePath(path.slice("/http".length) || "/")}`; // not named yet (the call failed before it was answered)
+      telemetry!.end(root, failureOf(e));
+    }
     const res = errorResponse(toPublicError(e, requestId, dev, { path }));
     res.headers.set("x-request-id", requestId);
     return res;

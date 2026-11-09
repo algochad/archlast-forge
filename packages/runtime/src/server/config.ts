@@ -91,6 +91,8 @@ export interface Config {
   databasePoolSize?: number;
   /** SQLite's `synchronous` for the app database (SQLITE_SYNCHRONOUS): `FULL` syncs every commit, `NORMAL` only at checkpoints. */
   sqliteSynchronous: "FULL" | "NORMAL";
+  /** What runs SQLite (DB_ENGINE): bun:sqlite, or the native layer in packages/db. */
+  dbEngine: "bun" | "native";
   /** Postgres connections for write transactions (DATABASE_WRITE_POOL_SIZE); unset: twice DATABASE_POOL_SIZE when that is set, else sized from the database. */
   databaseWritePoolSize?: number;
   redisUrl?: string;
@@ -250,6 +252,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (!dev && env.ADMIN_KEY && env.ADMIN_KEY.length < 16) fail("ADMIN_KEY must be at least 16 characters outside dev (`openssl rand -hex 24` makes one)");
   // Its telemetry joins the main app's under this name, which the main app's MICROSERVICES uses too; two engines both named archlast-forge would merge.
   if (dashboardUrl && !env.OTEL_SERVICE_NAME) fail("DASHBOARD_URL needs OTEL_SERVICE_NAME: this microservice's name, as the main app's MICROSERVICES lists it");
+  const dbEngine = (env.DB_ENGINE || "bun") as Config["dbEngine"];
+  if (dbEngine !== "bun" && dbEngine !== "native") fail(`DB_ENGINE must be "bun" or "native", got "${env.DB_ENGINE}"`);
   const sqliteSynchronous = (env.SQLITE_SYNCHRONOUS || "FULL").toUpperCase() as Config["sqliteSynchronous"];
   if (sqliteSynchronous !== "FULL" && sqliteSynchronous !== "NORMAL") fail(`SQLITE_SYNCHRONOUS must be "FULL" or "NORMAL", got "${env.SQLITE_SYNCHRONOUS}"`);
   const logFormat = (env.LOG_FORMAT ?? (dev ? "pretty" : "json")) as Config["logFormat"];
@@ -263,6 +267,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     databaseUrl,
     databaseKind,
     sqliteSynchronous,
+    dbEngine,
     databasePoolSize: env.DATABASE_POOL_SIZE ? int("DATABASE_POOL_SIZE", 0, 1) : undefined,
     databaseWritePoolSize: env.DATABASE_WRITE_POOL_SIZE ? int("DATABASE_WRITE_POOL_SIZE", 0, 1) : undefined,
     redisUrl: env.REDIS_URL || undefined,

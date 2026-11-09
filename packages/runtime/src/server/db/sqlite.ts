@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 import { closeSync, fsync, openSync } from "node:fs";
+import { nativeDb } from "./native";
+import { createNativeSqliteDb } from "./sqlite-native";
 import { totalmem } from "node:os";
 import { dirname } from "node:path";
 import { ftsTable, migrateSqlite } from "./migrate";
@@ -200,6 +202,16 @@ export function sqliteMemory(ram: number, connections: number) {
  * itself stays consistent). It is for data that can be lost, like telemetry.
  */
 export function createSqliteDb(path: string, readers = 4, ram?: number, synchronous: "FULL" | "NORMAL" = "FULL"): Db {
+  // DB_ENGINE=native in the environment moves every file database onto the native engine, the tests' included (the server asks for it through open.ts).
+  if (path !== ":memory:" && process.env.DB_ENGINE === "native") {
+    const native = nativeDb();
+    if (native) return createNativeSqliteDb(path, native, readers, ram, synchronous);
+  }
+  return createBunSqliteDb(path, readers, ram, synchronous);
+}
+
+/** SQLite on bun:sqlite: the JavaScript DocStore over it, with the JavaScript read cache. */
+export function createBunSqliteDb(path: string, readers = 4, ram?: number, synchronous: "FULL" | "NORMAL" = "FULL"): Db {
   const memory = path === ":memory:";
   const syncer = !memory && synchronous === "FULL" ? new WalSyncer(path + "-wal", path) : undefined;
   const sized = ram && !memory ? sqliteMemory(ram, readers + 1) : undefined;

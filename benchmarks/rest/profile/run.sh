@@ -3,9 +3,10 @@
 cd $(dirname $0)
 # the app's @archlast/forge-runtime, linked to this checkout (a workspace member would need a lockfile change)
 [ -e forge/node_modules/@archlast/forge-runtime ] || { mkdir -p forge/node_modules/@archlast && ln -s ../../../../../../packages/runtime forge/node_modules/@archlast/forge-runtime; }
-PORT=4900 HTTP_ENGINE=${HTTP_ENGINE:-archlast} taskset -c 0-3 bun ${BUNARGS:-} serve.ts > server.log 2>&1 &
+FORGE=${FORGE:-forge} PORT=4900 HTTP_ENGINE=${HTTP_ENGINE:-archlast} taskset -c 0-3 bun ${BUNARGS:-} serve.ts > server.log 2>&1 &
 SPID=$!
 for i in $(seq 1 100); do curl -s -o /dev/null localhost:4900/http/ping && break; sleep 0.3; done
+[ "${FORGE:-forge}" = forge-db ] && curl -s -X POST localhost:4900/http/seed > /dev/null   # the ctx.db app starts empty
 # a path starting with ~ is a regular expression for oha's --rand-regex-url (many different paths, as real traffic has): ~/http/li/([1-9][0-9]{0,2})
 for p in "$@"; do
   mode=(); url="http://127.0.0.1:4900$p"

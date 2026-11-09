@@ -6,6 +6,16 @@ export type Matched = false | { params: Record<string, string> };
 
 const SEGMENT = /^(?::[A-Za-z_$][\w$]*|[A-Za-z0-9_.~-]+)$/;
 
+/** Whether `path` has the lower-case `fixed` segment at `at`, ignoring case, without making a string of it. */
+function sameSegment(path: string, at: number, fixed: string): boolean {
+  for (let i = 0; i < fixed.length; i++) {
+    let c = path.charCodeAt(at + i);
+    if (c >= 65 && c <= 90) c += 32; // fixed segments are ASCII (see SEGMENT), so only A-Z fold
+    if (c !== fixed.charCodeAt(i)) return false;
+  }
+  return true;
+}
+
 /** The fast matcher for `pattern`, or null when the pattern has anything but fixed segments and plain parameters. */
 export function simpleMatcher(pattern: string, fallback: (path: string) => Matched): ((path: string) => Matched) | null {
   if (!pattern.startsWith("/")) return null;
@@ -28,7 +38,7 @@ export function simpleMatcher(pattern: string, fallback: (path: string) => Match
       if (next === at) return false; // an empty segment
       const f = fixed[i];
       if (f !== null) {
-        if (next - at !== f!.length || path.slice(at, next).toLowerCase() !== f) return false;
+        if (next - at !== f!.length || !sameSegment(path, at, f!)) return false;
       } else {
         let value = path.slice(at, next);
         if (value.indexOf("%") >= 0) {

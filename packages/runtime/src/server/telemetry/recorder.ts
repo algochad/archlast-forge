@@ -88,13 +88,18 @@ function namespaceOf(s: Span): string {
  * (The same answers as the regular expressions this replaced, without running four of them over every segment of every request.)
  */
 export function looksLikeId(seg: string): boolean {
-  const n = seg.length;
+  return idAt(seg, 0, seg.length);
+}
+
+/** `looksLikeId` of the text between `from` and `to` of `path`, without making the segment a string. */
+function idAt(path: string, from: number, to: number): boolean {
+  const n = to - from;
   if (n === 0) return false;
   let digits = 0;
   let hex = 0;
   let word = 0;
-  for (let i = 0; i < n; i++) {
-    const c = seg.charCodeAt(i);
+  for (let i = from; i < to; i++) {
+    const c = path.charCodeAt(i);
     if (c >= 48 && c <= 57) (digits++, hex++, word++);
     else if ((c >= 97 && c <= 102) || (c >= 65 && c <= 70)) (hex++, word++);
     else if ((c >= 103 && c <= 122) || (c >= 71 && c <= 90) || c === 95 || c === 45) word++;
@@ -103,10 +108,10 @@ export function looksLikeId(seg: string): boolean {
   if (hex === n && n >= 16) return true;
   if (word === n && n >= 20 && digits > 0) return true;
   // a UUID: 8 hex digits, a dash, then 27 hex digits and dashes
-  if (n === 36 && seg.charCodeAt(8) === 45) {
-    for (let i = 0; i < 8; i++) if (!isHex(seg.charCodeAt(i))) return false;
-    for (let i = 9; i < 36; i++) {
-      const c = seg.charCodeAt(i);
+  if (n === 36 && path.charCodeAt(from + 8) === 45) {
+    for (let i = from; i < from + 8; i++) if (!isHex(path.charCodeAt(i))) return false;
+    for (let i = from + 9; i < to; i++) {
+      const c = path.charCodeAt(i);
       if (c !== 45 && !isHex(c)) return false;
     }
     return true;
@@ -122,19 +127,17 @@ export function normalizePath(path: string) {
   // the same path as the request before is the common case under load: a comparison, not a scan
   if (path === lastPath) return lastNormal;
   let result = "";
+  let copied = 0; // path[0, copied) is in `result` already
   let start = 0;
-  let changed = false;
   for (;;) {
     const slash = path.indexOf("/", start);
-    const seg = slash < 0 ? path.slice(start) : path.slice(start, slash);
-    if (looksLikeId(seg)) (result += ":id"), (changed = true);
-    else result += seg;
+    const end = slash < 0 ? path.length : slash;
+    if (idAt(path, start, end)) (result += path.slice(copied, start) + ":id"), (copied = end);
     if (slash < 0) break;
-    result += "/";
     start = slash + 1;
   }
   lastPath = path;
-  return (lastNormal = changed ? result : path || "/");
+  return (lastNormal = copied === 0 ? path || "/" : result + path.slice(copied));
 }
 
 /** An HTTP status for a call's outcome, as /rpc would answer it. */

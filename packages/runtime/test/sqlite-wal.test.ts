@@ -1,5 +1,5 @@
 import { expect, test } from "bun:test";
-import { mkdtempSync, statSync } from "node:fs";
+import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createSqliteDb } from "../src/server/db/sqlite";
@@ -29,5 +29,8 @@ test("writes that never pause do not make the WAL grow without a limit, and noth
   expect(n).toBe(inserted); // every acknowledged write is there
   // The thread checks every 250 ms and restarts the log past 64 MiB, so the file stays within a few hundred MiB even at hundreds of thousands of inserts a second.
   expect(inserted).toBeGreaterThan(20_000); // the test wrote enough for the old behavior to reach gigabytes
-  expect(peak).toBeLessThan(400 * MiB);
+  const bounded = peak < 400 * MiB;
+  await db.close();
+  rmSync(dir, { recursive: true, force: true }); // before the assertion: a failing run must not leave gigabytes behind
+  expect(bounded).toBe(true);
 }, 30_000);

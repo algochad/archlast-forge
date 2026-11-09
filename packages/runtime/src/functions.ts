@@ -155,6 +155,10 @@ export interface Query<D, T extends TableNames = TableNames> {
   skip(n: number): Query<D, T>;
   collect(): Promise<D[]>;
   first(): Promise<D | null>;
+  /** `collect()`, `first()` and `take()` as JSON text, for a route that sends the documents on as they are. A query with `filter()`, `include()` or `select()` needs the objects and is written out. */
+  collectJson(): Promise<string>;
+  firstJson(): Promise<string>;
+  takeJson(n: number): Promise<string>;
   /** The one matching document, `null` if there is none, an error if there are several. */
   unique(): Promise<D | null>;
   take(n: number): Promise<D[]>;
@@ -203,6 +207,8 @@ export interface QueryInitializer<T extends TableNames> extends Query<Doc<T>, T>
 
 export interface DatabaseReader {
   get<T extends TableNames>(id: Id<T>): Promise<Doc<T> | null>;
+  /** `get()` as JSON text (`"null"` where there is none), for a route that sends the document on as it is: nothing is parsed or written out again where the database keeps documents as text. */
+  getJson<T extends TableNames>(id: Id<T>): Promise<string>;
   /** Many documents by id in one round trip, in the order given; `null` where one doesn't exist. */
   getMany<T extends TableNames>(ids: readonly Id<T>[]): Promise<(Doc<T> | null)[]>;
   query<T extends TableNames>(table: T): QueryInitializer<T>;

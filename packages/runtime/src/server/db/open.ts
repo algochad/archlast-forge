@@ -1,7 +1,9 @@
 import { sqlitePath, type Config } from "../config";
 import { planPools, readPostgresLimits, type PoolPlan } from "./pool-size";
 import { createPostgresDb } from "./postgres";
+import { nativeDb } from "./native";
 import { createSqliteDb } from "./sqlite";
+import { createNativeSqliteDb } from "./sqlite-native";
 import type { Db } from "./types";
 
 /**
@@ -29,6 +31,11 @@ export async function openDatabase(config: Config, memory?: number, opts: { work
   if (config.databaseKind === "mongodb") {
     const read = config.databasePoolSize ?? navigator.hardwareConcurrency * 2;
     return (await import("./mongodb")).createMongoDb(config.databaseUrl!, { maxPoolSize: read + (config.databaseWritePoolSize ?? read * 2) });
+  }
+  if (config.dbEngine === "native") {
+    const native = nativeDb();
+    if (!native) throw new Error("DB_ENGINE=native, but the native database layer is not available here (Linux, built with `bun run build` in packages/db, or the engine image)");
+    return createNativeSqliteDb(sqlitePath(config), native, undefined, memory, config.sqliteSynchronous);
   }
   return createSqliteDb(sqlitePath(config), undefined, memory, config.sqliteSynchronous);
 }

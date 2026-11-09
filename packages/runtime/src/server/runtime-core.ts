@@ -220,6 +220,7 @@ export async function startCore(opts: {
       else console.log(message);
     },
   });
+  if (worker === 0 && config.databaseKind === "sqlite" && config.dbEngine === "native") console.log("database: SQLite on the native layer (DB_ENGINE=native)");
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);
