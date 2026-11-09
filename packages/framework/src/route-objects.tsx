@@ -12,6 +12,8 @@ export interface RouteModule {
   shouldRevalidate?: ShouldRevalidateFunction;
   /** Root only: the `<html>` document that wraps the app and its error page. */
   Layout?: ComponentType<{ children: ReactNode }>;
+  /** Root only: render pages with islands (`export const islands = true`): only the parts of a page that need the browser ship JavaScript, and links swap the next page in. */
+  islands?: boolean;
   /**
    * Root only: Better Auth client plugins (`organizationClient()`, `oauthProviderClient()`, `genericOAuthClient()`, …) for the app's auth
    * client, on the server render and in the browser. `useAuth<typeof authPlugins>()` gives their methods typed.

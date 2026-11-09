@@ -174,6 +174,52 @@ Return a `Response`. Anything else (a string, `undefined`) is a server error: th
 - **`x-request-id`** is added to every response. If the caller sent an `x-request-id` of 1 to 64 characters (letters, digits, `.`, `_`, `-`), that value is reused; otherwise one is generated. It's the id to look up in the logs, or in the dashboard's [search](dashboard.html#keyboard-search-and-theme), which opens the request's trace.
 - **Redirects** work: `Response.redirect(url, 302)` reaches the client with its `Location`.
 
+## Minimal routes
+
+A handler written with `httpAction` is given a Web `Request` and answers with a `Response`. Making and reading those objects is most of what a request costs when the route answers from memory or with a quick query. `minimalAction` is the same route without them: the handler is given the request's fields and answers with bytes.
+
+```ts
+import { httpRouter, minimalAction, minimalJson, MinimalResponse } from "@archlast/forge-runtime";
+
+const http = httpRouter();
+http.route({
+  method: "GET",
+  pathPrefix: "/items/",
+  handler: minimalAction(async (ctx, req) => {
+    const id = Number(req.path.slice("/items/".length));
+    const item = items.get(id);
+    return item ? minimalJson(item) : new MinimalResponse(404, [["content-type", "text/plain"]], "not found");
+  }),
+});
+```
+
+- **The request** has `method`, `url` (absolute), `path`, `search` (with the `?`, or empty), `headers` (a list of `[name, value]` pairs with lower-case names), and `body` (an `ArrayBuffer`, or `undefined` for a GET). The headers are decoded when you first read them, so a route that reads none does not pay for them. `ctx` is the same as for `httpAction` (`ctx.auth`, `ctx.runQuery`, ...).
+- **The answer** is a `MinimalResponse(status, headers, body)` with a string, bytes or `null` body, or `minimalJson(data, status?, headers?)`, `minimalRaw(json, status?, headers?)` (text that already is JSON, such as `await ctx.read((c) => c.db.getJson(id))`: nothing is parsed or written out again) and `minimalText(text, status?, headers?)`. A `Response` is accepted too, for the odd route that needs one.
+- **Everything else is as for `httpAction`**: telemetry, the request id, rate limits, CORS you set yourself, validators and the OpenAPI document, errors, time limits. Only the objects differ.
+- **When to use it.** For a hot route. On the benchmark API (reading one item from memory, 4 cores) a `minimalAction` route answers about 336,000 requests a second against about 176,000 for the same route as a NestJS controller; see [benchmarks](benchmarks.html). A route that reads a body as JSON, forwards the `Request`, or uses a library that wants one should stay an `httpAction`.
+
+## The database from a route
+
+A route's `ctx` is an `HttpCtx`: an action's ctx and two methods that run a function in a transaction, with no registered function in between.
+
+```ts
+http.route({
+  method: "GET",
+  pathPrefix: "/items/",
+  handler: minimalAction(async (ctx, req) => {
+    const item = await ctx.read((c) => c.db.query("items").withIndex("by_item", (q) => q.eq("itemId", 7)).first());
+    return item ? minimalJson(item) : minimalJson({ error: "not found" }, 404);
+  }),
+});
+```
+
+- **`ctx.read(fn)`** runs `fn` in one read transaction and **`ctx.write(fn)`** in one write transaction. `fn` gets what a query's or a mutation's handler gets (`db`, `auth`, `storage`, and `scheduler` for a write) and returns anything. A write publishes its topics after the commit, so live queries and the query cache see it.
+- **It skips what a call by name costs**: the lookup, the argument validation, the access check and result cache, and the span and log line of a function. The database spans are recorded as always, and `FUNCTION_TIMEOUT_MS` ends a transaction that runs too long.
+- **Like a query or a mutation, `fn` can run again.** The database may re-run a read, and a write that loses a serialization conflict is retried, so keep side effects (a `fetch`, an email) outside it and return what the route needs.
+- **Use `ctx.runQuery` and `ctx.runMutation` when you want the function.** A named function is called by clients and other functions too, validates its arguments, is cached and is a span of its own. `ctx.read` and `ctx.write` are for the route's own data access, and for NestJS the same thing is a [`DbService`](nest.html#the-database-straight-from-a-controller).
+- **A document as JSON text.** `db.getJson(id)` and `query(…).firstJson()`, `takeJson(n)` and `collectJson()` give what `get`, `first`, `take` and `collect` give as JSON text (`"null"` for none), for a route that sends the document on as it is, with `minimalRaw`. A query with `filter()`, `include()` or `select()` needs the objects, and its text is written out from them. In measurements this saves the parse and the write of a document (a few tenths of a microsecond), not more: the cost of a read is mostly elsewhere.
+- Regular `action`s are unchanged: they have no `db`.
+
 ## Who is calling
 
 The engine reads the `cookie` and `authorization` headers of the request and resolves the caller before your handler starts. `await ctx.auth.getUserIdentity()` gives the same `{ userId, sessionId, email, name }` that a function would see, or `null`.

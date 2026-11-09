@@ -35,7 +35,8 @@ Adds to the common files:
 
 ```
 app/
-  root.tsx             Layout (the <html> document, also for error pages), Chrome (header, nav, viewer, sign-out), default Outlet, ErrorBoundary
+  root.tsx             `islands = true`, Layout (the <html> document, also for error pages), Chrome (header, nav, a Sign in link or the user menu), default Outlet, ErrorBoundary
+  components/user-menu.tsx  the signed-in visitor's menu with sign-out: an island (its own file, plain-data props)
   routes/index.tsx     home page (uses useViewer)
   routes/sign-in.tsx   sign in / sign up with Better Auth (useAuth from @archlast/forge-react)
   routes/chat.tsx      loader (redirect when signed out + ctx.query prefetch) and a live usePaginatedQuery chat
@@ -47,7 +48,7 @@ package.json           + @archlast/forge-framework, @archlast/forge-react, react
 ```
 
 - `forge/` stays the backend; `app/` is the browser/SSR code and may import only `forge/_generated` (types and `api`).
-- **With shadcn (default):** adds `components.json`, `app/components/ui/*` (shadcn components built on Base UI), `app/components/theme-toggle.tsx`, `app/lib/utils.ts` (`cn`), `app/styles.css` with Tailwind v4 and the theme of the chosen base color (`neutral` default; `stone zinc mauve olive mist taupe`; fixed at creation). Dependencies: `tailwindcss`, `tw-animate-css`, `class-variance-authority`, `cn`, `lucide-react`, `@base-ui/react`, `shadcn`, `@fontsource-variable/geist`; dev: `bun-plugin-tailwind` (the framework's browser build loads it from the project). Add components with `bunx shadcn@latest add <component>`. Dark mode follows the system until the header toggle sets `class="dark"` on `<html>`; the theme script in `app/root.tsx` that applies it before the first paint carries `nonce={useNonce()}`, as any inline script must under the pages' Content-Security-Policy.
+- **With shadcn (default):** adds `components.json`, `app/components/ui/*` (shadcn components built on Base UI), `app/components/theme-toggle.tsx`, `app/lib/utils.ts` (`cn`), `app/styles.css` with Tailwind v4 and the theme of the chosen base color (`neutral` default; `stone zinc mauve olive mist taupe`; fixed at creation). Dependencies: `tailwindcss`, `tw-animate-css`, `class-variance-authority`, `cn`, `lucide-react`, `@base-ui/react`, `shadcn`, `@fontsource-variable/geist`; dev: `bun-plugin-tailwind` (the framework's browser build loads it from the project). Add components with `bunx shadcn@latest add <component>`. Dark mode follows the system until the header toggle sets `class="dark"` on `<html>`; the theme script in `app/root.tsx` that applies it before the first paint and handles the toggle's click (a button with `data-theme-toggle`, so the toggle is part of the page and needs no JavaScript of its own) carries `nonce={useNonce()}`, as any inline script must under the pages' Content-Security-Policy.
 - **`--no-shadcn`:** plain `styles.css` (classes like `container`, `btn`, `card`), no Tailwind.
 - Default services: `postgres,redis,s3,caddy`. With `--services none` the stack is the engine alone on SQLite with one `app-data` volume (compose has only `app`).
 - `bun run dev` = one process on the host (engine and framework dev server) with rebuild and live reload on :3000; `bun run build`/`start` = `--no-docker` production build/serve; `bun run up` = Docker stack. Routes and conventions: [fullstack.md](fullstack.md).

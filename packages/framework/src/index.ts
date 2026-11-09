@@ -2,8 +2,6 @@
 export {
   data,
   isRouteErrorResponse,
-  Link,
-  NavLink,
   Navigate,
   Outlet,
   redirect,
@@ -17,6 +15,7 @@ export {
   useRouteLoaderData,
   useSearchParams,
 } from "react-router";
+export { Link, NavLink } from "./link";
 export { useLoaderData } from "./loader-data";
 export { forgeContext, type LoaderArgs, type LoaderContext, type Viewer } from "./context";
 export { useNonce, useViewer } from "./providers";

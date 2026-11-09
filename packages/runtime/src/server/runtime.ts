@@ -1,6 +1,6 @@
 import type { Subprocess } from "bun";
 import type { FunctionKind, UserIdentity } from "../functions";
-import { serializeError, type CallHeaders, type CallResult, type ErrorKind, type IdentityDetail, type LogEntry, type SerializedError } from "./executor";
+import { serializeError, type CallHeaders, type HttpFinish, type CallResult, type ErrorKind, type IdentityDetail, type LogEntry, type SerializedError } from "./executor";
 import type { Manifest } from "./project";
 import type { Batch, HostEvent, HostMessage, HttpRequestMessage, HttpResponseMessage, RuntimeMessage, SerializedRequest, SerializedResponse, SocketMessage } from "./protocol";
 import { startCore, type RuntimeCore } from "./runtime-core";
@@ -41,6 +41,8 @@ interface Options {
   env: Record<string, string | undefined>;
   dev: boolean;
   workers?: number;
+  /** The place of this server in its cluster (0 is the first), for the core run in this process. */
+  worker?: number;
   serverId?: string;
   timeouts?: { functionMs: number; actionMs: number };
   /** Calls one process may have waiting; more are refused (see ErrorKind "overloaded"). */
@@ -71,7 +73,7 @@ interface Worker {
  * miss costs besides its own work. The price: a function that never yields blocks the server too. A watchdog thread then kills the whole
  * process (after the call's timeout plus the grace), so a supervisor (Docker's restart policy, systemd) can start it again.
  */
-class InlineWorker implements Worker {
+export class InlineWorker implements Worker {
   proc?: RuntimeCore;
   ready = false;
   started?: Promise<Manifest>;
@@ -94,7 +96,7 @@ class InlineWorker implements Worker {
     this.started = startCore({
       forgeDir: this.opts.forgeDir,
       env: this.opts.env,
-      worker: 0,
+      worker: this.opts.worker ?? 0, // a server of a cluster that is not the first leaves the scheduler, crons and backups to it
       serverId: this.opts.serverId ?? "local",
       dev: this.opts.dev,
       send: (m) => this.events.onMessage(m),
@@ -138,13 +140,43 @@ class InlineWorker implements Worker {
     this.proc?.event(msg);
   }
 
+  /**
+   * `request` for an HTTP request, answering without a promise when the runtime can (see `httpDirect` in runtime-core.ts). The request counts as in flight until
+   * the caller says it is over with `settled()`: for an answer that is a promise, that is when the promise is, and the caller already is at that moment, so no
+   * promise is made here to find out. A failure is `RuntimeCallError.from(serializeError(e))` as `request` throws it: `failed(e)` does that for the caller's.
+   */
+  httpDirect(msg: Omit<Extract<HostMessage, { t: "http" }>, "id">, finish?: HttpFinish): any {
+    const core = this.proc;
+    if (!core) throw new RuntimeCallError("Function runtime is not running", "internal");
+    if (this.inFlight >= (this.opts.maxPending ?? 1000)) throw new RuntimeCallError("Server is busy, try again", "overloaded");
+    this.inFlight++;
+    try {
+      const answer = core.httpDirect(msg, finish);
+      if (!(answer instanceof Promise)) this.inFlight--;
+      return answer;
+    } catch (e) {
+      this.inFlight--;
+      throw this.failed(e);
+    }
+  }
+
+  /** An answer that was a promise is settled (see `httpDirect`). */
+  settled() {
+    this.inFlight--;
+  }
+
+  failed(e: unknown) {
+    return e instanceof RuntimeCallError ? e : RuntimeCallError.from(serializeError(e));
+  }
+
   async request(msg: Omit2<HostMessage, "id">) {
     const core = this.proc;
     if (!core) throw new RuntimeCallError("Function runtime is not running", "internal");
     if (this.inFlight >= (this.opts.maxPending ?? 1000)) throw new RuntimeCallError("Server is busy, try again", "overloaded");
     this.inFlight++;
     try {
-      return await core.handle({ ...msg, id: 0 } as HostMessage);
+      (msg as { id?: number }).id = 0; // nothing here is matched by id: the answer is this call's own promise
+      return await core.handle(msg as HostMessage);
     } catch (e) {
       throw RuntimeCallError.from(serializeError(e));
     } finally {
@@ -347,6 +379,18 @@ export class FunctionRuntime {
   manifest?: Manifest;
   loadError?: string;
   onPublish: (topics: string[]) => void = () => {};
+  /** A runtime relayed an event (`createPubSub`): to the other servers of a cluster, which `deliverRelay` it. */
+  onRelay: (topic: string, payload: unknown) => void = () => {};
+  /** An event another server of the cluster relayed: to every runtime process of this one. */
+  deliverRelay(topic: string, payload: unknown) {
+    for (const w of this.workers) if (w.ready) w.event({ t: "relay", topic, payload });
+  }
+  /** A runtime process let go of the database's write lock: to the other servers of a cluster. */
+  onUnlock: () => void = () => {};
+  /** Another server let go of the write lock: the runtime processes of this one that wait for it may try. */
+  deliverUnlock() {
+    for (const w of this.workers) if (w.ready) w.event({ t: "unlock" });
+  }
   onLog: (entry: LogEntry) => void = () => {};
   /** A gateway sends to, or closes, one of the server's sockets. */
   onWs: (msg: SocketMessage) => void = () => {};
@@ -375,7 +419,13 @@ export class FunctionRuntime {
       else if (msg.t === "metrics") this.onMetrics(msg.points, msg.instance);
       else if (msg.t === "sample")
         this.onSample({ ...msg.sample, inflight: this.workers[index]?.load }); // calls waiting in that process, for the Runtime page
-      else if (msg.t === "relay") for (const w of this.workers) if (w.ready) w.event(msg); // to every worker, the sender too: one path for all
+      else if (msg.t === "unlock") {
+        this.workers.forEach((w, i) => i !== index && w.ready && w.event({ t: "unlock" })); // the other runtime processes of this server
+        this.onUnlock(); // and the other servers of a cluster
+      } else if (msg.t === "relay") {
+        for (const w of this.workers) if (w.ready) w.event(msg); // to every worker, the sender too: one path for all
+        this.onRelay(msg.topic, msg.payload); // and to the other servers of a cluster
+      }
     };
     if (this.opts.inline) return new InlineWorker(this.opts, { onMessage });
     const worker: Worker = new RuntimeProcess(index, this.opts, {
@@ -517,8 +567,20 @@ export class FunctionRuntime {
     return best;
   }
 
-  private async send(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, index?: number) {
-    const w = await this.pick(index);
+  /** The only process, when there is one and it is up: no choice to make, so no await either. */
+  private only(index?: number): Worker | undefined {
+    if (this.workers.length !== 1 || this.starting || !this.manifest || this.loadError || (index !== undefined && index !== 0)) return undefined;
+    const w = this.workers[0]!;
+    return w.proc && w.ready ? w : undefined;
+  }
+
+  private send(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, index?: number): Promise<unknown> {
+    const w = this.only(index);
+    // with one process there is nothing to choose: no await before the call
+    return w ? this.dispatch(w, msg, hardTimeoutMs) : this.pick(index).then((picked) => this.dispatch(picked, msg, hardTimeoutMs));
+  }
+
+  private dispatch(w: Worker, msg: Omit2<HostMessage, "id">, hardTimeoutMs: number): Promise<unknown> {
     return w.request(msg, hardTimeoutMs, () => {
       const i = this.workers.indexOf(w);
       console.error(`function runtime ${i} didn't answer within ${hardTimeoutMs} ms; killing ${i < 0 ? "it (it was leaving the pool)" : "and restarting it"}`);
@@ -556,6 +618,12 @@ export class FunctionRuntime {
   http(req: HttpRequestMessage, headers: CallHeaders, requestId: string, worker?: number, trace?: TraceParent) {
     const t = this.opts.timeouts ?? { functionMs: 10_000, actionMs: 600_000 };
     return this.send({ t: "http", req, headers, requestId, trace }, t.actionMs + HARD_TIMEOUT_GRACE_MS, worker) as Promise<HttpResponseMessage>;
+  }
+
+  /** The function runtime, when it runs in this process and is up: what `httpDirect` is called on. */
+  inlineWorker(): InlineWorker | undefined {
+    const w = this.only();
+    return w instanceof InlineWorker ? w : undefined;
   }
 
   admin<T = unknown>(op: string, args: Record<string, unknown>, actor: string) {

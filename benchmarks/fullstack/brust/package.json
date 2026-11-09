@@ -1,0 +1,14 @@
+{
+  "name": "@archlast/bench-brust",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "brust build routes.tsx",
+    "start": "brust start"
+  },
+  "dependencies": {
+    "@brust/core": "2.0.0-alpha.38",
+    "react": "19.3.1",
+    "react-dom": "19.3.1"
+  }
+}

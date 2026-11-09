@@ -145,6 +145,13 @@
         "playwright-core": "^1.64.1",
       },
     },
+    "packages/db": {
+      "name": "@archlast/forge-db",
+      "version": "0.17.0",
+      "devDependencies": {
+        "@types/bun": "1.4.4",
+      },
+    },
     "packages/framework": {
       "name": "@archlast/forge-framework",
       "version": "0.17.0",
@@ -153,6 +160,7 @@
         "@archlast/forge-react": "workspace:*",
         "@archlast/forge-runtime": "workspace:*",
         "@tanstack/react-query": "5.104.5",
+        "acorn": "8.19.0",
         "react-router": "8.5.0",
       },
       "devDependencies": {
@@ -215,6 +223,7 @@
         "helmet": "8.3.0",
         "ioredis": "6.0.0",
         "kafkajs": "2.2.4",
+        "knitting": "0.1.77",
         "mongodb": "7.8.0",
         "mqtt": "5.16.1",
         "nats": "2.29.3",
@@ -244,6 +253,14 @@
       },
       "devDependencies": {
         "@types/bun": "1.4.4",
+      },
+    },
+    "packages/tuyere": {
+      "name": "@archlast/forge-tuyere",
+      "version": "0.17.0",
+      "devDependencies": {
+        "@types/bun": "1.4.4",
+        "playwright-core": "^1.64.1",
       },
     },
     "packages/vue": {
@@ -276,6 +293,8 @@
 
     "@archlast/forge-dashboard": ["@archlast/forge-dashboard@workspace:packages/dashboard"],
 
+    "@archlast/forge-db": ["@archlast/forge-db@workspace:packages/db"],
+
     "@archlast/forge-demo": ["@archlast/forge-demo@workspace:apps/demo"],
 
     "@archlast/forge-demo-forge": ["@archlast/forge-demo-forge@workspace:apps/demo/forge"],
@@ -289,6 +308,8 @@
     "@archlast/forge-runtime": ["@archlast/forge-runtime@workspace:packages/runtime"],
 
     "@archlast/forge-svelte": ["@archlast/forge-svelte@workspace:packages/svelte"],
+
+    "@archlast/forge-tuyere": ["@archlast/forge-tuyere@workspace:packages/tuyere"],
 
     "@archlast/forge-vue": ["@archlast/forge-vue@workspace:packages/vue"],
 
@@ -929,6 +950,8 @@
     "json-schema-traverse": ["json-schema-traverse@1.0.0", "", {}, "sha512-NM8/P9n3XjXhIZn1lLhkFaACTOURQXjWhV4BA/RnOv8xvgqtqpAX9IO4mRQxSx1Rlo4tqzeqb0sOlruaOy3dug=="],
 
     "kafkajs": ["kafkajs@2.2.4", "", {}, "sha512-j/YeapB1vfPT2iOIUn/vxdyKEuhuY2PxMBvf5JWux6iSaukAccrMtXEY/Lb7OvavDhOWME589bpLrEdnVHjfjA=="],
+
+    "knitting": ["knitting@0.1.77", "", {}, "sha512-NVCR8l24iEwSvB80vliRhYEP6c6PbS/tXypllt3eWfGH7iuvLpSmvwHuPyE4XFlMGL+KhkBuFp+AxK/dumxRBw=="],
 
     "kysely": ["kysely@0.29.7", "", {}, "sha512-fmIq+7kv4WbFm2tcfznRzikqB4cuNpgZ40PSU2fAJ2/OO5XhojqnTPrmgrCjYSRJVwBln03XcRXJGnw9H099IQ=="],
 

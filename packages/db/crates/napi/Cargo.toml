@@ -1,0 +1,27 @@
+[package]
+name = "archlast-db-napi"
+version = "0.1.0"
+edition = "2021"
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+napi = { version = "3", default-features = false, features = ["napi4"] }
+napi-derive = "3"
+# Pinned to 0.37 (SQLite 3.50): rusqlite 0.41 bundles 3.54, in which a point query with an ORDER BY over an expression index (every query the engine makes) took 7 µs
+# instead of 2.3 µs (same plan, same index). Measure a newer SQLite on that query before moving it up.
+# SQLite compiled into the library (JSON, FTS5, ...): the same engine on every machine, not whatever the host or the Bun build carries.
+rusqlite = { version = "0.37", features = ["bundled"] }
+# preserve_order: a document's fields stay in the order they were written, as JSON.stringify keeps them (reactivity topics are made of them). float_roundtrip: a number read back is the double that was written (the default parser can be one unit in the last place off, which breaks a keyset cursor on _creationTime).
+serde_json = { version = "1", features = ["preserve_order", "float_roundtrip"] }
+serde = { version = "1", features = ["derive"] }
+lru = "0.12"
+base64 = "0.22"
+indexmap = { version = "2", features = ["serde"] }
+getrandom = "0.2"
+# flock, for the pause that every process using the database file sees (checkpoint.rs)
+libc = "0.2"
+
+[build-dependencies]
+napi-build = "2"

@@ -1,0 +1,512 @@
+{
+  "axum": {
+    "label": "Rust (Axum 0.8, Tokio)",
+    "peakMiB": 25,
+    "scenarios": {
+      "read": {
+        "rps": 497346,
+        "p50ms": 0.058,
+        "p99ms": 2.033,
+        "cores": 2.89,
+        "success": 1
+      },
+      "list": {
+        "rps": 302658,
+        "p50ms": 0.209,
+        "p99ms": 0.385,
+        "cores": 3.17,
+        "success": 1
+      },
+      "update": {
+        "rps": 467117,
+        "p50ms": 0.066,
+        "p99ms": 2.053,
+        "cores": 3.13,
+        "success": 1
+      },
+      "create": {
+        "rps": 476558,
+        "p50ms": 0.124,
+        "p99ms": 0.318,
+        "cores": 3.08,
+        "success": 1
+      }
+    }
+  },
+  "serve": {
+    "label": "Tuyere (native App API, 3 I/O threads)",
+    "peakMiB": 110,
+    "scenarios": {
+      "read": {
+        "rps": 456161,
+        "p50ms": 0.12,
+        "p99ms": 0.531,
+        "cores": 2.93,
+        "success": 1
+      },
+      "list": {
+        "rps": 358628,
+        "p50ms": 0.163,
+        "p99ms": 0.501,
+        "cores": 2.67,
+        "success": 1
+      },
+      "update": {
+        "rps": 411772,
+        "p50ms": 0.134,
+        "p99ms": 0.573,
+        "cores": 3.02,
+        "success": 1
+      },
+      "create": {
+        "rps": 347316,
+        "p50ms": 0.138,
+        "p99ms": 1.352,
+        "cores": 2.75,
+        "success": 1
+      }
+    }
+  },
+  "go": {
+    "label": "Go (fasthttp)",
+    "peakMiB": 68,
+    "scenarios": {
+      "read": {
+        "rps": 457135,
+        "p50ms": 0.076,
+        "p99ms": 1.458,
+        "cores": 2.37,
+        "success": 1
+      },
+      "list": {
+        "rps": 380759,
+        "p50ms": 0.116,
+        "p99ms": 1.433,
+        "cores": 2.99,
+        "success": 1
+      },
+      "update": {
+        "rps": 412648,
+        "p50ms": 0.072,
+        "p99ms": 1.952,
+        "cores": 2.84,
+        "success": 1
+      },
+      "create": {
+        "rps": 461824,
+        "p50ms": 0.113,
+        "p99ms": 0.475,
+        "cores": 3.11,
+        "success": 1
+      }
+    }
+  },
+  "dotnet": {
+    "label": ".NET 10 (Minimal APIs)",
+    "peakMiB": 76,
+    "scenarios": {
+      "read": {
+        "rps": 392989,
+        "p50ms": 0.136,
+        "p99ms": 1.097,
+        "cores": 3.03,
+        "success": 1
+      },
+      "list": {
+        "rps": 305788,
+        "p50ms": 0.18,
+        "p99ms": 1.008,
+        "cores": 3.16,
+        "success": 1
+      },
+      "update": {
+        "rps": 345777,
+        "p50ms": 0.155,
+        "p99ms": 1.098,
+        "cores": 3.27,
+        "success": 1
+      },
+      "create": {
+        "rps": 306551,
+        "p50ms": 0.167,
+        "p99ms": 1.465,
+        "cores": 2.92,
+        "success": 1
+      }
+    }
+  },
+  "forge-minimal": {
+    "label": "archlast-forge (forge/http.ts minimal routes, Tuyere)",
+    "peakMiB": 267,
+    "scenarios": {
+      "read": {
+        "rps": 336018,
+        "p50ms": 0.168,
+        "p99ms": 0.822,
+        "cores": 2.65,
+        "success": 1
+      },
+      "list": {
+        "rps": 251478,
+        "p50ms": 0.224,
+        "p99ms": 0.94,
+        "cores": 2.33,
+        "success": 1
+      },
+      "update": {
+        "rps": 261625,
+        "p50ms": 0.211,
+        "p99ms": 1.133,
+        "cores": 2.53,
+        "success": 1
+      },
+      "create": {
+        "rps": 234766,
+        "p50ms": 0.198,
+        "p99ms": 1.973,
+        "cores": 2.51,
+        "success": 1
+      }
+    }
+  },
+  "nest-serve": {
+    "label": "NestJS on Tuyere (no Forge, a basic adapter)",
+    "peakMiB": 134,
+    "scenarios": {
+      "read": {
+        "rps": 290605,
+        "p50ms": 0.203,
+        "p99ms": 0.674,
+        "cores": 2.2,
+        "success": 1
+      },
+      "list": {
+        "rps": 218327,
+        "p50ms": 0.289,
+        "p99ms": 0.814,
+        "cores": 1.94,
+        "success": 1
+      },
+      "update": {
+        "rps": 243649,
+        "p50ms": 0.244,
+        "p99ms": 0.794,
+        "cores": 2.18,
+        "success": 1
+      },
+      "create": {
+        "rps": 221570,
+        "p50ms": 0.228,
+        "p99ms": 1.992,
+        "cores": 2.14,
+        "success": 1
+      }
+    }
+  },
+  "forge": {
+    "label": "archlast-forge (NestJS path, Tuyere)",
+    "peakMiB": 270,
+    "scenarios": {
+      "read": {
+        "rps": 175874,
+        "p50ms": 0.335,
+        "p99ms": 1.217,
+        "cores": 1.91,
+        "success": 1
+      },
+      "list": {
+        "rps": 133301,
+        "p50ms": 0.438,
+        "p99ms": 1.432,
+        "cores": 1.66,
+        "success": 1
+      },
+      "update": {
+        "rps": 127514,
+        "p50ms": 0.452,
+        "p99ms": 1.641,
+        "cores": 1.76,
+        "success": 1
+      },
+      "create": {
+        "rps": 113262,
+        "p50ms": 0.457,
+        "p99ms": 4.312,
+        "cores": 1.83,
+        "success": 1
+      }
+    }
+  },
+  "bun": {
+    "label": "Bun.serve",
+    "peakMiB": 92,
+    "scenarios": {
+      "read": {
+        "rps": 143497,
+        "p50ms": 0.423,
+        "p99ms": 0.86,
+        "cores": 0.78,
+        "success": 1
+      },
+      "list": {
+        "rps": 111052,
+        "p50ms": 0.551,
+        "p99ms": 1.081,
+        "cores": 0.81,
+        "success": 1
+      },
+      "update": {
+        "rps": 90799,
+        "p50ms": 0.671,
+        "p99ms": 1.348,
+        "cores": 0.84,
+        "success": 1
+      },
+      "create": {
+        "rps": 81450,
+        "p50ms": 0.686,
+        "p99ms": 2.965,
+        "cores": 1.04,
+        "success": 1
+      }
+    }
+  },
+  "nest-bun": {
+    "label": "NestJS on Bun (Express adapter)",
+    "peakMiB": 156,
+    "scenarios": {
+      "read": {
+        "rps": 38744,
+        "p50ms": 1.575,
+        "p99ms": 2.556,
+        "cores": 0.91,
+        "success": 1
+      },
+      "list": {
+        "rps": 35168,
+        "p50ms": 1.736,
+        "p99ms": 2.677,
+        "cores": 0.9,
+        "success": 1
+      },
+      "update": {
+        "rps": 22949,
+        "p50ms": 2.661,
+        "p99ms": 4.466,
+        "cores": 0.92,
+        "success": 1
+      },
+      "create": {
+        "rps": 21416,
+        "p50ms": 2.535,
+        "p99ms": 7.701,
+        "cores": 1.15,
+        "success": 1
+      }
+    }
+  },
+  "forge-bun": {
+    "label": "archlast-forge (NestJS path, Bun.serve)",
+    "peakMiB": 224,
+    "scenarios": {
+      "read": {
+        "rps": 37971,
+        "p50ms": 1.604,
+        "p99ms": 3.219,
+        "cores": 0.92,
+        "success": 1
+      },
+      "list": {
+        "rps": 32708,
+        "p50ms": 1.862,
+        "p99ms": 3.691,
+        "cores": 0.91,
+        "success": 1
+      },
+      "update": {
+        "rps": 27535,
+        "p50ms": 2.207,
+        "p99ms": 4.394,
+        "cores": 0.93,
+        "success": 1
+      },
+      "create": {
+        "rps": 26192,
+        "p50ms": 2.214,
+        "p99ms": 7.249,
+        "cores": 0.99,
+        "success": 1
+      }
+    }
+  },
+  "forge-notelemetry": {
+    "label": "archlast-forge (NestJS path, Tuyere, telemetry off)",
+    "peakMiB": 224,
+    "scenarios": {
+      "read": {
+        "rps": 188862,
+        "p50ms": 0.314,
+        "p99ms": 1.165,
+        "cores": 2.04,
+        "success": 1
+      },
+      "list": {
+        "rps": 147532,
+        "p50ms": 0.427,
+        "p99ms": 1.379,
+        "cores": 1.8,
+        "success": 1
+      },
+      "update": {
+        "rps": 137816,
+        "p50ms": 0.431,
+        "p99ms": 1.615,
+        "cores": 1.88,
+        "success": 1
+      },
+      "create": {
+        "rps": 122752,
+        "p50ms": 0.442,
+        "p99ms": 4.167,
+        "cores": 1.9,
+        "success": 1
+      }
+    }
+  },
+  "nest-node": {
+    "label": "NestJS on Node.js 24 (Express adapter)",
+    "peakMiB": 132,
+    "scenarios": {
+      "read": {
+        "rps": 23057,
+        "p50ms": 2.716,
+        "p99ms": 3.336,
+        "cores": 0.92,
+        "success": 1
+      },
+      "list": {
+        "rps": 20131,
+        "p50ms": 3.128,
+        "p99ms": 3.824,
+        "cores": 0.92,
+        "success": 1
+      },
+      "update": {
+        "rps": 15605,
+        "p50ms": 4.078,
+        "p99ms": 4.906,
+        "cores": 0.94,
+        "success": 1
+      },
+      "create": {
+        "rps": 16749,
+        "p50ms": 3.775,
+        "p99ms": 4.8,
+        "cores": 0.94,
+        "success": 1
+      }
+    }
+  },
+  "node": {
+    "label": "Node.js 24 (Express 5)",
+    "peakMiB": 131,
+    "scenarios": {
+      "read": {
+        "rps": 22579,
+        "p50ms": 2.793,
+        "p99ms": 3.47,
+        "cores": 0.92,
+        "success": 1
+      },
+      "list": {
+        "rps": 20528,
+        "p50ms": 3.077,
+        "p99ms": 3.838,
+        "cores": 0.92,
+        "success": 1
+      },
+      "update": {
+        "rps": 16311,
+        "p50ms": 3.849,
+        "p99ms": 4.869,
+        "cores": 0.94,
+        "success": 1
+      },
+      "create": {
+        "rps": 17282,
+        "p50ms": 3.63,
+        "p99ms": 4.695,
+        "cores": 0.94,
+        "success": 1
+      }
+    }
+  },
+  "dotnet-controllers": {
+    "label": ".NET 10 (Web API: controllers only, no middleware)",
+    "peakMiB": 83,
+    "scenarios": {
+      "read": {
+        "rps": 219569,
+        "p50ms": 0.254,
+        "p99ms": 1.091,
+        "cores": 3.22,
+        "success": 1
+      },
+      "list": {
+        "rps": 198804,
+        "p50ms": 0.3,
+        "p99ms": 0.833,
+        "cores": 3.37,
+        "success": 1
+      },
+      "update": {
+        "rps": 152267,
+        "p50ms": 0.366,
+        "p99ms": 1.312,
+        "cores": 3.28,
+        "success": 1
+      },
+      "create": {
+        "rps": 157562,
+        "p50ms": 0.346,
+        "p99ms": 1.729,
+        "cores": 3.21,
+        "success": 1
+      }
+    }
+  },
+  "dotnet-webapi": {
+    "label": ".NET 10 (Web API: controllers and middleware)",
+    "peakMiB": 101,
+    "scenarios": {
+      "read": {
+        "rps": 154646,
+        "p50ms": 0.359,
+        "p99ms": 1.417,
+        "cores": 3.3,
+        "success": 1
+      },
+      "list": {
+        "rps": 136982,
+        "p50ms": 0.411,
+        "p99ms": 1.457,
+        "cores": 3.31,
+        "success": 1
+      },
+      "update": {
+        "rps": 108280,
+        "p50ms": 0.502,
+        "p99ms": 1.832,
+        "cores": 3.3,
+        "success": 1
+      },
+      "create": {
+        "rps": 109956,
+        "p50ms": 0.48,
+        "p99ms": 2.519,
+        "cores": 3.22,
+        "success": 1
+      }
+    }
+  }
+}

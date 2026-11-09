@@ -1,0 +1,51 @@
+# Hearth: the native database layer
+
+Hearth is the engine's database layer written in Rust. It is the same `ctx.db` your functions already use (`get`, `insert`, `patch`, `query().withIndex(...)`, `paginate`, `include`, `count`, and the rest), with the document database moved out of JavaScript: each read and each write is one call into Rust, which checks the document against your schema, keeps the indexes, runs the query and hands back JSON text. Your code does not change, and neither does what a query or a mutation does.
+
+It runs SQLite (a bundled copy, in WAL mode) and is for Linux, where the engine image has it built in. Postgres and MongoDB keep the layers they have.
+
+## Turning it on
+
+```sh
+DB_ENGINE=native
+```
+
+`bun` (`bun:sqlite`, the document layer in JavaScript) is the default for a single server. A [Bellows](configuration.html#bellows-a-cluster-of-servers) cluster switches Hearth on by itself, because it is the layer made to be shared by several servers. The start-up log says which one runs:
+
+```
+database: SQLite on Hearth, the native layer (DB_ENGINE=native)
+```
+
+Asked for where it is not built (not Linux, or a checkout without `bun run build` in `packages/db`), the server does not start and says so.
+
+## What it does
+
+- **One call per operation.** A query, an insert, a patch or a delete crosses into Rust once. Results come back as JSON text, which a route can send on without parsing it (`getJson`, `firstJson`), and which a function parses once.
+- **Validation and indexes in Rust.** Documents are checked against the schema's validators and the indexes are kept in the same call. What Rust cannot vouch for (a `filter()` written in JavaScript, a validator it cannot express) goes to the JavaScript layer for that one call, which decides and words the error.
+- **Plans and caches.** Prepared statements and query plans are kept, and a read cache keeps results until a write to the table they read.
+- **Group commit.** Writes that queue up while one commits run together in one transaction, each in its own savepoint, and are answered only once the commit is done.
+- **The write-ahead log stays bounded.** A thread copies the log into the database and, past 64 MiB, briefly holds the writer so the log can restart, even under writes that never pause.
+
+## How much it costs
+
+These are the engine's own timings in Rust, with no JavaScript or HTTP (`cargo test --release bench -- --ignored --nocapture` in `packages/db/crates/napi`), on the benchmark machine:
+
+| Operation | Hearth | Raw SQLite statement |
+|---|---:|---:|
+| Read one document by an index | 1.3 µs | 0.8 µs (by `_id`) |
+| List 20 documents | 7.0 µs | |
+| Insert | 3.5 µs | 2.5 µs |
+| Patch a field | 4.0 µs | 1.8 µs (an `UPDATE`) |
+| Delete | 3.4 µs | |
+
+The difference from a bare statement is what a document database adds: parsing the stored JSON, merging, validating and the index entries. With HTTP in front, an app's routes on `ctx.db` reach about 175,000 reads, 127,000 lists and 74,000 updates a second on four cores; see [the SQLite benchmarks](benchmarks.html#the-same-api-on-sqlite).
+
+## With Bellows
+
+Several servers on one SQLite file need more than one process can give, and Hearth does it: a writer waits for the write lock without blocking its event loop and is woken when another server lets go; the write-ahead log has one keeper and every writer sees its pause; and per-table commit counters in shared memory tell each server's read cache when another server has written. Writes from all servers are serialized by SQLite's one write lock, so no update is lost.
+
+## Limits
+
+- SQLite only, and Linux.
+- The write lock is one per database file: updates do not scale with more servers the way reads do.
+- The API is the one of the JavaScript layer by design. A difference is a bug: a test runs the same operations through both layers and compares the answers.

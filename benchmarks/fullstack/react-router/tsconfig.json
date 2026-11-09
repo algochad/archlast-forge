@@ -1,0 +1,1 @@
+{ "compilerOptions": { "jsx": "react-jsx", "module": "ESNext", "moduleResolution": "bundler", "target": "ES2022", "strict": true, "skipLibCheck": true, "rootDirs": [".", "./.react-router/types"], "types": ["vite/client"] }, "include": ["app", ".react-router/types/**/*"] }

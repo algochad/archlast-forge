@@ -1,5 +1,7 @@
 import { Database } from "bun:sqlite";
 import { closeSync, fsync, openSync } from "node:fs";
+import { nativeDb } from "./native";
+import { createNativeSqliteDb } from "./sqlite-native";
 import { totalmem } from "node:os";
 import { dirname } from "node:path";
 import { ftsTable, migrateSqlite } from "./migrate";
@@ -74,14 +76,48 @@ export const sqliteDialect: Dialect = {
 // loop of the process that serves requests, so the connections here never checkpoint: a thread with its own connection does, passively
 // (it never waits for or blocks readers or the writer), once the WAL passes 32 MiB, so each hot page is copied once per 32 MiB of writes
 // rather than on every few commits.
+//
+// A passive checkpoint cannot make the WAL start over: that happens only when a write transaction begins with nothing left to copy, and a
+// writer that commits again and again always has a commit between the end of the checkpoint and its next transaction, so under writes that
+// never pause the file grew without a limit (357 MB in 3 seconds of inserts, about 6 KB each). Past 64 MiB the thread therefore tells the
+// writer to hold its next batch ("pause"), takes the write lock with a RESTART checkpoint (which copies the little that is left, as only the
+// newest version of each page is copied, and waits for the readers) and lets it go on ("resume"): the next write starts the WAL over, and
+// the file is cut back to its size limit. Reads are not held, writes wait for the length of one checkpoint (milliseconds).
 const checkpointer = (path: string) => `import { Database } from "bun:sqlite";
+import { statSync } from "node:fs";
 const db = new Database(${JSON.stringify(path)});
 db.exec("PRAGMA busy_timeout = 0");
-const checkpoint = db.query("PRAGMA wal_checkpoint(PASSIVE)");
+const passive = db.query("PRAGMA wal_checkpoint(PASSIVE)");
+const restart = db.query("PRAGMA wal_checkpoint(RESTART)");
+// statSync every time: a BunFile keeps the size it first read
+const walSize = () => {
+  try {
+    return statSync(${JSON.stringify(path + "-wal")}).size;
+  } catch {
+    return 0;
+  }
+};
+let lastLog = -1;
 setInterval(() => {
   try {
-    if (Bun.file(${JSON.stringify(path + "-wal")}).size > 32 * 1024 * 1024) checkpoint.get();
-  } catch {}
+    const size = walSize();
+    if (size <= 32 * 1024 * 1024) return;
+    const { log } = passive.get();
+    // Over the hard limit and written to since the last look (an idle database waits for its next write to start the WAL over).
+    if (size > 64 * 1024 * 1024 && log !== lastLog) {
+      postMessage("pause");
+      db.exec("PRAGMA busy_timeout = 5000");
+      try {
+        restart.get();
+      } finally {
+        db.exec("PRAGMA busy_timeout = 0");
+        postMessage("resume");
+      }
+    }
+    lastLog = log;
+  } catch {
+    postMessage("resume");
+  }
 }, 250);`;
 
 /**
@@ -166,6 +202,16 @@ export function sqliteMemory(ram: number, connections: number) {
  * itself stays consistent). It is for data that can be lost, like telemetry.
  */
 export function createSqliteDb(path: string, readers = 4, ram?: number, synchronous: "FULL" | "NORMAL" = "FULL"): Db {
+  // DB_ENGINE=native in the environment moves every file database onto the native engine, the tests' included (the server asks for it through open.ts).
+  if (path !== ":memory:" && process.env.DB_ENGINE === "native") {
+    const native = nativeDb();
+    if (native) return createNativeSqliteDb(path, native, readers, ram, synchronous);
+  }
+  return createBunSqliteDb(path, readers, ram, synchronous);
+}
+
+/** SQLite on bun:sqlite: the JavaScript DocStore over it, with the JavaScript read cache. */
+export function createBunSqliteDb(path: string, readers = 4, ram?: number, synchronous: "FULL" | "NORMAL" = "FULL"): Db {
   const memory = path === ":memory:";
   const syncer = !memory && synchronous === "FULL" ? new WalSyncer(path + "-wal", path) : undefined;
   const sized = ram && !memory ? sqliteMemory(ram, readers + 1) : undefined;
@@ -193,10 +239,17 @@ export function createSqliteDb(path: string, readers = 4, ram?: number, synchron
       });
   const waiting: ((c: Database) => void)[] = [];
   let checkpointThread: Worker | undefined;
+  /** The checkpoint thread is restarting the WAL (see `checkpointer`): the writer starts no batch until it is done. */
+  let paused = false;
+  let wake: (() => void) | undefined;
   // The path is part of the script, not a message: a message sent before the thread has loaded can be lost, and then nothing ever checkpoints.
   if (!memory) {
     checkpointThread = new Worker(URL.createObjectURL(new Blob([checkpointer(path)], { type: "application/javascript" })));
     (checkpointThread as unknown as { unref(): void }).unref();
+    checkpointThread.onmessage = (e: MessageEvent) => {
+      if (e.data === "pause") paused = true;
+      else if (e.data === "resume") (paused = false), wake?.();
+    };
   }
 
   // Group commit. Write transactions run one at a time on the writer, but those that queue up meanwhile run back to back in one SQLite
@@ -239,6 +292,15 @@ export function createSqliteDb(path: string, readers = 4, ram?: number, synchron
   async function drain() {
     try {
       while (queue.length) {
+        if (paused) {
+          // Waits for "resume"; a thread that died or a restart that hangs cannot hold the writes for more than 6 s.
+          await new Promise<void>((resolve) => {
+            const timer = setTimeout(() => ((paused = false), resolve()), 6000);
+            wake = () => (clearTimeout(timer), resolve());
+          });
+          wake = undefined;
+          continue;
+        }
         if (queue[0]!.exclusive) {
           const job = queue.shift()!;
           const tx = scopedTx(txOf(writer));

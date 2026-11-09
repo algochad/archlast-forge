@@ -1,7 +1,9 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
-import { basename, join, resolve } from "node:path";
+import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { brotliCompressSync, gzipSync } from "node:zlib";
+import { classifyApp, type ComponentReport } from "./classify";
 import { generate } from "./generate";
+import { compileApp, moduleSource, type AppTemplates } from "./render-compile";
 import { scanRoutes } from "./routes";
 
 export interface BuildManifest {
@@ -14,6 +16,13 @@ export interface BuildManifest {
   routes: Record<string, string[]>;
   /** The server bundle, relative to the build directory. */
   server: string;
+  /**
+   * Present when pages are rendered with islands (see classify.ts): the browser entry that hydrates them, the files to preload with it, and the routes
+   * (ids) that can be rendered that way. A page whose routes are not all in `routes` is rendered and hydrated as a whole, as without islands.
+   */
+  islands?: { entry: string; nav: string; preload: string[]; routes: string[] };
+  /** Routes whose pages the engine can print from a template (see render-compile.ts), and why the others cannot. */
+  templates?: { routes: string[]; reasons: Record<string, string> };
 }
 
 export interface BuildResult {
@@ -53,6 +62,59 @@ async function tailwind(root: string): Promise<Bun.BunPlugin[]> {
   return [(await import(path)).default];
 }
 
+/** Whether app/root.tsx says `export const islands = true`. */
+function optsIn(appDir: string, rootFile: string | undefined): boolean {
+  if (!rootFile) return false;
+  try {
+    return /^export\s+const\s+islands\s*=\s*true\b/m.test(readFileSync(join(appDir, rootFile), "utf8"));
+  } catch {
+    return false;
+  }
+}
+
+/** The id of an island in the page: its file below app/ and the name it is exported under. */
+const islandId = (appDir: string, m: ComponentReport) => `${relative(appDir, m.file).split(sep).join("/")}#${m.exportName}`;
+
+/**
+ * Server bundles see each island's file through a wrapper module that exports the same names, the islands marked (island.tsx). The browser bundle
+ * imports the files as they are.
+ */
+const WRAPPED = "?forge-island";
+
+function islandWrappers(appDir: string, mounts: ComponentReport[]): Bun.BunPlugin {
+  const byFile = new Map<string, ComponentReport[]>();
+  for (const m of mounts) byFile.set(m.file, [...(byFile.get(m.file) ?? []), m]);
+  return {
+    name: "forge-islands",
+    setup(b) {
+      b.onResolve({ filter: /.*/ }, (args) => {
+        if (args.namespace === "forge-island" || args.kind === "entry-point-build" || !args.importer) return undefined;
+        let file: string;
+        try {
+          file = Bun.resolveSync(args.path, args.resolveDir || dirname(args.importer));
+        } catch {
+          return undefined;
+        }
+        // The wrapper's own import is for the file itself.
+        if (args.importer.endsWith(WRAPPED)) return undefined;
+        // A different path from the file's: the bundler would take a module of that path in another namespace for the same module.
+        return byFile.has(file) ? { path: file + WRAPPED, namespace: "forge-island" } : undefined;
+      });
+      b.onLoad({ filter: /.*/, namespace: "forge-island" }, (args) => {
+        const path = args.path.slice(0, -WRAPPED.length);
+        const file = JSON.stringify(path);
+        const lines = [`import { island } from "@archlast/forge-framework/island";`, `export * from ${file};`];
+        // Under other names than the exports', so the bundler does not take the wrapper for the thing it wraps.
+        (byFile.get(path) ?? []).forEach((m, i) => {
+          const id = JSON.stringify(islandId(appDir, m));
+          lines.push(`import { ${m.exportName} as original${i} } from ${file};`, `const wrapped${i} = island(original${i}, ${id});`, m.exportName === "default" ? `export default wrapped${i};` : `export { wrapped${i} as ${m.exportName} };`);
+        });
+        return { contents: lines.join("\n"), loader: "js", resolveDir: dirname(path) };
+      });
+    },
+  };
+}
+
 const flat = (p: string) => p.replace(/^\.\//, "");
 
 const buildDirOf = (root: string) => join(root, ".forge", "build");
@@ -81,7 +143,7 @@ function precompress(clientDir: string) {
  * Bundles app/ twice: for the browser (split per route, hashed) and for the server (one file, packages left external).
  * Output goes to <root>/.forge/build/<version>; `latest.json` points at the newest. Throws BuildError.
  */
-export async function buildApp(o: { root: string; dev: boolean }): Promise<BuildResult> {
+export async function buildApp(o: { root: string; dev: boolean; islands?: boolean }): Promise<BuildResult> {
   const root = resolve(o.root);
   const { dev } = o;
   const appDir = join(root, "app");
@@ -94,13 +156,58 @@ export async function buildApp(o: { root: string; dev: boolean }): Promise<Build
   }
   const gen = generate(root, tree);
 
+  // Islands: only when the root layout and document can be left unhydrated (see classify.ts); otherwise the app is rendered as it always was.
+  let mounts: ComponentReport[] = [];
+  // Islands are on when the app allows it, even with no island in it: its pages then carry only the navigation script.
+  let islandsOn = false;
+  let templates: AppTemplates | undefined;
+  let islandRoutes: string[] = [];
+  // On when asked for: the option, FORGE_ISLANDS=1 (0 turns it off), or `export const islands = true` in app/root.tsx.
+  const wantIslands = o.islands ?? (process.env.FORGE_ISLANDS ? process.env.FORGE_ISLANDS === "1" : optsIn(appDir, tree.root));
+  if (wantIslands) {
+    const report = classifyApp(root);
+    const layout = tree.root ? report.components.find((c) => c.name === "Layout" && c.file === join(appDir, tree.root!)) : undefined;
+    const why = !report.root
+      ? undefined
+      : report.root.tier !== "page"
+        ? `the root layout (app/root.tsx) is ${report.root.tier === "island" ? "an island" : "a fallback"}: ${report.components.find((c) => c.name === report.root!.component)?.reasons[0] ?? ""}`
+        : report.root.notes.includes("exports authPlugins")
+          ? "app/root.tsx exports authPlugins, which islands do not load yet"
+          : layout && layout.tier !== "page"
+            ? "the document (Layout in app/root.tsx) is interactive"
+            : undefined;
+    if (why) console.log(`[archlast-forge] islands are off: ${why}`);
+    else {
+      mounts = report.mounts;
+      islandsOn = true;
+      if (process.env.FORGE_TEMPLATES !== "0") templates = compileApp(root, appDir, tree, (id) => (id === "root" ? report.root?.tier : report.routes.find((r) => r.id === id)?.tier));
+      islandRoutes = report.routes.filter((r) => r.tier !== "fallback").map((r) => r.id);
+    }
+  }
+  writeFileSync(join(gen, "render.server.ts"), moduleSource(gen, templates?.compiled ?? new Map()));
+  const appRoot = join(root, "app");
+  if (islandsOn) {
+    writeFileSync(
+      join(gen, "islands.client.ts"),
+      `// Generated by archlast-forge. Don't edit.
+import { startIslands } from "@archlast/forge-framework/islands";
+
+startIslands({
+${mounts.map((m) => `  ${JSON.stringify(islandId(appRoot, m))}: () => import(${JSON.stringify(relative(gen, m.file).split(sep).join("/").replace(/\.(tsx|ts|jsx|js)$/, ""))}).then((m) => m.${m.exportName === "default" ? "default" : m.exportName}),`).join("\n")}
+});
+`,
+    );
+  }
+
   const version = Date.now().toString(36);
   const dir = join(buildDirOf(root), version);
-  const common = { root, publicPath: "/_app/", sourcemap: dev ? ("linked" as const) : ("none" as const), drop: dev ? [] : ["debugger"], throw: false };
+  // `jsx.development` is the build's own say: Bun otherwise follows NODE_ENV of the shell that builds, and a production build made in a shell without it calls
+  // the development JSX runtime, which React's production build does not have ("jsxDEV is not a function" on every page).
+  const common = { root, publicPath: "/_app/", jsx: { development: dev }, sourcemap: dev ? ("linked" as const) : ("none" as const), drop: dev ? [] : ["debugger"], throw: false };
 
   const client = await Bun.build({
     ...common,
-    entrypoints: [join(gen, "entry.client.tsx")],
+    entrypoints: [join(gen, "entry.client.tsx"), ...(islandsOn ? [join(gen, "islands.client.ts"), join(import.meta.dir, existsSync(join(import.meta.dir, "nav.ts")) ? "nav.ts" : "nav.js")] : [])],
     outdir: join(dir, "client"),
     target: "browser",
     splitting: true,
@@ -122,13 +229,14 @@ export async function buildApp(o: { root: string; dev: boolean }): Promise<Build
     target: "bun",
     packages: "external",
     naming: "[name]-[hash].[ext]",
-    plugins: [ignoreStyles],
+    plugins: [ignoreStyles, ...(islandsOn ? [islandWrappers(appRoot, mounts)] : [])],
   });
   if (!server.success) throw new BuildError(`The server bundle failed to build:\n\n${messageOf(server.logs)}`);
 
   const meta = (client as unknown as { metafile: Meta }).metafile;
   const byName = new Map(Object.entries(meta.outputs).map(([path, info]) => [flat(path), info]));
-  const entryOut = client.outputs.find((a) => a.kind === "entry-point");
+  const entryOf = (name: string) => client.outputs.find((a) => a.kind === "entry-point" && basename(a.path).startsWith(`${name}-`));
+  const entryOut = entryOf("entry.client");
   if (!entryOut) throw new BuildError("The browser bundle has no entry point");
   const entry = basename(entryOut.path);
 
@@ -153,7 +261,17 @@ export async function buildApp(o: { root: string; dev: boolean }): Promise<Build
   const serverOut = server.outputs.find((a) => a.kind === "entry-point");
   if (!serverOut) throw new BuildError("The server bundle has no entry point");
 
-  const manifest: BuildManifest = { version, dev, entry, css, routes, server: `server/${basename(serverOut.path)}` };
+  const islandsOut = islandsOn ? entryOf("islands.client") : undefined;
+  const manifest: BuildManifest = {
+    version,
+    dev,
+    entry,
+    css,
+    routes,
+    server: `server/${basename(serverOut.path)}`,
+    ...(templates && { templates: { routes: [...templates.compiled.keys()], reasons: Object.fromEntries(templates.reasons) } }),
+    ...(islandsOut && { islands: { entry: basename(islandsOut.path), nav: basename(entryOf("nav")!.path), preload: [...preload(basename(islandsOut.path))], routes: islandRoutes } }),
+  };
   writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2));
   mkdirSync(buildDirOf(root), { recursive: true });
   writeFileSync(join(buildDirOf(root), "latest.json"), JSON.stringify({ version }));

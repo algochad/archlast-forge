@@ -22,6 +22,10 @@ export interface SerializedResponse {
 export interface HttpRequestMessage {
   method: string;
   url: string;
+  /** The path of `url` and its query string, when the sender has them already (the receiver skips parsing the URL for them). */
+  path?: string;
+  search?: string;
+  /** May be a getter that decodes them when first read (a request handed to a runtime in the same process). */
   headers: [string, string][];
   body?: ArrayBuffer;
 }
@@ -30,11 +34,13 @@ export interface HttpResponseMessage {
   status: number;
   headers: [string, string][];
   /** A stream for a response that is sent as it is written (`stream`): across IPC its bytes follow as `chunk` messages. */
-  body: ArrayBuffer | ReadableStream<Uint8Array>;
+  body: ArrayBuffer | Uint8Array | string | ReadableStream<Uint8Array>;
   stream?: true;
   telemetry?: CallTelemetry;
   /** The answer is a Nest controller's (`nest(http, ...)`): the server gives it the REST API's security headers. */
   nest?: true;
+  /** The route that answered (`/items/:id`), for an answer that is not traced, which has no `http.route` attribute: the request is named by it, not by its path with ids replaced. */
+  route?: string;
 }
 
 /** Server → function runtime, with no answer: the sockets of Nest gateways and GraphQL subscriptions under /http. */
@@ -47,7 +53,9 @@ export type HostEvent =
   /** A PubSub event from one worker, for every worker (createPubSub in @archlast/forge-runtime/nest). */
   | { t: "relay"; topic: string; payload: unknown }
   /** The pool changed size: a process keeps a read cache only while it is the database's one writer. */
-  | { t: "pool"; workers: number };
+  | { t: "pool"; workers: number }
+  /** Another process (a runtime process of this server, or another server) let go of the database's write lock: a writer that waits for it may try now. */
+  | { t: "unlock" };
 
 /** Function runtime → server: what a gateway sends to one of those sockets, or that it closes it. */
 export type SocketMessage = { t: "ws"; op: "send"; sid: string; data: string | ArrayBuffer } | { t: "ws"; op: "close"; sid: string; code?: number; reason?: string };
@@ -89,6 +97,8 @@ export type RuntimeMessage =
   | { t: "log"; entry: LogEntry }
   | { t: "chunk"; id: number; data?: ArrayBuffer; end?: true; error?: string }
   | { t: "relay"; topic: string; payload: unknown }
+  /** This process let go of the database's write lock (a commit): the others that share the file are told. */
+  | { t: "unlock" }
   /** A trace the runtime started itself (a scheduled job), finished. */
   | { t: "trace"; trace: TraceRecord }
   /** Custom metrics recorded since the last of these, as they stand now. */

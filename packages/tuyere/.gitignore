@@ -1,0 +1,10 @@
+target/
+node_modules/
+native/
+bench/logs-*.txt
+bench/*.out
+bench/status*.txt
+bench/spike/
+bench/client/target/
+*.log
+bench/container/forge/

@@ -1,9 +1,13 @@
+import type { NativeEngine, NativeHandle } from "./native";
+
 export type Row = Record<string, any>;
 
 export interface DbTx {
   /** `?` placeholders in both dialects; adapters rewrite them as needed. */
   query<T = Row>(sql: string, params?: unknown[]): Promise<T[]>;
   execute(sql: string, params?: unknown[]): Promise<void>;
+  /** On the native engine, which keeps the documents and answers the DocStore's operations itself: this transaction, as it knows it. */
+  native?: NativeHandle;
   /** On MongoDB, which has no SQL: what DocStore does with documents, as operations. The SQL adapters leave it out. */
   mongo?: MongoOps;
 }
@@ -89,6 +93,9 @@ export interface Dialect {
 
 export interface TableSpec {
   name: string;
+  /** The fields' validators (plain data) and whether the table checks writes: the native engine validates with them. */
+  fields?: Record<string, unknown>;
+  strict?: boolean;
   indexes: Record<string, readonly string[]>;
   searchIndexes?: Record<string, { searchField: string; filterFields: readonly string[] }>;
 }
@@ -109,6 +116,8 @@ export interface NumberStats {
 }
 
 export interface TransactionOptions {
+  /** A read that may be answered from the read cache (the native engine's): the last tries of a read that keeps being moved go straight to the database. */
+  cached?: boolean;
   /**
    * The function may be run more than once: it is deterministic and does nothing outside the database (a query is). A read may then start
    * without a transaction and be run again inside one if it needs a snapshot; MongoDB does the same for a write that fits one document (see
@@ -119,6 +128,8 @@ export interface TransactionOptions {
 
 export interface Db extends DbTx {
   readonly dialect: Dialect;
+  /** The native engine, where this database is one. */
+  readonly engine?: NativeEngine;
   /** Read transactions see one consistent snapshot; write transactions are serializable and may be retried. */
   transaction<T>(mode: "read" | "write", fn: (tx: DbTx) => Promise<T>, options?: TransactionOptions): Promise<T>;
   /** Creates document tables and syncs their indexes. Documents are JSON, so fields need no migration. */
@@ -151,7 +162,11 @@ export function scopedTx(tx: DbTx): DbTx & { end(): void } {
   return {
     query: (sql, params) => (check(), tx.query(sql, params)),
     execute: (sql, params) => (check(), tx.execute(sql, params)),
+    ...(tx.native && { native: tx.native }),
     ...(mongo && { mongo }),
-    end: () => (open = false),
+    end: () => {
+      open = false;
+      tx.native?.revoke(); // a function that kept using the database after it ended must not reach a transaction of someone else
+    },
   };
 }

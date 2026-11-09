@@ -45,6 +45,7 @@ export {
   defineAuth,
   getFunctionName,
   httpAction,
+  minimalAction,
   httpRouter,
   internalAction,
   internalMutation,
@@ -63,6 +64,7 @@ export {
   type FunctionReference,
   type FunctionReturn,
   type HttpAction,
+  type HttpCtx,
   type HttpMethod,
   type HttpRouterOptions,
   type HelmetConfig,
@@ -81,3 +83,5 @@ export {
   type UserIdentity,
   type Visibility,
 } from "./functions";
+
+export { minimalJson, minimalRaw, minimalText, MinimalResponse, type MinimalRequest } from "./server/minimal";

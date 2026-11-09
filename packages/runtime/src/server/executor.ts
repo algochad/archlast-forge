@@ -1,13 +1,15 @@
 import { SnapshotMoved, type ReadCache } from "./read-cache";
+import { MinimalResponse, type MinimalRequest } from "./minimal";
 import { isForgeError, TimeoutError } from "../errors";
-import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, type RegisteredFunction, type UserIdentity } from "../functions";
+import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, type HttpCtx, type RegisteredFunction, type UserIdentity } from "../functions";
 import { validate, validateFields, ValidationError } from "../values";
 import type { Limits } from "./config";
 import { isRetryableConflict, type Db, type DbTx } from "./db/types";
+import { NativeStore } from "./native-store";
 import { DocStore, RESET_TOPIC, type TablesSpec } from "./docstore";
 import { cancelScheduled, schedule } from "./scheduler";
 import type { Storage } from "./storage";
-import { inSpan, logContext, telemetryOf, traced, tracedTx, type CallTelemetry, type TraceParent } from "./telemetry/context";
+import { activeCall, inSpan, logContext, telemetryOf, traced, tracedTx, type CallTelemetry, type TraceParent } from "./telemetry/context";
 
 export { logContext };
 
@@ -115,14 +117,154 @@ function checkReturn<T>(fn: RegisteredFunction, value: T): T {
 }
 
 /** Rejects after `ms`. The handler may keep running; its transaction handle refuses further use once the call ends. */
+/**
+ * An action's `ctx`. Making its storage, scheduler and `run*` functions for every call costs more than most handlers (an HTTP route that answers from memory)
+ * use of them, so they are made the first time one is read.
+ */
+/** What a caller that sends the answer itself makes of it (`ok`), and of a failure (`fail`): see `runHttpAnonymous`. */
+export interface HttpFinish {
+  ok(message: any): unknown;
+  fail(error: unknown): unknown;
+}
+/** `finish.ok` of an answer that may be a promise of one. */
+const finished = (finish: HttpFinish, out: unknown) => (out instanceof Promise ? out.then((m) => finish.ok(m), (e) => finish.fail(e)) : finish.ok(out));
+
+const routeOf = (ctx: LazyActionCtx) => ((ctx as unknown as Record<symbol, unknown>)[ROUTE] as string | null | undefined) ?? undefined;
+
+/** Where an untraced HTTP call's handler may leave the route it matched (Nest's controller route): the call has no trace to annotate. null: asked for; a string: given. */
+export const ROUTE = Symbol.for("archlast-forge.route");
+
+class LazyActionCtx {
+  private parts?: ReturnType<Executor["actionCtxParts"]>;
+  private readFn?: ReturnType<Executor["ctxRead"]>;
+  private writeFn?: ReturnType<Executor["ctxWrite"]>;
+  constructor(
+    private readonly exec: Executor,
+    readonly auth: { getUserIdentity(): Promise<UserIdentity | null> },
+    private readonly identity: UserIdentity | null,
+    private readonly requestId: string | undefined,
+  ) {}
+  private get p() {
+    return (this.parts ??= this.exec.actionCtxParts(this.identity, this.requestId));
+  }
+  get storage() {
+    return this.p.storage;
+  }
+  get scheduler() {
+    return this.p.scheduler;
+  }
+  get runQuery() {
+    return this.p.runQuery;
+  }
+  get runMutation() {
+    return this.p.runMutation;
+  }
+  get runAction() {
+    return this.p.runAction;
+  }
+  // `ctx.read` and `ctx.write` of a route are most of what a database route uses: they do not make the rest of the ctx.
+  get read() {
+    return (this.readFn ??= this.exec.ctxRead(this.identity));
+  }
+  get write() {
+    return (this.writeFn ??= this.exec.ctxWrite(this.identity));
+  }
+}
+
+/** The ctx a `ctx.read` function is given: the database and the caller at once, and the storage only if it is used. */
+class ReadCtx {
+  constructor(
+    readonly db: unknown,
+    readonly auth: { getUserIdentity(): Promise<UserIdentity | null> },
+    private readonly exec: Executor,
+    private readonly store: DocStore,
+  ) {}
+  get storage() {
+    return this.exec.storage(this.store);
+  }
+}
+
+/** The same for `ctx.write`: the storage and the scheduler are made when used. */
+class WriteCtx {
+  constructor(
+    readonly db: unknown,
+    readonly auth: { getUserIdentity(): Promise<UserIdentity | null> },
+    private readonly exec: Executor,
+    private readonly store: DocStore,
+    private readonly tx: DbTx,
+    private readonly after: AfterCommit,
+  ) {}
+  get storage() {
+    return this.exec.storage(this.store, this.after);
+  }
+  get scheduler() {
+    const { exec, tx } = this;
+    return exec.schedulerOf(tx);
+  }
+}
+
+/**
+ * Time limits for calls. Every call has one and almost none reaches it, so a timer made and cleared for each is most of what a limit costs: calls with the same
+ * limit wait in a list in the order their deadlines fall, and one timer per list is set for its first.
+ */
+class Deadlines {
+  private lists = new Map<number, { head?: Node; tail?: Node; timer?: Timer }>();
+
+  add(ms: number, fire: () => void): Node {
+    let list = this.lists.get(ms);
+    if (!list) this.lists.set(ms, (list = {}));
+    const node: Node = { at: performance.now() + ms, fire, list, ms };
+    if (list.tail) (list.tail.next = node), (node.prev = list.tail);
+    else list.head = node;
+    list.tail = node;
+    if (!list.timer) list.timer = setTimeout(() => this.tick(ms, list!), ms);
+    return node;
+  }
+
+  remove(node: Node) {
+    if (node.done) return;
+    node.done = true;
+    const list = node.list;
+    if (node.prev) node.prev.next = node.next;
+    else list.head = node.next;
+    if (node.next) node.next.prev = node.prev;
+    else list.tail = node.prev;
+    if (!list.head && list.timer) (clearTimeout(list.timer), (list.timer = undefined));
+  }
+
+  private tick(ms: number, list: { head?: Node; tail?: Node; timer?: Timer }) {
+    list.timer = undefined;
+    const now = performance.now();
+    while (list.head && list.head.at <= now) {
+      const node = list.head;
+      this.remove(node);
+      node.fire();
+    }
+    if (list.head) list.timer = setTimeout(() => this.tick(ms, list), Math.max(1, list.head.at - now));
+  }
+}
+interface Node {
+  at: number;
+  fire: () => void;
+  list: { head?: Node; tail?: Node; timer?: Timer };
+  ms: number;
+  prev?: Node;
+  next?: Node;
+  done?: boolean;
+}
+const deadlines = new Deadlines();
+
+/** The `ctx.auth` of a call with no caller. */
+const ANONYMOUS = { getUserIdentity: async (): Promise<UserIdentity | null> => null };
+
 function withTimeout<T>(promise: Promise<T>, ms: number, name: string): Promise<T> {
-  let timer: Timer;
-  return Promise.race([
-    promise,
-    new Promise<never>((_, reject) => {
-      timer = setTimeout(() => reject(new TimeoutError(`${name} timed out after ${ms} ms`)), ms);
-    }),
-  ]).finally(() => clearTimeout(timer));
+  return new Promise<T>((resolve, reject) => {
+    const node = deadlines.add(ms, () => reject(new TimeoutError(`${name} timed out after ${ms} ms`)));
+    promise.then(
+      (value) => (deadlines.remove(node), resolve(value)),
+      (error) => (deadlines.remove(node), reject(error)),
+    );
+  });
 }
 
 export interface RunOptions {
@@ -150,14 +292,18 @@ export class Executor {
   /** Replaces the read cache (undefined turns it off): a transaction already running keeps the one it started with. */
   setReadCache(cache?: ReadCache) {
     this.o.readCache = cache;
+    this.o.db.engine?.setCache(cache !== undefined); // the native engine keeps its own cache: the object is only the switch
   }
 
   constructor(private o: ExecutorOptions) {
     this.limits = o.limits ?? { functionTimeoutMs: 10_000, actionTimeoutMs: 600_000, maxResultBytes: 8 << 20, maxDocumentBytes: 1 << 20 };
+    this.o.db.engine?.setCache(o.readCache !== undefined);
   }
 
   private store(tx: DbTx, writes?: Set<string>, cached = true) {
-    return new DocStore(tracedTx(tx, this.system), this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes, cached ? this.o.readCache : undefined, this.o.devWarn);
+    // On the native engine the cache is the engine's (a transaction says whether it may use it); a store there is given none of its own.
+    const Store = tx.native ? NativeStore : DocStore;
+    return new Store(tracedTx(tx, this.system), this.o.db.dialect, this.o.tables, new Set(), writes, this.limits.maxDocumentBytes, cached && !this.o.db.engine ? this.o.readCache : undefined, this.o.devWarn);
   }
 
   /** OpenTelemetry's name for the database, on db spans. */
@@ -173,9 +319,10 @@ export class Executor {
           "read",
           async (tx) => {
             const store = this.store(tx, undefined, attempt < 3); // the last tries go straight to the database
-            return { value: await fn(store, tx), reads: store.reads };
+            const value = await fn(store, tx);
+            return { value, reads: store.reads }; // (the native engine adds what it tracked when the transaction ends, just after this)
           },
-          { rerunnable: true }, // a query is deterministic and writes nothing, so a database may run it again where that is cheaper than a transaction
+          { rerunnable: true, cached: attempt < 3 }, // a query is deterministic and writes nothing, so a database may run it again where that is cheaper than a transaction
         );
       } catch (e) {
         if (!(e instanceof SnapshotMoved)) throw e;
@@ -194,6 +341,7 @@ export class Executor {
     } finally {
       for (const t of store?.writing ?? []) this.o.readCache?.settled(t, []);
       this.o.readCache?.clear();
+      this.o.db.engine?.clearCache();
       this.o.publish([RESET_TOPIC]);
     }
   }
@@ -231,7 +379,7 @@ export class Executor {
           // benchmark's 99th percentile five times longer at the same throughput.
           value = attempt > 1 && this.o.db.serializeRetries ? await this.retrying(run) : await run();
         } finally {
-          // Committed or rolled back: the tables it wrote can be read and cached again.
+          // Committed or rolled back: the tables it wrote can be read and cached again (the native engine settles its own cache when the transaction ends, before this).
           for (const t of store?.writing ?? []) this.o.readCache?.settled(t, writes);
         }
         if (writes.size) this.o.publish([...writes]);
@@ -265,7 +413,7 @@ export class Executor {
 
   /** Notes who a traced call runs as. */
   ranAs(identity: UserIdentity | null) {
-    const trace = logContext.getStore()?.trace;
+    const trace = activeCall()?.trace;
     if (trace && identity) trace.user = { id: identity.userId, ...((identity.email ?? identity.name) && { name: String(identity.email ?? identity.name) }) };
   }
 
@@ -344,15 +492,85 @@ export class Executor {
   }
 
   /** Runs an HTTP action. The caller is resolved from the request's cookie or authorization header, and is anonymous without one. */
-  async runHttp(name: string, action: HttpAction, req: Request, headers: CallHeaders, requestId?: string): Promise<Response> {
-    const identity = await this.identityOf(headers);
+  async runHttp(name: string, action: HttpAction, req: Request | MinimalRequest, headers: CallHeaders, requestId?: string, routeOut?: { route?: string }): Promise<Response | MinimalResponse> {
+    // Anonymous (no cookie, no authorization header) is known without waiting for anything
+    const identity = headers.cookie || headers.authorization ? await this.resolveIdentity(headers) : null;
     this.ranAs(identity);
     const auth = { getUserIdentity: async () => identity };
-    const res = await this.logged(name, requestId, undefined, () =>
-      withTimeout(Promise.resolve(action.handler(this.actionCtx(auth, identity, requestId) as unknown as ActionCtx, req)), this.limits.actionTimeoutMs, name),
-    );
-    if (!(res instanceof Response)) throw new Error(`${name} must return a Response`);
-    return res;
+    const ctx = this.actionCtx(auth, identity, requestId);
+    if (routeOut) (ctx as unknown as Record<symbol, unknown>)[ROUTE] = null; // an untraced call: the handler may leave its route here
+    const res: unknown = await this.logged(name, requestId, undefined, () => withTimeout(Promise.resolve(action.handler(ctx as unknown as HttpCtx, req as Request)), this.limits.actionTimeoutMs, name));
+    if (routeOut) routeOut.route = routeOf(ctx);
+    if (!(res instanceof Response) && !(res instanceof MinimalResponse)) throw new Error(`${name} must return a Response`);
+    return res as Response | MinimalResponse;
+  }
+
+  /**
+   * `runHttp` for a caller with no cookie or authorization header and no trace to record: the answer comes back without a promise when the handler's does not
+   * (a handler that waits for something is given its time limit as before). Everything else `runHttp` does is done in the same order.
+   */
+  runHttpAnonymous<R, T>(
+    name: string,
+    action: HttpAction,
+    req: Request | MinimalRequest,
+    requestId: string | undefined,
+    answer: (route: R, res: Response | MinimalResponse, telemetry: undefined, named?: string) => T,
+    route: R,
+    finish?: HttpFinish,
+  ): any {
+    const start = performance.now();
+    let res: unknown;
+    let ctx: LazyActionCtx;
+    try {
+      ctx = new LazyActionCtx(this, ANONYMOUS, null, requestId);
+      (ctx as unknown as Record<symbol, unknown>)[ROUTE] = null;
+      res = logContext.run({ name, requestId, logs: undefined, trace: undefined, spanId: undefined }, () => action.handler(ctx as unknown as HttpCtx, req as Request));
+    } catch (e) {
+      this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
+      throw e;
+    }
+    if (res && typeof (res as PromiseLike<unknown>).then === "function") {
+      // One promise for the wait: the answer, the call's log line and the time limit are settled in the one step that sees the handler's result. With `finish`, that step also
+      // makes what the caller sends, and a failure is answered by it too, so the caller has no promise of its own to wait on.
+      return new Promise<unknown>((resolve, reject) => {
+        const fail = (e: unknown) => (finish ? resolve(finish.fail(e)) : reject(e));
+        const node = deadlines.add(this.limits.actionTimeoutMs, () => {
+          this.logCall(name, requestId, start, undefined, false, `${name} timed out after ${this.limits.actionTimeoutMs} ms`);
+          fail(new TimeoutError(`${name} timed out after ${this.limits.actionTimeoutMs} ms`));
+        });
+        (res as PromiseLike<unknown>).then(
+          (value) => {
+            if (node.done) return; // the time limit came first
+            deadlines.remove(node);
+            let out: unknown;
+            try {
+              out = answer(route, this.httpResult(name, value), undefined, routeOf(ctx));
+            } catch (e) {
+              this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
+              fail(e);
+              return;
+            }
+            this.logCall(name, requestId, start, undefined, true, "ok");
+            resolve(finish ? finished(finish, out) : out);
+          },
+          (e) => {
+            if (node.done) return;
+            deadlines.remove(node);
+            this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
+            fail(e);
+          },
+        );
+      });
+    }
+    const checked = this.httpResult(name, res);
+    this.logCall(name, requestId, start, undefined, true, "ok");
+    const out = answer(route, checked, undefined, routeOf(ctx));
+    return finish ? finished(finish, out) : out;
+  }
+
+  private httpResult(name: string, res: unknown): Response | MinimalResponse {
+    if (!(res instanceof Response) && !(res instanceof MinimalResponse)) throw new Error(`${name} must return a Response`);
+    return res as Response | MinimalResponse;
   }
 
   /** A function's time limit, for mutations run outside `call` (the scheduler). */
@@ -377,22 +595,24 @@ export class Executor {
   /** `access`: the check of a query that declares one, which is logged only when it refuses, and is a span of its own. */
   async logged<T>(name: string, requestId: string | undefined, logs: ConsoleLine[] | undefined, fn: () => Promise<T>, access = false): Promise<T> {
     const start = performance.now();
-    const outer = logContext.getStore();
-    const entry = (ok: boolean, message: string) =>
-      (!access || !ok) &&
-      this.o.log({ time: Date.now(), name, level: "call", message, ok, requestId, durationMs: Math.round((performance.now() - start) * 10) / 10, traceId: outer?.trace?.traceId });
+    const outer = activeCall();
     const context = { name, requestId, logs, trace: outer?.trace, spanId: outer?.spanId };
     try {
       // A traced call is a span, and what it does nests under it; the module is its namespace on the time-by-code view.
       const out = context.trace
         ? await logContext.run(context, () => inSpan(access ? `${name} (access)` : name, "function", attrsOfFunction(name), fn, 1))
         : await logContext.run(context, fn);
-      entry(true, "ok");
+      if (!access) this.logCall(name, requestId, start, outer?.trace?.traceId, true, "ok");
       return out;
     } catch (e) {
-      entry(false, (e as Error)?.message ?? String(e));
+      this.logCall(name, requestId, start, outer?.trace?.traceId, false, (e as Error)?.message ?? String(e));
       throw e;
     }
+  }
+
+  /** The log line for one call (its name, whether it worked and how long it took). */
+  private logCall(name: string, requestId: string | undefined, start: number, traceId: string | undefined, ok: boolean, message: string) {
+    this.o.log({ time: Date.now(), name, level: "call", message, ok, requestId, durationMs: Math.round((performance.now() - start) * 10) / 10, traceId });
   }
 
   private s3(): Storage {
@@ -425,9 +645,37 @@ export class Executor {
   }
 
   actionCtx(auth: { getUserIdentity(): Promise<UserIdentity | null> }, identity: UserIdentity | null, requestId?: string) {
+    return new LazyActionCtx(this, auth, identity, requestId);
+  }
+
+  /** `ctx.read` of a route: a read transaction around `fn`, which is given the database, the caller and the storage. */
+  ctxRead(identity: UserIdentity | null) {
+    const auth = { getUserIdentity: async () => identity };
+    return async (fn: (ctx: any) => unknown) => {
+      const { value } = await this.read((store) => withTimeout(Promise.resolve(fn(new ReadCtx(store.reader(), auth, this, store))), this.limits.functionTimeoutMs, "ctx.read"));
+      return value;
+    };
+  }
+
+  /** `ctx.write` of a route: a write transaction (topics are published after the commit) around `fn`. */
+  ctxWrite(identity: UserIdentity | null) {
+    const auth = { getUserIdentity: async () => identity };
+    return (fn: (ctx: any) => unknown) =>
+      this.mutate((store, tx, after) => withTimeout(Promise.resolve(fn(new WriteCtx(store.writer(), auth, this, store, tx, after))), this.limits.functionTimeoutMs, "ctx.write"));
+  }
+
+  schedulerOf(tx: DbTx) {
+    return {
+      runAfter: (ms: number, ref: any, a?: object) => schedule(tx, this.o.functions, Date.now() + ms, ref, a),
+      runAt: (at: number, ref: any, a?: object) => schedule(tx, this.o.functions, at, ref, a),
+      cancel: (id: string) => cancelScheduled(tx, id),
+    };
+  }
+
+  /** What an action's `ctx` is made of: `actionCtx` hands it out piece by piece (see `LazyActionCtx`), since most handlers use few of them. */
+  actionCtxParts(identity: UserIdentity | null, requestId?: string) {
     const runAs = (kind: FunctionKind) => async (ref: any, args?: object) => (await this.call(getFunctionName(ref), kind, args, identity, requestId)).value;
     return {
-      auth,
       storage: {
         getUrl: async (id: string) => (await this.read((s) => this.storage(s).getUrl(id))).value,
         generateUploadUrl: (o?: { contentType?: string }) => this.mutate((s, _tx, after) => this.storage(s, after).generateUploadUrl(o)),
@@ -441,6 +689,9 @@ export class Executor {
       runQuery: runAs("query"),
       runMutation: runAs("mutation"),
       runAction: runAs("action"),
+      // An HTTP route's direct access to the database (HttpCtx): the transaction of a query or a mutation around a function that is not registered by name.
+      read: this.ctxRead(identity),
+      write: this.ctxWrite(identity),
     };
   }
 }

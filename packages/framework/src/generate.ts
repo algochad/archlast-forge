@@ -33,6 +33,7 @@ ${rootImport}
 ${imports.join("\n")}
 
 export const manifest: ManifestNode = { id: "root", module: root, children: ${children} };
+${mode === "server" ? 'export { templates } from "./render.server";' : ""}
 `;
 }
 

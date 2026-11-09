@@ -1,18 +1,11 @@
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
-import { availableParallelism } from "node:os";
 import { join, resolve } from "node:path";
 import { DEFAULT_REDIS_PREFIX } from "./bus";
+import { serverCores } from "./cores";
 
-/** CPU cores this process may use: the container's CPU quota when it has one (cgroup v2 `cpu.max`), else the machine's. */
-export function serverCores(): number {
-  const cores = availableParallelism();
-  try {
-    const [quota, period] = readFileSync("/sys/fs/cgroup/cpu.max", "utf8").trim().split(/\s+/);
-    if (quota && quota !== "max") return Math.min(cores, Math.max(1, Math.ceil(Number(quota) / Number(period))));
-  } catch {} // not Linux, or no cgroup v2
-  return cores;
-}
+export { serverCores };
+
 
 /**
  * The function runtime processes `RUNTIME_WORKERS` asks for: a number, or `auto`, which is the cores times `RUNTIME_WORKERS_RATIO` (0.5 by
@@ -98,6 +91,13 @@ export interface Config {
   databasePoolSize?: number;
   /** SQLite's `synchronous` for the app database (SQLITE_SYNCHRONOUS): `FULL` syncs every commit, `NORMAL` only at checkpoints. */
   sqliteSynchronous: "FULL" | "NORMAL";
+  /** What runs SQLite (DB_ENGINE): bun:sqlite, or the native layer in packages/db. */
+  dbEngine: "bun" | "native";
+  /** SERVER_PROCESSES: how many servers of this app share the machine's port (a cluster, see cluster.ts), or `auto`: one for every two cores, from 4 cores. */
+  serverProcesses: number | "auto";
+  /** The cluster this process is in: its size once it is worked out (the CLI's supervisor tells each process), and this process's place (0 is the first, which keeps the singleton work). */
+  clusterSize: number;
+  clusterIndex: number;
   /** Postgres connections for write transactions (DATABASE_WRITE_POOL_SIZE); unset: twice DATABASE_POOL_SIZE when that is set, else sized from the database. */
   databaseWritePoolSize?: number;
   redisUrl?: string;
@@ -132,6 +132,8 @@ export interface Config {
   idleTimeoutSeconds: number;
   /** Memory the in-process cache may use; Redis applies its own limits. */
   cacheMaxBytes: number;
+  /** HTTP_ENGINE: which server answers requests. `auto`: the native engine on 4 or more cores when it is built, else Bun.serve. */
+  httpEngine: "auto" | "bun" | "archlast";
   /** Function runtime processes per server. */
   runtimeWorkers: number;
   /** `process`: functions run in child processes, restarted alone on code changes or a hang. `inline`: in the server process, fastest. */
@@ -216,6 +218,8 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   // Inline is the default outside dev: no IPC hop per call, about twice the throughput on one core. Dev keeps the child process, so code
   // changes reload without dropping connections, and so does a pool of runtime processes.
   const { workers: runtimeWorkers } = runtimeWorkersFor(env);
+  const httpEngine = (env.HTTP_ENGINE || "auto") as Config["httpEngine"];
+  if (httpEngine !== "auto" && httpEngine !== "bun" && httpEngine !== "archlast") fail(`HTTP_ENGINE must be "auto", "bun" or "archlast", got "${env.HTTP_ENGINE}"`);
   const runtimeMode = (env.RUNTIME_MODE || (dev || runtimeWorkers > 1 ? "process" : "inline")) as Config["runtimeMode"];
   if (runtimeMode !== "process" && runtimeMode !== "inline") fail(`RUNTIME_MODE must be "process" or "inline", got "${env.RUNTIME_MODE}"`);
   if (runtimeMode === "inline" && dev) fail("RUNTIME_MODE=inline can't reload code when it changes; use it outside dev");
@@ -253,6 +257,14 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
   if (!dev && env.ADMIN_KEY && env.ADMIN_KEY.length < 16) fail("ADMIN_KEY must be at least 16 characters outside dev (`openssl rand -hex 24` makes one)");
   // Its telemetry joins the main app's under this name, which the main app's MICROSERVICES uses too; two engines both named archlast-forge would merge.
   if (dashboardUrl && !env.OTEL_SERVICE_NAME) fail("DASHBOARD_URL needs OTEL_SERVICE_NAME: this microservice's name, as the main app's MICROSERVICES lists it");
+  const rawProcesses = env.SERVER_PROCESSES?.trim();
+  const serverProcesses = !rawProcesses || rawProcesses === "auto" ? ("auto" as const) : Number(rawProcesses);
+  if (serverProcesses !== "auto" && (!Number.isInteger(serverProcesses) || serverProcesses < 1 || serverProcesses > 32)) fail(`SERVER_PROCESSES must be an integer from 1 to 32 or "auto", got "${rawProcesses}"`);
+  const clusterSize = Math.max(1, Math.floor(Number(env.ARCHLAST_CLUSTER_SIZE)) || 1);
+  const clusterIndex = Math.max(0, Math.floor(Number(env.ARCHLAST_CLUSTER_INDEX)) || 0);
+  // A cluster shares one SQLite file between processes, which the native layer is made for (the write lock, the log's checkpoint and the cache are all aware of the others).
+  const dbEngine = (env.DB_ENGINE || (clusterSize > 1 ? "native" : "bun")) as Config["dbEngine"];
+  if (dbEngine !== "bun" && dbEngine !== "native") fail(`DB_ENGINE must be "bun" or "native", got "${env.DB_ENGINE}"`);
   const sqliteSynchronous = (env.SQLITE_SYNCHRONOUS || "FULL").toUpperCase() as Config["sqliteSynchronous"];
   if (sqliteSynchronous !== "FULL" && sqliteSynchronous !== "NORMAL") fail(`SQLITE_SYNCHRONOUS must be "FULL" or "NORMAL", got "${env.SQLITE_SYNCHRONOUS}"`);
   const logFormat = (env.LOG_FORMAT ?? (dev ? "pretty" : "json")) as Config["logFormat"];
@@ -266,6 +278,10 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     databaseUrl,
     databaseKind,
     sqliteSynchronous,
+    dbEngine,
+    serverProcesses,
+    clusterSize,
+    clusterIndex,
     databasePoolSize: env.DATABASE_POOL_SIZE ? int("DATABASE_POOL_SIZE", 0, 1) : undefined,
     databaseWritePoolSize: env.DATABASE_WRITE_POOL_SIZE ? int("DATABASE_WRITE_POOL_SIZE", 0, 1) : undefined,
     redisUrl: env.REDIS_URL || undefined,
@@ -291,6 +307,7 @@ export function loadConfig(env: Record<string, string | undefined> = process.env
     idleTimeoutSeconds: int("IDLE_TIMEOUT_SECONDS", 75, 1),
     runtimeWorkers,
     runtimeMode,
+    httpEngine,
     limits: {
       functionTimeoutMs: int("FUNCTION_TIMEOUT_MS", 10_000, 1),
       actionTimeoutMs: int("ACTION_TIMEOUT_MS", 600_000, 1),

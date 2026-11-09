@@ -1,0 +1,10 @@
+# Tuyere on its own with the store in SQLite (bun:sqlite): the same server.ts (build context: benchmarks/rest).
+ARG ENGINE_IMAGE=ghcr.io/algochad/archlast-forge-engine:0.17.0
+FROM ${ENGINE_IMAGE}
+WORKDIR /app
+COPY servers/tuyere/server.ts ./
+COPY servers/shared/driver-bun.ts servers/shared/rules.ts servers/shared/store-sqlite.ts ./
+RUN cat driver-bun.ts rules.ts store-sqlite.ts > store.ts && rm driver-bun.ts rules.ts store-sqlite.ts
+ENV NODE_ENV=production
+ENTRYPOINT ["bun"]
+CMD ["/app/server.ts"]

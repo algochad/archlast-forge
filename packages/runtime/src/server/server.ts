@@ -9,7 +9,9 @@ import { KEY_ADMIN, type AdminInfo } from "./admin-ops";
 import { CLIENT_IP_HEADER } from "./auth";
 import { claimPrefix, connectRedis, MemoryBus, RedisBus, type Bus } from "./bus";
 import { MemoryCache, RedisCache } from "./cache";
+import { nativeEngine, startHttpServer } from "./engine";
 import { docsRouting, type ApiDocsPageConfig, type ApiDocsRouting } from "../api-docs";
+import { serverCores } from "./cores";
 import { ConfigError, loadConfig, redisOwnerOf, reservedPathOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
 import { matchRoute } from "./http";
 import { RESET_TOPIC } from "./docstore";
@@ -25,7 +27,8 @@ import { Metrics, type LoopDelays } from "./metrics";
 import type { Manifest } from "./project";
 import { toPublicError } from "./public-error";
 import { MemoryRateLimiter, rateKeyOf, RedisRateLimiter, type RateLimiter } from "./ratelimit";
-import { buildRpc, errorResponse, HttpError, readBytes, readText, type Rpc, type SocketData } from "./rpc";
+import { buildRpc, errorResponse, HttpError, readBytes, readText, type Rpc, type RpcOptions, type SocketData } from "./rpc";
+import type { HttpRequestMessage, HttpResponseMessage } from "./protocol";
 import { FunctionRuntime } from "./runtime";
 import { QueryRunner, SubscriptionManager, type QueryObserver } from "./subscriptions";
 import { TelemetryClient } from "./telemetry/client";
@@ -33,9 +36,12 @@ import { Firewall, settingsOf, type TestRequest } from "./waf/firewall";
 import { now as clock } from "./telemetry/context";
 import { OtlpExporter } from "./telemetry/export";
 import { telemetryForwarder } from "./telemetry/forward";
+import { serverMemory } from "./db/sqlite";
+import { unlock } from "./db/unlock";
+import { ClusterBus, ClusterHub, ClusterLink, ClusterSupervisor, SharedRateLimiter, clusterDir, isControlPlane, proxy as proxyToFirst, resolveClusterSize, runtimeWorkersPerServer, serveControl, type ClusterWire } from "./cluster";
 import { spanId as newSpanId } from "./telemetry/ids";
 import { failureOf } from "./telemetry/outcome";
-import { normalizePath, Telemetry } from "./telemetry/recorder";
+import { normalizePath, Telemetry, type Outcome } from "./telemetry/recorder";
 import { processSampler } from "./telemetry/sampler";
 import type { Span, TelemetryBatch } from "./telemetry/types";
 
@@ -103,7 +109,19 @@ export interface AppEnv {
    * streaming scripts, the app's own) must carry it, or the browser won't run them.
    */
   nonce?: string;
+  /** Whether the HTTP engine can print a page from a template and JSON (`x-forge-template` on the answer says which template and carries the data as its body). */
+  templates?: boolean;
+  /** Registers a page template with the engine (when `templates` is true); returns the id a `x-forge-template` answer names. */
+  registerTemplate?(name: string, template: unknown): number;
+  /**
+   * Cache tags for the tables the queries of this request read (`call` with a query), for a page the engine keeps: a write to one of the tables
+   * purges the page. Tag names are safe for `x-forge-cache`'s `tag=`.
+   */
+  tags?(): string[];
 }
+
+/** The cache tag for a topic: the same on every server, so a write seen on one purges the pages another keeps. */
+const topicTag = (topic: string) => `t${Bun.hash(topic).toString(36)}`;
 
 export interface ServerOptions {
   forgeDir: string;
@@ -120,6 +138,11 @@ export interface ServerOptions {
    * without it the dashboard asks for a restart of the process.
    */
   restart?: () => Promise<void>;
+  /**
+   * How to start another server of this app on this machine (the command line of this process, which the CLI knows): with it, `SERVER_PROCESSES` can make a cluster of
+   * servers sharing the port (see cluster.ts). Without it the server runs alone.
+   */
+  cluster?: { command: string[] };
 }
 
 /**
@@ -164,6 +187,47 @@ export interface RunningServer {
   stop(opts?: { graceful?: boolean; keepApp?: boolean }): Promise<void>;
 }
 
+const pairsOf = (raw: { headerPairs(): string[] }): [string, string][] => {
+  const pairs = raw.headerPairs();
+  const headers: [string, string][] = [];
+  for (let i = 0; i < pairs.length; i += 2) headers.push([pairs[i]!, pairs[i + 1]!]);
+  return headers;
+};
+
+/** A request for a function runtime in this process: its headers are decoded the first time something reads them. */
+class InlineHttpRequest implements HttpRequestMessage {
+  private decoded?: [string, string][];
+  constructor(
+    private readonly raw: { headerPairs(): string[] },
+    readonly method: string,
+    private readonly secure: boolean,
+    private readonly host: string,
+    readonly path: string,
+    readonly search: string,
+    readonly body: ArrayBuffer | undefined,
+  ) {}
+  get url(): string {
+    return `${this.secure ? "https" : "http"}://${this.host}${this.path}${this.search}`;
+  }
+  get headers(): [string, string][] {
+    return (this.decoded ??= pairsOf(this.raw));
+  }
+}
+
+/** What the engine's request offers the server's /http path (see `rawHttp`). */
+interface RawRequestLike {
+  method: string;
+  url: string;
+  secure: boolean;
+  upgradeable: boolean;
+  bodyStreamed: boolean;
+  body: Uint8Array | null;
+  ip: string | null;
+  header(name: string): string | null;
+  headerPairs(): string[];
+  headerValues(want: unknown, out: (string | undefined)[]): void;
+}
+
 const pickAuthHeaders = (get: (name: string) => string | null | undefined): CallHeaders => {
   const h: CallHeaders = {};
   for (const name of ["cookie", "authorization"]) {
@@ -177,7 +241,18 @@ const REQUEST_ID = /^[\w.-]{1,64}$/;
 // Ids for requests that bring none: a random prefix per process and a counter, which costs far less than a UUID per request.
 const idPrefix = crypto.randomUUID().slice(0, 8);
 let idCount = 0;
-const requestIdOf = (given: string | null | undefined) => (given && REQUEST_ID.test(given) ? given : `${idPrefix}-${(++idCount).toString(36)}`);
+// the counter's low digits come from a table, so an id is two strings joined
+const LOW = Array.from({ length: 1296 }, (_, i) => i.toString(36).padStart(2, "0"));
+let idHigh = `${idPrefix}-0`;
+let idLow = 0;
+const requestIdOf = (given: string | null | undefined) => {
+  if (given && REQUEST_ID.test(given)) return given;
+  if (idLow === LOW.length) {
+    idLow = 0;
+    idHigh = `${idPrefix}-${(++idCount).toString(36)}`;
+  }
+  return idHigh + LOW[idLow++];
+};
 
 /**
  * The client address a trusted proxy saw. A proxy appends the address it got the request from, so the last entry is the one to believe:
@@ -244,6 +319,19 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   if (storedError) log("error", storedError);
   const startedWith = stored;
 
+  // ---- the cluster this server is in: several servers of the app on this machine, sharing the port (cluster.ts) ----
+  const cluster = await resolveClusterSize(config, env, { dev, command: opts.cluster?.command });
+  config.clusterSize = cluster.size;
+  if (cluster.size > 1 && !env.DB_ENGINE) config.dbEngine = "native";
+  if (cluster.size > 1) {
+    // The runtime processes are each server's own: `auto` shares the cores among the servers, a number is meant for each. One means the runtime inline.
+    config.runtimeWorkers = runtimeWorkersPerServer(runtimeWorkersFor(env), cluster.size, serverMemory());
+    if (!env.RUNTIME_MODE) config.runtimeMode = config.runtimeWorkers > 1 ? "process" : "inline";
+  }
+  const clustered = cluster.size > 1;
+  const follower = clustered && config.clusterIndex > 0;
+  const clusterFolder = clusterDir(config.dataDir);
+
   // Security headers (Helmet) for the REST API, the app's pages and the dashboard: presets, the code's options (each load), and the
   // dashboard's HELMET and HELMET_CONFIG (live settings: the environment's win).
   const storageOrigins = [...new Set([config.s3?.publicEndpoint, config.s3?.endpoint].filter((u): u is string => Boolean(u)).map((u) => new URL(u).origin))];
@@ -271,20 +359,67 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   let pool = runtimeWorkersFor(env);
   const serverId = `${hostname()}:${process.pid}`;
   const ttl = config.cacheTtlMs;
-  const bus: Bus = config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0, prefix: config.redisPrefix }) : new MemoryBus();
+  // A cluster's first server is the hub the others connect to: topics and rate-limit counts go through it (with Redis, through Redis).
+  let hub: ClusterHub | undefined;
+  let link: ClusterLink | undefined;
+  if (clustered) {
+    if (follower) link = await ClusterLink.connect(clusterFolder, config.clusterIndex);
+    else (hub = new ClusterHub(clusterFolder)).start();
+  }
+  const wire: ClusterWire | undefined = hub ?? link;
+  const clusterBus = clustered && !config.redisUrl ? new ClusterBus(wire!) : undefined;
+  const bus: Bus = clusterBus ?? (config.redisUrl ? await RedisBus.connect(config.redisUrl, { broadcastAll: ttl > 0 || config.httpEngine !== "bun", prefix: config.redisPrefix }) : new MemoryBus());
   const cache = ttl > 0 ? (config.redisUrl ? await RedisCache.connect(config.redisUrl, config.redisPrefix) : new MemoryCache(10_000, config.cacheMaxBytes)) : undefined;
   const limiterRedis = config.redisUrl ? await connectRedis(config.redisUrl) : undefined;
-  const limiter: RateLimiter = limiterRedis ? new RedisRateLimiter(limiterRedis, `${config.redisPrefix}rl:`) : new MemoryRateLimiter();
+  const limiter: RateLimiter = limiterRedis ? new RedisRateLimiter(limiterRedis, `${config.redisPrefix}rl:`) : clustered ? new SharedRateLimiter(clusterFolder) : new MemoryRateLimiter();
+  if (wire) unlock.send = () => wire.send({ t: "unlock" });
+  const takeFromOthers = (m: { t: string; topics?: string[]; topic?: string; payload?: unknown }) => {
+    if (m.t === "unlock") (unlock.notify(), runtime.deliverUnlock());
+    else if (m.t === "topics") clusterBus?.receive(m.topics!);
+    else if (m.t === "relay") runtime.deliverRelay(m.topic!, m.payload);
+    else if (m.t === "reload") reload().then(() => log("info", "function runtime reloaded (asked by another Bellows server)"), (e) => log("error", `reload failed: ${(e as Error).message}`));
+  };
+  /** What the other servers hold open now (they tell with their counts), added to this one's in /metrics. */
+  const others = new Map<number, { connections: number; subscriptions: number }>();
+  const sumOthers = (key: "connections" | "subscriptions") => [...others.values()].reduce((a, o) => a + o[key], 0);
+  if (hub)
+    hub.onMessage = (m, from) => {
+      if (m.t === "metrics") {
+        metrics.merge(m.fns);
+        others.set(m.from, { connections: m.connections, subscriptions: m.subscriptions });
+        return;
+      }
+      takeFromOthers(m);
+      hub!.send(m, from); // and to the rest
+    };
+  if (link) {
+    link.onMessage = takeFromOthers;
+    // The first server went away: this one goes with it (its supervisor starts them together again).
+    link.onClose = () => {
+      log("warn", "the first server of the cluster stopped; stopping this one");
+      process.kill(process.pid, "SIGTERM");
+    };
+  }
   // Two apps with one prefix on one Redis would share a cache and wake each other: say so at the start, instead of serving the wrong data silently.
   if (limiterRedis && (await claimPrefix(limiterRedis, config.redisPrefix, redisOwnerOf(config))))
     log("warn", `another app already uses the Redis prefix "${config.redisPrefix}" (it was written with a different BETTER_AUTH_SECRET): apps that share a Redis need their own OTEL_SERVICE_NAME or REDIS_PREFIX, or they share a cache and wake each other's subscriptions. If you just rotated the secret, this goes away once every server has restarted.`);
 
   const runtimeEnv = { ...env }; // gets the bound URL before the runtime starts
+  if (clustered)
+    Object.assign(runtimeEnv, {
+      ARCHLAST_CLUSTER_SIZE: String(cluster.size),
+      ARCHLAST_CLUSTER_INDEX: String(config.clusterIndex),
+      ARCHLAST_WORKER: String(config.clusterIndex),
+      // what this server works out for itself, so its runtime processes (which read the environment as a server does) agree with it
+      RUNTIME_WORKERS: String(config.runtimeWorkers),
+      RUNTIME_MODE: config.runtimeMode,
+    });
   const runtime = new FunctionRuntime({
     forgeDir: resolve(opts.forgeDir),
     env: runtimeEnv,
     dev,
     workers: config.runtimeWorkers,
+    worker: config.clusterIndex,
     serverId,
     timeouts: { functionMs: config.limits.functionTimeoutMs, actionMs: config.limits.actionTimeoutMs },
     maxPending: config.limits.maxPendingCalls,
@@ -293,7 +428,13 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const metrics = new Metrics();
   // Telemetry: the store's worker when it is on, and an exporter when a collector is configured; either needs the recorder.
   // A microservice keeps no store: what it records goes to the main app's (DASHBOARD_URL), whose dashboard shows it.
-  const forward = config.telemetry && config.dashboardUrl ? telemetryForwarder(config.dashboardUrl, config.dashboardToken!) : undefined;
+  // A server of a cluster that is not the first sends what it records to the first, whose store and dashboard are the cluster's.
+  const forward =
+    config.telemetry && follower
+      ? telemetryForwarder("http://localhost", "", { unix: join(clusterFolder, "control.sock"), path: "/_cluster/telemetry" })
+      : config.telemetry && config.dashboardUrl
+        ? telemetryForwarder(config.dashboardUrl, config.dashboardToken!)
+        : undefined;
   if (config.telemetry && !forward && config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
   const store =
     config.telemetry && !forward
@@ -339,6 +480,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     loops.set(s.instance, { role: s.role, p99: s.loopP99, max: s.loopMax });
     telemetry?.sample(s);
   };
+  // `createPubSub` events reach the runtimes of the other servers of a cluster
+  if (wire) runtime.onRelay = (topic, payload) => wire.send({ t: "relay", topic, payload });
+  if (wire) runtime.onUnlock = () => wire.send({ t: "unlock" }); // (a runtime process of this server committed: the other servers' writers may try the lock)
   runtime.onPublish = (topics) => void bus.publish(topics).catch((e) => log("error", "publish failed", { error: String(e) }));
   /** Sockets of Nest gateways, by id: the function runtime sends to and closes them through runtime.onWs. */
   const gatewaySockets = new Map<string, ServerWebSocket<ServerSocket>>();
@@ -358,14 +502,32 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     telemetry,
   );
   // Evicts cache entries, and lets subscriptions notice writes that overlapped their first read. A Redis bus only delivers every topic when caching.
-  if (cache || !config.redisUrl) bus.subscribe("*", (topic) => queries.invalidated(topic));
+  if (cache || !config.redisUrl || config.httpEngine !== "bun") bus.subscribe("*", (topic) => queries.invalidated(topic));
   // A restore rewrote the tables: what any query read may have changed.
   bus.subscribe(RESET_TOPIC, () => {
     void queries.reset().catch((e) => log("error", "cache reset failed", { error: String(e) }));
     subs.rerunAll();
   });
 
-  const rpcOpts = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
+  /** Whether the HTTP engine keeps responses a page asks it to (see `x-forge-cache`). */
+  let nativeCache = false;
+  /** The handler of requests that come in at the port, kept to answer the ones another server of the cluster passes on. */
+  let mainFetch: ((req: Request, srv: Server<ServerSocket>) => Promise<Response | undefined>) | undefined;
+  /** Tags the pages the engine keeps were given (one per table read), so a write purges only for tables a page depends on. */
+  const pageTags = new Set<string>();
+  let purgePages: ((tags: string[]) => void) | undefined;
+  let nativeRegister: ((name: string, template: unknown) => number) | undefined;
+  // A table's own topic is published by every write to it (rows' index and id topics only matter to subscriptions).
+  if (config.httpEngine !== "bun")
+    bus.subscribe("*", (topic) => {
+      if (!purgePages || topic.includes(":")) return;
+      const tag = topicTag(topic);
+      if (pageTags.has(tag)) purgePages([tag]);
+    });
+  let nativeReply: (new (body: string | Uint8Array | null, init?: { status?: number; headers?: [string, string][]; block?: unknown }) => unknown) | undefined;
+  let nativeBlock: ((pairs: [string, string][]) => unknown) | undefined;
+  let nativeTemplateReply: (new (template: number, data: string, init: { status: number; headers: [string, string][] }) => unknown) | undefined;
+  const rpcOpts: RpcOptions = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
   const maxBody = config.limits.maxRequestBytes;
   // Files kept on this server's disk are served here; uploads to them, and backups uploaded to the dashboard, may be larger than other requests.
   const localFiles = config.storage === "local" ? (createStorage(config) as LocalStorage) : undefined;
@@ -375,6 +537,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   // Rebuilt after each load; open sockets use whichever is current, so they see functions added by a reload.
   let rpc: Rpc = buildRpc({ functions: [], tables: {}, crons: [], storage: false }, runtime, queries, subs, rpcOpts);
   let loading: Promise<unknown> = Promise.resolve();
+  /** Whether `loading` is still going (a request has nothing to wait for otherwise, and need not pay for an await). */
+  let loadPending = false;
   /** The routes served at the root, for the manifest they came with (a reload brings new ones). */
   let rootRoutes: { manifest: Manifest; routes: NonNullable<Manifest["rootRoutes"]> } | undefined;
   /** Whether a root-mounted route (`httpRouter({ root: true })`) takes this path: one that matches it, under any method (a 405 is the route's). */
@@ -426,11 +590,14 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       return manifest;
     });
-    loading = p.catch(() => {});
+    loadPending = true;
+    loading = p.catch(() => {}).then(() => void (loadPending = false));
     return p;
   };
 
   const reload = () => runtime.stop().then(load);
+  /** In a cluster the others follow once this one has reloaded: a variable set with `env set` is read by every server, not only by the one that got the signal. */
+  const reloadAll = () => reload().then((manifest) => (wire?.send({ t: "reload" }), manifest));
   let connections = 0;
   let shuttingDown = false;
   let warnedEcho = false;
@@ -452,7 +619,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       workers: runtime.size,
       uptimeMs: Math.round(process.uptime() * 1000),
     }),
-    reload: () => reload(),
+    reload: () => reloadAll(),
     cache: () => ({ ...queries.snapshot(), backend: config.redisUrl ? "redis" : "memory", maxBytes: config.redisUrl ? null : config.cacheMaxBytes }),
     clearCache: () => queries.clear(),
     customFunctions: config.customFunctions,
@@ -600,7 +767,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         await runtime.admin("settings.save", { name, value: next }, actor);
         // The pool's size applies at once in process mode: processes start, or finish their calls and stop. Into or out of inline mode needs a restart.
         let applied: string | undefined;
-        if ((name === "RUNTIME_WORKERS" || name === "RUNTIME_WORKERS_RATIO") && !overridden && config.runtimeMode === "process") {
+        if ((name === "RUNTIME_WORKERS" || name === "RUNTIME_WORKERS_RATIO") && !overridden && config.runtimeMode === "process" && !clustered) {
           const merged = withSettings(baseEnv, all);
           const wanted = loadConfig(merged, dev);
           if (wanted.runtimeMode === "process") {
@@ -766,11 +933,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   };
   const clientIp = (req: Request, srv: Server<SocketData>) => (config.trustProxy && lastForwarded(req.headers.get("x-forwarded-for"))) || srv.requestIP(req)?.address || "unknown";
   /** Seconds to wait when this client is over its rate limit; with no limit configured, null at once and the client's address is never looked up. */
-  const limited = (req: Request, srv: Server<SocketData>, prefix = ""): Promise<number | null> | null => {
-    const max = config.limits.rateLimitPerMinute;
-    if (!max) return null;
-    return limiter.consume(prefix + rateKeyOf(clientIp(req, srv)), { window: 60, max }).then((r) => (r.allowed ? null : (r.retryAfter ?? 60)));
-  };
+  const limitedBy = (ip: string, prefix = ""): Promise<number | null> => limiter.consume(prefix + rateKeyOf(ip), { window: 60, max: config.limits.rateLimitPerMinute }).then((r) => (r.allowed ? null : (r.retryAfter ?? 60)));
+  const limited = (req: Request, srv: Server<SocketData>, prefix = ""): Promise<number | null> | null => (config.limits.rateLimitPerMinute ? limitedBy(clientIp(req, srv), prefix) : null);
   const tooMany = (retryAfter: number) => Response.json({ message: "Too many requests" }, { status: 429, headers: { "retry-after": String(retryAfter) } });
 
   async function handleAdmin(req: Request, path: string, requestId: string): Promise<Response> {
@@ -929,7 +1093,152 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   metrics.waf = () => (firewall.enabled ? { ...firewall.stats.counters, rules: firewall.stats.ruleCounts() } : undefined);
 
   dashboardPage?.warm(); // built while the server starts, so the first visit doesn't wait
-  const server = Bun.serve<ServerSocket>({
+  const NO_BYTES = new Uint8Array(0);
+  /**
+   * Requests under /http, answered from the engine's own request: no Web `Request` for the engine's side, no copies of the URL and the headers, and the
+   * answer written as an engine `Reply`. It does what the branch for /http in `fetch` below does, in the same order, and returns undefined (leaving the
+   * request to that branch) for anything it would do differently: a WebSocket, a streamed body, the firewall, the API docs' paths, Socket.IO's polling,
+   * routes at the root, and a server that is shutting down or has not loaded. Telemetry, rate limits, security headers and the request id are the same.
+   */
+  let wantedHeaders: unknown;
+  // reused by every request: filled and read before anything is awaited
+  const headerSlots: (string | undefined)[] = [];
+  const rawHttp = (raw: RawRequestLike): unknown => {
+    const target = raw.url;
+    if (!target.startsWith("/http") || !nativeReply) return undefined;
+    const q = target.indexOf("?");
+    const path = q < 0 ? target : target.slice(0, q);
+    if (path !== "/http" && !path.startsWith("/http/")) return undefined;
+    if (shuttingDown || firewall.enabled || raw.upgradeable || raw.bodyStreamed || (q >= 0 && target.includes("EIO="))) return undefined;
+    const method = raw.method;
+    const bytes = method === "GET" ? undefined : (raw.body ?? NO_BYTES);
+    if (bytes && bytes.byteLength > maxBody) return undefined;
+    // The headers the request itself needs are read without decoding the rest, which a runtime in this process is given when it asks for them.
+    raw.headerValues(wantedHeaders!, headerSlots);
+    if (headerSlots[1] !== undefined) return undefined; // upgrade
+    const host = headerSlots[0] ?? "localhost";
+    const given = headerSlots[2];
+    const traceparent = headerSlots[3];
+    const forwarded = headerSlots[4];
+    const cookie = headerSlots[5];
+    const authorization = headerSlots[6];
+    // The API docs' plan is settled by the first request that goes the long way round; until then (or when the app changed) that is the way for this one too.
+    const plan = docsPlan;
+    let docs: { at: ApiDocsRouting; clashes: Set<string> } | null = null;
+    if (config.apiDocs !== false) {
+      if (!plan || plan.manifest !== runtime.manifest || !plan.settled) return undefined;
+      docs = plan.at && { at: plan.at, clashes: plan.clashes };
+    }
+    if (docs && (docsClaim(docs, path) || (opts.apiDocs && docsMayServe(docs, path, method)))) return undefined;
+    const requestId = requestIdOf(given);
+    if (config.limits.rateLimitPerMinute) {
+      const ip = (config.trustProxy && lastForwarded(forwarded)) || raw.ip || "unknown";
+      return limitedBy(ip).then((retry) => {
+        if (retry) {
+          const res = tooMany(retry);
+          res.headers.set("x-request-id", requestId);
+          return res;
+        }
+        return loadPending ? loading.then(() => serveRaw(raw, method, target, path, q, bytes, host, requestId, traceparent, cookie, authorization)) : serveRaw(raw, method, target, path, q, bytes, host, requestId, traceparent, cookie, authorization);
+      });
+    }
+    if (loadPending) return loading.then(() => serveRaw(raw, method, target, path, q, bytes, host, requestId, traceparent, cookie, authorization));
+    return serveRaw(raw, method, target, path, q, bytes, host, requestId, traceparent, cookie, authorization);
+  };
+
+  /** The rest of `rawHttp`, once the request is known to be one it answers and nothing is left to wait for: no promise is made unless the route's handler makes one. */
+  const serveRaw = (raw: RawRequestLike, method: string, target: string, path: string, q: number, bytes: Uint8Array | undefined, host: string, requestId: string, traceparent: string | undefined, cookie: string | undefined, authorization: string | undefined): unknown => {
+    const httpPath = path.slice("/http".length) || "/";
+    const body = bytes && (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
+    const search = q < 0 ? "" : target.slice(q);
+    // To a runtime in this process the headers and the URL are given as getters that make them when read (most routes read neither); to another process, as they are.
+    const inline = runtime.inlineWorker();
+    const message: HttpRequestMessage = inline
+      ? new InlineHttpRequest(raw, method, raw.secure, host, httpPath, search, body)
+      : { method, url: `${raw.secure ? "https" : "http"}://${host}${httpPath}${search}`, path: httpPath, search, headers: pairsOf(raw), body };
+    // Named `METHOD /route` when it ends (the route that matched, or the path with its ids made `:id`): the name is only read then, so the path is not scanned for ids on every request.
+    const root = telemetry?.begin("http", method, method, traceparent ?? null, requestId, { "url.path": httpPath });
+    const callHeaders: CallHeaders = {};
+    if (cookie) callHeaders.cookie = cookie;
+    if (authorization) callHeaders.authorization = authorization;
+    const trace = root && telemetry!.parent(root);
+    let r: any;
+    // For a runtime in this process the answer is made where its promise is settled, so the one promise the request has is not waited on twice
+    const finish = inline ? new RawFinish(inline, root, method, requestId, path) : undefined;
+    try {
+      r = inline ? inline.httpDirect({ t: "http", req: message, headers: callHeaders, requestId, trace }, finish) : runtime.http(message, callHeaders, requestId, undefined, trace);
+    } catch (e) {
+      return rawFailed(root, e, requestId, path);
+    }
+    if (finish) {
+      if (r instanceof Promise) finish.async = true; // it counts as in flight until it settles (see `RawFinish`)
+      return r;
+    }
+    if (r instanceof Promise) return r.then((v) => rawAnswered(root, method, v, requestId, path), (e) => rawFailed(root, e, requestId, path));
+    return rawAnswered(root, method, r, requestId, path);
+  };
+
+  /** What `serveRaw` does with a runtime's answer or failure, as an object (no closures made per request). */
+  class RawFinish {
+    /** The answer was a promise: the request stops being in flight when it settles. */
+    async = false;
+    constructor(
+      private readonly inline: NonNullable<ReturnType<typeof runtime.inlineWorker>>,
+      private readonly root: ReturnType<NonNullable<typeof telemetry>["begin"]> | undefined,
+      private readonly method: string,
+      private readonly requestId: string,
+      private readonly path: string,
+    ) {}
+    ok(message: HttpResponseMessage) {
+      if (this.async) this.inline.settled();
+      return rawAnswered(this.root, this.method, message, this.requestId, this.path);
+    }
+    fail(error: unknown) {
+      if (this.async) this.inline.settled();
+      return rawFailed(this.root, this.inline.failed(error), this.requestId, this.path);
+    }
+  }
+
+  const rawAnswered = (root: ReturnType<NonNullable<typeof telemetry>["begin"]> | undefined, method: string, r: HttpResponseMessage, requestId: string, path: string): unknown => {
+    try {
+      if (root) {
+        const route = r.telemetry?.attrs?.["http.route"] ?? r.route;
+        root.operation = route ? `${method} ${route}` : r.status === 404 ? `${method} (unmatched)` : `${method} ${normalizePath(path.slice("/http".length) || "/")}`;
+        const outcome: Outcome = { status: r.status, telemetry: r.telemetry };
+        if (r.status >= 500) outcome.error = { type: `HTTP ${r.status}`, message: `${root.operation} answered ${r.status}`, handled: false };
+        telemetry!.end(root, outcome);
+      }
+      let out = r.headers;
+      let block: unknown = null;
+      // The REST API's security headers: written as bytes encoded once when the answer sets none of them itself, otherwise added to the list
+      if (r.nest) {
+        block = nativeBlock ? security.blockFor("api", out, nativeBlock) : null;
+        if (!block) out = security.applyPairs("api", out);
+      }
+      out.push(["x-request-id", requestId]);
+      // A stream is the engine's to send as a Response; anything else is bytes and a status.
+      if (r.body instanceof ReadableStream) return new Response(r.body, { status: r.status, headers: out });
+      const bytes = r.body;
+      return new nativeReply!(typeof bytes === "string" ? bytes || null : bytes.byteLength ? (bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)) : null, { status: r.status, headers: out, block: block ?? undefined });
+    } catch (e) {
+      return rawFailed(undefined, e, requestId, path);
+    }
+  };
+
+  const rawFailed = (root: ReturnType<NonNullable<typeof telemetry>["begin"]> | undefined, e: unknown, requestId: string, path: string): Response => {
+    if (root) {
+      if (root.operation === root.method) root.operation = `${root.method} ${normalizePath(path.slice("/http".length) || "/")}`; // not named yet (the call failed before it was answered)
+      telemetry!.end(root, failureOf(e));
+    }
+    const res = errorResponse(toPublicError(e, requestId, dev, { path }));
+    res.headers.set("x-request-id", requestId);
+    return res;
+  };
+  const {
+    server,
+    engine: httpEngine,
+    why: httpEngineWhy,
+  } = await startHttpServer<ServerSocket>(config.httpEngine, dev, {
     port: config.port,
     hostname: config.hostname,
     maxRequestBodySize: takesUploads ? Math.max(config.limits.maxRequestBytes, config.maxUploadBytes) : config.limits.maxRequestBytes,
@@ -937,14 +1246,21 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     // The dashboard is bundled in production mode everywhere, dev included: minified, with React's production build (which the engine image
     // has, so a development bundle there renders a blank page). Its source isn't watched; edits to it show after a restart.
     development: false,
+    // For the native engine only (Bun.serve has no such options): the /http fast path, and the Rust I/O threads, of which one core is left to the
+    // JavaScript thread and four are all that one JavaScript thread can use.
+    // In a cluster every server has one I/O thread (the layout that served the most requests per core) and shares the port with the others.
+    ...(config.httpEngine !== "bun" && { rawFetch: rawHttp, threads: Math.max(1, Number(env.ARCHLAST_THREADS) || (clustered ? 1 : Math.min(4, Math.max(2, serverCores() - 1)))) }),
+    ...(clustered && { reusePort: true }),
     routes: config.dashboardUrl
       ? { "/_dashboard": () => Response.redirect(`${config.dashboardUrl}/_dashboard#/microservices`, 302) }
       : {},
-    async fetch(req, srv) {
+    fetch: (mainFetch = async (req: Request, srv: Server<ServerSocket>) => {
       const url = new URL(req.url);
       const path = url.pathname;
       const requestId = requestIdOf(req.headers.get("x-request-id"));
       const withId = (res: Response) => (res.headers.set("x-request-id", requestId), res);
+      // Only the first server of a cluster has the telemetry, the logs, the metrics and the sessions of the dashboard: the others pass these on.
+      if (follower && isControlPlane(path, req.method)) return withId(await proxyToFirst(clusterFolder, req, clientIp(req, srv)));
 
       if (path === "/health") return Response.json({ ok: true });
       if (path === "/ready")
@@ -1032,7 +1348,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         const auth = req.headers.get("authorization")?.replace(/^Bearer /, "");
         const token = env.METRICS_TOKEN || config.adminKey;
         if (token ? !(auth && sameSecret(auth, token)) : !dev) return new Response("Not found", { status: 404 });
-        return new Response(metrics.render({ subscriptions: subs.size, connections, workers: runtime.size, backlog: runtime.backlog() }, queries.snapshot(), loops), {
+        return new Response(metrics.render({ subscriptions: subs.size + sumOthers("subscriptions"), connections: connections + sumOthers("connections"), workers: runtime.size, backlog: runtime.backlog() }, queries.snapshot(), loops), {
           headers: { "content-type": "text/plain; version=0.0.4" },
         });
       }
@@ -1136,7 +1452,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             root && telemetry!.parent(root),
           );
           if (root) {
-            const route = r.telemetry?.attrs?.["http.route"];
+            const route = r.telemetry?.attrs?.["http.route"] ?? r.route;
             root.operation = route ? `${req.method} ${route}` : r.status === 404 ? `${req.method} (unmatched)` : root.operation;
             telemetry!.end(root, {
               status: r.status,
@@ -1145,8 +1461,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             });
           }
           // A body on a 204 or 304 is an error in a Response.
-          const out = r.body instanceof ReadableStream ? r.body : r.body.byteLength ? r.body : null;
-          const res = new Response(out, { status: r.status, headers: r.headers });
+          const out = r.body instanceof ReadableStream ? r.body : typeof r.body === "string" ? r.body || null : r.body.byteLength ? r.body : null;
+          const res = new Response(out as BodyInit | null, { status: r.status, headers: r.headers });
           return withId(r.nest ? security.apply("api", res) : res);
         } catch (e) {
           if (root) telemetry!.end(root, failureOf(e));
@@ -1179,7 +1495,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
           return cors(req, withId(errorResponse({ message: "Malformed function name", code: "BAD_REQUEST", requestId })));
         }
         const headers = pickAuthHeaders((n) => req.headers.get(n));
-        return cors(req, await rpc.call(name, req, url, { headers, requestId, traceparent: req.headers.get("traceparent") ?? undefined })); // sets x-request-id itself
+        // The engine's Reply has no Headers to add to: when `rpcOpts.reply` is set, the answer comes with the CORS headers already on it.
+        const origin = req.headers.get("origin");
+        const corsHeaders = rpcOpts.reply && origin && config.trustedOrigins.includes(origin) ? { "access-control-allow-origin": origin, "access-control-allow-credentials": "true", vary: "origin" } : undefined;
+        const answer = await rpc.call(name, req, url, { headers, requestId, traceparent: req.headers.get("traceparent") ?? undefined, cors: corsHeaders }); // sets x-request-id itself
+        return answer instanceof Response ? cors(req, answer) : answer;
       }
       if (authPath.startsWith("/api/auth")) {
         let body: string | undefined;
@@ -1261,6 +1581,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             });
         };
         let res: Response | undefined;
+        const pageRead = new Set<string>();
         // A fresh nonce per page, when the app's policy limits scripts: its inline scripts carry it, and the policy names it.
         const nonce = security.wantsNonce("app") ? Buffer.from(crypto.getRandomValues(new Uint8Array(16))).toString("base64") : undefined;
         try {
@@ -1268,7 +1589,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             requestId,
             dev,
             ...(nonce && { nonce }),
+            ...(nativeCache && { templates: true, registerTemplate: nativeRegister }),
             headers,
+            tags: () => [...pageRead].slice(0, 32),
             async call(name, kind, args) {
               const started = clock();
               const obs: QueryObserver = root
@@ -1283,6 +1606,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
                   // A copy: the result may be the object the query cache keeps, and a page is free to change what it gets.
                   const r = await queries.run(name, (args ?? {}) as Record<string, unknown>, headers, requestId, undefined, obs);
                   keep(obs, name, started);
+                  if (nativeCache) for (const t of r.topics) if (!t.includes(":")) pageRead.add(topicTag(t)), pageTags.add(topicTag(t));
                   return r.json !== undefined ? JSON.parse(r.json) : structuredClone(r.value);
                 }
                 const r = await runtime.call(name, kind, args ?? {}, headers, { requestId, trace: obs.trace });
@@ -1318,11 +1642,36 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             ...(res && res.status >= 500 && { error: { type: `HTTP ${res.status}`, message: `${root.operation} answered ${res.status}`, handled: false } }),
           });
         }
-        // The nonce is for documents; the app's files and JSON get the policy without it.
-        if (res) return security.apply("app", res, res.headers.get("content-type")?.includes("text/html") ? nonce : undefined);
+        if (res) {
+          // A page the app wants kept (`x-forge-cache`) is, on the native engine, handed to it to serve again; its inline scripts are then named by hash, since a
+          // nonce would be the same for every visitor. Elsewhere the note is dropped and the page is served as any other.
+          const note = res.headers.get("x-forge-cache");
+          const hashes = res.headers.get("x-forge-csp-hashes"); // "" when the page has no inline script
+          if (note || hashes !== null) {
+            try {
+              res.headers.delete("x-forge-cache");
+              res.headers.delete("x-forge-csp-hashes");
+            } catch {
+              res = new Response(res.body, res);
+              res.headers.delete("x-forge-cache");
+              res.headers.delete("x-forge-csp-hashes");
+            }
+          }
+          const kept = Boolean(note && hashes !== null && nativeCache);
+          if (kept) res.headers.set("x-archlast-cache", note!);
+          // The nonce is for documents; the app's files and JSON get the policy without it.
+          const out = security.apply("app", res, kept || !res.headers.get("content-type")?.includes("text/html") ? undefined : nonce, kept ? hashes!.split(",").filter(Boolean) : undefined);
+          // A page the app has the engine print: its body is the data, and the engine prints the template named in `x-forge-template` on its I/O thread.
+          const template = out.headers.get("x-forge-template");
+          if (template !== null && nativeTemplateReply) {
+            const headers = [...out.headers].filter(([k]) => k !== "x-forge-template");
+            return new nativeTemplateReply(Number(template), await out.text(), { status: out.status, headers }) as unknown as Response;
+          }
+          return out;
+        }
       }
       return new Response("Not found", { status: 404 });
-    },
+    }) as never,
     websocket: {
       maxPayloadLength: config.limits.maxRequestBytes,
       // A client that can't keep up is dropped; it reconnects and refetches, instead of buffering without bound.
@@ -1364,7 +1713,40 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       },
     },
   });
+  // On the native engine a successful /rpc call is answered with its Reply, which skips the Web Response (a request before this gets a Response).
+  if (httpEngine === "archlast") {
+    nativeCache = true;
+    const native = (await nativeEngine())!;
+    nativeTemplateReply = native.TemplateReply;
+    nativeRegister = native.registerTemplate;
+    purgePages = (tags) => (server as unknown as { purgeCache?(tags: string[]): void }).purgeCache?.(tags);
+    const Reply = native.Reply;
+    nativeReply = Reply as typeof nativeReply;
+    nativeBlock = (pairs) => new native.HeaderBlock(pairs);
+    // the order `rawHttp` reads them in
+    wantedHeaders = new native.HeaderNames(["host", "upgrade", "x-request-id", "traceparent", "x-forwarded-for", "cookie", "authorization"]);
+    rpcOpts.reply = (body, headers) => new Reply(body, { headers }) as unknown as Response;
+  }
 
+  log("info", `http engine: ${httpEngine} (${httpEngineWhy})`);
+  // The first server of a cluster answers what the others pass on (the dashboard, the admin API, metrics, telemetry), and starts them once it has loaded.
+  let control: ReturnType<typeof serveControl> | undefined;
+  let supervisor: ClusterSupervisor | undefined;
+  if (clustered && !follower) {
+    log("info", `Bellows: ${cluster.why}`);
+    control = serveControl(clusterFolder, async (req, ip) => {
+      const path = new URL(req.url).pathname;
+      if (path === "/_cluster/telemetry" && req.method === "POST") {
+        store?.write((await req.json()) as TelemetryBatch);
+        return new Response(null, { status: 204 });
+      }
+      // as if it had come in at the port, from the address its client had
+      const address = ip ?? "unknown";
+      const srv = { requestIP: () => ({ address, family: address.includes(":") ? "IPv6" : "IPv4", port: 0 }), timeout() {}, upgrade: () => false, port: config.port, hostname: config.hostname };
+      return (await mainFetch!(req, srv as never)) ?? new Response("Not found", { status: 404 });
+    });
+    supervisor = new ClusterSupervisor({ size: cluster.size, command: opts.cluster!.command, env: baseEnv, dir: clusterFolder });
+  } else if (follower) log("info", `Bellows: server ${config.clusterIndex} of ${cluster.size}`);
   // Bound to every interface, the local URL is the useful one (Better Auth's default origin, logs).
   const url = ["0.0.0.0", "::"].includes(config.hostname) ? `http://localhost:${server.port}` : server.url.href.replace(/\/$/, "");
   runtimeEnv.BETTER_AUTH_URL ??= url;
@@ -1376,6 +1758,17 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       await bus.close();
       throw e;
     });
+
+  // Sockets stay with the server that took them, and the long-polling of Socket.IO needs the same server for each of its requests: an app that has gateways or subscriptions
+  // over sockets is started as one server unless the number was asked for.
+  if (supervisor && (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.sockets-used")]) {
+    if (config.serverProcesses === "auto") {
+      log("info", "Bellows: the app has WebSocket gateways, whose sockets stay with one server: running one (SERVER_PROCESSES=n runs n anyway)");
+      await supervisor.stop();
+      supervisor = undefined;
+    } else log("warn", "Bellows: the app has WebSocket gateways; their sockets stay with the server that took them, and Socket.IO's long-polling needs a server for each session: use WebSocket transports only");
+  }
+  supervisor?.start(); // the others, now that the database is migrated and the first can answer them
 
   // This process's health every 10 seconds, with the connections, subscriptions and cache figures only the server knows. The cache
   // counters are totals since start; a sample carries what happened since the one before.
@@ -1401,6 +1794,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     loops.set(serverId, { role: "server", p99: h.loopP99, max: h.loopMax });
     telemetry?.sample({ time: Date.now(), instance: serverId, role: "server", ...h, connections, subscriptions: subs.size, inflight: telemetry.inflight, ...cache });
   };
+  // A server of a cluster tells the first what its functions did, for /metrics.
+  const reporter = link && setInterval(() => link!.send({ t: "metrics", from: config.clusterIndex, fns: metrics.take(), connections, subscriptions: subs.size }), 2000);
+  reporter?.unref?.();
   const sampler = setInterval(takeSample, 10_000);
   sampler.unref?.();
   // A first sample soon after start, so a node a scaler just added is on the dashboard's Nodes page at once rather than 10 s later.
@@ -1411,15 +1807,20 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     url,
     config,
     runtime,
-    reload,
+    reload: reloadAll,
     async stop({ graceful = true, keepApp = false } = {}) {
       shuttingDown = true;
       clearInterval(sampler);
+      clearInterval(reporter);
       clearTimeout(firstSample);
       // 1012 "service restart": clients reconnect (to another server, behind a load balancer) and refetch.
       for (const ws of sockets) ws.close(1012, "Server restarting");
       if (graceful) await Promise.race([server.stop(false), Bun.sleep(10_000)]);
       server.stop(true);
+      unlock.send = () => {};
+      await supervisor?.stop();
+      control?.stop(true);
+      hub?.stop();
       if (!keepApp) await opts.app?.dispose?.();
       await runtime.stop();
       await bus.close();
