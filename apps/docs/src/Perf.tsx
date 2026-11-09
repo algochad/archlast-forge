@@ -1,4 +1,4 @@
-import { type CSSProperties, type ReactNode } from "react";
+import { type CSSProperties, type ReactNode, useState } from "react";
 import { Link } from "react-router";
 import { Code } from "./Code";
 import { Anvil } from "./Anvil";
@@ -10,6 +10,15 @@ import bench from "./bench.json";
 const k = (n: number) => Math.round(n).toLocaleString("en-US");
 const x = (a: number, b: number) => `${a / b >= 10 ? Math.round(a / b) : (a / b).toFixed(1)}×`;
 const ms = (n: number) => (n >= 100 ? `${Math.round(n)} ms` : n >= 10 ? `${n.toFixed(1)} ms` : `${n.toFixed(2)} ms`);
+
+/** The operations of the REST benchmark, in the order of the tabs above its charts. */
+const OPS = [
+  { key: "read", tab: "Get", title: "GET /items/:id" },
+  { key: "list", tab: "List", title: "GET /items?limit=20" },
+  { key: "update", tab: "Update", title: "PUT /items/:id" },
+  { key: "create", tab: "Create", title: "POST /items" },
+] as const;
+type Op = (typeof OPS)[number]["key"];
 
 interface BarRow { label: string; value: number; us?: boolean }
 
@@ -63,6 +72,11 @@ export function Env() {
 export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }) {
   const read = (n: string) => rest[n]!.scenarios.read!.rps;
   const sql = (n: string) => restSqlite[n]!.scenarios.read!.rps;
+  // the charts show the operation picked on the tabs; the copy beside them talks about reads
+  const [op, setOp] = useState<Op>("read");
+  const cur = OPS.find((o) => o.key === op)!;
+  const mem = (n: string) => rest[n]!.scenarios[op]!.rps;
+  const lite = (n: string) => restSqlite[n]!.scenarios[op]!.rps;
   return (
     <>
       <div className="perf">
@@ -86,43 +100,50 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
           <Link className="btn link" to="/Tuyere">How the engine works <Arrow /></Link>
         </div>
         <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
+          <div className="optabs" role="tablist" aria-label="Operation">
+            {OPS.map((o) => (
+              <button key={o.key} type="button" role="tab" aria-selected={op === o.key} className={op === o.key ? "on" : ""} onClick={() => setOp(o.key)}>
+                {o.tab}
+              </button>
+            ))}
+          </div>
           <Bars
-            title="GET /items/:id · in-memory CRUD API"
+            title={`${cur.title} · CRUD API on SQLite`}
             rows={[
-              { label: "Rust · Axum", value: read("axum") },
-              { label: "Tuyere · alone", value: read("serve"), us: true },
-              { label: "Go · fasthttp", value: read("go") },
-              { label: ".NET 10 · Minimal API", value: read("dotnet") },
-              { label: ".NET 10 · Web API, controllers only", value: read("dotnet-controllers") },
-              { label: ".NET 10 · Web API, with middleware", value: read("dotnet-webapi") },
-              { label: "Forge · minimal route", value: read("forge-minimal"), us: true },
-              { label: "NestJS · Tuyere, no Forge", value: read("nest-serve"), us: true },
-              { label: "Bun.serve", value: read("bun") },
-              { label: "NestJS · Bun", value: read("nest-bun") },
-              { label: "NestJS · Node", value: read("nest-node") },
-              { label: "Forge · Tuyere", value: read("forge"), us: true },
-              { label: "Node · Express", value: read("node") },
-              { label: "Forge · on Bun.serve", value: read("forge-bun"), us: true },
+              { label: "Tuyere · alone", value: lite("serve"), us: true },
+              { label: "Rust · Axum", value: lite("axum") },
+              { label: "NestJS · Tuyere, no Forge", value: lite("nest-serve"), us: true },
+              { label: ".NET 10 · Minimal API", value: lite("dotnet") },
+              { label: ".NET 10 · MVC controllers", value: lite("dotnet-controllers") },
+              { label: ".NET 10 · MVC + middleware", value: lite("dotnet-webapi") },
+              { label: "Go · fasthttp", value: lite("go") },
+              { label: "Forge · Nest · bun:sqlite", value: lite("forge-bunsqlite"), us: true },
+              { label: "Bun.serve", value: lite("bun") },
+              { label: "Forge · minimal · ctx.db", value: lite("forge-minimal"), us: true },
+              { label: "Forge · Nest · ctx.db", value: lite("forge"), us: true },
+              { label: "NestJS · Node", value: lite("nest-node") },
             ]}
-            note={<>4 CPU cores, 2 GiB. <Link to="/benchmarks">Method and all four operations</Link></>}
+            note={<>Each in its own SQLite driver; Forge in production (two servers), through <code>ctx.db</code> and through <code>bun:sqlite</code>. <Link to="/benchmarks#the-same-api-on-sqlite">Method, writes and what Forge adds</Link>{op === "create" && " Creates depend on the disk and the log checkpoint: read them as an order of magnitude."}</>}
           />
           <Bars
-            title="GET /items/:id · the same API on SQLite"
+            title={`${cur.title} · the same API in memory`}
             rows={[
-              { label: "Tuyere · alone", value: sql("serve"), us: true },
-              { label: "Rust · Axum", value: sql("axum") },
-              { label: "NestJS · Tuyere, no Forge", value: sql("nest-serve"), us: true },
-              { label: ".NET 10 · Minimal API", value: sql("dotnet") },
-              { label: ".NET 10 · Web API, controllers only", value: sql("dotnet-controllers") },
-              { label: ".NET 10 · Web API, with middleware", value: sql("dotnet-webapi") },
-              { label: "Go · fasthttp", value: sql("go") },
-              { label: "Forge · Nest · bun:sqlite", value: sql("forge-bunsqlite"), us: true },
-              { label: "Bun.serve", value: sql("bun") },
-              { label: "Forge · minimal route · ctx.db", value: sql("forge-minimal"), us: true },
-              { label: "Forge · Nest · ctx.db", value: sql("forge"), us: true },
-              { label: "NestJS · Node", value: sql("nest-node") },
+              { label: "Rust · Axum", value: mem("axum") },
+              { label: "Tuyere · alone", value: mem("serve"), us: true },
+              { label: "Go · fasthttp", value: mem("go") },
+              { label: ".NET 10 · Minimal API", value: mem("dotnet") },
+              { label: ".NET 10 · MVC controllers", value: mem("dotnet-controllers") },
+              { label: ".NET 10 · MVC + middleware", value: mem("dotnet-webapi") },
+              { label: "Forge · minimal route", value: mem("forge-minimal"), us: true },
+              { label: "NestJS · Tuyere, no Forge", value: mem("nest-serve"), us: true },
+              { label: "Bun.serve", value: mem("bun") },
+              { label: "NestJS · Bun", value: mem("nest-bun") },
+              { label: "NestJS · Node", value: mem("nest-node") },
+              { label: "Forge · Tuyere", value: mem("forge"), us: true },
+              { label: "Node · Express", value: mem("node") },
+              { label: "Forge · on Bun.serve", value: mem("forge-bun"), us: true },
             ]}
-            note={<>Each in its own SQLite driver; Forge in production (two servers), through <code>ctx.db</code> and through <code>bun:sqlite</code>. <Link to="/benchmarks#the-same-api-on-sqlite">Method, writes and what Forge adds</Link></>}
+            note={<>4 CPU cores, 2 GiB. <Link to="/benchmarks">Method and all four operations</Link></>}
           />
         </div>
       </div>
