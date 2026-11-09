@@ -112,18 +112,16 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
             rows={[
               { label: "Tuyere · alone", value: lite("serve"), us: true },
               { label: "Rust · Axum", value: lite("axum") },
-              { label: "NestJS · Tuyere, no Forge", value: lite("nest-serve"), us: true },
               { label: ".NET 10 · Minimal API", value: lite("dotnet") },
               { label: ".NET 10 · MVC controllers", value: lite("dotnet-controllers") },
               { label: ".NET 10 · MVC + middleware", value: lite("dotnet-webapi") },
               { label: "Go · fasthttp", value: lite("go") },
-              { label: "Forge · Nest · bun:sqlite", value: lite("forge-bunsqlite"), us: true },
               { label: "Bun.serve", value: lite("bun") },
               { label: "Forge · minimal · ctx.db", value: lite("forge-minimal"), us: true },
               { label: "Forge · Nest · ctx.db", value: lite("forge"), us: true },
               { label: "NestJS · Node", value: lite("nest-node") },
             ]}
-            note={<>Each in its own SQLite driver; Forge in production (two servers), through <code>ctx.db</code> and through <code>bun:sqlite</code>. <Link to="/benchmarks#the-same-api-on-sqlite">Method, writes and what Forge adds</Link>{op === "create" && " Creates depend on the disk and the log checkpoint: read them as an order of magnitude."}</>}
+            note={<>Each in its own SQLite driver; Forge in production (two servers), through <code>ctx.db</code>. <Link to="/benchmarks#the-same-api-on-sqlite">Method, writes and what Forge adds</Link>{op === "create" && " Creates depend on the disk and the log checkpoint: read them as an order of magnitude."}</>}
           />
           <Bars
             title={`${cur.title} · the same API in memory`}
@@ -135,7 +133,6 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
               { label: ".NET 10 · MVC controllers", value: mem("dotnet-controllers") },
               { label: ".NET 10 · MVC + middleware", value: mem("dotnet-webapi") },
               { label: "Forge · minimal route", value: mem("forge-minimal"), us: true },
-              { label: "NestJS · Tuyere, no Forge", value: mem("nest-serve"), us: true },
               { label: "Bun.serve", value: mem("bun") },
               { label: "NestJS · Bun", value: mem("nest-bun") },
               { label: "NestJS · Node", value: mem("nest-node") },
