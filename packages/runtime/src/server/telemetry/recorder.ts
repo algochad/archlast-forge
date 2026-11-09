@@ -17,7 +17,6 @@ import type { Attrs, ErrorInfo, LogRecord, MetricPoint, RequestKind, RequestReco
  */
 export class Root {
   private ids?: { traceId: string; spanId: string };
-  readonly time = Date.now();
   readonly t0 = performance.now();
 
   constructor(
@@ -31,6 +30,8 @@ export class Root {
     /** Whether this request's spans are recorded; `weight` is how many requests it stands for in span statistics (1 / its chance). */
     readonly detail = true,
     readonly weight = 1,
+    /** When it began (Date.now()); read by the caller who has it already. */
+    readonly time = Date.now(),
   ) {}
 
   get traceId() {
@@ -201,7 +202,8 @@ export class Telemetry {
    */
   begin(kind: RequestKind, operation: string, method?: string, incoming?: string | null, requestId?: string, attrs?: Attrs): Root {
     this.inflight++;
-    const sec = Math.floor(Date.now() / 1000);
+    const time = Date.now();
+    const sec = Math.floor(time / 1000);
     if (sec !== this.rateSecond) {
       this.rate = sec === this.rateSecond + 1 ? this.rateCount : 0;
       this.rateSecond = sec;
@@ -212,7 +214,7 @@ export class Telemetry {
     const budget = this.o.detailPerSecond ?? 200;
     const p = parent?.sampled || this.rate <= budget ? 1 : budget / this.rate;
     const detail = p >= 1 || Math.random() < p;
-    return new Root(kind, operation, method, parent, requestId, attrs, detail, detail ? 1 / p : 1);
+    return new Root(kind, operation, method, parent, requestId, attrs, detail, detail ? 1 / p : 1, time);
   }
 
   /** Where the runtime records the request's spans, under its root; nothing for a request that is only counted. */
@@ -342,12 +344,12 @@ export class Telemetry {
         if (!r) ops.set(name, (r = this.rollupOf(minute, kind, name))), m.size++;
       }
       hit = this.last = { minute, kind, operation, rollup: r, all: m.all };
+      this.dirty.add(r); // marked once: the next requests into the same rollups find them marked (a flush forgets `last`)
+      this.dirty.add(m.all);
     }
     const bucket = bucketOf(ms);
     add(hit.rollup, ms, bucket, status, cached);
     add(hit.all, ms, bucket, status, cached);
-    this.dirty.add(hit.rollup);
-    this.dirty.add(hit.all);
   }
 
   /** Every span but the root (`skip`), with the time it spent in its own code, counted `weight` times (a sampled request's share). */
@@ -421,6 +423,7 @@ export class Telemetry {
     if (this.services.length) batch.services = this.services.splice(0);
     this.dirty.clear();
     this.dirtySpans.clear();
+    this.last = undefined;
     // Minutes that are over were sent in full above; their rows are final.
     for (const m of this.minutes.keys()) if (m < current - 1) this.minutes.delete(m);
     if (Object.keys(batch).length) this.o.sink(batch);

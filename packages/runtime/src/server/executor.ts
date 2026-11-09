@@ -9,7 +9,7 @@ import { NativeStore } from "./native-store";
 import { DocStore, RESET_TOPIC, type TablesSpec } from "./docstore";
 import { cancelScheduled, schedule } from "./scheduler";
 import type { Storage } from "./storage";
-import { inSpan, logContext, telemetryOf, traced, tracedTx, type CallTelemetry, type TraceParent } from "./telemetry/context";
+import { activeCall, inSpan, logContext, telemetryOf, traced, tracedTx, type CallTelemetry, type TraceParent } from "./telemetry/context";
 
 export { logContext };
 
@@ -121,6 +121,11 @@ function checkReturn<T>(fn: RegisteredFunction, value: T): T {
  * An action's `ctx`. Making its storage, scheduler and `run*` functions for every call costs more than most handlers (an HTTP route that answers from memory)
  * use of them, so they are made the first time one is read.
  */
+const routeOf = (ctx: LazyActionCtx) => ((ctx as unknown as Record<symbol, unknown>)[ROUTE] as string | null | undefined) ?? undefined;
+
+/** Where an untraced HTTP call's handler may leave the route it matched (Nest's controller route): the call has no trace to annotate. null: asked for; a string: given. */
+export const ROUTE = Symbol.for("archlast-forge.route");
+
 class LazyActionCtx {
   private parts?: ReturnType<Executor["actionCtxParts"]>;
   private readFn?: ReturnType<Executor["ctxRead"]>;
@@ -400,7 +405,7 @@ export class Executor {
 
   /** Notes who a traced call runs as. */
   ranAs(identity: UserIdentity | null) {
-    const trace = logContext.getStore()?.trace;
+    const trace = activeCall()?.trace;
     if (trace && identity) trace.user = { id: identity.userId, ...((identity.email ?? identity.name) && { name: String(identity.email ?? identity.name) }) };
   }
 
@@ -479,14 +484,15 @@ export class Executor {
   }
 
   /** Runs an HTTP action. The caller is resolved from the request's cookie or authorization header, and is anonymous without one. */
-  async runHttp(name: string, action: HttpAction, req: Request | LightRequest, headers: CallHeaders, requestId?: string): Promise<Response | LightResponse> {
+  async runHttp(name: string, action: HttpAction, req: Request | LightRequest, headers: CallHeaders, requestId?: string, routeOut?: { route?: string }): Promise<Response | LightResponse> {
     // Anonymous (no cookie, no authorization header) is known without waiting for anything
     const identity = headers.cookie || headers.authorization ? await this.resolveIdentity(headers) : null;
     this.ranAs(identity);
     const auth = { getUserIdentity: async () => identity };
-    const res: unknown = await this.logged(name, requestId, undefined, () =>
-      withTimeout(Promise.resolve(action.handler(this.actionCtx(auth, identity, requestId) as unknown as HttpCtx, req as Request)), this.limits.actionTimeoutMs, name),
-    );
+    const ctx = this.actionCtx(auth, identity, requestId);
+    if (routeOut) (ctx as unknown as Record<symbol, unknown>)[ROUTE] = null; // an untraced call: the handler may leave its route here
+    const res: unknown = await this.logged(name, requestId, undefined, () => withTimeout(Promise.resolve(action.handler(ctx as unknown as HttpCtx, req as Request)), this.limits.actionTimeoutMs, name));
+    if (routeOut) routeOut.route = routeOf(ctx);
     if (!(res instanceof Response) && !(res instanceof LightResponse)) throw new Error(`${name} must return a Response`);
     return res as Response | LightResponse;
   }
@@ -495,11 +501,14 @@ export class Executor {
    * `runHttp` for a caller with no cookie or authorization header and no trace to record: the answer comes back without a promise when the handler's does not
    * (a handler that waits for something is given its time limit as before). Everything else `runHttp` does is done in the same order.
    */
-  runHttpAnonymous<R, T>(name: string, action: HttpAction, req: Request | LightRequest, requestId: string | undefined, answer: (route: R, res: Response | LightResponse, telemetry: undefined) => T, route: R): T | Promise<T> {
+  runHttpAnonymous<R, T>(name: string, action: HttpAction, req: Request | LightRequest, requestId: string | undefined, answer: (route: R, res: Response | LightResponse, telemetry: undefined, named?: string) => T, route: R): T | Promise<T> {
     const start = performance.now();
     let res: unknown;
+    let ctx: LazyActionCtx;
     try {
-      res = logContext.run({ name, requestId, logs: undefined, trace: undefined, spanId: undefined }, () => action.handler(new LazyActionCtx(this, ANONYMOUS, null, requestId) as unknown as HttpCtx, req as Request));
+      ctx = new LazyActionCtx(this, ANONYMOUS, null, requestId);
+      (ctx as unknown as Record<symbol, unknown>)[ROUTE] = null;
+      res = logContext.run({ name, requestId, logs: undefined, trace: undefined, spanId: undefined }, () => action.handler(ctx as unknown as HttpCtx, req as Request));
     } catch (e) {
       this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
       throw e;
@@ -517,7 +526,7 @@ export class Executor {
             deadlines.remove(node);
             let out: T;
             try {
-              out = answer(route, this.httpResult(name, value), undefined);
+              out = answer(route, this.httpResult(name, value), undefined, routeOf(ctx));
             } catch (e) {
               this.logCall(name, requestId, start, undefined, false, (e as Error)?.message ?? String(e));
               reject(e);
@@ -537,7 +546,7 @@ export class Executor {
     }
     const checked = this.httpResult(name, res);
     this.logCall(name, requestId, start, undefined, true, "ok");
-    return answer(route, checked, undefined);
+    return answer(route, checked, undefined, routeOf(ctx));
   }
 
   private httpResult(name: string, res: unknown): Response | LightResponse {
@@ -567,7 +576,7 @@ export class Executor {
   /** `access`: the check of a query that declares one, which is logged only when it refuses, and is a span of its own. */
   async logged<T>(name: string, requestId: string | undefined, logs: ConsoleLine[] | undefined, fn: () => Promise<T>, access = false): Promise<T> {
     const start = performance.now();
-    const outer = logContext.getStore();
+    const outer = activeCall();
     const context = { name, requestId, logs, trace: outer?.trace, spanId: outer?.spanId };
     try {
       // A traced call is a span, and what it does nests under it; the module is its namespace on the time-by-code view.

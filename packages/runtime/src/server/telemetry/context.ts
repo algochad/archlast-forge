@@ -35,6 +35,14 @@ export interface CallContext {
 /** The call a piece of code runs in: console output is attributed to it, and spans recorded under it. */
 export const logContext = new AsyncLocalStorage<CallContext>();
 
+/**
+ * How many calls with a trace are running (`traced()` is the only place one begins; everything inside inherits its trace). While there are none, no code needs the async
+ * context to learn whether its call is traced, and the lookup (made by every span, database operation and timed method) is skipped.
+ */
+export const tracing = { calls: 0 };
+/** The context of the call the code is in, when some call is traced; else nothing (its trace would be none either). */
+export const activeCall = () => (tracing.calls === 0 ? undefined : logContext.getStore());
+
 const ORIGIN = performance.timeOrigin;
 /** Epoch milliseconds with a fraction, on a clock that never steps back. */
 export const now = () => ORIGIN + performance.now();
@@ -79,17 +87,20 @@ export async function traced<T>(parent: TraceParent | undefined, name: string, f
     ...(trace.request && { attrs: trace.request }),
     ...(trace.user && { user: trace.user }),
   });
+  tracing.calls++;
   try {
     const value = await logContext.run({ name, trace, spanId: parent.parentId }, fn);
     return { value, telemetry: telemetry() };
   } catch (e) {
     throw attachTelemetry(e, telemetry());
+  } finally {
+    tracing.calls--;
   }
 }
 
 /** Runs `fn` as a span: spans recorded inside it nest under it. Outside a traced call, just runs it. */
 export async function inSpan<T>(name: string, type: SpanType, attrs: Attrs | undefined, fn: () => Promise<T> | T, kind = 1, rename?: Partial<CallContext>): Promise<T> {
-  const ctx = logContext.getStore();
+  const ctx = activeCall();
   if (!ctx?.trace) return fn();
   const id = spanId();
   const start = now();
@@ -115,7 +126,7 @@ export async function inSpan<T>(name: string, type: SpanType, attrs: Attrs | und
  */
 export function spanned<T extends (...args: any[]) => any>(fn: T, name: string, type: SpanType, attrs?: Attrs): T {
   return function (this: unknown, ...args: unknown[]) {
-    const ctx = logContext.getStore();
+    const ctx = activeCall();
     if (!ctx?.trace) return fn.apply(this, args);
     const id = spanId();
     const start = now();
@@ -141,7 +152,7 @@ export function spanned<T extends (...args: any[]) => any>(fn: T, name: string, 
 
 /** Adds attributes to the span that is running; `request` adds them to the request the trace is about instead. */
 export function annotate(attrs: Attrs, request = false) {
-  const ctx = logContext.getStore();
+  const ctx = activeCall();
   if (!ctx?.trace) return;
   if (request || !ctx.span) ctx.trace.request = { ...ctx.trace.request, ...attrs };
   else ctx.span.attrs = { ...ctx.span.attrs, ...attrs };
@@ -178,7 +189,7 @@ const nativeAttrs = new Map<string, Attrs>();
  * table ("SELECT todos", "INSERT todos").
  */
 export function nativeOp<T>(system: string, op: string, table: string | undefined, go: () => T): T {
-  const ctx = logContext.getStore();
+  const ctx = activeCall();
   if (!ctx?.trace) return go();
   const start = now();
   const name = table ? `${op} ${table}` : op;
@@ -233,7 +244,7 @@ const statementSpan = async <T>(system: string, ctx: CallContext, sql: string, g
 
 // MongoDB has no statements: an operation on a collection is the span.
 const operationSpan = async <T>(system: string, op: string, table: string, go: () => Promise<T>): Promise<T> => {
-  const ctx = logContext.getStore();
+  const ctx = activeCall();
   if (!ctx?.trace) return go();
   const start = now();
   const attrs: Attrs = { "db.system.name": system, "db.operation.name": op, "db.collection.name": table };
@@ -269,11 +280,11 @@ class TracedTx implements DbTx {
     if (tx.mongo) this.mongo = Object.fromEntries(Object.entries(tx.mongo).map(([op, f]) => [op, (table: string, ...rest: unknown[]) => operationSpan(system, op, table, () => (f as (...a: unknown[]) => Promise<unknown>)(table, ...rest))])) as unknown as DbTx["mongo"];
   }
   query<T = Record<string, any>>(sql: string, params?: unknown[]): Promise<T[]> {
-    const ctx = logContext.getStore();
+    const ctx = activeCall();
     return ctx?.trace ? statementSpan(this.system, ctx, sql, () => this.tx.query<T>(sql, params), rowCount) : this.tx.query<T>(sql, params);
   }
   execute(sql: string, params?: unknown[]): Promise<void> {
-    const ctx = logContext.getStore();
+    const ctx = activeCall();
     return ctx?.trace ? statementSpan(this.system, ctx, sql, () => this.tx.execute(sql, params), noRows) : this.tx.execute(sql, params);
   }
 }
@@ -291,7 +302,7 @@ let fetchPatched = false;
  * `traceparent` for the service to continue the trace with. Undefined when the call isn't traced, which is nearly always.
  */
 export function outboundSpan(name: string, attrs: Attrs): { traceparent: string; end(error?: string): void } | undefined {
-  const ctx = logContext.getStore();
+  const ctx = activeCall();
   if (!ctx?.trace) return undefined;
   const id = spanId();
   const start = now();
@@ -316,7 +327,7 @@ export function instrumentFetch() {
   fetchPatched = true;
   const original = globalThis.fetch;
   const traced = (async (input: string | URL | Request, init?: RequestInit) => {
-    const ctx = logContext.getStore();
+    const ctx = activeCall();
     if (!ctx?.trace) return original(input, init);
     const req = input instanceof Request ? input : undefined;
     const url = new URL(req ? req.url : String(input));

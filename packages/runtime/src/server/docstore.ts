@@ -5,7 +5,7 @@ import { tableOf, validateFields, ValidationError, type Validator } from "../val
 import type { DbTx, Dialect, MongoFilter, MongoOps } from "./db/types";
 import { ftsTable } from "./db/migrate";
 import { call, type NativeHandle, type Param } from "./db/native";
-import { logContext, nativeOp } from "./telemetry/context";
+import { activeCall, nativeOp } from "./telemetry/context";
 import { escapeRegex, searchField as mongoSearchField, searchWords } from "./db/mongodb-search";
 
 export type TablesSpec = Record<
@@ -121,7 +121,7 @@ export class DocStore {
 
   /** One call to the native engine: a `db` span when the request is traced, and the engine's errors as JavaScript's own. */
   protected n<T>(op: string, table: string | undefined, f: () => T): T {
-    if (!logContext.getStore()?.trace) return call(f); // not a traced call (nearly all): no span, no closure
+    if (!activeCall()?.trace) return call(f); // not a traced call (nearly all): no span, no closure
     return nativeOp("sqlite", op, table, () => call(f));
   }
 

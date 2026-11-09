@@ -308,12 +308,20 @@ export async function startCore(opts: {
   };
 
   /** The message the server is answered with, for what a route's handler returned. The answer of a `LightResponse` needs no waiting; a `Response`'s body does. */
-  function httpAnswer(route: HttpRoute, res: Response | LightResponse, telemetry: CallTelemetry | undefined): HttpResponseMessage | Promise<HttpResponseMessage> {
+  function httpAnswer(route: HttpRoute, res: Response | LightResponse, telemetry: CallTelemetry | undefined, named?: string): HttpResponseMessage | Promise<HttpResponseMessage> {
     if (res instanceof LightResponse) {
-      const out = res.headers.filter((h) => h[0] !== "content-length");
+      // a copy of the headers only when one has to go (a handler sets no content-length of its own, nearly always)
+      let out = res.headers;
+      for (let i = 0; i < out.length; i++)
+        if (out[i]![0] === "content-length") {
+          out = out.filter((h) => h[0] !== "content-length");
+          break;
+        }
       const reply: HttpResponseMessage = { status: res.status, headers: out, body: res.body ?? EMPTY };
       if ((route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true) reply.nest = true;
       if (telemetry) reply.telemetry = telemetry;
+      const routeName = named ?? route.path;
+      if (routeName !== undefined && !telemetry) reply.route = routeName;
       return reply;
     }
     return httpResponseAnswer(route, res, telemetry);
@@ -436,6 +444,7 @@ export async function startCore(opts: {
           };
         let telemetry: CallTelemetry | undefined;
         const name = routeName(route);
+        const routeOut: { route?: string } | undefined = msg.trace ? undefined : {}; // an untraced request is named by the route its handler leaves
         const run = () => {
           // The route's pattern, for the request's name; a Nest controller names its own, finer one.
           annotate({ "http.route": route.path ?? `${route.pathPrefix}*` }, true);
@@ -460,6 +469,7 @@ export async function startCore(opts: {
                 : (undefined as unknown as Request),
             msg.headers,
             msg.requestId,
+            routeOut,
           );
         };
         let res: Response | LightResponse;
@@ -468,7 +478,7 @@ export async function startCore(opts: {
           telemetry = traced_.telemetry;
           res = traced_.value;
         } else res = await run(); // a request that is only counted runs untraced: nothing to collect
-        return httpAnswer(route, res, telemetry);
+        return httpAnswer(route, res, telemetry, routeOut?.route);
       }
       case "admin":
         if (msg.op === "cli") return cli(msg.args as { cmd: string; args?: Record<string, unknown> });

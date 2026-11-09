@@ -1105,7 +1105,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const rawAnswered = (root: ReturnType<NonNullable<typeof telemetry>["begin"]> | undefined, method: string, r: HttpResponseMessage, requestId: string, path: string): unknown => {
     try {
       if (root) {
-        const route = r.telemetry?.attrs?.["http.route"];
+        const route = r.telemetry?.attrs?.["http.route"] ?? r.route;
         root.operation = route ? `${method} ${route}` : r.status === 404 ? `${method} (unmatched)` : `${method} ${normalizePath(path.slice("/http".length) || "/")}`;
         const outcome: Outcome = { status: r.status, telemetry: r.telemetry };
         if (r.status >= 500) outcome.error = { type: `HTTP ${r.status}`, message: `${root.operation} answered ${r.status}`, handled: false };
@@ -1351,7 +1351,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
             root && telemetry!.parent(root),
           );
           if (root) {
-            const route = r.telemetry?.attrs?.["http.route"];
+            const route = r.telemetry?.attrs?.["http.route"] ?? r.route;
             root.operation = route ? `${req.method} ${route}` : r.status === 404 ? `${req.method} (unmatched)` : root.operation;
             telemetry!.end(root, {
               status: r.status,

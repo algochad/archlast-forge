@@ -70,6 +70,8 @@ type AnyCtx = QueryCtx | MutationCtx | ActionCtx;
 
 /** Where the function's or request's ctx sits on the object Nest knows as the request (or the socket). */
 const FORGE_CTX = Symbol.for("archlast-forge.ctx");
+/** Where an untraced call is told its route (executor.ts); null means the call asks for it. */
+const ROUTE = Symbol.for("archlast-forge.route");
 /** Marks a Response whose body is sent as it is written: the engine streams it instead of waiting for the end. */
 const STREAM = Symbol.for("archlast-forge.stream");
 
@@ -890,9 +892,13 @@ class ForgeResponse extends EventEmitter {
   request?: ForgeRequest;
   private readable?: ReadableStream<Uint8Array>;
   private stream?: ReadableStreamDefaultController<Uint8Array>;
-  private resolve!: () => void;
+  private resolve?: () => void;
+  private pending?: Promise<void>;
   /** Resolves when the response is ready to go: ended, or streaming. */
-  readonly done = new Promise<void>((r) => (this.resolve = r));
+  get done(): Promise<void> {
+    // made when something waits (a handler that answers after `next()` returned): most answers are over by then
+    return (this.pending ??= new Promise<void>((r) => (this.resolve = r)));
+  }
 
   get headersSent() {
     return Boolean(this.readable) || this.writableEnded;
@@ -913,7 +919,7 @@ class ForgeResponse extends EventEmitter {
         this.request?.emit("close");
       },
     });
-    this.resolve();
+    this.resolve?.();
   }
   write(chunk: unknown, encoding?: BufferEncoding | (() => void), cb?: () => void) {
     if (this.writableEnded) return false;
@@ -931,7 +937,7 @@ class ForgeResponse extends EventEmitter {
       this.stream!.close();
     } else if (chunk !== undefined && chunk !== null) this.body = typeof chunk === "string" || chunk instanceof Uint8Array || chunk instanceof ArrayBuffer ? (chunk as BodyInit) : String(chunk);
     this.writableEnded = true;
-    this.resolve();
+    this.resolve?.();
     this.emit("finish");
     this.emit("close");
     done?.();
@@ -941,7 +947,7 @@ class ForgeResponse extends EventEmitter {
     this.error = error;
     this.stream?.error(error);
     this.writableEnded = true;
-    this.resolve();
+    this.resolve?.();
   }
 
   status(code: number) {
@@ -1203,7 +1209,10 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
         if (layer.route) {
           req.params = found.params;
           // The request is named after the route it matched, below /http: the mount prefix and Nest's own path.
-          telemetry()?.annotate({ "http.route": (layer.named ??= `${this.prefix.slice(0, -1)}${layer.pattern}`) }, true);
+          const named = (layer.named ??= `${this.prefix.slice(0, -1)}${layer.pattern}`);
+          // a call with no trace has nothing to annotate: it is named by what it leaves on its ctx
+          if ((ctx as unknown as Record<symbol, unknown>)[ROUTE] === null) (ctx as unknown as Record<symbol, unknown>)[ROUTE] = named;
+          else telemetry()?.annotate({ "http.route": named }, true);
         }
         try {
           const out = layer.handler(req, res, next);

@@ -17,7 +17,10 @@ export class Metrics {
     m.calls++;
     if (!ok) m.errors++;
     m.sum += durationMs;
-    for (let i = 0; i < BUCKETS.length; i++) if (durationMs <= BUCKETS[i]!) m.buckets[i]!++;
+    // the first bucket that holds it; the cumulative counts of a histogram are made when it is rendered
+    let i = 0;
+    while (i < BUCKETS.length && durationMs > BUCKETS[i]!) i++;
+    if (i < BUCKETS.length) m.buckets[i]!++;
   }
 
   render(gauges: { subscriptions: number; connections: number; workers: number; backlog?: { waiting: number; waitMs: number }[] }, cache?: CacheSnapshot, loops?: LoopDelays) {
@@ -32,7 +35,7 @@ export class Metrics {
       "# HELP forge_function_duration_ms Function call duration.",
       "# TYPE forge_function_duration_ms histogram",
       ...[...this.fns].flatMap(([n, m]) => [
-        ...BUCKETS.map((b, i) => `forge_function_duration_ms_bucket{${label(n)},le="${b}"} ${m.buckets[i]}`),
+        ...BUCKETS.map((b, i) => `forge_function_duration_ms_bucket{${label(n)},le="${b}"} ${m.buckets.slice(0, i + 1).reduce((a, x) => a + x, 0)}`),
         `forge_function_duration_ms_bucket{${label(n)},le="+Inf"} ${m.calls}`,
         `forge_function_duration_ms_sum{${label(n)}} ${m.sum}`,
         `forge_function_duration_ms_count{${label(n)}} ${m.calls}`,

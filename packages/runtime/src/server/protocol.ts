@@ -39,6 +39,8 @@ export interface HttpResponseMessage {
   telemetry?: CallTelemetry;
   /** The answer is a Nest controller's (`nest(http, ...)`): the server gives it the REST API's security headers. */
   nest?: true;
+  /** The route that answered (`/items/:id`), for an answer that is not traced, which has no `http.route` attribute: the request is named by it, not by its path with ids replaced. */
+  route?: string;
 }
 
 /** Server → function runtime, with no answer: the sockets of Nest gateways and GraphQL subscriptions under /http. */
