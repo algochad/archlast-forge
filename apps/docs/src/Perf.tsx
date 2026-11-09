@@ -97,7 +97,7 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
             <li><b>.NET with comparable work.</b> A Web API with controllers and the middleware a service carries (request ids, security headers, telemetry, a rate limiter) does {k(read("dotnet-webapi"))} reads a second in memory and {k(sql("dotnet-webapi"))} on SQLite, {k(read("dotnet-controllers"))} and {k(sql("dotnet-controllers"))} with controllers alone, against {k(read("dotnet"))} and {k(sql("dotnet"))} as Minimal APIs. Forge's NestJS path does {k(read("forge"))} and {k(sql("forge"))}. <Link to="/benchmarks#what-a-net-web-api-costs">What it costs and why it was measured</Link></li>
             <li><b>Where it loses:</b> one connection at a time, and about 1.5× the CPU of Bun.serve per request.</li>
           </ul>
-          <Link className="btn link" to="/Tuyere">How the engine works <Arrow /></Link>
+          <Link className="btn link" to="/tuyere">How the engine works <Arrow /></Link>
         </div>
         <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
           <div className="optabs" role="tablist" aria-label="Operation">
@@ -165,7 +165,6 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
         <div style={{ display: "grid", gap: 16, minWidth: 0 }}>
           <Bars
             title="Home page, no data"
-            log
             rows={[
               { label: "Forge · kept page", value: home(/as scaffolded/), us: true },
               { label: "brust · alpha.38", value: home(/^brust/) },
@@ -177,7 +176,6 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
           />
           <Bars
             title="Products, 100 rows from a loader"
-            log
             rows={[
               { label: "brust · alpha.38", value: products(/^brust/) },
               { label: "Forge · islands", value: products(/as scaffolded/), us: true },
@@ -206,7 +204,6 @@ export function Perf({ pool: poolSnippet }: { pool: Parameters<typeof Code>[0] }
           <Anvil />
           <Bars
             title="/ping while the server does blocking work"
-            log
             rows={[
               { label: "Idle server", value: pool.pingIdle.rps },
               { label: "Work in Anvil", value: pool.pingPool.rps, us: true },
