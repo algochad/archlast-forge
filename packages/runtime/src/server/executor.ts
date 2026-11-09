@@ -1,5 +1,5 @@
 import { SnapshotMoved, type ReadCache } from "./read-cache";
-import { LightResponse, type LightRequest } from "./light";
+import { MinimalResponse, type MinimalRequest } from "./minimal";
 import { isForgeError, TimeoutError } from "../errors";
 import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, type HttpCtx, type RegisteredFunction, type UserIdentity } from "../functions";
 import { validate, validateFields, ValidationError } from "../values";
@@ -492,7 +492,7 @@ export class Executor {
   }
 
   /** Runs an HTTP action. The caller is resolved from the request's cookie or authorization header, and is anonymous without one. */
-  async runHttp(name: string, action: HttpAction, req: Request | LightRequest, headers: CallHeaders, requestId?: string, routeOut?: { route?: string }): Promise<Response | LightResponse> {
+  async runHttp(name: string, action: HttpAction, req: Request | MinimalRequest, headers: CallHeaders, requestId?: string, routeOut?: { route?: string }): Promise<Response | MinimalResponse> {
     // Anonymous (no cookie, no authorization header) is known without waiting for anything
     const identity = headers.cookie || headers.authorization ? await this.resolveIdentity(headers) : null;
     this.ranAs(identity);
@@ -501,8 +501,8 @@ export class Executor {
     if (routeOut) (ctx as unknown as Record<symbol, unknown>)[ROUTE] = null; // an untraced call: the handler may leave its route here
     const res: unknown = await this.logged(name, requestId, undefined, () => withTimeout(Promise.resolve(action.handler(ctx as unknown as HttpCtx, req as Request)), this.limits.actionTimeoutMs, name));
     if (routeOut) routeOut.route = routeOf(ctx);
-    if (!(res instanceof Response) && !(res instanceof LightResponse)) throw new Error(`${name} must return a Response`);
-    return res as Response | LightResponse;
+    if (!(res instanceof Response) && !(res instanceof MinimalResponse)) throw new Error(`${name} must return a Response`);
+    return res as Response | MinimalResponse;
   }
 
   /**
@@ -512,9 +512,9 @@ export class Executor {
   runHttpAnonymous<R, T>(
     name: string,
     action: HttpAction,
-    req: Request | LightRequest,
+    req: Request | MinimalRequest,
     requestId: string | undefined,
-    answer: (route: R, res: Response | LightResponse, telemetry: undefined, named?: string) => T,
+    answer: (route: R, res: Response | MinimalResponse, telemetry: undefined, named?: string) => T,
     route: R,
     finish?: HttpFinish,
   ): any {
@@ -568,9 +568,9 @@ export class Executor {
     return finish ? finished(finish, out) : out;
   }
 
-  private httpResult(name: string, res: unknown): Response | LightResponse {
-    if (!(res instanceof Response) && !(res instanceof LightResponse)) throw new Error(`${name} must return a Response`);
-    return res as Response | LightResponse;
+  private httpResult(name: string, res: unknown): Response | MinimalResponse {
+    if (!(res instanceof Response) && !(res instanceof MinimalResponse)) throw new Error(`${name} must return a Response`);
+    return res as Response | MinimalResponse;
   }
 
   /** A function's time limit, for mutations run outside `call` (the scheduler). */

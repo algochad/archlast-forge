@@ -36,8 +36,9 @@ import { Firewall, settingsOf, type TestRequest } from "./waf/firewall";
 import { now as clock } from "./telemetry/context";
 import { OtlpExporter } from "./telemetry/export";
 import { telemetryForwarder } from "./telemetry/forward";
+import { serverMemory } from "./db/sqlite";
 import { unlock } from "./db/unlock";
-import { ClusterBus, ClusterHub, ClusterLink, ClusterSupervisor, SharedRateLimiter, clusterDir, isControlPlane, proxy as proxyToFirst, resolveClusterSize, serveControl, type ClusterWire } from "./cluster";
+import { ClusterBus, ClusterHub, ClusterLink, ClusterSupervisor, SharedRateLimiter, clusterDir, isControlPlane, proxy as proxyToFirst, resolveClusterSize, runtimeWorkersPerServer, serveControl, type ClusterWire } from "./cluster";
 import { spanId as newSpanId } from "./telemetry/ids";
 import { failureOf } from "./telemetry/outcome";
 import { normalizePath, Telemetry, type Outcome } from "./telemetry/recorder";
@@ -322,6 +323,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const cluster = await resolveClusterSize(config, env, { dev, command: opts.cluster?.command });
   config.clusterSize = cluster.size;
   if (cluster.size > 1 && !env.DB_ENGINE) config.dbEngine = "native";
+  if (cluster.size > 1) {
+    // The runtime processes are each server's own: `auto` shares the cores among the servers, a number is meant for each. One means the runtime inline.
+    config.runtimeWorkers = runtimeWorkersPerServer(runtimeWorkersFor(env), cluster.size, serverMemory());
+    if (!env.RUNTIME_MODE) config.runtimeMode = config.runtimeWorkers > 1 ? "process" : "inline";
+  }
   const clustered = cluster.size > 1;
   const follower = clustered && config.clusterIndex > 0;
   const clusterFolder = clusterDir(config.dataDir);
@@ -368,9 +374,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const limiter: RateLimiter = limiterRedis ? new RedisRateLimiter(limiterRedis, `${config.redisPrefix}rl:`) : clustered ? new SharedRateLimiter(clusterFolder) : new MemoryRateLimiter();
   if (wire) unlock.send = () => wire.send({ t: "unlock" });
   const takeFromOthers = (m: { t: string; topics?: string[]; topic?: string; payload?: unknown }) => {
-    if (m.t === "unlock") unlock.notify();
+    if (m.t === "unlock") (unlock.notify(), runtime.deliverUnlock());
     else if (m.t === "topics") clusterBus?.receive(m.topics!);
     else if (m.t === "relay") runtime.deliverRelay(m.topic!, m.payload);
+    else if (m.t === "reload") reload().then(() => log("info", "function runtime reloaded (asked by another Bellows server)"), (e) => log("error", `reload failed: ${(e as Error).message}`));
   };
   /** What the other servers hold open now (they tell with their counts), added to this one's in /metrics. */
   const others = new Map<number, { connections: number; subscriptions: number }>();
@@ -398,7 +405,15 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     log("warn", `another app already uses the Redis prefix "${config.redisPrefix}" (it was written with a different BETTER_AUTH_SECRET): apps that share a Redis need their own OTEL_SERVICE_NAME or REDIS_PREFIX, or they share a cache and wake each other's subscriptions. If you just rotated the secret, this goes away once every server has restarted.`);
 
   const runtimeEnv = { ...env }; // gets the bound URL before the runtime starts
-  if (clustered) Object.assign(runtimeEnv, { ARCHLAST_CLUSTER_SIZE: String(cluster.size), ARCHLAST_CLUSTER_INDEX: String(config.clusterIndex), ARCHLAST_WORKER: String(config.clusterIndex) });
+  if (clustered)
+    Object.assign(runtimeEnv, {
+      ARCHLAST_CLUSTER_SIZE: String(cluster.size),
+      ARCHLAST_CLUSTER_INDEX: String(config.clusterIndex),
+      ARCHLAST_WORKER: String(config.clusterIndex),
+      // what this server works out for itself, so its runtime processes (which read the environment as a server does) agree with it
+      RUNTIME_WORKERS: String(config.runtimeWorkers),
+      RUNTIME_MODE: config.runtimeMode,
+    });
   const runtime = new FunctionRuntime({
     forgeDir: resolve(opts.forgeDir),
     env: runtimeEnv,
@@ -467,6 +482,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   };
   // `createPubSub` events reach the runtimes of the other servers of a cluster
   if (wire) runtime.onRelay = (topic, payload) => wire.send({ t: "relay", topic, payload });
+  if (wire) runtime.onUnlock = () => wire.send({ t: "unlock" }); // (a runtime process of this server committed: the other servers' writers may try the lock)
   runtime.onPublish = (topics) => void bus.publish(topics).catch((e) => log("error", "publish failed", { error: String(e) }));
   /** Sockets of Nest gateways, by id: the function runtime sends to and closes them through runtime.onWs. */
   const gatewaySockets = new Map<string, ServerWebSocket<ServerSocket>>();
@@ -580,6 +596,8 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   };
 
   const reload = () => runtime.stop().then(load);
+  /** In a cluster the others follow once this one has reloaded: a variable set with `env set` is read by every server, not only by the one that got the signal. */
+  const reloadAll = () => reload().then((manifest) => (wire?.send({ t: "reload" }), manifest));
   let connections = 0;
   let shuttingDown = false;
   let warnedEcho = false;
@@ -601,7 +619,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       workers: runtime.size,
       uptimeMs: Math.round(process.uptime() * 1000),
     }),
-    reload: () => reload(),
+    reload: () => reloadAll(),
     cache: () => ({ ...queries.snapshot(), backend: config.redisUrl ? "redis" : "memory", maxBytes: config.redisUrl ? null : config.cacheMaxBytes }),
     clearCache: () => queries.clear(),
     customFunctions: config.customFunctions,
@@ -749,7 +767,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         await runtime.admin("settings.save", { name, value: next }, actor);
         // The pool's size applies at once in process mode: processes start, or finish their calls and stop. Into or out of inline mode needs a restart.
         let applied: string | undefined;
-        if ((name === "RUNTIME_WORKERS" || name === "RUNTIME_WORKERS_RATIO") && !overridden && config.runtimeMode === "process") {
+        if ((name === "RUNTIME_WORKERS" || name === "RUNTIME_WORKERS_RATIO") && !overridden && config.runtimeMode === "process" && !clustered) {
           const merged = withSettings(baseEnv, all);
           const wanted = loadConfig(merged, dev);
           if (wanted.runtimeMode === "process") {
@@ -1715,7 +1733,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   let control: ReturnType<typeof serveControl> | undefined;
   let supervisor: ClusterSupervisor | undefined;
   if (clustered && !follower) {
-    log("info", `cluster: ${cluster.why}`);
+    log("info", `Bellows: ${cluster.why}`);
     control = serveControl(clusterFolder, async (req, ip) => {
       const path = new URL(req.url).pathname;
       if (path === "/_cluster/telemetry" && req.method === "POST") {
@@ -1728,7 +1746,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       return (await mainFetch!(req, srv as never)) ?? new Response("Not found", { status: 404 });
     });
     supervisor = new ClusterSupervisor({ size: cluster.size, command: opts.cluster!.command, env: baseEnv, dir: clusterFolder });
-  } else if (follower) log("info", `cluster: server ${config.clusterIndex} of ${cluster.size}`);
+  } else if (follower) log("info", `Bellows: server ${config.clusterIndex} of ${cluster.size}`);
   // Bound to every interface, the local URL is the useful one (Better Auth's default origin, logs).
   const url = ["0.0.0.0", "::"].includes(config.hostname) ? `http://localhost:${server.port}` : server.url.href.replace(/\/$/, "");
   runtimeEnv.BETTER_AUTH_URL ??= url;
@@ -1745,10 +1763,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   // over sockets is started as one server unless the number was asked for.
   if (supervisor && (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.sockets-used")]) {
     if (config.serverProcesses === "auto") {
-      log("info", "cluster: the app has WebSocket gateways, whose sockets stay with one server: running one (SERVER_PROCESSES=n runs n anyway)");
+      log("info", "Bellows: the app has WebSocket gateways, whose sockets stay with one server: running one (SERVER_PROCESSES=n runs n anyway)");
       await supervisor.stop();
       supervisor = undefined;
-    } else log("warn", "cluster: the app has WebSocket gateways; their sockets stay with the server that took them, and Socket.IO's long-polling needs a server for each session: use WebSocket transports only");
+    } else log("warn", "Bellows: the app has WebSocket gateways; their sockets stay with the server that took them, and Socket.IO's long-polling needs a server for each session: use WebSocket transports only");
   }
   supervisor?.start(); // the others, now that the database is migrated and the first can answer them
 
@@ -1789,7 +1807,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     url,
     config,
     runtime,
-    reload,
+    reload: reloadAll,
     async stop({ graceful = true, keepApp = false } = {}) {
       shuttingDown = true;
       clearInterval(sampler);

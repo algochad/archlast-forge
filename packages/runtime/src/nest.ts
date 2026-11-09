@@ -54,7 +54,7 @@ import type { RouteDocs, SecurityRequirement } from "./api-docs";
 import { httpAction, type ActionCtx, type HttpCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
 import { AsyncLocalStorage } from "node:async_hooks";
 import { queryValue } from "./server/http";
-import { LIGHT, LightResponse, type LightRequest } from "./server/light";
+import { MINIMAL, MinimalResponse, type MinimalRequest } from "./server/minimal";
 import { simpleMatcher } from "./server/route-match";
 import { NEST_MOUNT, type NestRoute } from "./server/openapi";
 import { validate, validateFields, ValidationError, type PropertyValidators, type Validator } from "./values";
@@ -390,13 +390,13 @@ export function nest(http: { route(spec: HttpRoute): void; root?: boolean }, opt
   })();
   started.catch(() => {}); // reported to every call that needs the app
 
-  // The mount takes a `LightRequest` and may answer with a `LightResponse` (see server/light.ts): a Nest request needs no Web `Request` or `Response` unless a handler asks.
+  // The mount takes a `MinimalRequest` and may answer with a `MinimalResponse` (see server/minimal.ts): a Nest request needs no Web `Request` or `Response` unless a handler asks.
   let ready: ForgeAdapter | undefined;
   started.then((s) => void (ready = s.adapter), () => {});
   const serve = (ctx: HttpCtx, request: Parameters<ForgeAdapter["handle"]>[0]) => (ready ? ready.handle(request, ctx) : started!.then((s) => s.adapter.handle(request, ctx))) as Promise<Response>; // (a promise or, for a controller that answers at once, the answer)
   const handler = httpAction((ctx, request) => (scoped ? txScope.run({ action: ctx }, () => serve(ctx, request)) : serve(ctx, request)));
   (handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] = true;
-  (handler as unknown as Record<symbol, unknown>)[LIGHT] = true;
+  (handler as unknown as Record<symbol, unknown>)[MINIMAL] = true;
   if (o.helmet !== undefined) (handler as unknown as Record<symbol, unknown>)[Symbol.for("archlast-forge.nest-helmet")] = o.helmet;
   for (const method of METHODS) http.route({ method, pathPrefix: prefix, handler });
   (globalThis as Record<symbol, unknown>)[NEST_ROUTES] = async () => routesOf((await started!).app, http.root ? prefix : `/http${prefix}`);
@@ -835,7 +835,7 @@ class ForgeRequest extends EventEmitter {
   [FORGE_CTX]: ActionCtx;
 
   constructor(
-    private readonly source: Request | LightRequest,
+    private readonly source: Request | MinimalRequest,
     readonly method: string,
     readonly path: string,
     readonly body: unknown,
@@ -1052,7 +1052,7 @@ class ForgeResponse extends EventEmitter {
   }
 
   /** The answer as bytes when that is all it is (a string, bytes or nothing), so the server need not make a `Response` to read it back; otherwise the `Response`. */
-  toAnswer(): Response | LightResponse {
+  toAnswer(): Response | MinimalResponse {
     const empty = this.statusCode === 204 || this.statusCode === 304;
     const body = this.readable ?? (empty ? null : this.body);
     if (body !== null && typeof body !== "string" && !(body instanceof Uint8Array)) return this.toResponse();
@@ -1069,7 +1069,7 @@ class ForgeResponse extends EventEmitter {
     }
     // `new Response("text")` says what it is when sent: the same here
     if (typeof body === "string" && !typed) headers.push(["content-type", "text/plain;charset=utf-8"]);
-    return new LightResponse(this.statusCode, headers, body);
+    return new MinimalResponse(this.statusCode, headers, body);
   }
 
   toResponse() {
@@ -1135,12 +1135,12 @@ const unsupported = (what: string) => new Error(`${what} is not available for Ne
 const NO_BODY: { body: unknown; rawBody?: Buffer } = { body: undefined };
 const noop = () => {};
 /** The response as the answer, or its error thrown (before the head went out; an error while streaming ends the stream instead). */
-function answerOf(res: ForgeResponse): Response | LightResponse {
+function answerOf(res: ForgeResponse): Response | MinimalResponse {
   if (res.error) throw res.error;
   return res.toAnswer();
 }
 
-async function readBody(request: Request | LightRequest): Promise<{ body: unknown; rawBody?: Buffer }> {
+async function readBody(request: Request | MinimalRequest): Promise<{ body: unknown; rawBody?: Buffer }> {
   if (request.method === "GET" || request.method === "HEAD") return { body: undefined };
   let rawBody: Buffer;
   let type: string;
@@ -1194,12 +1194,12 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
    * promise when the controller's does not (a request with a body waits for it first), and with exactly one when it is: each promise made between the socket and the
    * handler is a turn of the event loop's microtasks.
    */
-  handle(request: Request | LightRequest, ctx: ActionCtx): Promise<Response | LightResponse> | Response | LightResponse {
+  handle(request: Request | MinimalRequest, ctx: ActionCtx): Promise<Response | MinimalResponse> | Response | MinimalResponse {
     if (request.method === "GET" || request.method === "HEAD") return this.dispatch(request, ctx, NO_BODY); // a read has no body to wait for
     return this.withBody(request, ctx);
   }
 
-  private async withBody(request: Request | LightRequest, ctx: ActionCtx): Promise<Response | LightResponse> {
+  private async withBody(request: Request | MinimalRequest, ctx: ActionCtx): Promise<Response | MinimalResponse> {
     let parsed: Awaited<ReturnType<typeof readBody>>;
     try {
       parsed = await readBody(request);
@@ -1210,7 +1210,7 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
     return this.dispatch(request, ctx, parsed);
   }
 
-  private dispatch(request: Request | LightRequest, ctx: ActionCtx, parsed: { body: unknown; rawBody?: Buffer }): Promise<Response | LightResponse> | Response | LightResponse {
+  private dispatch(request: Request | MinimalRequest, ctx: ActionCtx, parsed: { body: unknown; rawBody?: Buffer }): Promise<Response | MinimalResponse> | Response | MinimalResponse {
     // Nest sees paths below the mount point, so `prefix: "/api/"` with `@Controller("users")` serves /http/api/users.
     const pathname = request instanceof Request ? splitUrl(request.url).pathname : request.path;
     const search = request instanceof Request ? splitUrl(request.url).search : request.search;

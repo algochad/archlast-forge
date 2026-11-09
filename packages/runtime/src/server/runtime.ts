@@ -385,6 +385,12 @@ export class FunctionRuntime {
   deliverRelay(topic: string, payload: unknown) {
     for (const w of this.workers) if (w.ready) w.event({ t: "relay", topic, payload });
   }
+  /** A runtime process let go of the database's write lock: to the other servers of a cluster. */
+  onUnlock: () => void = () => {};
+  /** Another server let go of the write lock: the runtime processes of this one that wait for it may try. */
+  deliverUnlock() {
+    for (const w of this.workers) if (w.ready) w.event({ t: "unlock" });
+  }
   onLog: (entry: LogEntry) => void = () => {};
   /** A gateway sends to, or closes, one of the server's sockets. */
   onWs: (msg: SocketMessage) => void = () => {};
@@ -413,7 +419,10 @@ export class FunctionRuntime {
       else if (msg.t === "metrics") this.onMetrics(msg.points, msg.instance);
       else if (msg.t === "sample")
         this.onSample({ ...msg.sample, inflight: this.workers[index]?.load }); // calls waiting in that process, for the Runtime page
-      else if (msg.t === "relay") {
+      else if (msg.t === "unlock") {
+        this.workers.forEach((w, i) => i !== index && w.ready && w.event({ t: "unlock" })); // the other runtime processes of this server
+        this.onUnlock(); // and the other servers of a cluster
+      } else if (msg.t === "relay") {
         for (const w of this.workers) if (w.ready) w.event(msg); // to every worker, the sender too: one path for all
         this.onRelay(msg.topic, msg.payload); // and to the other servers of a cluster
       }

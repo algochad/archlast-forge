@@ -244,14 +244,6 @@
         "socket.io-client": "^4.8.4",
       },
     },
-    "packages/serve": {
-      "name": "@archlast/forge-serve",
-      "version": "0.17.0",
-      "devDependencies": {
-        "@types/bun": "1.4.4",
-        "playwright-core": "^1.64.1",
-      },
-    },
     "packages/svelte": {
       "name": "@archlast/forge-svelte",
       "version": "0.17.0",
@@ -261,6 +253,14 @@
       },
       "devDependencies": {
         "@types/bun": "1.4.4",
+      },
+    },
+    "packages/tuyere": {
+      "name": "@archlast/forge-tuyere",
+      "version": "0.17.0",
+      "devDependencies": {
+        "@types/bun": "1.4.4",
+        "playwright-core": "^1.64.1",
       },
     },
     "packages/vue": {
@@ -307,9 +307,9 @@
 
     "@archlast/forge-runtime": ["@archlast/forge-runtime@workspace:packages/runtime"],
 
-    "@archlast/forge-serve": ["@archlast/forge-serve@workspace:packages/serve"],
-
     "@archlast/forge-svelte": ["@archlast/forge-svelte@workspace:packages/svelte"],
+
+    "@archlast/forge-tuyere": ["@archlast/forge-tuyere@workspace:packages/tuyere"],
 
     "@archlast/forge-vue": ["@archlast/forge-vue@workspace:packages/vue"],
 

@@ -51,6 +51,8 @@ class NativeTx implements DbTx {
 export interface ClusterSeat {
   size: number;
   index: number;
+  /** Whether this handle keeps the write-ahead log (the checkpoint's thread): one of all that share the file. */
+  keeper?: boolean;
   /** The folder the servers' shared files are in (the commit counters of their read caches). */
   dir?: string;
 }
@@ -60,7 +62,7 @@ export function createNativeSqliteDb(path: string, native: NativeDb, readers = 4
   const sized = ram ? sqliteMemory(ram, readers + 1) : undefined;
   // In a cluster one process keeps the write-ahead log (the first), and all of them see its pause (a lock beside the file).
   const shared = cluster !== undefined && cluster.size > 1;
-  const engine: NativeEngine = new native.Engine(path, JSON.stringify({ readers, mmapBytes: sized?.mmapBytes, cacheKiB: sized?.cacheKiB, checkpoint: !shared || cluster.index === 0, shared, epochs: shared && cluster.dir ? join(cluster.dir, "epochs.shm") : undefined }));
+  const engine: NativeEngine = new native.Engine(path, JSON.stringify({ readers, mmapBytes: sized?.mmapBytes, cacheKiB: sized?.cacheKiB, checkpoint: !shared || (cluster.keeper ?? cluster.index === 0), shared, epochs: shared && cluster.dir ? join(cluster.dir, "epochs.shm") : undefined }));
 
   // ---- the writer: group commit ----
   // Write transactions run one at a time on the writer, but those that queue up meanwhile run back to back in one SQLite transaction, each in its own savepoint,

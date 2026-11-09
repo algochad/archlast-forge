@@ -109,7 +109,7 @@ export const SETTINGS: SettingDef[] = [
     type: "enum",
     options: ["bun", "native"],
     default: "bun",
-    doc: "What runs the SQLite database: bun (bun:sqlite) or native (the engine's Rust layer, packages/db: it owns the connections, the WAL and the document operations). native is for Linux where the layer is built (the engine image); asked for where it is missing, the server does not start.",
+    doc: "What runs the SQLite database: bun (bun:sqlite) or native (Hearth, the engine's Rust layer, packages/db: it owns the connections, the WAL and the document operations). native is for Linux where the layer is built (the engine image); asked for where it is missing, the server does not start.",
     envOnly: BOOT,
   },
   { name: "SCHEMA_CHECK", group: "Database", type: "bool", default: "on outside dev", doc: "At startup, refuse to serve when stored documents don't match the schema." },
@@ -156,7 +156,7 @@ export const SETTINGS: SettingDef[] = [
     min: 1,
     options: ["auto"],
     default: "auto",
-    doc: "Servers of this app on this machine, sharing its port, each with one I/O thread and one event loop. `auto`: one for every two cores from 4 cores (4 cores: 2, 8: 4, at most 8), when the app runs with `archlast-forge start`, on SQLite with the native engine and the native database layer; else 1. The first keeps the scheduler, backups and dashboard; the others answer requests and send what they record to it. Needs SQLite (the native layer, which a cluster switches on), RUNTIME_WORKERS=1 and a production start. 1 runs one server.",
+    doc: "Bellows: servers of this app on this machine, sharing its port, each with one I/O thread and one event loop. `auto`: two servers from 4 cores (one below, and one when the memory could not hold two), when the app runs with `archlast-forge start`, on SQLite with the native engine and Hearth, the native database layer; else 1. The first keeps the scheduler, backups and dashboard; the others answer requests and send what they record to it. Needs SQLite (Hearth, which Bellows switches on) and a production start; RUNTIME_WORKERS gives each server its own runtime processes. 1 runs one server.",
   },
   {
     name: "RUNTIME_MODE",

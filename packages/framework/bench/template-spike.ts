@@ -2,9 +2,9 @@
 //   MODE=react|rust bun packages/framework/bench/template-spike.ts
 import { createElement as h } from "react";
 import { renderToString } from "react-dom/server";
-import { Reply, TemplateReply } from "../../serve/src/index.ts";
-import { serveCompat } from "../../serve/src/compat.ts";
-import { registerTemplate, renderTemplate } from "../../serve/src/templates.ts";
+import { Reply, TemplateReply } from "../../tuyere/src/index.ts";
+import { serveCompat } from "../../tuyere/src/compat.ts";
+import { registerTemplate, renderTemplate } from "../../tuyere/src/templates.ts";
 
 const WORDS = ["Anvil", "Bolt", "Cable", "Drill", "Engine", "Filter", "Gasket", "Hinge", "Insert", "Joint"];
 const rows = Array.from({ length: 100 }, (_, i) => ({ id: i + 1, name: `${WORDS[i % 10]} ${WORDS[(i * 7) % 10]} ${i + 1}`, sku: `SKU-${String(i + 1).padStart(5, "0")}`, stock: (i * 37) % 500, price: `$${(1.99 + ((i * 7919) % 250000) / 100).toFixed(2)}`, added: `Jan ${(i % 28) + 1}, 2026` }));

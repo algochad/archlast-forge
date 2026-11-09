@@ -134,7 +134,7 @@ export interface RpcOptions {
   maxRequestBytes?: number;
   telemetry?: Telemetry;
   /**
-   * Builds the answer to a successful call. Set when the HTTP engine has a type cheaper than Web `Response` (archlast-serve's `Reply`); it
+   * Builds the answer to a successful call. Set when the HTTP engine has a type cheaper than Web `Response` (Tuyere's `Reply`); it
    * is read at each call. Such an answer is returned with the CORS headers of `ctx.cors` already on it, since it has no `Headers` to add to.
    */
   reply?: (body: string | Uint8Array, headers: Record<string, string>) => Response;

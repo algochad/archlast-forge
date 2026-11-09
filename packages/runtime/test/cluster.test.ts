@@ -3,7 +3,7 @@ import { existsSync, statSync } from "node:fs";
 import { join } from "node:path";
 import { nativeEngine } from "../src/server/engine";
 import { nativeDb } from "../src/server/db/native";
-import { clusterSizeFor } from "../src/server/cluster";
+import { clusterSizeFor, runtimeWorkersPerServer } from "../src/server/cluster";
 import { addAdmin } from "../src/server/admin-ops";
 import { createSqliteDb } from "../src/server/db/sqlite";
 import { migrateSystem } from "../src/server/system";
@@ -17,8 +17,21 @@ const fixture = join(import.meta.dir, "fixture-cluster");
 const ADMIN = "k".repeat(32);
 const capable = Boolean(nativeDb()) && process.platform === "linux";
 
-test("one server for every two cores, at most 8", () => {
-  expect([1, 2, 3, 4, 5, 6, 8, 12, 16, 64].map(clusterSizeFor)).toEqual([1, 1, 1, 2, 2, 3, 4, 6, 8, 8]);
+const GiB = 1024 ** 3;
+
+test("two servers from 4 cores, one below, and fewer when they would not fit in memory", () => {
+  expect([1, 2, 3, 4, 5, 6, 8, 12, 16, 64].map((c) => clusterSizeFor(c))).toEqual([1, 1, 1, 2, 2, 2, 2, 2, 2, 2]);
+  expect(clusterSizeFor(8, 2 * GiB)).toBe(2);
+  expect(clusterSizeFor(8, 0.5 * GiB)).toBe(1); // (two would not fit beside each other)
+  expect(clusterSizeFor(16, 0.25 * GiB)).toBe(1);
+});
+
+test("runtime processes per server: `auto` shares the cores among the servers, a number is each server's own", () => {
+  const auto = (cores: number) => ({ workers: Math.max(1, Math.floor(cores * 0.5)), auto: true });
+  // 4 cores: the runtime stays inline in each server; 8 cores: two processes each; 16: four each
+  expect([4, 8, 16].map((c) => runtimeWorkersPerServer(auto(c), 2))).toEqual([1, 2, 4]);
+  expect(runtimeWorkersPerServer(auto(16), 2, 1 * GiB)).toBe(1); // (memory short: the servers first, the runtime inline)
+  expect(runtimeWorkersPerServer({ workers: 3, auto: false }, 2)).toBe(3);
 });
 
 const freePort = () => {
@@ -233,6 +246,170 @@ describe.skipIf(!capable)("restarting a cluster", () => {
       await c.stop();
     }
   }, 90_000);
+});
+
+describe.skipIf(!capable)("reloading a cluster", () => {
+  // `env set` and `env rm` change what the next load of the function runtime reads, and the CLI asks the first server (SIGHUP) to reload: every server must follow, with its
+  // caches (the native read cache, the query cache) still right afterwards.
+  test("a reload on the first server reaches the others: a stored variable is read by every server, and the caches keep up with writes after it", async () => {
+    if (!(await nativeEngine())) return;
+    const data = tempDir();
+    const withDb = async <T>(fn: (db: ReturnType<typeof createSqliteDb>) => Promise<T>) => {
+      const db = createSqliteDb(join(data, "app.db"));
+      try {
+        return await fn(db);
+      } finally {
+        await db.close();
+      }
+    };
+    await withDb((db) => migrateSystem(db));
+    const c = await start({}, 2, data);
+    const flags = async () => {
+      const seen = new Map<number, string | null>();
+      for (let i = 0; i < 80; i++) {
+        const r = (await (await c.fetch("/http/env")).json()) as { flag: string | null; pid: number };
+        seen.set(r.pid, r.flag);
+      }
+      return seen;
+    };
+    const reloaded = async (flag: string | null) => {
+      c.proc.kill("SIGHUP");
+      const until = Date.now() + 30_000;
+      while (Date.now() < until) {
+        const seen = await flags().catch(() => new Map<number, string | null>());
+        if (seen.size === 2 && [...seen.values()].every((f) => f === flag)) return seen;
+        await Bun.sleep(100);
+      }
+      return flags();
+    };
+    try {
+      expect([...(await flags()).values()]).toEqual([null, null]);
+      await withDb(async (db) => db.execute(`INSERT INTO "_env" ("name", "value", "updatedAt") VALUES ('CLUSTER_FLAG', 'on', 0)`));
+      expect([...(await reloaded("on")).values()]).toEqual(["on", "on"]); // (both servers, not only the one that got the signal)
+      // the caches after a reload: a cached query and the read cache see every write, whichever server took it
+      const call = async (fn: string, body: object = {}) => c.fetch(`/rpc/${fn}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+      const read = async () => ((await (await c.fetch(`/rpc/counter:get?args=${encodeURIComponent(JSON.stringify({ name: "after" }))}`)).json()) as { result: number }).result;
+      for (let i = 1; i <= 40; i++) {
+        expect((await call("counter:inc", { name: "after" })).ok).toBe(true);
+        for (let tries = 0; tries < 50 && (await read()) !== i; tries++) await Bun.sleep(20);
+        expect(await read()).toBe(i);
+      }
+      const total = await Promise.all(Array.from({ length: 100 }, () => c.fetch("/http/inc", { method: "POST" })));
+      expect(total.every((r) => r.ok)).toBe(true);
+      expect(await (await c.fetch("/http/count")).json()).toBe(100);
+      // and a variable removed is gone from both
+      await withDb(async (db) => db.execute(`DELETE FROM "_env" WHERE "name" = 'CLUSTER_FLAG'`));
+      expect([...(await reloaded(null)).values()]).toEqual([null, null]);
+      expect(await (await c.fetch("/http/count")).json()).toBe(100); // the data is where it was
+    } finally {
+      await c.stop();
+    }
+  }, 120_000);
+});
+
+describe.skipIf(!capable)("a cluster whose servers run their functions in runtime processes", () => {
+  // RUNTIME_WORKERS above 1 gives every server a pool of runtime processes of its own (restarted alone, killed when stuck), beside the other server's: the processes
+  // share the one SQLite file, so their writes, their caches and their wake-ups for the write lock have to work across all of them.
+  let c: Running;
+  const pids = async (n = 150) => {
+    const seen = new Map<number, number>(); // pid -> server index
+    for (let i = 0; i < n; i++) {
+      const w = await who(c);
+      seen.set(w.pid, w.index);
+    }
+    return seen;
+  };
+  beforeAll(async () => {
+    if (!(await nativeEngine())) return;
+    c = await start({ RUNTIME_WORKERS: "2", ACTION_TIMEOUT_MS: "1000" }, 2);
+  }, 90_000);
+  afterAll(async () => c?.stop());
+
+  test("both servers answer, each from its own runtime processes", async () => {
+    const seen = await pids();
+    expect(new Set(seen.values())).toEqual(new Set([0, 1]));
+    expect(seen.size).toBeGreaterThan(2); // (more processes than servers: the requests were run by the runtime processes)
+    expect(seen.has(c.proc.pid)).toBe(false); // (and none by the server process itself)
+  });
+
+  test("no update is lost between the processes, and reads see every write", async () => {
+    const results = await Promise.all(Array.from({ length: 300 }, () => c.fetch("/http/inc", { method: "POST" })));
+    expect(results.every((r) => r.ok)).toBe(true);
+    expect(await (await c.fetch("/http/count")).json()).toBe(300);
+    const call = async (fn: string, body: object) => c.fetch(`/rpc/${fn}`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
+    const read = async () => ((await (await c.fetch(`/rpc/counter:get?args=${encodeURIComponent(JSON.stringify({ name: "p" }))}`)).json()) as { result: number }).result;
+    for (let i = 1; i <= 30; i++) {
+      expect((await call("counter:inc", { name: "p" })).ok).toBe(true);
+      for (let tries = 0; tries < 50 && (await read()) !== i; tries++) await Bun.sleep(20);
+      expect(await read()).toBe(i);
+    }
+  }, 60_000);
+
+  test("a runtime process that dies is replaced, and a stuck one is killed alone", async () => {
+    const before = await pids(100);
+    const victim = [...before.keys()][0]!;
+    process.kill(victim, "SIGKILL");
+    let after = new Map<number, number>();
+    for (let i = 0; i < 40; i++) {
+      after = await pids(60).catch(() => new Map());
+      if (after.size >= 4 && !after.has(victim)) break;
+      await Bun.sleep(100);
+    }
+    expect(after.has(victim)).toBe(false);
+    expect(after.size).toBeGreaterThan(2);
+    // a function that never returns: its process is killed after the time limit and a grace period, while the app goes on answering
+    const stuck = c.fetch("/http/spin").catch(() => undefined);
+    const started = Date.now();
+    let answered = 0;
+    while (Date.now() - started < 9_000) {
+      const r = await c.fetch("/http/who").catch(() => undefined);
+      if (r?.ok) answered++;
+      await Bun.sleep(50);
+    }
+    expect(answered).toBeGreaterThan(40); // (the other processes answered throughout)
+    await stuck;
+    const later = await pids(100);
+    expect(later.size).toBeGreaterThan(2); // (the stuck one is back too)
+    expect(await (await c.fetch("/http/count")).json()).toBe(300); // the data is where it was
+  }, 90_000);
+
+  test("a reload reaches every server and its runtime processes", async () => {
+    const data = tempDir();
+    const withDb = async <T>(fn: (db: ReturnType<typeof createSqliteDb>) => Promise<T>) => {
+      const db = createSqliteDb(join(data, "app.db"));
+      try {
+        return await fn(db);
+      } finally {
+        await db.close();
+      }
+    };
+    await withDb((db) => migrateSystem(db));
+    const own = await start({ RUNTIME_WORKERS: "2" }, 2, data);
+    try {
+      const flags = async () => {
+        const seen = new Map<number, string | null>();
+        for (let i = 0; i < 120; i++) {
+          const r = (await (await own.fetch("/http/env")).json()) as { flag: string | null; pid: number };
+          seen.set(r.pid, r.flag);
+        }
+        return seen;
+      };
+      expect([...(await flags()).values()].every((f) => f === null)).toBe(true);
+      await withDb(async (db) => db.execute(`INSERT INTO "_env" ("name", "value", "updatedAt") VALUES ('CLUSTER_FLAG', 'on', 0)`));
+      own.proc.kill("SIGHUP");
+      const until = Date.now() + 40_000;
+      let seen = new Map<number, string | null>();
+      while (Date.now() < until) {
+        seen = await flags().catch(() => new Map());
+        if (seen.size > 2 && [...seen.values()].every((f) => f === "on")) break;
+        await Bun.sleep(150);
+      }
+      expect(seen.size).toBeGreaterThan(2);
+      expect([...seen.values()].every((f) => f === "on")).toBe(true);
+    } finally {
+      await own.stop();
+    }
+  }, 120_000);
 });
 
 describe.skipIf(!capable)("a cluster under saturated writes and a rate limit", () => {

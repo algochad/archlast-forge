@@ -23,7 +23,7 @@ export interface HandlerOptions {
   /** Most bytes in a WebSocket frame. */
   maxPayload?: number;
   /**
-   * Builds the answer to a call. A server whose engine has a cheaper type than Web `Response` (archlast-serve's `Reply`) says so here; it is
+   * Builds the answer to a call. A server whose engine has a cheaper type than Web `Response` (Tuyere's `Reply`) says so here; it is
    * read at each call, so it may be set after the server has started. Default: `new Response`.
    */
   respond?: (body: string, status: number, headers: Record<string, string>) => Response;

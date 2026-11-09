@@ -191,7 +191,7 @@ export class ForgeRpcServer extends Server implements CustomTransportStrategy {
       // before it compares anything, so how far a wrong guess matches is not something timing can show.
       const accepted = new Set<string>();
       const maxBody = Number(process.env.MAX_REQUEST_BYTES) || 8 * 1024 * 1024;
-      // Set once the engine is up, when it is archlast-serve: its Reply skips the Web Response (about 2.6 us of a call's 12).
+      // Set once the engine is up, when it is Tuyere: its Reply skips the Web Response (about 2.6 us of a call's 12).
       let EngineReply: NativeEngine["Reply"] | undefined;
       const rpc = createRpc({
         maxPayload: maxBody,

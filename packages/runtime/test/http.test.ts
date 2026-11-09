@@ -136,20 +136,20 @@ describe("httpRouter", () => {
     expect(await (await http("/arguments")).json()).toEqual({ url: "/arguments" });
   });
 
-  test("a lightAction route is given the request's fields and answers with bytes, or with a Response if it likes", async () => {
-    const res = await http("/light?x=1", { method: "POST", body: "hello bytes" });
+  test("a minimalAction route is given the request's fields and answers with bytes, or with a Response if it likes", async () => {
+    const res = await http("/minimal?x=1", { method: "POST", body: "hello bytes" });
     expect(res.status).toBe(201);
-    expect(res.headers.get("x-light")).toBe("1");
+    expect(res.headers.get("x-minimal")).toBe("1");
     expect(res.headers.get("content-type")).toBe("application/json");
     expect(res.headers.get("x-request-id")).toBeTruthy();
-    expect(await res.json()).toEqual({ method: "POST", path: "/light", search: "?x=1", text: "hello bytes", host: true, who: null });
-    const empty = await http("/light?empty=1", { method: "POST" });
+    expect(await res.json()).toEqual({ method: "POST", path: "/minimal", search: "?x=1", text: "hello bytes", host: true, who: null });
+    const empty = await http("/minimal?empty=1", { method: "POST" });
     expect(empty.status).toBe(204);
-    expect(empty.headers.get("x-light")).toBe("1");
+    expect(empty.headers.get("x-minimal")).toBe("1");
     expect(await empty.text()).toBe("");
-    const web = await http("/light?web=1", { method: "POST" });
+    const web = await http("/minimal?web=1", { method: "POST" });
     expect(await web.text()).toBe("from a Response");
-    expect(web.headers.get("x-light")).toBe("web");
+    expect(web.headers.get("x-minimal")).toBe("web");
   });
 
 });

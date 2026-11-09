@@ -1,5 +1,5 @@
 import type { HelmetOptions } from "helmet";
-import { LIGHT, type LightRequest, type LightResponse } from "./server/light";
+import { MINIMAL, type MinimalRequest, type MinimalResponse } from "./server/minimal";
 import { checkDocsConfig, type ApiDocsConfig, type RouteDocs } from "./api-docs";
 
 /** Helmet's options per surface, or false for no security headers there. */
@@ -296,7 +296,7 @@ export interface ActionCtx {
 }
 
 /**
- * What an HTTP route's handler gets (`httpAction`, `lightAction`, a NestJS controller's `@Ctx()`): an action's ctx and direct access to the database.
+ * What an HTTP route's handler gets (`httpAction`, `minimalAction`, a NestJS controller's `@Ctx()`): an action's ctx and direct access to the database.
  * `read` runs `fn` in one read transaction and `write` in one write transaction, as a query and a mutation run, without calling a function by name: no
  * argument validation, no access check or result cache, no function span or log line of its own (the database spans are recorded). Writes publish their
  * topics after the commit, so live queries update as for any mutation.
@@ -512,13 +512,13 @@ export function httpAction(handler: HttpAction["handler"]): HttpAction {
 }
 
 /**
- * An HTTP action that is given the request's fields (`method`, `path`, `search`, `headers`, `body` as bytes) and answers with a `LightResponse` (`lightJson`,
- * `lightText`) instead of a Web `Request` and `Response`: for routes that answer from memory or a quick query, where making and reading those objects is much
+ * An HTTP action that is given the request's fields (`method`, `path`, `search`, `headers`, `body` as bytes) and answers with a `MinimalResponse` (`minimalJson`,
+ * `minimalText`) instead of a Web `Request` and `Response`: for routes that answer from memory or a quick query, where making and reading those objects is much
  * of what a request costs. A `Response` it returns is accepted too. Used in `http.route` as `httpAction` is.
  */
-export function lightAction(handler: (ctx: HttpCtx, request: LightRequest) => LightResponse | Response | Promise<LightResponse | Response>): HttpAction {
+export function minimalAction(handler: (ctx: HttpCtx, request: MinimalRequest) => MinimalResponse | Response | Promise<MinimalResponse | Response>): HttpAction {
   const action: HttpAction = { kind: "httpAction", handler: handler as unknown as HttpAction["handler"] };
-  (action as unknown as Record<symbol, unknown>)[LIGHT] = true;
+  (action as unknown as Record<symbol, unknown>)[MINIMAL] = true;
   return action;
 }
 

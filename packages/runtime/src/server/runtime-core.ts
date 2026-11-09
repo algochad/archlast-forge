@@ -11,13 +11,14 @@ import { loadConfig } from "./config";
 import { openDatabase } from "./db/open";
 import { describePlan } from "./db/pool-size";
 import { serverMemory } from "./db/sqlite";
+import { unlock } from "./db/unlock";
 import type { Db } from "./db/types";
 import type { HttpRoute, UserIdentity } from "../functions";
 import { Executor, logContext, serializeError, type CallHeaders, type LogEntry } from "./executor";
 import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
 import { checkHttpRequest, matchRoute, routeName, takesRequest } from "./http";
 import { buildOpenApi, docsWarnings, NEST_MOUNT, type NestRoute } from "./openapi";
-import { LIGHT, LightResponse } from "./light";
+import { MINIMAL, MinimalResponse } from "./minimal";
 import type { HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
 import { createStorage } from "./storage";
@@ -209,19 +210,24 @@ export async function startCore(opts: {
   const health = opts.sample ? processSampler() : undefined;
   const sampleTimer = health && setInterval(() => send({ t: "sample", sample: { time: Date.now(), instance, role: "runtime", ...health() } }), 10_000);
   const config = loadConfig(opts.env, opts.dev);
+  // What happens once for the app (the scheduler, crons, backups, the schema check, the log's keeper) belongs to the first runtime process of the first server.
+  const owner = worker === 0 && config.clusterIndex === 0;
+  /** Whether this process keeps a read cache: on the native layer always (its commit counters, shared by every process on the file, keep it right), else only while it is the database's one writer. */
+  const readCacheFor = (workers: number) => (config.databaseKind === "sqlite" && (config.dbEngine === "native" || (workers === 1 && config.clusterSize === 1)) ? new ReadCache() : undefined);
 
   if (config.databaseKind !== "postgres") mkdirSync(config.dataDir, { recursive: true });
   // Every function runtime process holds its own connections, so they share the RAM SQLite is given.
   // On Postgres the first process says what the pools hold against what the database allows, and warns when that is close to the limit.
   const db = await openDatabase(config, serverMemory() / (config.runtimeWorkers * config.clusterSize), {
+    keeper: owner,
     plan: (plan) => {
-      if (worker !== 0) return;
+      if (!owner) return;
       const { level, message } = describePlan(plan);
       if (level === "warn") console.warn(message);
       else console.log(message);
     },
   });
-  if (worker === 0 && config.databaseKind === "sqlite" && config.dbEngine === "native") console.log("database: SQLite on the native layer (DB_ENGINE=native)");
+  if (owner && config.databaseKind === "sqlite" && config.dbEngine === "native") console.log("database: SQLite on Hearth, the native layer (DB_ENGINE=native)");
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);
@@ -236,11 +242,11 @@ export async function startCore(opts: {
     publish: (topics) => send({ t: "publish", topics }),
     log: emit,
     // Only this process writes the local database when it is the one function runtime (and the one server), so its own writes keep the cache exact.
-    readCache: config.databaseKind === "sqlite" && config.runtimeWorkers === 1 && (config.clusterSize === 1 || config.dbEngine === "native") ? new ReadCache() : undefined, // (a cluster: the native layer's caches learn of the other servers' commits)
+    readCache: readCacheFor(config.runtimeWorkers), // (a cluster: the native layer's caches learn of the other servers' commits)
     // Inside a call, so the warning is listed with the function that ran the query.
     devWarn: config.dev ? (message) => console.warn(message) : undefined,
   });
-  if (config.schemaCheck && worker === 0) await checkSchema(exec, project);
+  if (config.schemaCheck && owner) await checkSchema(exec, project);
   // What @archlast/forge-runtime/nest reaches the engine through, for work that doesn't start as a call: gateway sockets and microservice messages.
   (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.host")] = {
     identityOf: (headers: CallHeaders) => exec.identityOf(headers),
@@ -256,7 +262,7 @@ export async function startCore(opts: {
   const auth = createAuth(exec, project.tables, project.authOptions, config);
   // One scheduler per server: in a runtime pool only the first process polls.
   const scheduler =
-    worker === 0
+    owner
       ? new SchedulerLoop(
           exec,
           db,
@@ -270,7 +276,7 @@ export async function startCore(opts: {
       : undefined;
   const release = releaseOf(forgeDir, opts.env);
   // Backups run in the first process, next to the scheduler: one place per server makes them, so the scheduled one runs once.
-  const backups = worker === 0 ? new Backups({ db, exec, tables: project.tables, forgeDir, storage, config, env: opts.env, serverId, release }) : undefined;
+  const backups = owner ? new Backups({ db, exec, tables: project.tables, forgeDir, storage, config, env: opts.env, serverId, release }) : undefined;
   await backups?.recover();
   const backupTimer =
     backups &&
@@ -308,9 +314,9 @@ export async function startCore(opts: {
     }
   };
 
-  /** The message the server is answered with, for what a route's handler returned. The answer of a `LightResponse` needs no waiting; a `Response`'s body does. */
-  function httpAnswer(route: HttpRoute, res: Response | LightResponse, telemetry: CallTelemetry | undefined, named?: string): HttpResponseMessage | Promise<HttpResponseMessage> {
-    if (res instanceof LightResponse) {
+  /** The message the server is answered with, for what a route's handler returned. The answer of a `MinimalResponse` needs no waiting; a `Response`'s body does. */
+  function httpAnswer(route: HttpRoute, res: Response | MinimalResponse, telemetry: CallTelemetry | undefined, named?: string): HttpResponseMessage | Promise<HttpResponseMessage> {
+    if (res instanceof MinimalResponse) {
       // a copy of the headers only when one has to go (a handler sets no content-length of its own, nearly always)
       let out = res.headers;
       for (let i = 0; i < out.length; i++)
@@ -391,11 +397,11 @@ export async function startCore(opts: {
       };
       return finish ? finish.ok(answer) : answer;
     }
-    const light = (route.handler as unknown as Record<symbol, unknown>)[LIGHT] === true;
+    const minimal = (route.handler as unknown as Record<symbol, unknown>)[MINIMAL] === true;
     return exec.runHttpAnonymous(
       routeName(route),
       route.handler,
-      light
+      minimal
         ? {
             method,
             get url() {
@@ -459,11 +465,11 @@ export async function startCore(opts: {
           // The route's pattern, for the request's name; a Nest controller names its own, finer one.
           annotate({ "http.route": route.path ?? `${route.pathPrefix}*` }, true);
           // A route that can do without Web objects (Nest's mount) is given the fields of the request and answers with its own.
-          const light = (route.handler as unknown as Record<symbol, unknown>)[LIGHT] === true;
+          const minimal = (route.handler as unknown as Record<symbol, unknown>)[MINIMAL] === true;
           return exec.runHttp(
             name,
             route.handler,
-            light
+            minimal
               ? {
                   method,
                   url,
@@ -482,7 +488,7 @@ export async function startCore(opts: {
             routeOut,
           );
         };
-        let res: Response | LightResponse;
+        let res: Response | MinimalResponse;
         if (msg.trace) {
           const traced_ = await traced(msg.trace, name, run);
           telemetry = traced_.telemetry;
@@ -538,7 +544,8 @@ export async function startCore(opts: {
   };
   function event(msg: HostEvent) {
     // Another process writing would make cached rows stale: a fresh cache only once this one is the only writer again.
-    if (msg.t === "pool") return exec.setReadCache(config.databaseKind === "sqlite" && msg.workers === 1 ? new ReadCache() : undefined);
+    if (msg.t === "unlock") return unlock.notify();
+    if (msg.t === "pool") return exec.setReadCache(readCacheFor(msg.workers));
     const take = (globalThis as Record<symbol, unknown>)[msg.t === "relay" ? RELAY : SOCKETS] as ((msg: HostEvent) => void) | undefined;
     if (take) return take(msg);
     if (msg.t === "ws" && msg.op === "open") send({ t: "ws", op: "close", sid: msg.sid, code: 1008, reason: "No WebSocket gateway at this path" });

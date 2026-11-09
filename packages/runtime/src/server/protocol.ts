@@ -53,7 +53,9 @@ export type HostEvent =
   /** A PubSub event from one worker, for every worker (createPubSub in @archlast/forge-runtime/nest). */
   | { t: "relay"; topic: string; payload: unknown }
   /** The pool changed size: a process keeps a read cache only while it is the database's one writer. */
-  | { t: "pool"; workers: number };
+  | { t: "pool"; workers: number }
+  /** Another process (a runtime process of this server, or another server) let go of the database's write lock: a writer that waits for it may try now. */
+  | { t: "unlock" };
 
 /** Function runtime → server: what a gateway sends to one of those sockets, or that it closes it. */
 export type SocketMessage = { t: "ws"; op: "send"; sid: string; data: string | ArrayBuffer } | { t: "ws"; op: "close"; sid: string; code?: number; reason?: string };
@@ -95,6 +97,8 @@ export type RuntimeMessage =
   | { t: "log"; entry: LogEntry }
   | { t: "chunk"; id: number; data?: ArrayBuffer; end?: true; error?: string }
   | { t: "relay"; topic: string; payload: unknown }
+  /** This process let go of the database's write lock (a commit): the others that share the file are told. */
+  | { t: "unlock" }
   /** A trace the runtime started itself (a scheduled job), finished. */
   | { t: "trace"; trace: TraceRecord }
   /** Custom metrics recorded since the last of these, as they stand now. */

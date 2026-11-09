@@ -3,7 +3,7 @@
 // the browser, event handlers, refs, browser globals. It never guesses: when it cannot tell, the answer is the heavier one.
 //
 // It reads what Bun's transpiler makes of the file (plain JavaScript, JSX as `jsx(...)` calls), parsed with acorn, so it works wherever
-// the framework builds, TypeScript or not. See packages/serve/docs/fullstack.md.
+// the framework builds, TypeScript or not. See packages/tuyere/docs/fullstack.md.
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, isAbsolute, join, resolve } from "node:path";
 import * as acorn from "acorn";

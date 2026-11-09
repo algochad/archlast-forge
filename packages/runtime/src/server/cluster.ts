@@ -1,4 +1,4 @@
-// A cluster: several servers of one app on one machine, sharing the port (each with its own Rust I/O thread and its own JavaScript event loop), the way archlast-serve
+// A cluster: several servers of one app on one machine, sharing the port (each with its own Rust I/O thread and its own JavaScript event loop), the way Tuyere
 // adds JavaScript loops as it adds I/O threads. The first process (index 0) is the one the CLI started: it keeps what must happen once (the scheduler, crons, backups,
 // the telemetry store, the dashboard and the admin API); the others answer requests, and send what they record to it. `docs/decisions.md#a-cluster-of-servers` says why.
 //
@@ -13,13 +13,30 @@ import { MemoryBus } from "./bus";
 import { ConfigError, type Config } from "./config";
 import { serverCores } from "./cores";
 import { nativeDb } from "./db/native";
+import { serverMemory } from "./db/sqlite";
 import { chooseEngine } from "./engine";
 import { MemoryRateLimiter, type RateLimiter, type RateLimitResult } from "./ratelimit";
 import { log } from "./logger";
 
-/** Servers per machine for `cores` cores: one for every two, at least 1, at most 8 (4 cores: 2; 8: 4). Each has one I/O thread: the layout that served the most requests per core. */
-export function clusterSizeFor(cores: number): number {
-  return Math.max(1, Math.min(8, Math.floor(cores / 2)));
+/** What a loaded server takes of the machine's memory (the benchmark's peak was 180 to 280 MiB), with room to spare: no more servers than fit. */
+export const SERVER_BYTES = 384 * 1024 * 1024;
+
+/**
+ * Servers per machine for `cores` cores and `memory` bytes: two from 4 cores, one below, and fewer when they would not fit. SQLite has one writer, so a third
+ * server made lists a little faster (+8%) and updates slower (71k to 67k a second, then 62k with a fourth) with reads level; two is where it pays.
+ */
+export function clusterSizeFor(cores: number, memory = Infinity): number {
+  return Math.max(1, Math.min(cores >= 4 ? 2 : 1, Math.floor(memory / SERVER_BYTES)));
+}
+
+/**
+ * The function runtime's processes of each server, for a start whose `RUNTIME_WORKERS` is `auto`: the cores the ratio gives (half, by default) shared among the servers,
+ * as many as fit in memory next to them, and one (the runtime inline in the server) when that is all there is. A number is the app's own choice, for each server.
+ */
+export function runtimeWorkersPerServer(want: { workers: number; auto: boolean }, servers: number, memory = Infinity): number {
+  if (!want.auto) return want.workers;
+  const fits = Math.floor(memory / SERVER_BYTES / servers) - 1; // (each server is a process of its own beside its runtime processes)
+  return Math.max(1, Math.min(Math.floor(want.workers / servers), fits));
 }
 
 /**
@@ -36,15 +53,13 @@ export async function resolveClusterSize(config: Config, env: Record<string, str
   };
   if (o.dev) return refuse("a production start (development runs one server)");
   if (config.databaseKind !== "sqlite") return refuse("SQLite (Postgres and MongoDB are not supported yet)");
-  if (config.runtimeWorkers > 1) return refuse("RUNTIME_WORKERS=1");
-  if (config.runtimeMode !== "inline") return refuse("RUNTIME_MODE=inline, the default outside development");
   if (env.DB_ENGINE === "bun") return refuse("the native database layer, not DB_ENGINE=bun");
   if (!o.command) return refuse("a start with the archlast-forge CLI (`archlast-forge start`), which can start the other servers");
   const engine = await chooseEngine(config.httpEngine, o.dev);
   if (engine.engine !== "archlast") return refuse(`the native HTTP engine (${engine.why})`);
   if (!nativeDb()) return refuse("the native database layer, which is not available here (Linux, built with `bun run build` in packages/db, or the engine image)");
   const cores = serverCores();
-  const size = want === "auto" ? clusterSizeFor(cores) : want;
+  const size = want === "auto" ? clusterSizeFor(cores, serverMemory()) : want;
   return { size, why: want === "auto" ? `${size} servers for ${cores} cores` : `SERVER_PROCESSES=${size}` };
 }
 
@@ -54,6 +69,8 @@ export type ClusterMessage =
   | { t: "topics"; topics: string[] }
   /** A server let go of the database's write lock: one that waits for it may try now. */
   | { t: "unlock" }
+  /** A server reloaded its function runtime (`env set`, the dashboard, SIGHUP) and it worked: the others do the same, so they all run what the first one does. */
+  | { t: "reload" }
   /** An event a runtime relayed to its peers (`createPubSub`). */
   | { t: "relay"; topic: string; payload: unknown }
   /** A server's function counts since its last message (for /metrics, which the first server answers for the cluster), and what it holds open now. */
@@ -389,7 +406,7 @@ export class ClusterSupervisor {
         const failures = fast ? (this.failures.get(index) ?? 0) + 1 : 0;
         this.failures.set(index, failures);
         const wait = Math.min(30_000, 500 * 2 ** Math.min(failures, 6));
-        log("error", `server ${index} of the cluster exited (${signal ?? `code ${code}`}); starting it again in ${(wait / 1000).toFixed(1)} s`);
+        log("error", `Bellows: server ${index} exited (${signal ?? `code ${code}`}); starting it again in ${(wait / 1000).toFixed(1)} s`);
         setTimeout(() => this.spawn(index), wait).unref?.();
       },
     });

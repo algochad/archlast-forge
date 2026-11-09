@@ -45,7 +45,7 @@ export {
   defineAuth,
   getFunctionName,
   httpAction,
-  lightAction,
+  minimalAction,
   httpRouter,
   internalAction,
   internalMutation,
@@ -84,4 +84,4 @@ export {
   type Visibility,
 } from "./functions";
 
-export { lightJson, lightRaw, lightText, LightResponse, type LightRequest } from "./server/light";
+export { minimalJson, minimalRaw, minimalText, MinimalResponse, type MinimalRequest } from "./server/minimal";

@@ -1,4 +1,4 @@
-import { httpAction, httpRouter, lightAction, lightJson, v } from "../../src/index";
+import { httpAction, httpRouter, minimalAction, minimalJson, v } from "../../src/index";
 import { nest } from "../../src/nest";
 import { ForgeGraphQLDriver, GraphQLModule, type ForgeGraphQLOptions } from "../../src/nest-graphql";
 import { Transport, type MicroserviceOptions } from "../../src/nest-microservices";
@@ -26,10 +26,10 @@ http.docs({
 // ctx.read / ctx.write on a route that is not Nest's: one read and one write transaction
 http.route({
   method: "POST",
-  path: "/light-notes",
-  handler: lightAction(async (ctx, req) => lightJson(await ctx.write(async (c) => (await c.db.insert("notes", { text: new TextDecoder().decode(req.body), at: 2 }), (await c.db.query("notes").collect()).length)))),
+  path: "/minimal-notes",
+  handler: minimalAction(async (ctx, req) => minimalJson(await ctx.write(async (c) => (await c.db.insert("notes", { text: new TextDecoder().decode(req.body), at: 2 }), (await c.db.query("notes").collect()).length)))),
 });
-http.route({ method: "GET", path: "/light-notes", handler: lightAction(async (ctx) => lightJson(await ctx.read(async (c) => (await c.db.query("notes").collect()).map((n) => n.text)))) });
+http.route({ method: "GET", path: "/minimal-notes", handler: minimalAction(async (ctx) => minimalJson(await ctx.read(async (c) => (await c.db.query("notes").collect()).map((n) => n.text)))) });
 http.route({ method: "GET", path: "/plain", handler: httpAction(async () => new Response("from httpRouter")) });
 nest(http, {
   imports: [

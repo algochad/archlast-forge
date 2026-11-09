@@ -1,4 +1,4 @@
-import { anyApi, ForgeError, httpAction, httpRouter, lightAction, lightJson, LightResponse, v } from "../../src/index";
+import { anyApi, ForgeError, httpAction, httpRouter, minimalAction, minimalJson, MinimalResponse, v } from "../../src/index";
 
 const api = anyApi;
 const http = httpRouter();
@@ -16,15 +16,15 @@ http.route({
     return json({ url: new URL((arguments[1] as Request).url).pathname });
   } as never),
 });
-// lightAction: given the request's fields, answering without a Web Request or Response
+// minimalAction: given the request's fields, answering without a Web Request or Response
 http.route({
   method: "POST",
-  path: "/light",
-  handler: lightAction(async (ctx, req) => {
-    if (new URLSearchParams(req.search).has("empty")) return new LightResponse(204, [["x-light", "1"]], null);
-    if (new URLSearchParams(req.search).has("web")) return new Response("from a Response", { headers: { "x-light": "web" } });
+  path: "/minimal",
+  handler: minimalAction(async (ctx, req) => {
+    if (new URLSearchParams(req.search).has("empty")) return new MinimalResponse(204, [["x-minimal", "1"]], null);
+    if (new URLSearchParams(req.search).has("web")) return new Response("from a Response", { headers: { "x-minimal": "web" } });
     const who = await ctx.auth.getUserIdentity();
-    return lightJson({ method: req.method, path: req.path, search: req.search, text: new TextDecoder().decode(req.body), host: new Headers(req.headers).get("host") !== null, who: who ? "someone" : null }, 201, [["x-light", "1"]]);
+    return minimalJson({ method: req.method, path: req.path, search: req.search, text: new TextDecoder().decode(req.body), host: new Headers(req.headers).get("host") !== null, who: who ? "someone" : null }, 201, [["x-minimal", "1"]]);
   }),
 });
 http.route({

@@ -200,7 +200,7 @@ describe("in production, with functions inline in the server", () => {
     expect(await added.json()).toEqual(["prod", "inline"]);
     expect((await at("/direct/fail", { method: "POST" })).status).toBe(500);
     expect(await (await at("/direct/notes")).json()).toEqual(["prod", "inline"]);
-    expect(await (await at("/light-notes")).json()).toEqual(["prod", "inline"]);
+    expect(await (await at("/minimal-notes")).json()).toEqual(["prod", "inline"]);
   });
 
   test("gateway sockets, streamed writes and GraphQL work inline too", async () => {
@@ -679,10 +679,10 @@ describe("the database straight from a route", () => {
     expect((await text(await http("/direct/who"))).body).toBeNull();
   });
 
-  test("lightAction routes use ctx.read and ctx.write", async () => {
+  test("minimalAction routes use ctx.read and ctx.write", async () => {
     await http("/direct/notes", { method: "DELETE" });
-    const added = await http("/light-notes", { method: "POST", body: "lite" });
+    const added = await http("/minimal-notes", { method: "POST", body: "lite" });
     expect(await added.json()).toBe(1);
-    expect(await (await http("/light-notes")).json()).toEqual(["lite"]);
+    expect(await (await http("/minimal-notes")).json()).toEqual(["lite"]);
   });
 });

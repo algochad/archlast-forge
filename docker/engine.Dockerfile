@@ -16,15 +16,15 @@ RUN cd node_modules/.bun \
   && find . -type f \( -name '*.d.ts' -o -name '*.d.mts' -o -name '*.d.cts' -o -name '*.map' -o -iname 'readme*' -o -iname 'changelog*' -o -iname 'history.md' \) -delete \
   && cd /engine && find node_modules packages -xtype l -delete
 
-# The native HTTP engine (packages/serve: Rust I/O threads, HTTP_ENGINE=archlast). Built on Debian 12 like the image below, so the library
+# The native HTTP engine (packages/tuyere: Rust I/O threads, HTTP_ENGINE=archlast). Built on Debian 12 like the image below, so the library
 # links the glibc it runs on. It is only the .node file that is carried over: no compiler reaches the image.
 FROM rust:1.90-bookworm AS native
 WORKDIR /serve
-COPY packages/serve/Cargo.toml packages/serve/Cargo.lock ./
-COPY packages/serve/crates crates
-RUN cargo build --release --locked -p archlast-serve-napi \
-  && mkdir native && cp target/release/libarchlast_serve_napi.so native/archlast_serve.node \
-  && ldd native/archlast_serve.node
+COPY packages/tuyere/Cargo.toml packages/tuyere/Cargo.lock ./
+COPY packages/tuyere/crates crates
+RUN cargo build --release --locked -p tuyere-napi \
+  && mkdir native && cp target/release/libtuyere_napi.so native/tuyere.node \
+  && ldd native/tuyere.node
 
 # The native database layer (packages/db: DB_ENGINE=native, Rust and a bundled SQLite). Built the same way and for the same reason.
 FROM rust:1.90-bookworm AS native-db
@@ -53,9 +53,9 @@ COPY --from=install /engine/packages/client packages/client
 COPY --from=install /engine/packages/react packages/react
 COPY --from=install /engine/packages/create-archlast-forge packages/create-archlast-forge
 # The native engine: its TypeScript, and the library built above (the runtime picks it from HTTP_ENGINE=auto on 4 or more cores).
-COPY --from=install /engine/packages/serve/package.json /engine/packages/serve/tsconfig.json packages/serve/
-COPY --from=install /engine/packages/serve/src packages/serve/src
-COPY --from=native /serve/native packages/serve/native
+COPY --from=install /engine/packages/tuyere/package.json /engine/packages/tuyere/tsconfig.json packages/tuyere/
+COPY --from=install /engine/packages/tuyere/src packages/tuyere/src
+COPY --from=native /serve/native packages/tuyere/native
 # The native database layer: the library built above, where the runtime looks for it (used when DB_ENGINE=native).
 COPY --from=native-db /db/native packages/db/native
 # The one library the native engine needs that distroless does not have (Rust's unwinder).
