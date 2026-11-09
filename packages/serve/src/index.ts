@@ -48,10 +48,14 @@ export interface ListenOptions {
    */
   threads?: number;
   /**
-   * JS threads running your handlers (default 1). With n > 1 the main script is re-run in n-1 worker
-   * threads, so everything outside `listen` runs once per thread and in-memory state is per thread.
+   * JS threads (event loops) running your handlers. Default `"auto"`: one for every two I/O threads, rounded up (`loopsFor`): 2 threads run 1 loop, 3 run 2,
+   * 4 run 2, 5 run 3. A JavaScript thread serves about as many requests as two I/O threads can send it, so adding I/O threads alone moves the
+   * bottleneck to the one loop (3 I/O threads and 2 loops answered 22% more reads and 78% more lists than 3 and 1 on a Nest app in SQLite).
+   * With n > 1 the main script is re-run in n-1 worker threads, so everything outside `listen` runs once per thread and in-memory state is per
+   * thread: give a number (`workers: 1`) to keep one loop however many I/O threads there are. Writes to one SQLite file from several loops wait
+   * for each other: a write-heavy app can lose a little there.
    */
-  workers?: number;
+  workers?: number | "auto";
   /** Script the workers re-run. Default: the main script (`Bun.main`). */
   entry?: string;
   /** Seconds without traffic before a connection is closed (default 60; 0 = never). `ctx.timeout(0)` opts a request out. */
@@ -161,16 +165,22 @@ function defaultThreads(): number {
   return Math.min(2, availableParallelism());
 }
 
+/** The JavaScript event loops that go with `threads` I/O threads: one for every two, rounded up (1, 1, 2, 2, 3, 3, ... for 1, 2, 3, 4, 5, 6, ... threads). */
+export function loopsFor(threads: number): number {
+  return Math.max(1, Math.ceil(Math.max(1, Math.floor(threads)) / 2));
+}
+
 export function listen(
   router: Router,
   o: ListenOptions & { error?: (e: unknown) => void },
 ): Server {
+  const threads = o.threads ?? defaultThreads();
   return startServer({
     port: o.port ?? 3000,
     hostname: o.hostname ?? "0.0.0.0",
-    threads: o.threads ?? defaultThreads(),
+    threads,
     maxBody: o.maxRequestBodySize ?? 128 * 1024 * 1024,
-    workers: o.workers ?? 1,
+    workers: o.workers === undefined || o.workers === "auto" ? loopsFor(threads === 0 ? availableParallelism() : threads) : o.workers, // (0 threads: one for every CPU)
     entry: o.entry,
     backend: o.backend,
     statics: router

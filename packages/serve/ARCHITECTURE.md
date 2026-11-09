@@ -59,7 +59,7 @@ Which thread does what:
 | ----------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------- | --------------- |
 | **I/O threads** (`archlast-io-N`, default 2)          | accept, TLS, HTTP parsing, WebSocket framing, file serving, static routes, pub/sub fan-out, idle timers, socket writes | your JavaScript |
 | **JS lane 0** (Bun's main thread)                     | your handlers, the pump, `Request`/`Response` objects                                                                  | socket I/O      |
-| **JS lanes 1..n** (optional `workers`, Bun `Worker`s) | the same script again, for stateless handlers                                                                          | socket I/O      |
+| **JS lanes 1..n** (`workers`, default one per two I/O threads, Bun `Worker`s) | the same script again, for stateless handlers                                                                          | socket I/O      |
 
 A connection never changes I/O thread, and a WebSocket never changes lane. That keeps connection state single-threaded
 (no locks on the hot path) and makes per-socket handler order trivial.

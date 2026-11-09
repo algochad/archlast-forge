@@ -44,5 +44,7 @@ new App()
     port: Number(process.env.PORT ?? 3000),
     hostname: "0.0.0.0",
     threads: Number(process.env.THREADS ?? 2),
+    workers: Number(process.env.WORKERS ?? 1), // JavaScript loops (the script is re-run in each)
+    reusePort: process.env.REUSEPORT === "1", // several copies of the server on one port
     backend: (process.env.ARCHLAST_BACKEND as never) ?? "napi",
   });

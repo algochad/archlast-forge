@@ -54,9 +54,10 @@ const app = new App()
 
 const server = app.listen({
   port: Number(process.env.PORT ?? 0),
-  workers: Number(process.env.WORKERS ?? 1),
+  // WORKERS=default leaves the option out: the loops follow the I/O threads
+  workers: process.env.WORKERS === "default" ? undefined : Number(process.env.WORKERS ?? 1),
   backend: process.env.BACKEND as any,
-  threads: 2,
+  threads: Number(process.env.THREADS ?? 2),
 });
 if (isMainThread) {
   await server.ready;

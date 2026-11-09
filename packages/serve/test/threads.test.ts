@@ -1,6 +1,6 @@
 import { afterAll, describe, expect, test } from "bun:test";
 import { readFileSync, rmSync, writeFileSync } from "node:fs";
-import type { BackendName } from "../src/index.ts";
+import { loopsFor, type BackendName } from "../src/index.ts";
 
 const backends: BackendName[] = ["bun-ffi", "napi"];
 const fixture = import.meta.dir + "/fixtures/mt-app.ts";
@@ -9,7 +9,7 @@ const procs: ReturnType<typeof Bun.spawn>[] = [];
 afterAll(() => procs.forEach((p) => p.kill()));
 
 async function startApp(
-  workers: number,
+  workers: number | "default",
   backend: BackendName,
   extraEnv: Record<string, string> = {},
 ): Promise<number> {
@@ -34,6 +34,32 @@ async function startApp(
   const m = out.match(/READY (\d+)/);
   if (!m) throw new Error(`app did not start: ${out}`);
   return Number(m[1]);
+}
+
+test("one JavaScript loop for every two I/O threads, rounded up", () => {
+  expect([1, 2, 3, 4, 5, 6, 7, 8].map(loopsFor)).toEqual([1, 1, 2, 2, 3, 3, 4, 4]);
+});
+
+for (const backend of backends) {
+  describe(`loops follow the I/O threads: ${backend}`, () => {
+    /** The loops that answered a burst that one loop could not keep up with. */
+    const lanesFor = async (io: number, workers: number | "default") => {
+      const port = await startApp(workers, backend, { THREADS: String(io) });
+      const lanes = new Set<number>();
+      const burst = await Promise.all(Array.from({ length: 240 }, () => fetch(`http://127.0.0.1:${port}/busy`).then((r) => r.json() as Promise<{ lane: number }>)));
+      for (const b of burst) lanes.add(b.lane);
+      return [...lanes].sort();
+    };
+    test("2 I/O threads run 1 loop; 3 run 2; 5 run 3", async () => {
+      expect(await lanesFor(2, "default")).toEqual([0]);
+      expect(await lanesFor(3, "default")).toEqual([0, 1]);
+      expect(await lanesFor(5, "default")).toEqual([0, 1, 2]);
+    });
+    test("a number of loops given wins", async () => {
+      expect(await lanesFor(4, 1)).toEqual([0]);
+      expect(await lanesFor(2, 2)).toEqual([0, 1]);
+    });
+  });
 }
 
 for (const backend of backends) {

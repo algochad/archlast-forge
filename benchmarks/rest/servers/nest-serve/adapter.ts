@@ -172,7 +172,7 @@ export class ArchlastNestAdapter extends AbstractHttpAdapter<unknown, Req, Res> 
   override listen(port: number | string, hostnameOrCb?: string | (() => void), maybeCb?: () => void) {
     const hostname = typeof hostnameOrCb === "string" ? hostnameOrCb : "0.0.0.0";
     this.port = Number(port);
-    this.routes.app.listen({ port: this.port, hostname, threads: Number(process.env.THREADS ?? 3), backend: (process.env.ARCHLAST_BACKEND as never) ?? "napi" });
+    this.routes.app.listen({ port: this.port, hostname, threads: Number(process.env.THREADS ?? 3), workers: Number(process.env.WORKERS ?? 1), reusePort: process.env.REUSEPORT === "1", backend: (process.env.ARCHLAST_BACKEND as never) ?? "napi" });
     (typeof hostnameOrCb === "function" ? hostnameOrCb : maybeCb)?.();
   }
   useStaticAssets(): never {

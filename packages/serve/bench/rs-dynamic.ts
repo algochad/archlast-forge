@@ -5,6 +5,7 @@ const s = new App()
   .listen({
     port: Number(process.env.PORT),
     threads: Number(process.env.THREADS ?? 0),
+    workers: Number(process.env.WORKERS ?? 1), // one loop unless asked: these keep state in memory
   });
 console.log(
   "listening",
