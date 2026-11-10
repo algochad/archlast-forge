@@ -79,10 +79,8 @@ export const sqliteDialect: Dialect = {
 //
 // A passive checkpoint cannot make the WAL start over: that happens only when a write transaction begins with nothing left to copy, and a
 // writer that commits again and again always has a commit between the end of the checkpoint and its next transaction, so under writes that
-// never pause the file grew without a limit (357 MB in 3 seconds of inserts, about 6 KB each). Past 64 MiB the thread therefore tells the
-// writer to hold its next batch ("pause"), takes the write lock with a RESTART checkpoint (which copies the little that is left, as only the
-// newest version of each page is copied, and waits for the readers) and lets it go on ("resume"): the next write starts the WAL over, and
-// the file is cut back to its size limit. Reads are not held, writes wait for the length of one checkpoint (milliseconds).
+// never pause the file grew without a limit. Past 64 MiB the thread asks the writer to pause between batches, waits for its acknowledgement,
+// then takes the write lock with a RESTART checkpoint. Reads are not held. An active reader or another process can delay the restart.
 const checkpointer = (path: string) => `import { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
 const db = new Database(${JSON.stringify(path)});
@@ -98,27 +96,37 @@ const walSize = () => {
   }
 };
 let lastLog = -1;
+let waitingForPause = false;
+onmessage = (event) => {
+  if (event.data !== "paused" || !waitingForPause) return;
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    restart.get();
+  } catch {
+    // Retry on a later interval; never leave the writer paused.
+  } finally {
+    db.exec("PRAGMA busy_timeout = 0");
+    waitingForPause = false;
+    postMessage("resume");
+  }
+};
 setInterval(() => {
+  if (waitingForPause) return;
   try {
     const size = walSize();
     if (size <= 32 * 1024 * 1024) return;
     const { log } = passive.get();
-    // Over the hard limit and written to since the last look (an idle database waits for its next write to start the WAL over).
+    // An idle database waits for its next write to start the WAL over.
     if (size > 64 * 1024 * 1024 && log !== lastLog) {
+      waitingForPause = true;
       postMessage("pause");
-      db.exec("PRAGMA busy_timeout = 5000");
-      try {
-        restart.get();
-      } finally {
-        db.exec("PRAGMA busy_timeout = 0");
-        postMessage("resume");
-      }
     }
     lastLog = log;
   } catch {
+    waitingForPause = false;
     postMessage("resume");
   }
-}, 250);`;
+}, 25);`;
 
 /**
  * Makes commits durable without stopping the thread that runs the functions. `synchronous = FULL` would fsync inside COMMIT, on that
@@ -241,14 +249,21 @@ export function createBunSqliteDb(path: string, readers = 4, ram?: number, synch
   let checkpointThread: Worker | undefined;
   /** The checkpoint thread is restarting the WAL (see `checkpointer`): the writer starts no batch until it is done. */
   let paused = false;
+  let pauseAcknowledged = false;
   let wake: (() => void) | undefined;
   // The path is part of the script, not a message: a message sent before the thread has loaded can be lost, and then nothing ever checkpoints.
   if (!memory) {
     checkpointThread = new Worker(URL.createObjectURL(new Blob([checkpointer(path)], { type: "application/javascript" })));
     (checkpointThread as unknown as { unref(): void }).unref();
     checkpointThread.onmessage = (e: MessageEvent) => {
-      if (e.data === "pause") paused = true;
-      else if (e.data === "resume") (paused = false), wake?.();
+      if (e.data === "pause") {
+        paused = true;
+        if (!draining) acknowledgePause();
+      } else if (e.data === "resume") {
+        paused = false;
+        pauseAcknowledged = false;
+        wake?.();
+      }
     };
   }
 
@@ -260,6 +275,12 @@ export function createBunSqliteDb(path: string, readers = 4, ram?: number, synch
   const queue: Job[] = [];
   let draining = false;
   const MAX_BATCH = 256;
+  const acknowledgePause = () => {
+    if (!pauseAcknowledged) {
+      pauseAcknowledged = true;
+      checkpointThread?.postMessage("paused");
+    }
+  };
   const BATCH_MS = 10;
   // Prepared once: exec() would parse these again for every transaction.
   const control = {
@@ -292,7 +313,14 @@ export function createBunSqliteDb(path: string, readers = 4, ram?: number, synch
   async function drain() {
     try {
       while (queue.length) {
+        // A continuously replenished queue can otherwise stay in promise microtasks indefinitely, starving the worker's pause message.
+        if (!memory) {
+          const turn = Promise.withResolvers<void>();
+          setImmediate(turn.resolve);
+          await turn.promise;
+        }
         if (paused) {
+          acknowledgePause();
           // Waits for "resume"; a thread that died or a restart that hangs cannot hold the writes for more than 6 s.
           await new Promise<void>((resolve) => {
             const timer = setTimeout(() => ((paused = false), resolve()), 6000);
