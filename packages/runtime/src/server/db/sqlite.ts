@@ -1,5 +1,5 @@
 import { Database } from "bun:sqlite";
-import { closeSync, fsync, openSync } from "node:fs";
+import { closeSync, fsync, openSync, statSync } from "node:fs";
 import { nativeDb } from "./native";
 import { createNativeSqliteDb } from "./sqlite-native";
 import { totalmem } from "node:os";
@@ -77,12 +77,10 @@ export const sqliteDialect: Dialect = {
 // (it never waits for or blocks readers or the writer), once the WAL passes 32 MiB, so each hot page is copied once per 32 MiB of writes
 // rather than on every few commits.
 //
-// A passive checkpoint cannot make the WAL start over: that happens only when a write transaction begins with nothing left to copy, and a
-// writer that commits again and again always has a commit between the end of the checkpoint and its next transaction, so under writes that
-// never pause the file grew without a limit (357 MB in 3 seconds of inserts, about 6 KB each). Past 64 MiB the thread therefore tells the
-// writer to hold its next batch ("pause"), takes the write lock with a RESTART checkpoint (which copies the little that is left, as only the
-// newest version of each page is copied, and waits for the readers) and lets it go on ("resume"): the next write starts the WAL over, and
-// the file is cut back to its size limit. Reads are not held, writes wait for the length of one checkpoint (milliseconds).
+// A passive checkpoint does not force a WAL restart while writes keep arriving. The writer therefore requests a RESTART checkpoint
+// between batches when the WAL grows beyond 64 MiB, and waits for it before writing more. In particular, a fast burst cannot outrun
+// the worker's timer, startup, or a passive checkpoint already in progress. An active reader or another process can prevent a restart;
+// in that case writers continue and retry after another 8 MiB of WAL growth, so a long reader can still make the WAL grow.
 const checkpointer = (path: string) => `import { Database } from "bun:sqlite";
 import { statSync } from "node:fs";
 const db = new Database(${JSON.stringify(path)});
@@ -97,28 +95,26 @@ const walSize = () => {
     return 0;
   }
 };
-let lastLog = -1;
+onmessage = (event) => {
+  if (event.data !== "restart") return;
+  try {
+    db.exec("PRAGMA busy_timeout = 5000");
+    const { busy } = restart.get();
+    postMessage({ type: "restarted", busy: busy !== 0 });
+  } catch (error) {
+    postMessage({ type: "error", message: String(error) });
+  } finally {
+    db.exec("PRAGMA busy_timeout = 0");
+  }
+};
+postMessage({ type: "ready" });
 setInterval(() => {
   try {
-    const size = walSize();
-    if (size <= 32 * 1024 * 1024) return;
-    const { log } = passive.get();
-    // Over the hard limit and written to since the last look (an idle database waits for its next write to start the WAL over).
-    if (size > 64 * 1024 * 1024 && log !== lastLog) {
-      postMessage("pause");
-      db.exec("PRAGMA busy_timeout = 5000");
-      try {
-        restart.get();
-      } finally {
-        db.exec("PRAGMA busy_timeout = 0");
-        postMessage("resume");
-      }
-    }
-    lastLog = log;
+    if (walSize() > 32 * 1024 * 1024) passive.get();
   } catch {
-    postMessage("resume");
+    // A later passive checkpoint or the writer's restart will try again.
   }
-}, 250);`;
+}, 25);`;
 
 /**
  * Makes commits durable without stopping the thread that runs the functions. `synchronous = FULL` would fsync inside COMMIT, on that
@@ -239,16 +235,56 @@ export function createBunSqliteDb(path: string, readers = 4, ram?: number, synch
       });
   const waiting: ((c: Database) => void)[] = [];
   let checkpointThread: Worker | undefined;
-  /** The checkpoint thread is restarting the WAL (see `checkpointer`): the writer starts no batch until it is done. */
-  let paused = false;
-  let wake: (() => void) | undefined;
-  // The path is part of the script, not a message: a message sent before the thread has loaded can be lost, and then nothing ever checkpoints.
+  let checkpointReady: Promise<void> | undefined;
+  let restartCheckpoint: (() => Promise<boolean>) | undefined;
+  let checkpointSize = 64 * MiB;
   if (!memory) {
+    const ready = Promise.withResolvers<void>();
+    let pending: { promise: Promise<boolean>; resolve(busy: boolean): void; reject(error: Error): void } | undefined;
+    let failure: Error | undefined;
+    checkpointReady = ready.promise;
+    // A worker can fail before a large enough WAL makes the writer await it.
+    void checkpointReady.catch(() => {});
     checkpointThread = new Worker(URL.createObjectURL(new Blob([checkpointer(path)], { type: "application/javascript" })));
     (checkpointThread as unknown as { unref(): void }).unref();
     checkpointThread.onmessage = (e: MessageEvent) => {
-      if (e.data === "pause") paused = true;
-      else if (e.data === "resume") (paused = false), wake?.();
+      if (e.data.type === "ready") ready.resolve();
+      else if (e.data.type === "restarted") {
+        pending?.resolve(e.data.busy);
+        pending = undefined;
+      } else if (e.data.type === "error") {
+        pending?.reject(new Error(`WAL checkpoint failed: ${e.data.message}`));
+        pending = undefined;
+      }
+    };
+    const fail = (error: Error) => {
+      failure = error;
+      ready.reject(error);
+      pending?.reject(error);
+      pending = undefined;
+      checkpointThread!.terminate();
+    };
+    checkpointThread.onerror = (e) => fail(new Error(`WAL checkpoint worker failed: ${e.message}`));
+    const waitForWorker = async <T>(promise: Promise<T>, phase: string, timeout: number) => {
+      const timer = setTimeout(() => fail(new Error(`WAL checkpoint worker ${phase} timed out`)), timeout);
+      try {
+        return await promise;
+      } finally {
+        clearTimeout(timer);
+      }
+    };
+    restartCheckpoint = async () => {
+      if (failure) throw failure;
+      await waitForWorker(checkpointReady!, "startup", 6000);
+      if (failure) throw failure;
+      const request = Promise.withResolvers<boolean>();
+      pending = request;
+      try {
+        checkpointThread!.postMessage("restart");
+      } catch (e) {
+        fail(new Error(`WAL checkpoint worker failed: ${String(e)}`));
+      }
+      return await waitForWorker(request.promise, "restart", 15000);
     };
   }
 
@@ -292,14 +328,25 @@ export function createBunSqliteDb(path: string, readers = 4, ram?: number, synch
   async function drain() {
     try {
       while (queue.length) {
-        if (paused) {
-          // Waits for "resume"; a thread that died or a restart that hangs cannot hold the writes for more than 6 s.
-          await new Promise<void>((resolve) => {
-            const timer = setTimeout(() => ((paused = false), resolve()), 6000);
-            wake = () => (clearTimeout(timer), resolve());
-          });
-          wake = undefined;
-          continue;
+        if (restartCheckpoint) {
+          // The physical file retains its high-water size after a restart. Check again after growth, or after SQLite truncates it.
+          // A busy restart is not a restart: readers keep their snapshots, and we retry sooner as the WAL grows.
+          try {
+            let size = 0;
+            try {
+              size = statSync(path + "-wal").size;
+            } catch (e) {
+              if ((e as NodeJS.ErrnoException).code !== "ENOENT") throw e;
+            }
+            if (size < checkpointSize - 32 * MiB) checkpointSize = Math.max(64 * MiB, size + 32 * MiB);
+            if (size > checkpointSize) {
+              const busy = await restartCheckpoint();
+              checkpointSize = size + (busy ? 8 : 32) * MiB;
+            }
+          } catch (e) {
+            for (const job of queue.splice(0)) job.reject(e);
+            continue;
+          }
         }
         if (queue[0]!.exclusive) {
           const job = queue.shift()!;
@@ -444,9 +491,12 @@ export function createBunSqliteDb(path: string, readers = 4, ram?: number, synch
     },
     migrate: (tables) => migrateSqlite(db, tables),
     async close() {
-      await enqueue(true, async () => {}); // after everything already queued
-      checkpointThread?.terminate();
-      for (const c of [writer, ...pool]) c.close();
+      try {
+        await enqueue(true, async () => {}); // after everything already queued
+      } finally {
+        checkpointThread?.terminate();
+        for (const c of [writer, ...pool]) c.close();
+      }
     },
   };
   return db;

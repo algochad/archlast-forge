@@ -13,7 +13,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  test:
+  suite:
     runs-on: ubuntu-latest
     timeout-minutes: 40
     services:
@@ -57,6 +57,17 @@ jobs:
         run: bunx turbo build typecheck
       - name: Test (SQLite, Postgres, Redis, S3, two servers)
         run: bunx turbo test --concurrency=1
+
+  # Packaging creates the tarballs used by both Docker end-to-end scripts. Run on a separate runner so its containers and ports are isolated.
+  packaging:
+    runs-on: ubuntu-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
       - name: Package smoke test (packed tarballs, a full-stack app and a backend, each served)
         run: bun scripts/pack.ts --smoke
       - name: Docker end to end (the stack with `up`, and `dev` with services)
@@ -64,6 +75,20 @@ jobs:
           bun packages/cli/src/index.ts engine build
           bun scripts/e2e-docker.ts
           bun scripts/e2e-dev.ts
+
+  # Keep the required check named "test": neither a skipped nor a failed prerequisite may pass the branch protection gate.
+  test:
+    if: ${{ always() }}
+    needs: [suite, packaging]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require the test suite and packaging
+        env:
+          SUITE: ${{ needs.suite.result }}
+          PACKAGING: ${{ needs.packaging.result }}
+        run: |
+          echo "suite: $SUITE; packaging: $PACKAGING"
+          [ "$SUITE" = success ] && [ "$PACKAGING" = success ]
 
   # Only when master is updated, which is a merge from staging: not for pull requests (a pull request that doesn't touch the Dockerfile has
   # nothing to learn from it) and not for staging. It builds the image and runs it, and pushes nothing. When this run succeeds on a merge that
