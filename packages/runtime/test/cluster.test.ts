@@ -434,8 +434,9 @@ describe.skipIf(!capable)("a cluster under saturated writes and a rate limit", (
       );
       clearInterval(watcher);
       expect(failed).toBe(0);
-      // the log's keeper restarts it past 64 MB, looking every 50 ms: it can pass that by what is written between two looks
+      // A reader, an in-flight write, or scheduling can delay the coordinated checkpoint; this workload has no long-lived readers.
       expect(biggest).toBeLessThan(240 * 1024 * 1024);
+      expect(await (await c.fetch("/http/big/count")).json()).toBe(total);
     } finally {
       await c.stop();
     }

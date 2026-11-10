@@ -33,4 +33,15 @@ http.route({
   path: "/big",
   handler: minimalAction(async (ctx) => minimalJson(await ctx.write(async (c) => (c.db as any).insert("blobs", { text: "x".repeat(16_000) })))),
 });
+http.route({
+  method: "GET",
+  path: "/big/count",
+  handler: minimalAction(async (ctx) =>
+    minimalJson(await ctx.read(async (c) => {
+      // This fixture's unregistered schema is not represented in the runtime's global database type.
+      const db = c.db as unknown as { query(table: string): { count(): Promise<number> } };
+      return db.query("blobs").count();
+    })),
+  ),
+});
 export default http;
