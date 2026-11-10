@@ -4,6 +4,8 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+## 0.21.0
+
 ### Added
 
 - **Names for the parts of Forge, beside Anvil.** **Tuyere** is the Rust HTTP engine (it was called archlast-serve: the package is now `@archlast/forge-tuyere` in `packages/tuyere`, the crates `tuyere-core`, `tuyere-napi` and `tuyere-ffi`, the native file `tuyere.node`; the package was never published, and `HTTP_ENGINE=archlast` and `ARCHLAST_THREADS` are unchanged), **Crucible** is the Rust page renderer (islands, templates, kept pages: [the page](rust-renderer.html)), **Hearth** is the native database layer (`DB_ENGINE=native`: a [new page](hearth.html)) and **Bellows** is the cluster of servers (`SERVER_PROCESSES`). The names show in the docs, the landing page, the start-up log (`database: SQLite on Hearth, the native layer`, `Bellows: server 1 of 2`) and the setting descriptions on the dashboard; nothing in your code changes.
