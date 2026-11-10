@@ -2,7 +2,7 @@ import { expect, test } from "bun:test";
 import { mkdtempSync, rmSync, statSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { createSqliteDb } from "../src/server/db/sqlite";
+import { createBunSqliteDb, createSqliteDb } from "../src/server/db/sqlite";
 
 const MiB = 2 ** 20;
 
@@ -27,10 +27,34 @@ test("writes that never pause do not make the WAL grow without a limit, and noth
   );
   const n = (await db.transaction("read", async (tx) => ((await tx.query("SELECT count(*) AS n FROM t")) as { n: number }[])[0]!.n)) as number;
   expect(n).toBe(inserted); // every acknowledged write is there
-  // The thread checks every 250 ms and restarts the log past 64 MiB, so the file stays within a few hundred MiB even at hundreds of thousands of inserts a second.
+  // The checkpoint thread asks the writer to pause past 64 MiB; a busy reader can delay a restart.
   expect(inserted).toBeGreaterThan(20_000); // the test wrote enough for the old behavior to reach gigabytes
   const bounded = peak < 400 * MiB;
   await db.close();
   rmSync(dir, { recursive: true, force: true }); // before the assertion: a failing run must not leave gigabytes behind
   expect(bounded).toBe(true);
 }, 30_000);
+
+test("a continuously queued burst lets the checkpointer restart the WAL", async () => {
+  const dir = mkdtempSync(join(tmpdir(), "afx-wal-"));
+  const path = join(dir, "app.db");
+  const db = createBunSqliteDb(path, 2, undefined, "NORMAL");
+  try {
+    await db.execute("CREATE TABLE t (id INTEGER PRIMARY KEY, doc TEXT)");
+    const payload = "x".repeat(32768);
+    let peak = 0;
+    const jobs = Array.from({ length: 15000 }, (_, i) =>
+      db.transaction("write", async (tx) => {
+        await tx.execute("INSERT INTO t (doc) VALUES (?)", [payload]);
+        if (i % 100 === 0) peak = Math.max(peak, statSync(`${path}-wal`).size);
+      }),
+    );
+    await Promise.all(jobs);
+    const rows = await db.transaction("read", (tx) => tx.query("SELECT count(*) AS n FROM t"));
+    expect(rows[0]!.n).toBe(15000);
+    expect(peak).toBeLessThan(400 * MiB);
+  } finally {
+    await db.close();
+    rmSync(dir, { recursive: true, force: true });
+  }
+}, 30000);
