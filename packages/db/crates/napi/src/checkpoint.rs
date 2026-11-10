@@ -1,11 +1,9 @@
-//! The WAL's keeper: a thread with a connection of its own that copies the log back into the database, and makes the log start over when writes never let it.
+//! The WAL's keeper: a thread with a connection of its own that checkpoints the log when it grows.
 //!
-//! A passive checkpoint copies the log without waiting for anyone, but it cannot make the log start over: that happens only when a write transaction begins with
-//! nothing left to copy, and a writer that commits again and again always has a commit between the end of a checkpoint and its next transaction (the log grew to
-//! gigabytes under saturated inserts). Past the hard limit the thread therefore raises `paused`, which the writer checks before each batch, and takes the write
-//! lock with a RESTART checkpoint. Reads are never held; writes wait for one checkpoint (it copies only the newest version of each hot page).
+//! A passive checkpoint can take a long time to copy a large log while writers continue to append to it. Instead, once the log passes the limit, the keeper
+//! pauses writers before checkpointing and uses TRUNCATE to copy and reset it. SQLite waits for existing readers; it never invalidates their snapshots.
 //!
-//! Several processes may use the file (a cluster of servers on one database): then the pause is also a lock on a file beside the database, which the thread holds
+//! Several processes may use the file (a cluster of servers on one database): the pause is also a lock on a file beside the database, which the keeper holds
 //! exclusively for the checkpoint and every writer, in any process, tests before its next batch. One process runs the thread; the others only test.
 
 use rusqlite::{Connection as Sqlite, OpenFlags};
@@ -16,7 +14,7 @@ use std::sync::Arc;
 use std::thread::JoinHandle;
 use std::time::Duration;
 
-const SOFT: u64 = 32 * 1024 * 1024;
+// A checkpoint may exceed this by writes already in flight and writes made before the keeper is scheduled. A long-lived reader can delay it further.
 const HARD: u64 = 64 * 1024 * 1024;
 
 pub struct Checkpointer {
@@ -59,7 +57,7 @@ impl Checkpointer {
         Self { paused, stop, handle, shared }
     }
 
-    /// Whether writers should hold their next batch (a RESTART checkpoint is waiting for the write lock or running, in this process or another).
+    /// Whether writers should hold their next batch (a checkpoint is waiting for the write lock or running, in this process or another).
     pub fn paused(&self) -> bool {
         if self.paused.load(Ordering::Acquire) {
             return true;
@@ -97,9 +95,9 @@ impl Drop for Checkpointer {
 fn run(path: &str, paused: &AtomicBool, stop: &AtomicBool, lock: Option<File>) {
     let wal = format!("{path}-wal");
     let mut conn: Option<Sqlite> = None;
-    let mut last_log: i64 = -1;
+    let mut retry_after = std::time::Instant::now();
     while !stop.load(Ordering::Acquire) {
-        // looks every 50 ms (saturated inserts put hundreds of megabytes a second in the log), in short steps so a close does not wait
+        // Poll in short steps so a close does not wait for the full interval.
         for _ in 0..5 {
             if stop.load(Ordering::Acquire) {
                 return;
@@ -107,36 +105,37 @@ fn run(path: &str, paused: &AtomicBool, stop: &AtomicBool, lock: Option<File>) {
             std::thread::sleep(Duration::from_millis(10));
         }
         let size = std::fs::metadata(&wal).map(|m| m.len()).unwrap_or(0);
-        if size <= SOFT {
+        if size <= HARD || std::time::Instant::now() < retry_after {
             continue;
         }
         if conn.is_none() {
             conn = Sqlite::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX).ok();
         }
         let Some(c) = conn.as_ref() else { continue };
-        let Ok(log) = checkpoint(c, "PASSIVE") else { continue };
-        // over the hard limit and written to since the last look (an idle database waits for its next write to start the log over)
-        if size > HARD && log != last_log {
-            paused.store(true, Ordering::Release);
-            // the other processes' writers see the pause as this lock; writers hold theirs for an instant, so it is had within a few tries
-            let locked = lock.as_ref().map(|f| (0..200).any(|_| flock(f, libc::LOCK_EX | libc::LOCK_NB) || { std::thread::sleep(Duration::from_millis(1)); false }));
-            if locked != Some(false) {
-                let _ = c.busy_timeout(Duration::from_secs(5));
-                let _ = checkpoint(c, "RESTART");
-                let _ = c.busy_timeout(Duration::ZERO);
-            }
-            if let (Some(f), Some(true)) = (&lock, locked) {
-                flock(f, libc::LOCK_UN);
-            }
-            paused.store(false, Ordering::Release);
+        if !truncate(c, paused, lock.as_ref(), Duration::from_secs(5)) {
+            // A reader can hold an old snapshot indefinitely. Let writers make progress before trying again.
+            retry_after = std::time::Instant::now() + Duration::from_secs(1);
         }
-        last_log = log;
     }
 }
 
-/// Runs `PRAGMA wal_checkpoint(mode)`; the number of frames in the log.
-fn checkpoint(c: &Sqlite, mode: &str) -> rusqlite::Result<i64> {
-    c.query_row(&format!("PRAGMA wal_checkpoint({mode})"), [], |r| r.get::<_, i64>(1))
+/// Pause writers before copying the log, including writers in other processes. A busy checkpoint must be retried: SQLite reports it in the first result column.
+fn truncate(c: &Sqlite, paused: &AtomicBool, lock: Option<&File>, timeout: Duration) -> bool {
+    paused.store(true, Ordering::Release);
+    let locked = lock.map(|f| (0..200).any(|_| flock(f, libc::LOCK_EX | libc::LOCK_NB) || { std::thread::sleep(Duration::from_millis(1)); false }));
+    let completed = if locked == Some(false) {
+        false
+    } else {
+        let _ = c.busy_timeout(timeout);
+        let result = c.query_row("PRAGMA wal_checkpoint(TRUNCATE)", [], |r| r.get::<_, i64>(0));
+        let _ = c.busy_timeout(Duration::ZERO);
+        matches!(result, Ok(0))
+    };
+    if let (Some(f), Some(true)) = (lock, locked) {
+        flock(f, libc::LOCK_UN);
+    }
+    paused.store(false, Ordering::Release);
+    completed
 }
 
 #[cfg(test)]
@@ -162,6 +161,70 @@ mod tests {
         // not shared: no lock to see
         let alone = Checkpointer::start(path, false, false);
         assert!(!alone.paused());
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn checkpoint_waits_for_a_reader_with_the_shared_pause_held() {
+        let dir = std::env::temp_dir().join(format!("afx-checkpoint-reader-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.db").to_str().unwrap().to_string();
+        let writer = Sqlite::open(&path).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (1);").unwrap();
+        let reader = Sqlite::open(&path).unwrap();
+        reader.execute_batch("BEGIN").unwrap();
+        assert_eq!(reader.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        writer.execute_batch("INSERT INTO t VALUES (2)").unwrap();
+
+        let observer = Checkpointer::start(path.clone(), false, true);
+        let keeper_path = path.clone();
+        let keeper = std::thread::spawn(move || {
+            let c = Sqlite::open(&keeper_path).unwrap();
+            let lock = pause_file(&keeper_path).unwrap();
+            truncate(&c, &AtomicBool::new(false), Some(&lock), Duration::from_secs(5))
+        });
+        let until = std::time::Instant::now() + Duration::from_secs(2);
+        while !observer.paused() && std::time::Instant::now() < until {
+            std::thread::sleep(Duration::from_millis(2));
+        }
+        assert!(observer.paused());
+        // The reader keeps its original snapshot while the keeper waits for it.
+        assert_eq!(reader.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        reader.execute_batch("COMMIT").unwrap();
+        assert!(keeper.join().unwrap());
+        std::thread::sleep(Duration::from_millis(3));
+        assert!(!observer.paused());
+        assert_eq!(std::fs::metadata(format!("{path}-wal")).unwrap().len(), 0);
+        assert_eq!(writer.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 2);
+        drop(observer);
+        drop(reader);
+        drop(writer);
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn busy_checkpoint_can_be_retried_without_losing_writes() {
+        let dir = std::env::temp_dir().join(format!("afx-checkpoint-busy-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("a.db");
+        let writer = Sqlite::open(&path).unwrap();
+        writer.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; CREATE TABLE t (n INTEGER); INSERT INTO t VALUES (1);").unwrap();
+        let reader = Sqlite::open(&path).unwrap();
+        reader.execute_batch("BEGIN").unwrap();
+        assert_eq!(reader.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        writer.execute_batch("INSERT INTO t VALUES (2)").unwrap();
+        let keeper = Sqlite::open(&path).unwrap();
+        let paused = AtomicBool::new(false);
+        assert!(!truncate(&keeper, &paused, None, Duration::from_millis(1)));
+        assert!(!paused.load(Ordering::Acquire));
+        writer.execute_batch("INSERT INTO t VALUES (3)").unwrap();
+        assert_eq!(reader.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 1);
+        reader.execute_batch("COMMIT").unwrap();
+        assert!(truncate(&keeper, &paused, None, Duration::from_secs(1)));
+        assert_eq!(writer.query_row("SELECT count(*) FROM t", [], |r| r.get::<_, i64>(0)).unwrap(), 3);
+        drop(keeper);
+        drop(reader);
+        drop(writer);
         let _ = std::fs::remove_dir_all(dir);
     }
 }

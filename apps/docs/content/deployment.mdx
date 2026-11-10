@@ -346,7 +346,7 @@ Without `DATABASE_URL` the engine stores data in a SQLite file (`bun:sqlite`, WA
 
 - **One server.** The file belongs to one engine; `REPLICAS > 1` and several servers need PostgreSQL. `RUNTIME_WORKERS > 1` works, but the processes share one write lock, so it helps CPU-heavy functions more than write-heavy ones.
 - **Backups:** set a schedule on the dashboard's Backups page (or `BACKUP_SCHEDULE`), ideally into a bucket of their own (`BACKUP_S3_*`); see [Backups](backups.html). `archlast-forge backup app.db` still takes a consistent copy of the file while the engine runs.
-- **WAL space:** the bun:sqlite writer yields between batches so its checkpoint thread can restart the log under continuous writes. A long-running reader, another writer, or a large transaction can delay a restart, so monitor disk space rather than treating the checkpoint threshold as a hard file-size limit.
+- **WAL space:** SQLite checkpoints recycle the log under continuous writes. A long-running reader, another writer, a large transaction, or a delayed checkpoint can make it grow beyond the checkpoint threshold, so monitor disk space rather than treating the threshold as a hard file-size limit.
 - **Capacity:** one core serves roughly 600 requests per second of the [$12 challenge](https://github.com/arjaythedev/twelve-dollar-server-challenge) mix, and held 2,000 simulated users with p95 between 50 and 400 ms across runs (measured on a shared VM; expect run-to-run swings). Past that, add runtime processes or move to PostgreSQL.
 
 ## Logs and metrics

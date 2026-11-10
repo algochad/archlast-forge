@@ -122,7 +122,7 @@ export function createNativeSqliteDb(path: string, native: NativeDb, readers = 4
     try {
       while (queue.length) {
         if (engine.paused()) {
-          // The native thread holds the write lock for a RESTART checkpoint (milliseconds): the batch waits, the loop does not block. The thread lowers the flag
+          // The native thread holds the write lock for a checkpoint (milliseconds): the batch waits, the loop does not block. The thread lowers the flag
           // when it is done, and gives up after its own 5 s busy timeout.
           const until = performance.now() + 6000;
           while (engine.paused() && performance.now() < until) await Bun.sleep(1);
