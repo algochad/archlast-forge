@@ -39,6 +39,10 @@ export interface Workspace {
   main: string;
   /** What the monorepo's packages are scoped with (`@<scope>/api`), when that isn't the name in the root package.json. */
   scope?: string;
+  /** Development HTTP port for the main app. */
+  mainPort?: number;
+  /** Forge RPC services called by each app. The main app defaults to every service. */
+  dependsOn?: Record<string, string[]>;
   transport: Transport;
   apps: Record<string, WorkspaceApp>;
   mobile?: boolean;
@@ -70,12 +74,80 @@ export function findWorkspaceRoot(from: string): string | undefined {
 /** The ports above these are taken by the main app (3000, and 4000 is nobody's), so a new service or app gets the next one. */
 export function nextPorts(ws: Workspace): { port: number; rpcPort: number } {
   const apps = Object.values(ws.apps);
-  return { port: Math.max(3000, ...apps.map((a) => a.port)) + 1, rpcPort: Math.max(4000, ...apps.map((a) => a.rpcPort ?? 0)) + 1 };
+  const main = ws.mainPort ?? 3000;
+  const used = new Set([main, ...apps.flatMap((a) => [a.port, a.rpcPort])]);
+  let port = Math.max(3000, main, ...apps.map((a) => a.port)) + 1;
+  while (used.has(port)) port++;
+  let rpcPort = Math.max(4000, ...apps.map((a) => a.rpcPort ?? 0)) + 1;
+  while (used.has(rpcPort) || rpcPort === port) rpcPort++;
+  return { port, rpcPort };
 }
 
 export const servicesOf = (ws: Workspace) => Object.entries(ws.apps).filter(([, a]) => a.kind === "service");
 /** Every app with a forge/ of its own: the main app first. */
 export const backendsOf = (ws: Workspace) => [ws.main, ...Object.keys(ws.apps)];
+
+export const portOf = (ws: Workspace, app: string) =>
+  app === ws.main ? (ws.mainPort ?? 3000) : ws.apps[app]!.port;
+export const dependenciesOf = (ws: Workspace, app: string) =>
+  ws.dependsOn?.[app] ??
+  (app === ws.main ? servicesOf(ws).map(([name]) => name) : []);
+
+export function validateWorkspace(ws: Workspace) {
+  const apps = backendsOf(ws);
+  const ports = new Map<number, string>();
+  const take = (port: number, label: string) => {
+    if (!Number.isInteger(port) || port < 1 || port > 65535)
+      throw new Error(`${label} needs a port from 1 to 65535`);
+    const previous = ports.get(port);
+    if (previous)
+      throw new Error(
+        `Development port ${port} is used by both ${previous} and ${label}`,
+      );
+    ports.set(port, label);
+  };
+  for (const app of apps) {
+    take(portOf(ws, app), `${app} HTTP`);
+    const service = ws.apps[app];
+    if (
+      service?.kind === "service" &&
+      (ws.transport === "forge-rpc" || ws.transport === "tcp")
+    )
+      take(service.rpcPort ?? 4001, `${app} ${ws.transport}`);
+  }
+  if (ws.dependsOn === undefined) return;
+  if (
+    !ws.dependsOn ||
+    typeof ws.dependsOn !== "object" ||
+    Array.isArray(ws.dependsOn) ||
+    ws.transport !== "forge-rpc"
+  )
+    throw new Error("`dependsOn` must map app names to Forge RPC services");
+  for (const [app, deps] of Object.entries(ws.dependsOn)) {
+    if (
+      !apps.includes(app) ||
+      !Array.isArray(deps) ||
+      deps.some(
+        (dep) =>
+          typeof dep !== "string" ||
+          !Object.hasOwn(ws.apps, dep) ||
+          ws.apps[dep]?.kind !== "service",
+      )
+    )
+      throw new Error(`${app}: dependsOn must list services in this workspace`);
+  }
+  const checked = new Set<string>();
+  const visit = (app: string, path: string[]) => {
+    if (path.includes(app))
+      throw new Error(
+        `Forge RPC dependency cycle: ${[...path, app].join(" → ")}`,
+      );
+    if (checked.has(app)) return;
+    for (const dep of dependenciesOf(ws, app)) visit(dep, [...path, app]);
+    checked.add(app);
+  };
+  for (const app of apps) visit(app, []);
+}
 
 const isDir = (p: string) => existsSync(p) && statSync(p).isDirectory();
 
@@ -146,24 +218,26 @@ export function loadWorkspace(root: string): { name: string; ws: Workspace; infe
   const bad = (why: string): never => {
     throw new Error(`${file}: ${why}`);
   };
-  if (typeof json.main !== "string" || !/^[A-Za-z0-9._-]+$/.test(json.main)) bad(`"main" must be the folder of the main app in apps/ (got ${JSON.stringify(json.main)})`);
+  if (!json || typeof json !== "object" || Array.isArray(json)) bad("expected a workspace object");
+  if (typeof json.main !== "string" || !/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(json.main)) bad(`"main" must be the folder of the main app in apps/ (got ${JSON.stringify(json.main)})`);
   if (!isDir(join(root, "apps", json.main!))) bad(`"main" is "${json.main}", and there is no apps/${json.main}`);
   if (json.scope !== undefined && !/^[a-z0-9][a-z0-9._-]*$/.test(String(json.scope))) bad(`"scope" must be a package scope without the @ (got ${JSON.stringify(json.scope)})`);
   if (!TRANSPORTS.includes(json.transport as Transport)) bad(`"transport" must be one of ${TRANSPORTS.join(", ")}`);
+  if (json.apps !== undefined && (!json.apps || typeof json.apps !== "object" || Array.isArray(json.apps))) bad(`"apps" must be an object`);
   for (const [n, a] of Object.entries(json.apps ?? {}))
-    if ((a.kind !== "service" && a.kind !== "app") || typeof a.port !== "number") bad(`"apps.${n}" needs a "kind" ("service" or "app") and a "port"`);
-  return {
-    name: json.scope ?? rootName,
-    ws: {
-      main: json.main!,
-      ...(json.scope && { scope: json.scope }),
-      transport: json.transport!,
-      apps: json.apps ?? {},
-      ...(json.mobile && { mobile: true }),
-      ...(json.desktop && { desktop: json.desktop }),
-    },
-    inferred: false,
+    if (n === json.main || !/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(n) || !a || (a.kind !== "service" && a.kind !== "app") || typeof a.port !== "number") bad(`"apps.${n}" needs a "kind" ("service" or "app") and a "port"`);
+  const ws: Workspace = {
+    main: json.main!,
+    ...(json.scope && { scope: json.scope }),
+    transport: json.transport!,
+    apps: json.apps ?? {},
+    ...(json.mainPort !== undefined && { mainPort: json.mainPort }),
+    ...(json.dependsOn !== undefined && { dependsOn: json.dependsOn }),
+    ...(json.mobile && { mobile: true }),
+    ...(json.desktop && { desktop: json.desktop }),
   };
+  validateWorkspace(ws);
+  return { name: json.scope ?? rootName, ws, inferred: false };
 }
 
 export function writeWorkspace(root: string, ws: Workspace) {

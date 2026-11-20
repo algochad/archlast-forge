@@ -4,6 +4,25 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+Authenticated query isolation and a workspace development workflow for Forge RPC monorepos.
+
+### Security
+
+- **Authenticated queries are cached and coalesced per session.** Sessions of the same user can have different active organizations. Live queries also watch changes to the rows used to resolve their caller. See [Query caching](caching.html#what-is-cached).
+
+### Added
+
+- **Run `bun run upgrade` from a monorepo root.** The generated root installs the Forge CLI directly and upgrades the whole workspace. See [Monorepos](monorepo.html#develop-from-the-workspace-root).
+
+### Changed
+
+- **Forge RPC monorepos start through Turbo with isolated development settings.** Filtered runs start declared services, codegen runs before consumers, and the CLI can report readiness and run opt-in seed scripts. See [Monorepos](monorepo.html#develop-from-the-workspace-root).
+  - **Upgrading:** run `archlast-forge workspace sync` with the new CLI. Put per-app local overrides in `.env.development.local`.
+
+### Fixed
+
+- **Full-stack development keeps pages styled and working across backend saves.** The browser refresh waits for the new backend runtime, and open pages can still fetch stylesheets and scripts from the previous working build. See [Full-stack development](framework.html#development).
+
 ## 0.21.0
 
 ### Added

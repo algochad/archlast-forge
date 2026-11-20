@@ -82,19 +82,123 @@ test("queries that read ctx.auth are cached per user and never leak between them
   expect(f.hits).toBeGreaterThanOrEqual(2);
 });
 
-test("two sessions of one user share cache entries", async () => {
+async function confirmSessionEntries(server: RunningServer) {
+  const url = server.url;
+  const hits = async () =>
+    fn(
+      await (await fetch(`${url}/_admin/cache`, { headers: admin })).json(),
+      "todos:whoami",
+    ).hits;
   const email = "cy@example.com";
-  const cookieOf = (res: Response) => res.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ");
-  const auth = (path: string, body: object) => fetch(`${srv.url}/api/auth/${path}`, { method: "POST", headers: { "content-type": "application/json", origin: srv.url }, body: JSON.stringify(body) });
-  const first = cookieOf(await auth("sign-up/email", { email, password: "correct horse battery", name: "Cy" }));
-  const second = cookieOf(await auth("sign-in/email", { email, password: "correct horse battery" })); // another device: another session
+  const cookieOf = (res: Response) =>
+    res.headers
+      .getSetCookie()
+      .map((c) => c.split(";")[0])
+      .join("; ");
+  const auth = (path: string, body: object) =>
+    fetch(`${url}/api/auth/${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: url },
+      body: JSON.stringify(body),
+    });
+  const first = cookieOf(
+    await auth("sign-up/email", {
+      email,
+      password: "correct horse battery",
+      name: "Cy",
+    }),
+  );
+  const second = cookieOf(
+    await auth("sign-in/email", { email, password: "correct horse battery" }),
+  ); // another device: another session
   expect(second).not.toBe(first);
-  const who = async (cookie: string) => (await rpc("todos:whoami", {}, { headers: { cookie } }))?.name;
+  const who = async (cookie: string) => {
+    const response = await fetch(`${url}/rpc/todos:whoami?args=%7B%7D`, {
+      headers: { cookie },
+    });
+    return ((await response.json()) as { result: { name: string } | null })
+      .result?.name;
+  };
   await who(first); // reveals the query reads ctx.auth
-  await who(first); // stored under this user
-  const before = fn(await cacheInfo(), "todos:whoami").hits;
+  await who(first); // stored under this session
+  const before = await hits();
   expect(await who(second)).toBe("Cy");
-  expect(fn(await cacheInfo(), "todos:whoami").hits).toBe(before + 1); // a hit, not a second entry per session
+  expect(await hits()).toBe(before);
+  expect(await who(second)).toBe("Cy");
+  expect(await hits()).toBe(before + 1);
+}
+
+test("two sessions of one user have independent cache entries", () =>
+  confirmSessionEntries(srv));
+
+test.skipIf(!process.env.TEST_REDIS_URL)(
+  "Redis uses an independent cache entry for each session",
+  async () => {
+    const server = await startServer({
+      forgeDir: fixture,
+      dev: true,
+      env: {
+        ...process.env,
+        PORT: "0",
+        DATA_DIR: tempDir(),
+        ADMIN_KEY: "secret",
+        REDIS_URL: process.env.TEST_REDIS_URL,
+        REDIS_PREFIX: `session-cache-${crypto.randomUUID()}`,
+      },
+    });
+    try {
+      await confirmSessionEntries(server);
+    } finally {
+      await server.stop();
+    }
+  },
+);
+
+test("a live authenticated query updates when its session ends", async () => {
+  const auth = (path: string, body: object, cookie = "") =>
+    fetch(`${srv.url}/api/auth/${path}`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: srv.url, cookie },
+      body: JSON.stringify(body),
+    });
+  const created = await auth("sign-up/email", {
+    email: "live-cache@example.com",
+    name: "Live",
+    password: "correct horse battery",
+  });
+  const cookie = created.headers
+    .getSetCookie()
+    .map((entry) => entry.split(";")[0])
+    .join("; ");
+  const ws = new WebSocket(`${srv.url.replace("http", "ws")}/rpc`, {
+    headers: { cookie, origin: srv.url },
+  } as never);
+  const initial = Promise.withResolvers<unknown>();
+  const signedOut = Promise.withResolvers<unknown>();
+  try {
+    ws.addEventListener("message", (event) => {
+      const message = JSON.parse(String(event.data));
+      if (message.type !== "data") return;
+      if (message.data.value === null) signedOut.resolve(message.data.value);
+      else initial.resolve(message.data.value);
+    });
+    await new Promise((resolve) =>
+      ws.addEventListener("open", resolve, { once: true }),
+    );
+    ws.send(
+      JSON.stringify({
+        type: "subscribe",
+        id: "identity",
+        name: "todos:whoami",
+        args: {},
+      }),
+    );
+    expect(await initial.promise).toMatchObject({ name: "Live" });
+    expect((await auth("sign-out", {}, cookie)).status).toBe(200);
+    expect(await signedOut.promise).toBeNull();
+  } finally {
+    ws.close();
+  }
 });
 
 test("clearing the cache empties it, and the dashboard action is audited", async () => {

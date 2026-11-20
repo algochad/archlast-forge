@@ -11,6 +11,8 @@ export interface ServeOptions {
   watchDir?: string;
   /** Prepares for a reload (codegen, installs); return false to skip it. */
   onChange?: (files: string[]) => Promise<boolean>;
+  /** Tracks a watched save from codegen to the replacement runtime being ready. */
+  onReloading?: (pending: Promise<void>) => void;
   /** A frontend served next to the API (framework mode). */
   app?: AppHost;
 }
@@ -101,7 +103,10 @@ export async function serve(opts: ServeOptions): Promise<RunningServer> {
       if (!/\.(ts|js)$/.test(file) && !["package.json", "bun.lock"].includes(basename(file))) return;
       changed.add(file);
       clearTimeout(timer);
-      timer = setTimeout(() => (running = running.then(apply)), 150);
+      timer = setTimeout(() => {
+        running = running.then(apply);
+        opts.onReloading?.(running);
+      }, 150);
     });
   }
   return server;

@@ -152,7 +152,7 @@ export const update = mutation({
 });
 ```
 
-With two accounts, Bob sees `{"page":[],"isDone":true,…}` for his list and `No such note` when he tries to update Ann's note by id. Queries that read `ctx.auth` are cached per user, never shared; see [Caching](caching.html).
+With two accounts, Bob sees `{"page":[],"isDone":true,…}` for his list and `No such note` when he tries to update Ann's note by id. Queries that read `ctx.auth` are cached per session, never shared; see [Caching](caching.html).
 
 ## Pagination with infinite scroll
 

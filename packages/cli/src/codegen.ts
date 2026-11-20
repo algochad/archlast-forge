@@ -1,3 +1,4 @@
+import { findWorkspaceRoot, loadWorkspace } from "create-archlast-forge/workspace";
 import { listModules } from "@archlast/forge-runtime/server";
 import { existsSync, mkdirSync, rmSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
@@ -65,13 +66,15 @@ export async function codegen(forgeDir: string) {
 /** Frontend code (src/ in an app with its own bundler, app/ in framework mode) may import only forge/_generated, or server-only code would reach the browser bundle. */
 export async function checkFrontendImports(forgeDir: string) {
   const generated = join(forgeDir, "_generated");
+  const workspace = findWorkspaceRoot(forgeDir);
+  const contracts = workspace && `@${loadWorkspace(workspace).name}/contracts`;
   const violations: string[] = [];
   for (const dir of ["src", "app"].map((d) => join(dirname(forgeDir), d)).filter(existsSync)) {
     for (const file of new Bun.Glob("**/*.{ts,tsx,js,jsx,mts}").scanSync({ cwd: dir, absolute: true })) {
       const loader = file.endsWith("x") ? "tsx" : "ts";
       for (const imp of new Bun.Transpiler({ loader }).scanImports(await Bun.file(file).text())) {
         // Forge RPC is for calls between backends: a page never holds FORGE_RPC_TOKEN, it calls its own backend's functions.
-        if (imp.path === "@archlast/forge-runtime/nest/rpc" || imp.path.startsWith("@archlast/forge-runtime/nest/rpc/")) {
+        if (imp.path === contracts || imp.path === "@archlast/forge-runtime/nest/rpc" || imp.path.startsWith("@archlast/forge-runtime/nest/rpc/")) {
           violations.push(`${relative(process.cwd(), file)} imports "${imp.path}": Forge RPC is for calls between backends (forge/ code), never from a page`);
           continue;
         }

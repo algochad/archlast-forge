@@ -112,7 +112,7 @@ Moves a backend or a full-stack app to another release: the latest by default, o
 4. `bun install` in the project, then in `forge/` (with `--ignore-scripts`, as `dev` does).
 5. `codegen`, run by the CLI that was just installed, so `forge/_generated` is the new version's.
 
-**In a monorepo the whole of it moves**, from its root or from inside any app: every app that is a project is upgraded as above (its packages, `forge/package.json`, `Dockerfile` and `compose.yaml`), and the other apps and packages (the phone app, the desktop app, `packages/api`, `packages/contracts`) have their dependencies on the archlast-forge packages moved. One `bun install` runs at the root, then each project's server dependencies and codegen. The packages of a release are meant to run together (a service and the app that calls it over Forge RPC, the phone app and its engine), and a `^0.x` range doesn't cross a minor, so an app left behind stays behind. Prettier is not set up in a monorepo's apps by this: they have it from `init`.
+**In a monorepo the whole of it moves.** Run `bun run upgrade [version]` at the root, or `archlast-forge upgrade` from inside any app. The generated root declares the CLI directly. During the upgrade, every app that is a project is upgraded as above (its packages, `forge/package.json`, `Dockerfile` and `compose.yaml`), and the other apps and packages (the phone app, the desktop app, `packages/api`, `packages/contracts`) have their dependencies on the archlast-forge packages moved. One `bun install` runs at the root, then each project's server dependencies and codegen. The packages of a release are meant to run together (a service and the app that calls it over Forge RPC, the phone app and its engine), and a `^0.x` range doesn't cross a minor, so an app left behind stays behind. Prettier is not set up in a monorepo's apps by this: they have it from `init`.
 
 The versions are edited as text, so those files keep their formatting and everything else in them; adding the `format` script and `prettier` rewrites `package.json` with its own indentation. It prints each change and ends with `✓ Upgraded to 0.10.0`:
 
@@ -191,7 +191,8 @@ It deletes folders with their data and `.env`, so it asks first (`--yes` skips t
 
 ```bash
 archlast-forge workspace          # list the monorepo's apps, services and ports
-archlast-forge workspace sync     # write the shared packages again from apps/
+archlast-forge workspace sync     # refresh shared packages and generated Turbo tasks
+archlast-forge workspace status   # report development readiness and codegen without secrets
 ```
 
 `sync` is for changes made by hand: an app folder you deleted drops out of the workspace, an app you made in `apps/` joins it, and `packages/api`, `packages/contracts` and the main app's `forge/_services.ts` are written from what is there. It also renames a backend main app's package from `@<project>/api` to `@<project>/backend`: monorepos made by 0.13.0 and before gave both it and `packages/api` that name, and `bun install` refuses two packages of one name.
@@ -215,8 +216,10 @@ Changes which stack services the app you are in has, after [`init`](#init) chose
 ## dev
 
 ```bash
-archlast-forge dev [--port <n>] [--with postgres,redis,s3] [--no-docker] [--run "<cmd>"] [--dir <forge dir>]
+archlast-forge dev [--port <n>] [--with postgres,redis,s3] [--no-docker] [--workspace] [--run "<cmd>"] [--dir <forge dir>]
 ```
+
+Inside a generated Forge RPC monorepo, `bun run dev` at the root runs each Forge app's `dev --workspace` task through Turbo. Ports come from the workspace file, and the isolated development profile selects the database and infrastructure. See [Develop from the workspace root](monorepo.html#develop-from-the-workspace-root).
 
 What it does depends on the project's mode (`archlast-forge.json`).
 

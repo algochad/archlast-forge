@@ -161,7 +161,7 @@ The scaffold wires main app → each service. A service that must call another s
 
 1. In the **calling** service add a service class like `OrdersService` above in `forge/_modules/orders/orders.client.ts` (hand-written client classes belong in `_modules/`; the scaffolded `forge/orders.service.ts` of a main app stays where the CLI put it), register it in a module listed in `_modules/index.ts` (or the `nest()` call), and use it from its router methods, controllers or actions (an action invoked from the router via `ctx.runAction`, or inject it into the router class's constructor: routers are Nest controllers).
 2. Add `"@<scope>/contracts": "workspace:*"` to the calling app's `package.json` (the main app has it as a devDependency), run `bun install`, then codegen in every app and the root `bun run typecheck`.
-3. Add `<CALLEE>_RPC_URL` to the caller's `.env`/`.env.example` and compose environment. The same `FORGE_RPC_TOKEN` must be in every app of the mesh (the scaffold writes it to each `.env`).
+3. Declare the callee under the caller's `dependsOn` in `archlast-forge.workspace.json`, then run `bun run workspace sync`. In the typed client, use `process.env.<CALLEE>_RPC_URL` and `process.env.<CALLEE>_RPC_TOKEN`. The workspace supplies both in development. Configure the corresponding address and receiving service's token in the deployment environment.
 4. Each callee must serve its `ForgeRpcServer` on its own `<NAME>_RPC_PORT` and every caller must reach it (same Docker network or host).
 
 Mesh design rules:

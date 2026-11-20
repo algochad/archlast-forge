@@ -9,7 +9,7 @@ bun create archlast-forge acme --microservices orders,billing   # implies --mono
 
 ```
 acme/
-  package.json        workspaces apps/* and packages/*; scripts dev, build, typecheck (turbo run …), format
+  package.json        workspaces apps/* and packages/*; scripts dev, build, typecheck (turbo run …), upgrade, workspace, format
   turbo.json          dev (persistent, no cache), build, typecheck (after the packages it depends on)
   apps/
     web/              the main app, as init makes it (--mode framework; apps/api with --mode backend)
@@ -20,7 +20,19 @@ acme/
     contracts/        @acme/contracts: the services' Forge RPC types, for the backends that call them (--transport forge-rpc, the default)
 ```
 
-Every app is a whole archlast-forge project, made as `init` makes one: its own `forge/`, `compose.yaml`, `Dockerfile` and `.env`, deployed on its own ([Deploying](#deploying)). `bun run dev` at the root starts them all (`turbo run dev`): the main app on port 3000, the services on 3001, 3002 and so on, on this machine (`--no-docker`) so they reach each other's transports. `bun run typecheck` runs each app's codegen and `tsc`, then `packages/api`'s. A backend main app's package is `@acme/backend`, because `@acme/api` is `packages/api`.
+Every app is a whole archlast-forge project with its own `forge/`, `compose.yaml`, `Dockerfile` and `.env`. Each can be [deployed independently](#deploying). A backend main app's package is `@acme/backend`, because `@acme/api` is `packages/api`.
+
+## Develop from the workspace root
+
+`bun run dev` starts the apps through Turbo and each Forge engine watches its own source. Forge RPC workspaces run native engines and default to SQLite. Set `mainPort`, app `port` and service `rpcPort` in [the workspace file](#the-workspace-file). Turbo starts declared dependencies even in a filtered run such as `bun run dev --filter=@acme/web`. Forge waits for their readiness, and reports which app is unavailable or which port is occupied.
+
+Development configuration comes from each app's private `.env.development.local`. It does not inherit stack `.env` files or application settings exported at the root. Set `DATABASE_URL`, `REDIS_URL` or `S3_…` there to use development infrastructure you run yourself. To have Forge start and stop development containers, set `FORGE_DEV_SERVICES` to a comma-separated selection of `postgres,redis,s3` in that app's profile. Forge uses the selected containers' connection settings and keeps their volumes on shutdown. `bun run up` in an app still uses its deployment stack.
+
+Each app keeps its database and development signing and admin keys under `forge/data`, or the `DATA_DIR` in its development profile. Use separate data locations and external databases for each app. Local RPC credentials are stable and scoped to the receiving service. Forge supplies each declared caller with `<SERVICE>_RPC_URL` and `<SERVICE>_RPC_TOKEN`. The dashboard uses its own credential. Deployment credentials stay in the deployment environment.
+
+To run an application-owned startup task, add a `forge:seed` script to that app's `package.json`. Forge runs it once per development start after the app and its dependencies are ready, with `FORGE_DEV_URL` and the app's development configuration available. Make the script idempotent. Keep it out of deployment scripts. Use `bun run workspace status` to see addresses, readiness, database mode, data locations and the state of generated contracts.
+
+From the root, `bun run typecheck` and `bun run build` run producer codegen before consumers use its output. `bun run upgrade [version]` uses the root's project-local CLI to update the workspace, regenerate contracts and refresh the lockfile. For an older workspace, use a recent Forge CLI to run `archlast-forge workspace sync` once. Move existing development settings you still need to the app's private development profile. Dev sessions previously signed with deployment keys may require signing in again.
 
 ## Shared types
 
@@ -80,6 +92,8 @@ Each takes the next free ports, runs `bun install` and codegen, and says what is
 ```
 
 `main` is the folder of the main app: `web` or `api` in a monorepo `init` made, any name in one made by hand. `scope`, when it is there, is what the packages are scoped with (`@<scope>/api`) in place of the root package's name. A service is called by the main app over `transport`; an app is a project of its own. `port` is where `dev` serves it on this machine, and `rpcPort` the service's port for the transport. A monorepo made before this file existed has it worked out from its folders, and the first change writes it. `archlast-forge workspace sync` rewrites the shared packages after changes you made by hand.
+
+`mainPort` defaults to 3000. In a Forge RPC workspace, `dependsOn` maps an app name to the services it calls. The main app calls all services by default. Other apps have no dependencies until declared. For example, `"dependsOn": { "web": ["orders"], "orders": ["billing"] }` starts Billing with Orders and Orders with Web, including filtered runs. It supplies the corresponding development addresses and tokens. Add the typed client in each caller's backend code as shown in [Forge RPC](forge-rpc.html#a-service-class-that-makes-the-calls). Run `bun run workspace sync` after editing the workspace file to refresh the Turbo tasks and shared contracts.
 
 ## A monorepo made by hand
 

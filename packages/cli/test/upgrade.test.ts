@@ -47,6 +47,7 @@ test("upgrade moves a monorepo whole: every app, service and package, and nothin
     "apps/orders/compose.yaml",
     "apps/orders/forge/package.json",
     "apps/orders/package.json",
+    "package.json",
     "packages/api/package.json",
     "packages/contracts/package.json",
   ]);

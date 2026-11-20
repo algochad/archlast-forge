@@ -1,5 +1,5 @@
-import { existsSync, watch } from "node:fs";
-import { join } from "node:path";
+import { existsSync, readdirSync, rmSync, watch } from "node:fs";
+import { dirname, join } from "node:path";
 
 /** Runs in the browser during development: reloads when the app is rebuilt and shows build errors on top of the page. */
 export const DEV_SCRIPT = `(() => {
@@ -99,4 +99,13 @@ export function watchApp(root: string, onChange: (files: string[]) => Promise<vo
     clearTimeout(timer);
     for (const w of watchers) w.close();
   };
+}
+
+/** Retain the builds the server can still serve to open documents. */
+export function keepBuilds(current: string, previous?: string) {
+  const root = dirname(current);
+  for (const name of readdirSync(root)) {
+    const dir = join(root, name);
+    if (dir !== current && dir !== previous && !name.endsWith(".json")) rmSync(dir, { recursive: true, force: true });
+  }
 }

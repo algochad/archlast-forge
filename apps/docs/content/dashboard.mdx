@@ -83,7 +83,7 @@ Every function in the manifest with a kind badge (query, mutation, action) and a
 
 ### Cache
 
-Shown when the query cache is on (`CACHE_TTL_MS`; otherwise the page says how to turn it on). Hit rate, calls served from the cache or by sharing a run already in flight, function runs, the time saved, and charts, over the page's time range (from each server's runtime samples and the recorded requests, so they survive a restart; with `TELEMETRY=off` they count since the server started). Entries and memory used, and entries evicted by writes and for space, are the server's own state right now, so they start again from zero with it. A per-function table marks queries that are cached **per user** (they read `ctx.auth`). Admins can **Clear cache**, which empties this server's cache (or the shared Redis cache) and records it in the audit log. See [caching](caching.html).
+Shown when the query cache is on (`CACHE_TTL_MS`; otherwise the page says how to turn it on). Hit rate, calls served from the cache or by sharing a run already in flight, function runs, the time saved, and charts, over the page's time range (from each server's runtime samples and the recorded requests, so they survive a restart; with `TELEMETRY=off` they count since the server started). Entries and memory used, and entries evicted by writes and for space, are the server's own state right now, so they start again from zero with it. A per-function table marks queries that are cached **per session** (they read `ctx.auth`). Admins can **Clear cache**, which empties this server's cache (or the shared Redis cache) and records it in the audit log. See [caching](caching.html).
 
 ### Alerts and Ingest keys
 

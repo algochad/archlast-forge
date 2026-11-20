@@ -196,7 +196,7 @@ For an exact signature read `reference`; for a message or symptom read `troubles
 
 **Turn an app into a monorepo:** `archlast-forge monorepo --microservices orders --yes` (in place; `--dry-run` first).
 
-**Add a service-to-service call (mesh):** hand-wire a client class in the calling service as described in [forge-rpc.md](references/forge-rpc.md); keep the call graph acyclic and each service's data private.
+**Add a service-to-service call (mesh):** hand-wire a client class in the calling service as described in [forge-rpc.md](references/forge-rpc.md); declare the dependency in `archlast-forge.workspace.json`, and run `bun run workspace sync`. Keep the call graph acyclic and each service's data private.
 
 ## CLI cheat sheet (full reference: [cli.md](references/cli.md))
 
@@ -208,7 +208,7 @@ For an exact signature read `reference`; for a message or symptom read `troubles
 | Production stack              | `bun run up` / `down` / `logs` (Docker Compose)                                                                                                                 |
 | Production without Docker     | `archlast-forge build --no-docker` then `start --no-docker`                                                                                                     |
 | Add / remove stack services   | `archlast-forge stack add\|remove postgres,redis,s3,caddy`                                                                                                      |
-| Monorepo changes              | `archlast-forge monorepo`, `add service\|app\|mobile\|desktop`, `remove <name>`, `workspace [sync]`                                                             |
+| Monorepo changes              | `archlast-forge monorepo`, `add service\|app\|mobile\|desktop`, `remove <name>`, `workspace [sync|status]`                                                             |
 | Data                          | `migrate`, `export`, `import`, `backup`, `restore`, `env`, `admin` (run inside the running server through `/_cli`, or open the database when no server runs)    |
 | Move to a new release         | `archlast-forge upgrade [version]`                                                                                                                              |
 

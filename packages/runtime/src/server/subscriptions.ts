@@ -12,7 +12,7 @@ import type { Telemetry } from "./telemetry/recorder";
 /** Filled in by a query run for whoever records it: how the cache answered, and what the run recorded when it executed. */
 export interface QueryObserver {
   trace?: TraceParent;
-  /** Set by a run of a query that declares `access`: what the caller's check read. A subscription watches it too, so a ban or a role change wakes it. */
+  /** Reads used to resolve or authorize the caller. A subscription watches them too. */
   access?: string[];
   cache?: "hit" | "miss" | "shared";
   telemetry?: CallTelemetry;
@@ -47,7 +47,7 @@ interface FunctionStats {
   skipped: number;
   hitMs: number;
   missMs: number;
-  /** Cached separately for each signed-in user, because the query reads `ctx.auth`. */
+  /** Cached separately for each authenticated session, because the query reads `ctx.auth`. */
   perUser: boolean;
 }
 
@@ -130,7 +130,7 @@ export class QueryRunner {
     const key = `${headers.cookie ?? ""}\u0000${headers.authorization ?? ""}`;
     const known = this.callers?.getNow<Caller>(key);
     if (known) return known;
-    if (!this.callers) return { identity: await this.runtime.identity(headers) };
+    if (!this.callers) return this.runtime.identityDetail(headers);
     const start = this.seq;
     const { identity, topics, until } = await this.runtime.identityDetail(headers);
     if (!identity) return ANONYMOUS;
@@ -196,23 +196,24 @@ export class QueryRunner {
     // A query with `access`: the check is this caller's, every time; what it returns is the same for everyone who passes, so it is cached and shared without the caller in its key.
     const shared = this.isShared(name);
     if (shared) obs.access = await this.checkAccess(name, args, headers, requestId, raw, obs);
+    const caller = !shared && this.perUser.has(name) ? await this.who(headers) : undefined;
+    if (caller?.topics) obs.access = caller.topics;
+    const identity = caller?.identity;
     // Without a cache, a query that reads ctx.auth runs on its own: sharing it would mean resolving the caller first, for little gain.
     if (!cache && (!this.coalesce || (!shared && this.perUser.has(name)))) {
       const start = this.seq;
-      const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId, trace: obs.trace, ...(shared && { access: "skip" as const }) });
+      const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId, trace: obs.trace, ...(caller && { identity }), ...(shared && { access: "skip" as const }) });
       obs.telemetry = r.telemetry;
       if (r.usedAuth) this.perUser.add(name);
       const topics = r.topics ?? [];
       // `value` is read on demand: a result that crossed from the runtime process is its JSON text until something asks for the object.
-      return lazyValue({ topics, clean: this.untouched(topics, start), json: r.json ?? JSON.stringify(r.value) ?? "null" }, () => r.value);
+      return lazyValue({ topics, clean: (!r.usedAuth || caller !== undefined) && this.untouched(topics, start), json: r.json ?? JSON.stringify(r.value) ?? "null" }, () => r.value);
     }
     const began = performance.now();
     const stats = this.statsOf(name);
-    // Queries that read ctx.auth are cached per caller. Who the caller is gets resolved fresh each time, so a revoked session stops matching.
-    const identity = cache && !shared && this.perUser.has(name) ? (await this.who(headers)).identity : undefined;
     if (identity) obs.user = { id: identity.userId, ...((identity.email ?? identity.name) && { name: String(identity.email ?? identity.name) }) };
-    // Per user, not per session: someone signed in on two devices has two sessions and the same results. (The session id stays out of the key.)
-    const who = identity === undefined ? name : JSON.stringify([name, identity && { userId: identity.userId, email: identity.email, name: identity.name }]);
+    // The active organization and other authorization state can differ between a user’s sessions.
+    const who = identity === undefined ? name : JSON.stringify([name, identity && { userId: identity.userId, sessionId: identity.sessionId, email: identity.email, name: identity.name }]);
     const key = raw !== undefined ? `${who}\u0000${raw}` : `${who}\u0001${JSON.stringify(argsOf(args) ?? {})}`;
     if (cache) {
       if (this.evicting) await this.invalidating; // a pending eviction must land before we read the cache
@@ -253,7 +254,7 @@ export class QueryRunner {
     const start = this.seq;
     const r = await this.runtime.call(name, "query", argsOf(args), headers, { requestId, trace: obs.trace, ...(identity !== undefined && { identity }), ...(shared && { access: "skip" as const }) });
     obs.telemetry = r.telemetry;
-    const topics = r.topics ?? [];
+    const topics = !shared && obs.access?.length ? [...new Set([...(r.topics ?? []), ...obs.access])] : (r.topics ?? []);
     // First sighting of a per-caller query: its result belongs to this caller, and the next call will be keyed by caller.
     const unkeyed = Boolean(r.usedAuth) && identity === undefined;
     if (unkeyed) this.perUser.add(name);
@@ -394,7 +395,7 @@ export class SubscriptionManager {
           const r = await this.queries.run(name, args, headers, requestId, raw, obs);
           if (root) this.telemetry!.end(root, { status: 200, telemetry: obs.telemetry, cache: obs.cache, user: obs.user });
           recorded = true;
-          // The read set can change with the data, so re-record topics on every run. A query with `access` also watches what its check read for this caller.
+          // The read set can change with the data, so re-record topics on every run. Include the reads that authorized this caller.
           const topics = obs.access?.length ? [...new Set([...r.topics, ...obs.access])] : r.topics;
           for (const [t, off] of unsubs) if (!topics.includes(t)) (off(), unsubs.delete(t));
           const added = topics.filter((t) => !unsubs.has(t));
