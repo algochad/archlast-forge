@@ -1,6 +1,6 @@
 # Releasing
 
-How a release reaches every place people get archlast-forge from. Releases are lockstep: one version for all nine packages, the engine image, and the version strings in the docs' samples. 0.6.1 and 0.7.0 were released with exactly these steps.
+Forge releases nine npm packages and the GHCR engine image at one version. GitHub Actions publishes the artifacts, tags the commit, creates the GitHub release, and updates the release notes and sample versions.
 
 ## Branches
 
@@ -13,7 +13,7 @@ Two branches are protected by rulesets (Settings > Rules): nothing is pushed to 
 
 - **Contributors** branch from `staging` and open their pull request into `staging`. The owner reviews it there (see [Reviewing a pull request](#reviewing-a-pull-request)). Pull requests into `master` from anywhere but `staging` fail the `source-branch` check. (Until the `staging` branch exists the check passes, only for the pull request that introduces it; it needs GitHub to answer "no such branch" exactly, and fails on any other answer.)
 - **Nothing publishes from `staging`.** The `engine-image` job of `ci.yml` runs only when `master` is updated (a push to `master`, which is a merge from `staging`), and it only builds the image and runs it. The image and the packages are published by `release.yml`, which starts by itself when CI passes on a merge into `master` that ships something (see [The release](#the-release)). Pull requests and `staging` can't overwrite the production image: they never push one.
-- **The release notes move by themselves.** After publishing, the release workflow's `docs` job moves what was under "Unreleased" in `apps/docs/content/release-notes.mdx` under the new version and updates the version strings of the docs' samples, on `master` and on `staging`, then redeploys the docs site ([the release bot](#the-release-bot)). Its pushes are the only ones either branch takes.
+- **The release notes move by themselves.** After publishing, the release workflow's `docs` job moves what was under "Unreleased" in `apps/docs/content/release-notes.mdx` under the new version and updates the version strings of the docs' samples, on `master` and on `staging`, and can call a deploy webhook ([the release bot](#the-release-bot)). Its pushes are the only ones either branch takes.
 - The owner can bypass either ruleset, but only through a pull request.
 
 ## The publishing points
@@ -23,25 +23,25 @@ Two branches are protected by rulesets (Settings > Rules): nothing is pushed to 
 | git | `master` (by pull request: it is protected), and the tag `vX.Y.Z` | a merged PR; the tag is made by the release workflow, after the packages are published | the owner's account |
 | npm | `@archlast/forge-runtime`, `-client`, `-react`, `-vue`, `-svelte`, `-framework`, `-dashboard`, `-cli`, and `create-archlast-forge` | the **publish** job of `.github/workflows/release.yml`, which starts by itself when CI passes on a merge into `master` that ships something | the `NPM_TOKEN` repository secret (a granular token with read and write on all packages, new names included) |
 | GHCR | `ghcr.io/algochad/archlast-forge-engine:X.Y.Z` and `:latest` | the **engine-image** job of the same workflow (`latest` moves only for a real release, not a pre-release); it runs first, because a new project's `archlast-forge up` pulls the image the moment the packages exist | `GITHUB_TOKEN` (automatic) |
-| Docs site | `apps/docs`, built and served by Caddy | Coolify builds it (see [the docs site](#the-docs-site)); the **docs** job of the release workflow calls its deploy webhook after a release | `DOCS_DEPLOY_WEBHOOK` (and `DOCS_DEPLOY_TOKEN`) in the `release` environment |
+| Docs site | `apps/docs`, built and served by Caddy | Coolify builds it on merges when configured (see [the docs site](#the-docs-site)). The **docs** job can also call a deploy webhook after a release | a Coolify build trigger, or `DOCS_DEPLOY_WEBHOOK` (and `DOCS_DEPLOY_TOKEN`) in the `release` environment |
 
 The CLI pulls the engine image whose tag equals its own version, so the packages and the image must always be released together. Inside this repo the CLI builds the image itself if it is missing, which is why nothing breaks locally when they are out of step.
 
 ## Rules
 
-- **Publishing can't be taken back, and merging starts it.** npm never lets a version be reused, and people may already have pulled an image tag. Every merge into `master` that ships something is a release, once CI passes. So merge into `master` only when the user asks for it, with the change reviewed on `staging`. A request to commit or push is not one. `[skip release]` in a commit message of the merge skips it.
+- **Publishing can't be taken back, and merging starts it.** npm never lets a version be reused, and people may already have pulled an image tag. Every merge into `master` that ships something is a release, once CI passes. So merge into `master` only when the user asks for it, with the change reviewed on `staging`. A request to commit or push is not one. See [version selection and release markers](#the-release).
 - **A release is only ever made from a commit of `master` with green CI.** The release workflow's first job, `plan`, refuses a commit that isn't reachable from `master` or has no successful CI run before anything is pushed. It also ends there for a merge that ships nothing (see below) and for a commit that was released already.
-- **Nobody tags by hand, nobody bumps the version by hand for an ordinary release, and nobody moves the release notes.** The workflow picks the version, stamps it into the packages and the image, publishes, and only then makes the tag `vX.Y.Z` and the GitHub release, so a tag exists only for a release that happened. Then it moves the notes and the docs' version strings and redeploys the docs site.
+- **Nobody tags by hand, nobody bumps the version by hand for an ordinary release, and nobody moves the release notes.** The workflow picks the version, stamps it into the packages and the image, publishes, and only then makes the tag `vX.Y.Z` and the GitHub release, so a tag exists only for a release that happened. Then it moves the notes and the docs' version strings for a stable release.
 - **Bun 1.4.4.** Check `bun --version` (mise installs it; see `mise.toml`). If `bun` on the PATH is older, call the mise binary: `~/.local/share/mise/installs/bun/1.4.4/bin/bun`.
 
 ## The release
 
-Every merge into `master` that ships something releases itself, from `staging` or not. `release.yml` runs after CI succeeds on the merge commit, and `scripts/release-plan.ts` decides, from what changed since the last release (the highest `v*` tag), with the rules in `scripts/release-bump.ts` (tests: `scripts/release-bump.test.ts`, run by CI):
+`release.yml` evaluates the merge commit after its push CI on `master` succeeds. `scripts/release-plan.ts` inspects the diff and commit messages since the latest release tag reachable from that commit. `scripts/release-bump.ts` defines the rules below, and CI runs `scripts/release-bump.test.ts`.
 
 | What changed since the last release | Release |
 | ----------------------------------- | ------- |
 | nothing a package or the engine image ships: only `apps/docs`, `docs`, `skills`, `.github`, `scripts`, tests, `bun.lock` | **none**: the run ends at `plan` |
-| `[skip release]` as a marker (below) | **none** |
+| `[skip release]` in the commit range, unless the range also contains `[release]` | **none** |
 | a fix, an internal change, a dependency: anything that ships and adds nothing to what users see | **patch**: `0.17.0` becomes `0.17.1` |
 | a new or removed public export (the entry files of the packages, the top level of `packages/runtime/src`), a new CLI flag, a new engine setting, a new scaffolded file or package, a commit whose first line starts `feat:` or `type!:` (or has a `BREAKING CHANGE:` footer), or the marker `[minor]` | **minor**: `0.17.4` becomes `0.18.0` |
 | the marker `[release]` | at least a patch, even if nothing shipped |
@@ -49,39 +49,168 @@ Every merge into `master` that ships something releases itself, from `staging` o
 
 - **Markers** (`[skip release]`, `[release]`, `[minor]`) count at the end of a commit's first line (`Fix a thing [skip release]`, which is what a squash or the PR title gives) or on a line of their own. Written mid-sentence or in `code`, as in this page, they do nothing, so a message can explain them without acting on them. `feat:` counts only at the start of a first line.
 - **The version is not committed.** The repository's `package.json` keeps the line (`0.17.0`), the workflow works out `0.17.3` from the tags, stamps it into the packages and the image, and the tag `v0.17.3` records it. So the version in the repository can be behind the published one: the last release is the highest `v*` tag (`git tag --list 'v*'`) or `npm view @archlast/forge-runtime version`.
-- **The same commit gets the same version**, so a re-run after a failure finishes the same release (npm's packages are skipped, the image is rebuilt from the same commit).
+- **A retry before tagging uses the same commit and version.** The workflow skips npm versions it already published and can rebuild the image from the same commit.
 - **The notes:** the GitHub release gets the `## X.Y.Z` section of the release notes page when a person wrote one (a release whose version they set), else what is under "Unreleased" in the released commit, else (nothing was noted) the subjects of the commits since the last release; each with a link to the comparison (`scripts/release-notes-section.ts`). Write the lines under "Unreleased" as each change lands; the release files them under its version.
 - A pre-release (`0.18.0-rc.1`, set with `scripts/version.ts`) publishes under `next`, moves no `latest` (npm or image) and is a GitHub pre-release.
 
 ## Steps
 
-An ordinary release, a patch or a minor the rules pick, has no steps beyond reviewing and merging:
+Merge into `master` only when the user explicitly asks to release Forge, and limit the promotion to the authorized change set. Use a single `staging` → `master` PR when the user asks for one release covering several changes.
 
-1. A change is a pull request into `staging` (reviewed as [below](#reviewing-a-pull-request)); put a line under "Unreleased" in `apps/docs/content/release-notes.mdx` for what users notice.
-2. Merge `staging` into `master` (a pull request, a merge commit): `gh pr create --base master --head staging --fill`, `gh pr checks --watch` (`test`, `source-branch` and `release-notes` must pass), `gh pr merge --merge` (the owner may merge without a second reviewer; keep `staging`). **This merge is the release**, if it ships something.
-3. **Watch the release**, which starts by itself when CI succeeds on the merge commit of `master`:
-   ```bash
-   sleep 20                                                  # the Release run starts when the CI run finishes
-   id=$(gh run list --workflow Release --limit 1 --json databaseId -q '.[0].databaseId')
-   until [ "$(gh run view $id --json status -q .status)" = completed ]; do sleep 20; done
-   gh run view $id --json conclusion,jobs -q '"conclusion: \(.conclusion)", (.jobs[] | "  \(.name): \(.conclusion)")'
-   ```
-   `plan` checks the commit is on `master` with green CI and works out the version; `engine-image` stamps it and pushes `:X.Y.Z` (and `:latest` for a real release); `publish` stamps it into the packages, runs `bun scripts/pack.ts --smoke` and publishes each tarball in `.pack/` with `npm publish --access public`, under `latest` (under `next` for a pre-release), skipping a package npm already has; `tag` makes `vX.Y.Z` on the commit and the GitHub release; `docs` (not for a pre-release) commits the release notes and the docs' version strings to `master` and `staging` as `Docs for X.Y.Z: … [skip release]` and redeploys the docs site. The CI those commits start releases nothing: they change only docs and carry the marker. `git pull --tags` brings the tag. A run that ends at `plan` was not a release: its log says why.
-4. **Verify the registries.** A green workflow is not proof: npm can take a few minutes to show a version, so look with `--prefer-online` and retry.
-   ```bash
-   for d in packages/*; do
-     p=$(bun -e "console.log(require('./$d/package.json').name)")
-     echo "$p $(npm view --prefer-online $p version)"        # every line should say X.Y.Z
-   done
-   tok=$(curl -s "https://ghcr.io/token?scope=repository:algochad/archlast-forge-engine:pull" | bun -e "console.log(JSON.parse(await Bun.stdin.text()).token)")
-   for t in X.Y.Z latest; do
-     curl -sI -H "Authorization: Bearer $tok" -H "Accept: application/vnd.oci.image.index.v1+json" \
-       https://ghcr.io/v2/algochad/archlast-forge-engine/manifests/$t | grep -iE "^HTTP|docker-content-digest"
-   done                                                       # 200, and the same digest for both tags
-   ```
+### 1. Prepare and land the complete change set
 
-5. **The docs site** is redeployed by the `docs` job when `DOCS_DEPLOY_WEBHOOK` is set (its log says so); otherwise redeploy it in Coolify (below). Then report what was published, with the commit, the tag and the image digest.
+Run the commands from the Forge checkout. Check the current branch, local changes, remote refs, release tags, GitHub authentication, and Bun version. Reuse an existing PR when it already carries the right changes. Work on a branch based on current `origin/staging` and preserve unrelated local work, using a separate worktree when needed.
 
+```bash
+git status --short --branch
+git remote get-url origin
+git fetch origin master staging --tags
+gh auth status
+gh repo view --json nameWithOwner,viewerPermission
+gh pr list --base staging
+gh pr list --base master --head staging
+bun --version
+```
+
+Review the commits, tests, docs, and the one-line summary and entries under **Unreleased**. Use [the review checklist](#reviewing-a-pull-request). Push the feature branch and open or update its PR into `staging`. If the changes are already on `staging`, confirm their presence there and proceed to the promotion PR.
+
+For each feature PR, save its number and head SHA from GitHub. Wait for its GitHub `test` check to pass before merging. Inspect the per-check results if the PR has results from multiple events. Match the verified head SHA when merging so an edit after CI cannot enter the release.
+
+```bash
+# Set feature_pr to the feature PR number.
+feature_head=$(gh pr view "$feature_pr" --json headRefOid --jq .headRefOid)
+gh pr checks "$feature_pr" --watch --interval 20
+gh pr checks "$feature_pr" --json name,bucket,event,link
+```
+
+After the PR's `test` check passes for that head, merge it.
+
+```bash
+gh pr merge "$feature_pr" --merge --match-head-commit "$feature_head"
+```
+
+If the user authorized owner bypass and review requirements still block the merge, add `--admin` after the required CI checks pass. A failed required check blocks the merge even when the owner can bypass it. Keep both protected branches. The release bot handles their post-release docs pushes.
+
+### 2. Promote the verified staging commit
+
+Fetch both branches again. Review `origin/master..origin/staging` and the combined diff to confirm the promotion contains the requested fixes and features together. Account for the previous release bot's docs commit. Resolve any unexpected shipped changes with the user before promoting them. Capture the `staging` SHA and follow its push CI by commit. Open the single release PR while that run is in progress. Prepare `release_pr_body` as a Markdown file listing the included changes, or reuse the existing promotion PR and its number.
+
+```bash
+git fetch origin master staging --tags
+git log --oneline origin/master..origin/staging
+git diff origin/master...origin/staging
+staging_head=$(git rev-parse origin/staging)
+reviewed_master=$(git rev-parse origin/master)
+gh run list --workflow ci.yml --event push --commit "$staging_head" \
+  --json databaseId,headSha,status,conclusion,url
+gh pr create --base master --head staging --title "Release Forge" --body-file "$release_pr_body"
+```
+
+Confirm the promotion PR's head matches the reviewed `staging_head`. Wait for the `staging` push CI and the release PR's `test`, `source-branch`, and `release-notes` checks to pass.
+
+The planner inspects every commit message since the preceding tag. The previous release bot's docs commit contains `[skip release]`, which can suppress the new release even when this merge ships code. Use `[release]` at the end of the authorized promotion merge's subject or on its own line in the merge body. It overrides the inherited marker while leaving the version choice to the planner. Apply it only when the user has authorized publication. An ordinary docs-only merge needs no marker.
+
+```bash
+# Set staging_run and release_pr from the GitHub results above.
+gh run watch "$staging_run" --exit-status --interval 20
+gh pr checks "$release_pr" --watch --interval 20
+gh pr checks "$release_pr" --json name,bucket,event,link
+gh pr view "$release_pr" --json baseRefOid,headRefOid
+```
+
+Once both runs pass, compare the current base and head SHAs with `reviewed_master` and `staging_head`. If either changed, review the diff and checks again before merging. Add `--admin` only under the same owner authorization and green-CI rule as above.
+
+```bash
+gh pr merge "$release_pr" --merge --match-head-commit "$staging_head" --subject 'Release Forge [release]'
+```
+
+If asked to preview the version, run `bun scripts/release-plan.ts` in a checkout of the intended release tree. A skip result on raw `staging` can reflect that inherited marker. To preview the effect of the promotion before merging, use a local merge object with the marker and pass its SHA to the same script. This creates no branch or tag.
+
+```bash
+release_tree=$(git merge-tree --write-tree origin/master "$staging_head")
+preview_sha=$(git commit-tree "$release_tree" -p origin/master -p "$staging_head" -m 'Preview Forge release [release]')
+bun scripts/release-plan.ts --sha "$preview_sha"
+```
+
+### 3. Watch master CI and the Release workflow
+
+Get the merge commit from the release PR after it shows **Merged**. Use the merge SHA for every lookup to avoid picking a previous release, a PR test merge, or the later docs bot commit.
+
+```bash
+master_sha=$(gh pr view "$release_pr" --json mergeCommit --jq .mergeCommit.oid)
+gh run list --workflow ci.yml --event push --commit "$master_sha" \
+  --json databaseId,headSha,status,conclusion,url
+# Set master_run to the matching push CI run once it appears.
+gh run watch "$master_run" --exit-status --interval 20
+gh run list --workflow release.yml --commit "$master_sha" \
+  --json databaseId,headSha,status,conclusion,url
+# Set release_run to the new Release run for this commit.
+gh run watch "$release_run" --exit-status --interval 20
+gh run view "$release_run" --json status,conclusion,jobs \
+  --jq '.jobs[] | [.name, .conclusion] | @tsv'
+```
+
+Wait for each run to appear and reach a terminal state. In an agent session, poll at short intervals so user messages can steer the task. A green PR does not replace the push CI on `master`. A failed push CI can create a skipped Release run. After a successful retry, watch the new Release run. If a fresh Release run for that SHA is still missing after a brief delay, confirm `master` still points to the verified merge SHA and use `gh workflow run release.yml --ref master`. Keep following the same release candidate.
+
+The jobs run in order. `plan` establishes the commit and version. `engine-image` publishes GHCR. `publish` packs, smoke-tests, and publishes to npm. `tag` creates the Git tag and GitHub release. For a stable release, `docs` stamps the notes and examples on both branches and may call the Coolify webhook. Inspect individual jobs if the overall Release run fails. A docs webhook failure after successful publishing and tagging does not require another package release. See [When it goes wrong](#when-it-goes-wrong).
+
+### 4. Verify the published artifacts
+
+Use the workflow's actual version. Fetch the tag and confirm it resolves to `master_sha` and contains every requested commit. Check the GitHub release's tag, notes, and pre-release setting.
+
+```bash
+# Set version to the workflow's version and master_sha from the merged PR.
+git fetch origin --tags
+test "$(git rev-parse "v${version}^{commit}")" = "$master_sha"
+gh release view "v$version" --json tagName,url,isDraft,isPrerelease,body
+```
+
+Check all nine names in [the publishing table](#the-publishing-points). The publish job can succeed several minutes before npm's public reads return the same version for every package. Retry `npm view --prefer-online` for packages still showing the previous version or a temporary 404.
+
+```bash
+channel=latest # Set next for a pre-release.
+packages=(
+  @archlast/forge-runtime @archlast/forge-client @archlast/forge-react
+  @archlast/forge-vue @archlast/forge-svelte @archlast/forge-framework
+  @archlast/forge-dashboard @archlast/forge-cli create-archlast-forge
+)
+ready=true
+for package in "${packages[@]}"; do
+  actual=$(npm view --prefer-online --loglevel=error --registry https://registry.npmjs.org "$package@$channel" version) || actual=unavailable
+  printf '%s %s\n' "$package" "$actual"
+  if [ "$actual" != "$version" ]; then ready=false; fi
+done
+"$ready"
+```
+
+Check GHCR's version tag and record its digest. Stable releases must also have that same digest under `latest`. For a pre-release, check the version tag and the previous stable `latest` if captured before publication. Keep the short-lived pull token out of output.
+
+```bash
+image=algochad/archlast-forge-engine
+ghcr_token=$(curl -fsS "https://ghcr.io/token?service=ghcr.io&scope=repository:$image:pull" |
+  bun -e 'console.log(JSON.parse(await Bun.stdin.text()).token)')
+manifest_digest() {
+  curl -fsSI -H "Authorization: Bearer $ghcr_token" \
+    -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.oci.image.manifest.v1+json, application/vnd.docker.distribution.manifest.v2+json' \
+    "https://ghcr.io/v2/$image/manifests/$1" |
+    awk 'tolower($1) == "docker-content-digest:" {gsub(/\r/, "", $2); print $2}'
+}
+version_digest=$(manifest_digest "$version")
+printf '%s %s\n' "$version" "$version_digest"
+test -n "$version_digest" && {
+  if [ "$channel" = latest ]; then
+    latest_digest=$(manifest_digest latest)
+    printf 'latest %s\n' "$latest_digest"
+    test "$version_digest" = "$latest_digest"
+  fi
+}
+```
+
+### 5. Finish and report
+
+Verify the release bot's notes commit on both branches for a stable release. Handle the live site as described in [The docs site](#the-docs-site). When Coolify deploys on merges or the user excludes that step, leave the deployment to the existing trigger.
+
+Report the included changes, the GitHub release and PR links, the tagged commit, the npm version verified for all nine packages, and the GHCR digest. Flag any job or artifact that is still pending. Keep the release together through retries by staying on the same commit until a code fix genuinely requires a new one.
 
 ### Choosing the version yourself
 
@@ -126,16 +255,13 @@ A pull request from a fork runs the same checks; read what it changes in `.githu
 
 Check a build before a release with `bun run --cwd apps/docs build`; it fails when a page is missing from the sidebar or a link names no page. To see the container as Coolify runs it: `cd apps/docs && docker compose run --build --rm -p 8080:80 docs`.
 
-**The release redeploys it** through Coolify's deploy webhook when `DOCS_DEPLOY_WEBHOOK` is set ([the release bot](#the-release-bot)). Without it, whether Coolify redeploys on a push to `master` is not recorded in the repository: after a release, open the Coolify project and check that the deployment shows the commit `Docs for X.Y.Z`, or trigger it. If you can't see Coolify, tell the user the site needs redeploying instead of assuming it did.
+Coolify can deploy on pushes to `master`. The release workflow can also request a deployment through `DOCS_DEPLOY_WEBHOOK`. Use the merge-driven deployment when configured. If live verification is in scope, check the site or the Coolify deployment for the stamped docs commit. Trigger a manual deployment only if it is needed for the requested release and the target project is known. If the user excludes the docs deployment, report the package release independently.
 
 ## When it goes wrong
 
-- **CI is red on a merge into `master`.** Nothing is released: the release needs a green run. Fix it through a pull request into `staging`, then into `master`; the fix is a merge that ships, so it releases (the next version, since nothing was published) when CI passes on it.
-- **The release workflow fails before npm** (`plan` refusing a commit or missing notes, the image build, the pack smoke test, a missing `NPM_TOKEN`: the failing step says so). Nothing is on npm and there is no tag to delete. Fix the cause: if it is a repository secret, `gh run rerun <id> --failed` is enough; if it is a commit, merge the fix the same way and the release runs again on it. The image job runs first, so `:X.Y.Z` and `:latest` on GHCR may already hold a build of the broken commit until the next run overwrites them; check the digest afterwards (step 9).
-- **It fails while publishing to npm.** Some packages may be live and npm refuses to publish a version twice. Re-run the failed jobs (`gh run rerun <id> --failed`, or `gh workflow run Release` on the same head of `master`): the packages npm already has are skipped and the rest are published from the same commit, then the tag is made. Do not finish by hand. If the commit has to change, release the next patch (`X.Y.Z+1`, all packages) and, if the incomplete version could mislead anyone, `npm deprecate` it with a message.
-- **A bad release is out.** It can't be unpublished safely: deprecate the version and release a patch.
-
-## Known gaps
-
-- **The release workflow has run end to end only in parts.** Its planning step (`scripts/release-plan.ts`) and the release-notes extraction were run against the real npm registry and the docs, and the workflow passes `actionlint`, but a full release has not been made with it yet: watch the first one (step 8).
-- **The docs site is redeployed by a webhook, not built by a workflow** (above): without `DOCS_DEPLOY_WEBHOOK` it is up to Coolify or a person.
+- **PR CI or push CI fails.** Use `gh run view RUN_ID --log-failed` and inspect the failing job, keeping credentials out of logs and replies. Retry a transient failure with `gh run rerun RUN_ID --failed` on the same commit, then wait for the new attempt. Fix a reproducible failure on a branch and go through the normal PRs again. Keep the version and change set together. A failed push CI on `master` cannot publish.
+- **Release stops at `plan`.** Inspect the job log for the evaluated SHA, version, and skip reason. When CI failed, recover CI first. When the intended promotion was skipped because of an inherited marker, use an authorized promotion with `[release]` through the normal branch flow.
+- **The image build or npm publish job fails.** Inspect the first failing step and check what reached GHCR and npm. Retry a recoverable failure through GitHub Actions on the same commit. Before a tag exists, a retry of the Release workflow skips npm versions it already published. Avoid publishing individual packages by hand. If code must change after a partial npm publish, coordinate the next lockstep version because npm will refuse to reuse a published version.
+- **npm still reports an old version after publishing.** Check the publish job's per-package receipts and retry the public registry reads. A lagging read alone is insufficient reason to publish a new version. Report any persistent mismatch with the affected package and the verified artifacts.
+- **Only the docs job fails.** Check whether release notes stamping or the Coolify webhook failed. If only the webhook failed, verify npm, GHCR, and the GitHub tag normally. Follow the user's deployment scope. A missing release bot key requires owner setup if notes stamping is required.
+- **A bad release is already live.** Coordinate a patch release. Deprecating an npm version is a separate action for the owner when necessary.
