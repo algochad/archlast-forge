@@ -13,6 +13,7 @@
   },
   "dependencies": {
     "@archlast/forge-framework": "^__VERSION__",
+    "@archlast/forge-runtime": "^__VERSION__",
     "@archlast/forge-react": "^__VERSION__",
     "react": "^19.3.1",
     "react-dom": "^19.3.1"

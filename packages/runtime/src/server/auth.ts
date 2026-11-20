@@ -186,7 +186,11 @@ export function createAuth(exec: Executor, tables: TablesSpec, options: AuthOpti
     },
     // The address Better Auth rate limits is the one the server worked out (it honors TRUST_PROXY) and put in this header,
     // not whatever X-Forwarded-For the client sent.
-    advanced: { ...options.advanced, ipAddress: { ...options.advanced?.ipAddress, ipAddressHeaders: [CLIENT_IP_HEADER] } },
+    advanced: {
+      ...(config.dev && process.env.ARCHLAST_WORKSPACE_DEV === "1" && { cookiePrefix: `forge-${config.port}` }),
+      ...options.advanced,
+      ipAddress: { ...options.advanced?.ipAddress, ipAddressHeaders: [CLIENT_IP_HEADER] },
+    },
     databaseHooks: {
       ...options.databaseHooks,
       session: {

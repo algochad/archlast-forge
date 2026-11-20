@@ -172,7 +172,7 @@ What this file decides:
 - **Arguments are validated** before your handler runs, using `args`. `v.id("notes")` rejects an id from another table. Document fields are validated again when you `insert` or `patch`.
 - **`returns: v.id("notes")`** makes the return type explicit and checks it at runtime; a mutation that returns the wrong thing rolls back.
 - **Order.** `by_owner_updated` is sorted by `updatedAt`, so `.order("desc")` gives the most recently edited first. The index's remaining fields, then `_creationTime`, decide the order.
-- **`list` reads `ctx.auth`**, so its result is cached and subscribed per user.
+- **`list` reads `ctx.auth`**, so its result is cached and subscribed per session.
 
 The dev terminal prints a line such as `✓ function runtime restarted (notes.ts, schema.ts)`, and `forge/_generated/api.ts` now has `api.notes.list`, `api.notes.create` and the rest, typed from your validators.
 
