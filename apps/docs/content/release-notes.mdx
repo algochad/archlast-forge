@@ -19,6 +19,10 @@ Authenticated query isolation and a workspace development workflow for Forge RPC
 - **Forge RPC monorepos start through Turbo with isolated development settings.** Filtered runs start declared services, codegen runs before consumers, and the CLI can report readiness and run opt-in seed scripts. See [Monorepos](monorepo.html#develop-from-the-workspace-root).
   - **Upgrading:** run `archlast-forge workspace sync` with the new CLI. Put per-app local overrides in `.env.development.local`.
 
+### Fixed
+
+- **Full-stack development keeps pages styled and working across backend saves.** The browser refresh waits for the new backend runtime, and open pages can still fetch stylesheets and scripts from the previous working build. See [Full-stack development](framework.html#development).
+
 ## 0.21.0
 
 ### Added

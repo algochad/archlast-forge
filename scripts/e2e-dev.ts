@@ -51,7 +51,20 @@ async function framework() {
     await until("a changed page", async () => (await (await fetch(`${p.base}/`)).text()).includes("Edited while running"));
     check("editing a page rebuilds it", true);
 
-    writeFileSync(join(p.dir, "forge/extra.ts"), `import { query } from "@archlast/forge-runtime";\nexport const answer = query({ handler: () => 42 });\n`);
+    const reloads = await fetch(`${p.base}/_app/__events`, { signal: AbortSignal.timeout(10_000) });
+    const reader = reloads.body!.pipeThrough(new TextDecoderStream()).getReader();
+    try {
+      writeFileSync(join(p.dir, "forge/extra.ts"), `import { query } from "@archlast/forge-runtime";\nawait Bun.sleep(750);\nexport const answer = query({ handler: () => 42 });\n`);
+      let events = "";
+      while (!events.includes('"type":"reload"')) {
+        const { value, done } = await reader.read();
+        if (done) throw new Error("live reload stream closed before the backend edit reached the browser");
+        events += value;
+      }
+      check("the browser refreshes after the replacement runtime is ready", (await fetch(`${p.base}/ready`)).ok);
+    } finally {
+      await reader.cancel();
+    }
     await until("a new function", async () => (await json(await fetch(`${p.base}/rpc/extra:answer`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" }))).result === 42);
     check("adding a backend function makes it callable", true);
     await until("regenerated types", async () => readFileSync(join(p.dir, "forge/_generated/api.ts"), "utf8").includes("extra"));

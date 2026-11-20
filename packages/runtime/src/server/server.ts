@@ -561,7 +561,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     return "route" in match || match.status === 405;
   };
   const load = () => {
-    const p = runtime.start().then(async (manifest) => {
+    return runtime.start().then(async (manifest) => {
       rpc = buildRpc(manifest, runtime, queries, subs, rpcOpts);
       if (manifest.release) telemetry?.release(manifest.release);
       telemetry?.describe({
@@ -590,12 +590,18 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       }
       return manifest;
     });
+  };
+  const trackLoad = (pending: Promise<Manifest>) => {
     loadPending = true;
-    loading = p.catch(() => {}).then(() => void (loadPending = false));
-    return p;
+    const settled = pending.catch(() => {}).then(() => {
+      if (loading === settled) loadPending = false;
+    });
+    loading = settled;
+    return pending;
   };
 
-  const reload = () => runtime.stop().then(load);
+  // Requests wait through shutdown too, while the old worker is gone and its replacement has yet to start.
+  const reload = () => trackLoad(loading.then(() => runtime.stop()).then(load));
   /** In a cluster the others follow once this one has reloaded: a variable set with `env set` is read by every server, not only by the one that got the signal. */
   const reloadAll = () => reload().then((manifest) => (wire?.send({ t: "reload" }), manifest));
   let connections = 0;
@@ -1263,12 +1269,11 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       if (follower && isControlPlane(path, req.method)) return withId(await proxyToFirst(clusterFolder, req, clientIp(req, srv)));
 
       if (path === "/health") return Response.json({ ok: true });
-      if (path === "/ready")
-        return Response.json(
-          // Why the code didn't load is for the logs (and the dev overlay): it can name files, hosts and data, and anyone may ask /ready.
-          { ready: !shuttingDown && Boolean(runtime.manifest) && !runtime.loadError, ...(dev && { error: runtime.loadError }) },
-          { status: !shuttingDown && runtime.manifest && !runtime.loadError ? 200 : 503 },
-        );
+      if (path === "/ready") {
+        const ready = !shuttingDown && !loadPending && Boolean(runtime.manifest) && !runtime.loadError;
+        // The production endpoint omits load errors because they can name files, hosts and data.
+        return Response.json({ ready, ...(dev && { error: runtime.loadError }) }, { status: ready ? 200 : 503 });
+      }
       // Content-Security-Policy violation reports from browsers (the app's pages and the dashboard), for the dashboard's Security page.
       if (path === CSP_REPORT_PATH && req.method === "POST") {
         const retry = await limited(req, srv, "csp:");
@@ -1751,9 +1756,9 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const url = ["0.0.0.0", "::"].includes(config.hostname) ? `http://localhost:${server.port}` : server.url.href.replace(/\/$/, "");
   runtimeEnv.BETTER_AUTH_URL ??= url;
   // Started right after binding, so early requests wait for the runtime instead of failing.
-  if (dev) await load().catch((e) => log("error", e.message));
+  if (dev) await trackLoad(load()).catch((e) => log("error", e.message));
   else
-    await load().catch(async (e) => {
+    await trackLoad(load()).catch(async (e) => {
       server.stop(true);
       await bus.close();
       throw e;

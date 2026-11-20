@@ -227,8 +227,19 @@ async function devFramework(dir: string, cfg: ProjectConfig) {
 
   companion(); // --run "<cmd>"
   const { createApp } = await loadFramework(root, "server");
-  const app = await createApp({ root, dev: true });
-  const server = await serve({ forgeDir: dir, dev: true, env: { ...env, PORT: String(port) }, app, watchDir: dir, onChange: forgeChanged(dir) });
+  let backendReload = Promise.resolve();
+  const app = await createApp({ root, dev: true, waitForBackend: () => backendReload });
+  const server = await serve({
+    forgeDir: dir,
+    dev: true,
+    env: { ...env, PORT: String(port) },
+    app,
+    watchDir: dir,
+    onChange: forgeChanged(dir),
+    onReloading: (pending) => {
+      backendReload = pending;
+    },
+  });
   banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  full-stack app  ${c.dim(`· ready in ${Math.round(performance.now() - began)} ms`)}`, [
     ["App", server.url],
     ["Dashboard", `${server.url}/_dashboard`],

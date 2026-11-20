@@ -121,3 +121,52 @@ test("changing a public file reloads without rebuilding", async () => {
   expect((await (await page()).text()).match(/entry\.client-[\w]+\.js/)![0]).toBe(before);
   ev.close();
 }, 30_000);
+
+test("a tab can fetch its stylesheet and scripts after a rebuild", async () => {
+  const ev = await events();
+  try {
+    const html = await (await page()).text();
+    const assets = (text: string) => [...text.matchAll(/(?:href|src)="(\/_app\/[^"]+\.(?:css|js))"/g)].map((match) => match[1]!);
+    const before = assets(html);
+    const originalCss = before.find((path) => path.endsWith(".css"))!;
+    const css = await (await page(originalCss)).text();
+
+    write("app/routes/about.tsx", 'if (typeof window === "undefined") throw new Error("temporary server build error"); export default function About() { return null; }');
+    await ev.next("error");
+    write("app/styles.css", "body { color: rebeccapurple; }");
+    write("app/routes/about.tsx", 'export default function About() { return <p>Build recovered</p>; }');
+    await ev.next("reload");
+
+    const next = assets(await (await page()).text());
+    expect(next).not.toContain(originalCss);
+    expect(await (await page(originalCss)).text()).toBe(css);
+    for (const asset of before) expect((await page(asset)).status).toBe(200);
+  } finally {
+    ev.close();
+  }
+}, 30_000);
+
+test("a page with a loader waits for the backend worker to finish restarting", async () => {
+  const stop = srv.runtime.stop.bind(srv.runtime);
+  const stopped = Promise.withResolvers<void>();
+  const resume = Promise.withResolvers<void>();
+  srv.runtime.stop = async () => {
+    await stop();
+    stopped.resolve();
+    await resume.promise;
+  };
+  const reload = srv.reload();
+  try {
+    await stopped.promise;
+    const ready = await page("/ready");
+    expect(ready.status).toBe(503);
+    const html = page();
+    expect(await Promise.race([html.then(() => "rendered"), Bun.sleep(100).then(() => "waiting")])).toBe("waiting");
+    resume.resolve();
+    expect((await html).status).toBe(200);
+  } finally {
+    resume.resolve();
+    srv.runtime.stop = stop;
+    await reload;
+  }
+}, 30_000);
