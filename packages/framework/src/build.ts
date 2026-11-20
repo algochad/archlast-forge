@@ -1,7 +1,8 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
 import { brotliCompressSync, gzipSync } from "node:zlib";
 import { classifyApp, type ComponentReport } from "./classify";
+import { keepBuilds } from "./dev";
 import { generate } from "./generate";
 import { compileApp, moduleSource, type AppTemplates } from "./render-compile";
 import { scanRoutes } from "./routes";
@@ -275,10 +276,9 @@ ${mounts.map((m) => `  ${JSON.stringify(islandId(appRoot, m))}: () => import(${J
   writeFileSync(join(dir, "manifest.json"), JSON.stringify(manifest, null, 2));
   mkdirSync(buildDirOf(root), { recursive: true });
   writeFileSync(join(buildDirOf(root), "latest.json"), JSON.stringify({ version }));
-  if (!dev) precompress(join(dir, "client"));
-
-  // Keep the previous build in dev: a page loaded before the rebuild still asks for its files.
-  const keep = new Set([version, ...(dev ? readdirSync(buildDirOf(root)).filter((n) => n !== version && !n.endsWith(".json")).sort().slice(-1) : [])]);
-  for (const name of readdirSync(buildDirOf(root))) if (!name.endsWith(".json") && !keep.has(name)) rmSync(join(buildDirOf(root), name), { recursive: true, force: true });
+  if (!dev) {
+    precompress(join(dir, "client"));
+    keepBuilds(dir);
+  }
   return { manifest, dir };
 }

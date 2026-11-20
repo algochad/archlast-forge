@@ -10,7 +10,7 @@ import { renderToReadableStream, renderToString } from "react-dom/server";
 import { createStaticHandler, createStaticRouter, isRouteErrorResponse, matchRoutes, RouterContextProvider, StaticRouterProvider, type StaticHandlerContext } from "react-router";
 import { BuildError, buildApp, readBuild, type BuildManifest, type BuildResult } from "./build";
 import { createViewerStore, forgeContext, type LoaderContext, type Viewer } from "./context";
-import { buildErrorPage, DEV_SCRIPT, DevEvents, watchApp } from "./dev";
+import { buildErrorPage, DEV_SCRIPT, DevEvents, keepBuilds, watchApp } from "./dev";
 import { IslandsContext, type IslandCount } from "./island";
 import { Providers } from "./providers";
 import { toRouteObjects } from "./route-objects";
@@ -24,6 +24,8 @@ export interface AppOptions {
   dev: boolean;
   /** Render pages with islands where the app allows it (see classify.ts). Default: what app/root.tsx's `islands` export or FORGE_ISLANDS says. */
   islands?: boolean;
+  /** Waits for any backend save that triggered this rebuild before refreshing the browser. */
+  waitForBackend?: () => Promise<void>;
   /** Where build and error messages go. Defaults to the console. */
   log?: (level: "info" | "error", message: string) => void;
 }
@@ -32,7 +34,6 @@ interface Loaded {
   build: BuildResult;
   handler: ReturnType<typeof createStaticHandler>;
   routes: ReturnType<typeof toRouteObjects>;
-  clientDir: string;
   /** app/root.tsx's `authPlugins`, for the client each render makes. */
   authPlugins?: unknown[];
   /** Routes whose pages the engine prints (see render-compile.ts): the compiled template and the code that runs the app's functions for it. */
@@ -212,13 +213,17 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
   const publicDir = join(root, "public");
   const events = new DevEvents();
   let loaded: Loaded | undefined;
+  let clientDirs: string[] = [];
   let buildError: string | undefined;
 
   async function load(build: BuildResult) {
     const mod = (await import(join(build.dir, build.manifest.server))) as { manifest: Parameters<typeof toRouteObjects>[0]; templates?: { route: string; template: unknown[]; prep?: (d: unknown) => void; bail?: (d: unknown) => boolean }[] };
     const routes = toRouteObjects(mod.manifest);
     const compiled = new Map((mod.templates ?? []).map((t) => [t.route, { template: t.template, prep: t.prep, bail: t.bail }] as const));
-    loaded = { build, routes, compiled, handler: createStaticHandler(routes), clientDir: join(build.dir, "client"), authPlugins: mod.manifest.module?.authPlugins };
+    const previous = loaded?.build.dir;
+    loaded = { build, routes, compiled, handler: createStaticHandler(routes), authPlugins: mod.manifest.module?.authPlugins };
+    clientDirs = [join(build.dir, "client"), ...(dev && previous ? [join(previous, "client")] : [])];
+    if (dev) keepBuilds(build.dir, previous);
   }
 
   async function rebuild(): Promise<boolean> {
@@ -239,6 +244,7 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
   if (dev) {
     await rebuild();
     stopWatching = watchApp(root, async (files) => {
+      await opts.waitForBackend?.();
       if (files.every((f) => f.startsWith(publicDir))) return events.broadcast({ type: "reload" });
       if (await rebuild()) events.broadcast({ type: "reload" });
       else events.broadcast({ type: "error", message: buildError! });
@@ -256,19 +262,22 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
       return events.response();
     }
     if (!loaded) return undefined;
-    const file = inside(loaded.clientDir, path.slice("/_app".length));
-    if (!file || !(await isFile(file))) return new Response("Not found", { status: 404 });
-    return fileResponse(file, req, { cache: dev ? "no-cache" : "public, max-age=31536000, immutable", precompressed: !dev });
+    for (const dir of clientDirs) {
+      const file = inside(dir, path.slice("/_app".length));
+      if (file && (await isFile(file))) return fileResponse(file, req, { cache: dev ? "no-cache" : "public, max-age=31536000, immutable", precompressed: !dev });
+    }
+    return new Response("Not found", { status: 404 });
   }
 
   async function page(req: Request, env: AppEnv, url: URL): Promise<Response> {
     // While the build is broken the page says so, instead of showing the last build that worked.
     if (buildError) return buildErrorPage(buildError, env.nonce);
-    if (!loaded) return new Response("The app isn't built yet", { status: 503 });
+    const current = loaded;
+    if (!current) return new Response("The app isn't built yet", { status: 503 });
     const wait = await env.rateLimited();
     if (wait !== null) return new Response("Too many requests", { status: 429, headers: { "retry-after": String(wait), "content-type": "text/plain; charset=utf-8" } });
 
-    const { handler, build, authPlugins } = loaded;
+    const { handler, build, authPlugins } = current;
     // One instant and one zone for the whole render, and the same two in the page: the browser's hydrating render uses them too.
     const time: TimeState = { now: Date.now(), timeZone: zoneFromCookie(req.headers.get("cookie")) ?? DEFAULT_ZONE };
     const queryClient = new QueryClient({ defaultOptions: { queries: { staleTime: Infinity } } });
@@ -322,12 +331,12 @@ export async function createApp(opts: AppOptions): Promise<AppHost> {
     };
     // A page the engine can print from a template (render-compile.ts) is not rendered here: the data goes to it as JSON, and it prints the page on its I/O thread.
     const leaf = context.matches.at(-1)?.route.id;
-    if (withIslands && env.templates && env.registerTemplate && !loaded.templates) {
+    if (withIslands && env.templates && env.registerTemplate && !current.templates) {
       const register = env.registerTemplate;
-      loaded.templates = new Map();
-      for (const [route, c] of loaded.compiled) loaded.templates.set(route, { id: register(`${root}:${route}`, c.template), prep: c.prep, bail: c.bail });
+      current.templates = new Map();
+      for (const [route, c] of current.compiled) current.templates.set(route, { id: register(`${root}:${route}`, c.template), prep: c.prep, bail: c.bail });
     }
-    const printed = withIslands && env.templates && leaf !== undefined ? loaded.templates?.get(leaf) : undefined;
+    const printed = withIslands && env.templates && leaf !== undefined ? current.templates?.get(leaf) : undefined;
     const status0 = context.statusCode;
     let needsReact = false;
     if (printed) {

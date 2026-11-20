@@ -8,12 +8,12 @@ import { lazyValue } from "../src/server/wire";
 type Call = { name: string; args: unknown; identity?: UserIdentity | null; access?: string };
 
 /** A function runtime that answers from memory and records how often it really ran. */
-function setup(opts: { delayMs?: number; peruser?: string[]; topics?: string[]; cache?: MemoryCache | null; pinned?: boolean; shared?: string[]; refuse?: string[] } = {}) {
+function setup(opts: { delayMs?: number; peruser?: string[]; sameUser?: boolean; topics?: string[]; cache?: MemoryCache | null; pinned?: boolean; shared?: string[]; refuse?: string[] } = {}) {
   const calls: Call[] = [];
   let version = 0;
   const runtime = {
     manifest: { functions: [{ name: "todos:list" }, { name: "me:get" }, ...(opts.shared ?? []).map((name) => ({ name, access: true }))] },
-    identity: async (headers: Record<string, string>) => (headers.cookie ? ({ userId: headers.cookie, sessionId: "s", email: "", name: headers.cookie } as UserIdentity) : null),
+    identity: async (headers: Record<string, string>) => (headers.cookie ? ({ userId: opts.sameUser ? "ada" : headers.cookie, sessionId: opts.sameUser ? headers.cookie : "s", email: "", name: opts.sameUser ? "ada" : headers.cookie } as UserIdentity) : null),
     identityDetail: async (headers: Record<string, string>) => ({ identity: await runtime.identity(headers), ...(opts.pinned && { topics: [`sessions:${headers.cookie}`] }) }),
     call: async (name: string, _kind: string, args: unknown, headers: Record<string, string>, o: { identity?: UserIdentity | null; access?: string } = {}) => {
       calls.push({ name, args, identity: o.identity, access: o.access });
@@ -198,6 +198,15 @@ describe("QueryRunner cache", () => {
     expect(s.functions.find((f) => f.name === "me:get")!.perUser).toBe(true);
     // the identity was resolved once and handed to the function, not resolved again
     expect(calls.slice(1).every((c) => c.identity !== undefined)).toBe(true);
+  });
+
+  test("only runs with the same session are coalesced", async () => {
+    const { runner, calls } = setup({ peruser: ["me:get"], sameUser: true, delayMs: 20 });
+    const run = (cookie: string) => runner.run("me:get", {}, { cookie });
+    await run("first");
+    await Promise.all([run("first"), run("first"), run("second")]);
+    expect(calls.slice(1).map((call) => call.identity?.sessionId).sort()).toEqual(["first", "second"]);
+    expect(runner.snapshot().coalesced).toBe(1);
   });
 
   test("reset forgets cached results and which queries are per-caller", async () => {

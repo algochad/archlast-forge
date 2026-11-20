@@ -209,7 +209,7 @@ export class ForgeRpcServer extends Server implements CustomTransportStrategy {
       const choice = (process.env.HTTP_ENGINE || "auto") as "auto" | "bun" | "archlast";
       void startHttpServer(choice, process.env.NODE_ENV !== "production", {
         port: this.options.port,
-        hostname: this.options.host,
+        hostname: this.options.host ?? (process.env.ARCHLAST_WORKSPACE_DEV === "1" ? "127.0.0.1" : undefined),
         maxRequestBodySize: maxBody,
         fetch: (req: Request, server: any) => rpc.fetch(req, server),
         websocket: rpc.websocket,

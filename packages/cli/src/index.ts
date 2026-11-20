@@ -15,6 +15,7 @@ import { serve } from "./serve";
 import * as stack from "./stack";
 import { banner, c, ok, step, warn } from "./ui";
 import { upgrade } from "./upgrade";
+import { checkWorkspacePorts, waitForWorkspaceApp, workspaceDev } from "./workspace-dev";
 
 // `init` has its own options and prompts: hand everything after it to the scaffolder.
 if (Bun.argv[2] === "init") {
@@ -46,6 +47,7 @@ ${c.bold("Develop")}
       --port <n>          port to listen on (default 3000)
       --with <list>       services to start: postgres, redis, s3 (default: the ones in archlast-forge.json)
       --no-docker         run a backend's engine in this process
+      --workspace         use this app’s isolated Forge RPC workspace development profile
       --run "<cmd>"       also run a command alongside, e.g. a separate frontend
   codegen                 write forge/_generated/ and check what your frontend imports
 
@@ -93,6 +95,7 @@ const { positionals, values } = parseCommandLine({
     dir: { type: "string" },
     port: { type: "string" },
     "no-docker": { type: "boolean" },
+    workspace: { type: "boolean" },
     docker: { type: "boolean" },
     with: { type: "string" },
     tag: { type: "string" },
@@ -130,7 +133,7 @@ if (values.version) {
   process.exit(0);
 }
 const [command, ...rest] = positionals;
-const port = Number(values.port ?? process.env.PORT ?? 3000);
+let port = Number(values.port ?? process.env.PORT ?? 3000);
 const inContainer = process.env.ARCHLAST_ENGINE === "1";
 
 /** Docker unless told otherwise, or unavailable (with a hint), or already inside the engine. */
@@ -142,12 +145,19 @@ function useDocker() {
   return false;
 }
 
+function adminKeyHint(env: Record<string, string | undefined>) {
+  return values.workspace ? `See the development profile or ${join(env.DATA_DIR!, ".dev-secrets.json")}` : env.ADMIN_KEY!;
+}
+
 function devEnv(dir: string) {
   const env = devSecrets({ ...process.env }, join(process.env.DATA_DIR ?? join(dir, "data")));
   env.DATA_DIR ??= join(dir, "data");
   // The app's own address is trusted, and a proxy in front of it (code-server's port forwarding) is worked out from that one.
-  env.TRUSTED_ORIGINS ||= `http://localhost:${port}`;
-  env.BETTER_AUTH_URL = `http://localhost:${port}`; // a project's .env (made for the stack) must not point sessions at another address
+  const localOrigin = `http://localhost:${port}`;
+  if (values.workspace) {
+    env.TRUSTED_ORIGINS = [localOrigin, `http://127.0.0.1:${port}`, env.TRUSTED_ORIGINS].filter(Boolean).join(",");
+  } else env.TRUSTED_ORIGINS ||= localOrigin;
+  env.BETTER_AUTH_URL = localOrigin; // a project's .env (made for the stack) must not point sessions at another address
   trustProxyOrigins(env);
   // Behind code-server's port proxy the browser reaches the engine only at the proxy's address, so the built-in storage's file URLs use it.
   const proxy = env.VSCODE_PROXY_URI;
@@ -181,6 +191,30 @@ function forgeChanged(dir: string) {
   };
 }
 
+function startDevInfrastructure(dir: string, cfg: ProjectConfig | undefined, env: Record<string, string | undefined>) {
+  const services = values.workspace
+    ? (process.env.FORGE_DEV_SERVICES || "").split(",").map((name) => name.trim()).filter(Boolean)
+    : devServices(cfg);
+  if (values.workspace && services.some((name) => !["postgres", "redis", "s3"].includes(name)))
+    fail("FORGE_DEV_SERVICES accepts only postgres, redis and s3.");
+  if (values.workspace && values["no-docker"] && services.length) fail("Remove FORGE_DEV_SERVICES or omit --no-docker.");
+  let where: string[] = [];
+  const noDocker = Boolean(values["no-docker"] || process.env.ARCHLAST_NO_DOCKER === "1");
+  if (services.length && noDocker) warn(`--no-docker: not starting ${services.join(", ")}; using SQLite. Set DATABASE_URL, REDIS_URL or S3_* yourself to use others.`);
+  else if (services.length) {
+    if (!dockerEngine.dockerAvailable())
+      fail(`This project uses ${services.join(", ")}, which run in Docker, and Docker isn't available.\nStart Docker, or run \`archlast-forge dev --no-docker\` to develop on SQLite.`);
+    step(`starting ${services.join(", ")}`);
+    const started = dockerEngine.startServices(dockerEngine.containerName(dir, true), services as dockerEngine.Service[], { host: true });
+    Object.assign(env, started.env);
+    if (values.workspace) Object.assign(process.env, started.env);
+    where = started.where;
+    process.on("exit", dockerEngine.stopStartedServices); // Ctrl-C ends the session, so it ends its services too
+  }
+
+  return where;
+}
+
 /** A full-stack app: the engine and the app in this process, services (if any) in Docker with ports on localhost. */
 async function devFramework(dir: string, cfg: ProjectConfig) {
   const began = performance.now();
@@ -189,28 +223,27 @@ async function devFramework(dir: string, cfg: ProjectConfig) {
   await ensureDeps(dir);
   ok(`codegen: ${(await generate(dir)).length} modules`);
 
-  const services = devServices(cfg);
-  let where: string[] = [];
-  const noDocker = Boolean(values["no-docker"] || process.env.ARCHLAST_NO_DOCKER === "1");
-  if (services.length && noDocker) warn(`--no-docker: not starting ${services.join(", ")}; using SQLite. Set DATABASE_URL, REDIS_URL or S3_* yourself to use others.`);
-  else if (services.length) {
-    if (!dockerEngine.dockerAvailable())
-      fail(`This project uses ${services.join(", ")}, which run in Docker, and Docker isn't available.\nStart Docker, or run \`archlast-forge dev --no-docker\` to develop on SQLite.`);
-    step(`starting ${services.join(", ")}`);
-    const started = dockerEngine.startServices(dockerEngine.containerName(dir, true), services, { host: true });
-    Object.assign(env, started.env);
-    where = started.where;
-    process.on("exit", dockerEngine.stopStartedServices); // Ctrl-C ends the session, so it ends its services too
-  }
+  const where = startDevInfrastructure(dir, cfg, env);
 
   companion(); // --run "<cmd>"
   const { createApp } = await loadFramework(root, "server");
-  const app = await createApp({ root, dev: true });
-  const server = await serve({ forgeDir: dir, dev: true, env: { ...env, PORT: String(port) }, app, watchDir: dir, onChange: forgeChanged(dir) });
+  let backendReload = Promise.resolve();
+  const app = await createApp({ root, dev: true, waitForBackend: () => backendReload });
+  const server = await serve({
+    forgeDir: dir,
+    dev: true,
+    env: { ...env, PORT: String(port) },
+    app,
+    watchDir: dir,
+    onChange: forgeChanged(dir),
+    onReloading: (pending) => {
+      backendReload = pending;
+    },
+  });
   banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  full-stack app  ${c.dim(`· ready in ${Math.round(performance.now() - began)} ms`)}`, [
     ["App", server.url],
     ["Dashboard", `${server.url}/_dashboard`],
-    ["Admin key", env.ADMIN_KEY!],
+    ["Admin key", adminKeyHint(env)],
     ...where.map((w): [string, string] => ["Service", w]),
   ]);
   console.log(c.dim("  Save a file and the page reloads. Ctrl-C stops everything.\n"));
@@ -221,14 +254,42 @@ async function devFramework(dir: string, cfg: ProjectConfig) {
 async function dev() {
   const dir = findForgeDir(values.dir);
   const cfg = loadProjectConfig(dir);
+  if (values.workspace) {
+    const root = projectRoot(dir);
+    if (values.port || values.docker || values.with) fail("Set ports in the workspace file and infrastructure in the app's .env.development.local.");
+    const local = workspaceDev(root, basename(root));
+    port = local.port;
+    await checkWorkspacePorts(port, local.ownRpc);
+    await Promise.all(local.deps.map((dep) => waitForWorkspaceApp(local.ws, dep, local.app)));
+    if (cfg?.mode === "framework") await devFramework(dir, cfg);
+    else await devBackend(dir, cfg);
+    await waitForWorkspaceApp(local.ws, local.app, local.app);
+    const pkg = await Bun.file(join(root, "package.json")).json();
+    if (pkg.scripts?.["forge:seed"]) {
+      const env = devEnv(dir);
+      const seed = Bun.spawn([process.execPath, "run", "forge:seed"], {
+        cwd: root, env: { ...env, FORGE_DEV_URL: `http://localhost:${port}` }, stdin: "ignore", stdout: "inherit", stderr: "inherit",
+      });
+      const stopSeed = () => { seed.kill(); };
+      process.on("exit", stopSeed);
+      const exit = await seed.exited;
+      process.off("exit", stopSeed);
+      if (exit !== 0) fail(`${local.app}: forge:seed failed (exit ${exit}). See its output above.`);
+    }
+    return;
+  }
   if (cfg?.mode === "framework") return devFramework(dir, cfg);
+  return devBackend(dir, cfg);
+}
+
+async function devBackend(dir: string, cfg?: ProjectConfig) {
 
   const env = devEnv(dir);
   companion();
   await ensureDeps(dir); // host install: editor types; the engine installs its own copy
   ok(`codegen: ${(await generate(dir)).length} modules`);
 
-  if (useDocker()) {
+  if (!values.workspace && useDocker()) {
     const name = dockerEngine.runEngine({
       forgeDir: dir,
       port,
@@ -245,7 +306,7 @@ async function dev() {
     banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  backend  ${c.dim("· engine in Docker")}`, [
       ["API", `http://localhost:${port}`],
       ["Dashboard", `http://localhost:${port}/_dashboard`],
-      ["Admin key", env.ADMIN_KEY!],
+      ["Admin key", adminKeyHint(env)],
       ["Container", name],
     ]);
     // The engine watches the mounted source; the host only keeps codegen current.
@@ -258,13 +319,15 @@ async function dev() {
     process.exit(0); // the container is gone; don't linger on the file watcher
   }
 
-  const skipped = devServices(cfg);
+  const where = values.workspace ? startDevInfrastructure(dir, cfg, env) : [];
+  const skipped = values.workspace ? [] : devServices(cfg);
   if (skipped.length) warn(`Not starting ${skipped.join(", ")} without Docker; using SQLite. Set DATABASE_URL, REDIS_URL or S3_* yourself to use others.`);
   const server = await serve({ forgeDir: dir, dev: true, env: { ...env, PORT: String(port) }, watchDir: dir, onChange: forgeChanged(dir) });
   banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  backend  ${c.dim("· in this process")}`, [
     ["API", server.url],
     ["Dashboard", `${server.url}/_dashboard`],
-    ["Admin key", env.ADMIN_KEY!],
+    ["Admin key", adminKeyHint(env)],
+    ...where.map((w): [string, string] => ["Service", w]),
   ]);
   const lock = findUp(dir, "bun.lock");
   if (lock && !lock.startsWith(dir)) watch(lock, () => void ensureDeps(dir).then(async (did) => void (did && (await server.reload()))));

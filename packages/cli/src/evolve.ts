@@ -8,6 +8,7 @@ import {
   addMobile,
   ensureAppNames,
   ensureDashboard,
+  ensureRootUpgrade,
   ensureStacks,
   ensureToken,
   finishServices,
@@ -17,6 +18,7 @@ import {
   writeRoot,
   writeService,
   writeShared,
+  writeWorkspaceDev,
   type Ctx,
   type Transport,
 } from "create-archlast-forge/monorepo";
@@ -63,6 +65,8 @@ function open(dir: string): Ctx {
 
 const done = (c: Ctx, summary: string[], apps: string[]): Change => {
   writeWorkspace(c.root, c.ws);
+  ensureRootUpgrade(c.root, c.version);
+  writeWorkspaceDev(c);
   format(c.root, c.written);
   return { root: c.root, summary, notes: c.notes, apps };
 };
@@ -173,11 +177,18 @@ export function removeApp(dir: string, name: string): Change {
   }
   rmSync(appDir(c, name), { recursive: true, force: true });
   delete ws.apps[name];
+  removeRelationships(ws, name);
   summary.unshift(`apps/${name}: deleted`);
   if (app.kind === "service")
     finishServices(c, []); // the barrel, packages/api and packages/contracts without it
   else writeShared(c);
   return done(c, summary, app.kind === "service" ? [ws.main] : []);
+}
+
+function removeRelationships(ws: Workspace, name: string) {
+  if (!ws.dependsOn) return;
+  delete ws.dependsOn[name];
+  for (const app of Object.keys(ws.dependsOn)) ws.dependsOn[app] = ws.dependsOn[app]!.filter((dep) => dep !== name);
 }
 
 /** Writes packages/api, packages/contracts and the main app's service list from the apps that are in apps/ now, and adds apps made by hand to the workspace. */
@@ -188,6 +199,7 @@ export function syncWorkspace(dir: string): Change {
   for (const [name, app] of Object.entries(ws.apps)) {
     if (existsSync(appDir(c, name))) continue;
     delete ws.apps[name];
+    removeRelationships(ws, name);
     summary.push(`${name}: its folder is gone, so it is no longer in the workspace`);
     if (app.kind === "service") c.notes.push(`apps/${ws.main}/forge/${name}.service.ts, ${name}.controller.ts and ${camel(name)}.ts called ${name}: delete them.`);
   }

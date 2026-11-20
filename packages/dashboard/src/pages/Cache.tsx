@@ -90,7 +90,7 @@ export function Cache({ admin }: { admin: Admin }) {
           label="Function runs"
           icon="functions"
           value={counts.misses.toLocaleString()}
-          hint={stored ? "calls that ran the function" : c.skipped ? `${c.skipped.toLocaleString()} results not kept (changed mid-run, too big, or per user)` : "every result was kept"}
+          hint={stored ? "calls that ran the function" : c.skipped ? `${c.skipped.toLocaleString()} results not kept (changed mid-run, too big, or caller scope discovered)` : "every result was kept"}
           trend={b.map((x) => x.cacheMisses ?? 0)}
         />
         <Stat
@@ -189,7 +189,7 @@ export function Cache({ admin }: { admin: Admin }) {
                   return (
                     <tr key={f.name}>
                       <td>
-                        <code className="field-name">{f.name}</code> {f.perUser && <Badge tone="accent">per user</Badge>}
+                        <code className="field-name">{f.name}</code> {f.perUser && <Badge tone="accent">per session</Badge>}
                       </td>
                       <td>
                         <span className="meter-cell">
@@ -213,8 +213,8 @@ export function Cache({ admin }: { admin: Admin }) {
         )}
         <p className="muted small">
           <b>From cache</b> counts calls answered from the cache, including those that arrived while an identical call was already running and used its result. A <b>run</b> executed the
-          function. Entries are evicted the moment a mutation changes anything they read, so a cached result is never stale. <b>Per user</b> queries read <code>ctx.auth</code>, so each
-          signed-in user has their own entry.
+          function. Entries are evicted the moment a mutation changes anything they read, so a cached result is never stale. <b>Per session</b> queries read <code>ctx.auth</code>, so each
+          signed-in session has its own entry.
         </p>
       </section>
     </div>

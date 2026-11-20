@@ -394,7 +394,7 @@ Redis carries write notifications between servers, the shared cache and rate-lim
 
 ### Everything is slow
 
-Check the dashboard's Requests page for the slow operation (sort by p95 or impact), then open one of its slow calls: the trace shows which statement or call took the time, and flags a statement repeated in a loop. Hotspots shows which code burns the most time overall. A `filter` without `withIndex` scans the table. Add an index that starts with the field you compare by equality (`q.eq`), then order and range on the next fields. Look at the Cache page's hit rate; a query that reads `ctx.auth` is cached per user and so shared less. See [Reading data](queries.html).
+Check the dashboard's Requests page for the slow operation (sort by p95 or impact), then open one of its slow calls: the trace shows which statement or call took the time, and flags a statement repeated in a loop. Hotspots shows which code burns the most time overall. A `filter` without `withIndex` scans the table. Add an index that starts with the field you compare by equality (`q.eq`), then order and range on the next fields. Look at the Cache page's hit rate; a query that reads `ctx.auth` is cached per session and so shared less. See [Reading data](queries.html).
 
 ### High memory
 

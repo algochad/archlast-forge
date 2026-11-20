@@ -121,9 +121,9 @@ test("convert refuses what it can't do safely, and a backend's main app runs on 
   const back = fresh("backend");
   scaffold({ dir: back, mode: "backend", services: [] });
   convertToMonorepo({ dir: back });
-  expect(json(back, "apps", "api", "package.json").scripts.dev).toBe("archlast-forge dev"); // no services: Docker is fine
+  expect(json(back, "apps", "api", "package.json").scripts.dev).toBe("archlast-forge dev --workspace");
   addService(back, "orders");
-  expect(json(back, "apps", "api", "package.json").scripts.dev).toBe("archlast-forge dev --no-docker"); // its code reaches the service's port
+  expect(json(back, "apps", "api", "package.json").scripts.dev).toBe("archlast-forge dev --workspace");
 });
 
 test("add service, again and again: ports, the list the main app mounts, contracts and one token; remove undoes it", () => {
@@ -136,7 +136,7 @@ test("add service, again and again: ports, the list the main app mounts, contrac
   expect(second.apps).toEqual(["user-billing", "api"]);
   expect(json(root, WORKSPACE_FILE).apps).toEqual({ orders: { kind: "service", port: 3001, rpcPort: 4001 }, "user-billing": { kind: "service", port: 3002, rpcPort: 4002 } });
   expect(read(root, "apps", "user-billing", "forge", "http.ts")).toContain("USER_BILLING_RPC_PORT ?? 4002");
-  expect(json(root, "apps", "user-billing", "package.json").scripts.dev).toBe("archlast-forge dev --no-docker --port 3002");
+  expect(json(root, "apps", "user-billing", "package.json").scripts.dev).toBe("archlast-forge dev --workspace");
   expect(read(root, "apps", "api", "forge", "_services.ts")).toMatch(
     /serviceControllers = \[OrdersController, UserBillingController\];\s+export const serviceProviders = \[OrdersService, UserBillingService\];/,
   );
@@ -152,7 +152,15 @@ test("add service, again and again: ports, the list the main app mounts, contrac
   expect(() => addService(root, "payments")).toThrow("payments.ts already exists");
   expect(existsSync(join(root, "apps", "payments"))).toBe(false); // refused before writing anything
 
+  const configured = json(root, WORKSPACE_FILE);
+  configured.dependsOn = { api: ["orders", "user-billing"], "user-billing": ["orders"] };
+  writeFileSync(join(root, WORKSPACE_FILE), JSON.stringify(configured));
+  syncWorkspace(root);
+  expect(read(root, "apps", "user-billing", "turbo.jsonc")).toContain("@shop/orders#dev");
+
   const removed = removeApp(root, "orders");
+  expect(json(root, WORKSPACE_FILE).dependsOn).toEqual({ api: ["user-billing"], "user-billing": [] });
+  expect(read(root, "apps", "user-billing", "turbo.jsonc")).not.toContain("@shop/orders#dev");
   expect(removed.summary).toContain("apps/api/forge/orders.service.ts: deleted");
   expect(existsSync(join(root, "apps", "orders"))).toBe(false);
   expect(existsSync(join(root, "apps", "api", "forge", "orders.ts"))).toBe(false);
@@ -250,7 +258,7 @@ test("add app: another full-stack app or a backend, on its own port, with its ty
   const change = addApp(root, "admin");
   expect(change.apps).toEqual(["admin"]);
   expect(existsSync(join(root, "apps", "admin", "app", "routes"))).toBe(true); // a full-stack app
-  expect(json(root, "apps", "admin", "package.json")).toMatchObject({ name: "@apps/admin", scripts: { dev: "archlast-forge dev --no-docker --port 3002" } });
+  expect(json(root, "apps", "admin", "package.json")).toMatchObject({ name: "@apps/admin", scripts: { dev: "archlast-forge dev --workspace" } });
   expect(json(root, "apps", "admin", "archlast-forge.json")).toEqual({ mode: "framework", services: ["postgres", "redis", "s3", "caddy"] });
   expect(read(root, "apps", "admin", "compose.yaml")).toContain("name: apps-admin\n");
   expect(read(root, "packages", "api", "admin.ts")).toContain('export { api as adminApi } from "../../apps/admin/forge/_generated/api";'); // each other app in a file of its own

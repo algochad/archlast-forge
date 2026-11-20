@@ -2,6 +2,7 @@
 import { existsSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { addPrettier } from "create-archlast-forge";
+import { ensureRootUpgrade } from "create-archlast-forge/monorepo";
 import { findWorkspaceRoot } from "create-archlast-forge/workspace";
 import { generate } from "./common";
 import { ensureDeps } from "./deps";
@@ -157,8 +158,8 @@ export async function upgrade(forgeDir: string, spec = "latest") {
 /** Upgrades every app and package of the monorepo at `root`: the versions, one `bun install` at the root, then each project's server dependencies and generated types. */
 async function upgradeMonorepo(root: string, spec: string) {
   const version = resolveRelease(spec, root);
+  ensureRootUpgrade(root, version);
   const changes = upgradeWorkspaceFiles(root, version);
-  if (!changes.length) return ok(`Nothing to change: the monorepo is on ${version}`);
   for (const ch of changes) console.log(`  ${ch.file.padEnd(34)} ${ch.name}  ${ch.from} → ${ch.to}`);
 
   step(`installing: bun install (${root})`);
