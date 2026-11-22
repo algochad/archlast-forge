@@ -680,7 +680,7 @@ export function writeRoot(c: Ctx) {
       {
         $schema: "https://turborepo.com/schema.json",
         tasks: {
-          dev: { cache: false, persistent: true },
+          dev: { cache: false, persistent: true, passThroughEnv: ["PORTLESS*", "NODE_EXTRA_CA_CERTS"] },
           build: { dependsOn: ["^build"], outputs: [".forge/build/**"] },
           // Each app's typecheck writes forge/_generated first, which packages/api reads.
           typecheck: { dependsOn: ["^typecheck"] },
@@ -733,15 +733,15 @@ function readmeBody(c: Ctx) {
   const services = servicesOf(ws).map(([n]) => n);
   const ports = services.map((s) => {
     const a = ws.apps[s]!;
-    return `| \`apps/${s}\` | a backend, and the \`${s}\` microservice | http://localhost:${a.port} | ${transport === "forge-rpc" ? `Forge RPC ${a.rpcPort}` : transport === "tcp" ? `TCP ${a.rpcPort}` : transport === "redis" ? "Redis (MICROSERVICES_REDIS_URL)" : "NATS (MICROSERVICES_NATS_URL)"} |`;
+    return `| \`apps/${s}\` | a backend, and the \`${s}\` microservice | Printed by dev | ${transport === "forge-rpc" ? `Forge RPC ${a.rpcPort}` : transport === "tcp" ? `TCP ${a.rpcPort}` : transport === "redis" ? "Redis (MICROSERVICES_REDIS_URL)" : "NATS (MICROSERVICES_NATS_URL)"} |`;
   });
   return `# ${name}
 
-A monorepo of [archlast-forge](https://github.com/algochad/archlast-forge) apps, run with [Turborepo](https://turborepo.com).
+A monorepo of [archlast-forge](https://github.com/algochad/archlast-forge) apps, run with [Turborepo](https://turborepo.com). Node.js 24 or later is required for the default Portless development URLs.
 
 | Folder | What | In development | Transport |
 |---|---|---|---|
-| \`apps/${main}\` | the main app${main === "web" ? " (pages and functions)" : " (a backend)"} | http://localhost:3000 | |
+| \`apps/${main}\` | the main app${main === "web" ? " (pages and functions)" : " (a backend)"} | Printed by dev | |
 ${ports.join("\n")}
 | \`packages/api\` | the main app's typed API (\`@${name}/api\`; another app's is \`@${name}/api/<app>\`) | | |
 ${transport === "forge-rpc" && services.length ? `| \`packages/contracts\` | the services' Forge RPC types (\`@${name}/contracts\`) | | |\n` : ""}
@@ -765,16 +765,17 @@ ${
 In \`apps/${main}/forge\`, each service has a class that makes the calls (\`${services[0]}.service.ts\`), and two ways in that both use it: a Nest controller (\`${services[0]}.controller.ts\`, mounted in \`http.ts\` through \`_services.ts\`) and an action (\`${camel(services[0]!)}.ts\`, which gets the class with \`inject(ctx, ${pascal(services[0]!)}Service)\`):
 
 \`\`\`bash
-curl -X POST localhost:3000/rpc/${camel(services[0]!)}:hello -H 'content-type: application/json' -d '{"from":"${main}"}'   # the action
+# Set FORGE_URL to the main app URL printed by dev.
+curl -X POST "$FORGE_URL/rpc/${camel(services[0]!)}:hello" -H 'content-type: application/json' -d '{"from":"${main}"}'   # the action
 # {"result":{"service":"${services[0]}","greeting":"Hello, ${main}","calls":1}}
-curl -X POST localhost:3000/http/${services[0]}/hello -H 'content-type: application/json' -d '{"from":"${main}"}'  # the controller
+curl -X POST "$FORGE_URL/http/${services[0]}/hello" -H 'content-type: application/json' -d '{"from":"${main}"}'  # the controller
 # {"service":"${services[0]}","greeting":"Hello, ${main}","calls":2}
 \`\`\`
-${transport === "forge-rpc" ? `\nForge RPC development runs on this machine. Edit \`archlast-forge.workspace.json\` for ports and dependencies, then run \`bun run workspace sync\`. The root \`bun run dev\` starts native Forge engines with local credentials and SQLite. To select development infrastructure, set \`FORGE_DEV_SERVICES=postgres,redis,s3\` with the services you want in an app's private \`.env.development.local\`. Run \`bun run workspace status\` to check readiness. Deployment uses each app's \`.env\` and \`compose.override.yaml\` (see Deploying).` : transport === "tcp" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the TCP ports are reachable. Deployed, the callers' \`<SERVICE>_HOST\` and \`<SERVICE>_PORT\` come from each app's \`compose.override.yaml\` (see Deploying).` : `\nStart a ${transport === "redis" ? "Redis" : "NATS"} server first, and point every app at it with \`${transport === "redis" ? "MICROSERVICES_REDIS_URL" : "MICROSERVICES_NATS_URL"}\` in production.`}
+${transport === "forge-rpc" ? `\nForge RPC development runs on this machine. Edit \`archlast-forge.workspace.json\` for RPC ports and dependencies, then run \`bun run workspace sync\`. The root \`bun run dev\` starts native Forge engines with local credentials and SQLite. To select development infrastructure, set \`FORGE_DEV_SERVICES=postgres,redis,s3\` with the services you want in an app's private \`.env.development.local\`. Run \`bun run workspace status\` to check readiness. Deployment uses each app's \`.env\` and \`compose.override.yaml\` (see Deploying).` : transport === "tcp" ? `\nIn development every app runs on this machine (\`--no-docker\`), so the TCP ports are reachable. Deployed, the callers' \`<SERVICE>_HOST\` and \`<SERVICE>_PORT\` come from each app's \`compose.override.yaml\` (see Deploying).` : `\nStart a ${transport === "redis" ? "Redis" : "NATS"} server first, and point every app at it with \`${transport === "redis" ? "MICROSERVICES_REDIS_URL" : "MICROSERVICES_NATS_URL"}\` in production.`}
 
 ## One dashboard
 
-The main app's dashboard (http://localhost:3000/_dashboard) shows every service: their requests, traces, errors, logs, nodes and Nest classes beside the main app's, and, with a service picked at the top, its data, schema and functions. Each service sends its telemetry to the main app (\`DASHBOARD_URL\` and \`OTEL_SERVICE_NAME\` in its \`.env\`) and serves no dashboard of its own; the main app lists the services (\`MICROSERVICES\`), and they share \`DASHBOARD_TOKEN\`. Deployed, the addresses come from each app's \`compose.override.yaml\` (see Deploying).
+The main app's dashboard (its URL is printed by dev) shows every service: their requests, traces, errors, logs, nodes and Nest classes beside the main app's, and, with a service picked at the top, its data, schema and functions. Each service sends its telemetry to the main app (\`DASHBOARD_URL\` and \`OTEL_SERVICE_NAME\` in its \`.env\`) and serves no dashboard of its own; the main app lists the services (\`MICROSERVICES\`), and they share \`DASHBOARD_TOKEN\`. Deployed, the addresses come from each app's \`compose.override.yaml\` (see Deploying).
 
 ## Deploying
 
@@ -819,6 +820,7 @@ function readme(c: Ctx) {
 export function addMobile(c: Ctx) {
   const { root, name, version } = c;
   const dir = join(root, "apps", "mobile");
+  const scheme = /^[a-z]/.test(name) ? name : `forge-${name}`;
   cpSync(MOBILE, dir, { recursive: true });
   renameSync(join(dir, "gitignore"), join(dir, ".gitignore")); // npm drops .gitignore files from packages
   renameSync(join(dir, "env.example"), join(dir, ".env.example"));
@@ -826,16 +828,15 @@ export function addMobile(c: Ctx) {
     for (const entry of readdirSync(path)) {
       const p = join(path, entry);
       if (statSync(p).isDirectory()) fill(p);
-      else writeFileSync(p, readFileSync(p, "utf8").replaceAll("__NAME__", name).replaceAll("__API__", `${camel(c.ws.main)}Api`).replaceAll("__MAIN__", c.ws.main).replaceAll("__VERSION__", version));
+      else writeFileSync(p, readFileSync(p, "utf8").replaceAll("__SCHEME__", scheme).replaceAll("__APP_ID__", scheme.replaceAll("-", "_")).replaceAll("__IOS_ID__", scheme).replaceAll("__NAME__", name).replaceAll("__API__", `${camel(c.ws.main)}Api`).replaceAll("__MAIN__", c.ws.main).replaceAll("__VERSION__", version));
     }
   };
   fill(dir);
   writeFileSync(join(dir, ".env"), readFileSync(join(dir, ".env.example"), "utf8"));
-  patchJson(join(dir, "package.json"), (pkg) => (pkg.devDependencies.typescript = rootTypescript(root)));
   c.written.push("apps/mobile");
   const forge = join(root, "apps", c.ws.main, "forge");
   if (existsSync(join(forge, "auth.ts")))
-    c.notes.push(`apps/${c.ws.main}/forge/auth.ts is yours, so it is unchanged. For the mobile app to sign in, add plugins: [expo()] (import { expo } from "@better-auth/expo") and trustedOrigins: ["${name}://"] to its defineAuth options.`);
+    c.notes.push(`apps/${c.ws.main}/forge/auth.ts is yours, so it is unchanged. For the mobile app to sign in, add plugins: [expo()] (import { expo } from "@better-auth/expo") and trustedOrigins: ["${scheme}://"] to its defineAuth options.`);
   else
     put(
       c,
@@ -843,8 +844,8 @@ export function addMobile(c: Ctx) {
       `import { defineAuth } from "@archlast/forge-runtime";
 import { expo } from "@better-auth/expo";
 
-// The mobile app signs in through Better Auth's Expo plugin: its requests come from its scheme (${name}://), not from a web origin.
-export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [expo()], trustedOrigins: ["${name}://"] });
+// The mobile app signs in through Better Auth's Expo plugin: its requests come from its scheme (${scheme}://), not from a web origin.
+export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [expo()], trustedOrigins: ["${scheme}://"] });
 `,
     );
   patchJson(join(forge, "package.json"), (pkg) => (pkg.dependencies = { ...pkg.dependencies, "@better-auth/expo": "1.7.12" }));

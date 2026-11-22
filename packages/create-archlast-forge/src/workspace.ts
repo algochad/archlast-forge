@@ -41,11 +41,22 @@ export interface Workspace {
   scope?: string;
   /** Development HTTP port for the main app. */
   mainPort?: number;
+  /** Route Forge HTTP development through Portless. The configured ports are direct-mode fallbacks. */
+  portless?: boolean;
   /** Forge RPC services called by each app. The main app defaults to every service. */
   dependsOn?: Record<string, string[]>;
   transport: Transport;
   apps: Record<string, WorkspaceApp>;
   mobile?: boolean;
+  mobileDev?: {
+    target?: string;
+    api?: number;
+    abi?: string;
+    profile?: string;
+    client?: string;
+    metroPort?: number;
+    backendPort?: number;
+  };
   desktop?: DesktopMode;
 }
 
@@ -226,14 +237,17 @@ export function loadWorkspace(root: string): { name: string; ws: Workspace; infe
   if (json.apps !== undefined && (!json.apps || typeof json.apps !== "object" || Array.isArray(json.apps))) bad(`"apps" must be an object`);
   for (const [n, a] of Object.entries(json.apps ?? {}))
     if (n === json.main || !/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(n) || !a || (a.kind !== "service" && a.kind !== "app") || typeof a.port !== "number") bad(`"apps.${n}" needs a "kind" ("service" or "app") and a "port"`);
+  if (json.portless !== undefined && typeof json.portless !== "boolean") bad('"portless" must be a boolean');
   const ws: Workspace = {
     main: json.main!,
+    ...(json.portless !== undefined && { portless: json.portless }),
     ...(json.scope && { scope: json.scope }),
     transport: json.transport!,
     apps: json.apps ?? {},
     ...(json.mainPort !== undefined && { mainPort: json.mainPort }),
     ...(json.dependsOn !== undefined && { dependsOn: json.dependsOn }),
     ...(json.mobile && { mobile: true }),
+    ...(json.mobileDev !== undefined && { mobileDev: json.mobileDev }),
     ...(json.desktop && { desktop: json.desktop }),
   };
   validateWorkspace(ws);

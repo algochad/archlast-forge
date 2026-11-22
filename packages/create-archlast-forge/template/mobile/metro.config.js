@@ -1,4 +1,7 @@
-// Expo's Metro config finds the workspace on its own (apps/ and packages/ of the monorepo).
 const { getDefaultConfig } = require("expo/metro-config");
+const { withNativeWind } = require("nativewind/metro");
 
-module.exports = getDefaultConfig(__dirname);
+module.exports = withNativeWind(getDefaultConfig(__dirname), {
+  input: "./global.css",
+  inlineRem: 16,
+});

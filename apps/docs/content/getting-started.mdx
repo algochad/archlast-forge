@@ -4,7 +4,8 @@ This page takes you from nothing to a running project, a first change, the dashb
 
 ## Prerequisites
 
-- **[Bun](https://bun.sh) 1.4.4 or later.** Check with `bun --version`. The project pins 1.4.4 in `mise.toml`; if you use [mise](https://mise.jdx.dev), `mise use bun@1.4.4` installs it. Bun 1.4.3 and older are not supported: 1.4.4 fixes security issues in them, in TLS, WebSockets, the database clients and the package manager, among them CVE-2026-111497. Node.js is not needed: the engine uses Bun's SQLite, HTTP server and Redis and S3 clients.
+- **[Bun](https://bun.sh) 1.4.4 or later.** Check with `bun --version`. The project pins 1.4.4 in `mise.toml`; if you use [mise](https://mise.jdx.dev), `mise use bun@1.4.4` installs it. Bun 1.4.3 and older are not supported: 1.4.4 fixes security issues in them, in TLS, WebSockets, the database clients and the package manager, among them CVE-2026-111497.
+- **Node.js 24 or later** for [Portless development](cli.html#named-local-urls-with-portless). Forge uses direct HTTP if Node.js 24 or later is unavailable. The production engine runs on Bun.
 - **Docker, sometimes.** You do not need it to develop a full-stack app on SQLite. You need it to run services (PostgreSQL, Redis, storage) during development, to develop in backend mode (the engine runs in a container, unless you pass `--no-docker`), and to deploy with `bun run up`. `DOCKER=podman` switches the binary.
 - A modern browser for the app and the dashboard.
 
@@ -66,8 +67,8 @@ $ bunx create-archlast-forge my-app --mode framework --yes --no-install --no-git
 │  bun install                                                         │
 │  bun run dev                                                         │
 │                                                                      │
-│  Your app: http://localhost:3000                                     │
-│  Dashboard: http://localhost:3000/_dashboard                         │
+│  Open the Portless URLs printed by dev. Node.js 24+ is required      │
+│  for Portless.                                                       │
 │                                                                      │
 │  To deploy: bun run up   (builds the image and starts the stack in   │
 │  compose.yaml)                                                       │
@@ -95,20 +96,20 @@ bun run dev
 
   archlast-forge 0.22.0  ·  full-stack app  · ready in 737 ms
 
-  ➜  App        http://localhost:3000
-  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  App        https://my-app-42a6b2c1d026.localhost
+  ➜  Dashboard  https://my-app-42a6b2c1d026.localhost/_dashboard
   ➜  Admin key  <48 hex characters>
 
   Save a file and the page reloads. Ctrl-C stops everything.
 ```
 
-The timings vary. Everything runs in this one process on your machine: the engine, your functions (in a child process that restarts alone when `forge/` changes) and the app, which rebuilds in a fraction of a second and reloads the browser when you save. Services you chose run in Docker with their ports on localhost, and stop when you press Ctrl-C; their data is kept in named volumes. Use `--port 3100` if 3000 is taken.
+The timings vary. Everything runs in this one process on your machine: the engine, your functions (in a child process that restarts alone when `forge/` changes) and the app, which rebuilds in a fraction of a second and reloads the browser when you save. Services you chose run in Docker with their ports on localhost, and stop when you press Ctrl-C; their data is kept in named volumes. Portless assigns a free HTTP port and shows the local URL.
 
-Open http://localhost:3000. The starter is a small chat: create an account on the Sign in page, then open the chat in two windows and watch both update.
+Open the app URL printed by Forge. The starter is a small chat: create an account on the Sign in page, then open the chat in two windows and watch both update.
 
 ### A backend
 
-In backend mode `bun run dev` starts the engine in a Docker container with `forge/` mounted, and the services listed in `archlast-forge.json` next to it. Edits to `forge/` restart only the function runtime; open connections stay up. The server answers at http://localhost:3000.
+In backend mode `bun run dev` starts the engine in a Docker container with `forge/` mounted, and the services listed in `archlast-forge.json` next to it. Edits to `forge/` restart only the function runtime; open connections stay up. The server answers at the named URL printed by Forge.
 
 If you have no Docker handy, run the engine in your own process instead. It uses SQLite and ignores the services:
 
@@ -118,15 +119,16 @@ $ bunx archlast-forge dev --no-docker
 
   archlast-forge 0.22.0  ·  backend  · in this process
 
-  ➜  API        http://localhost:3000
-  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  API        https://my-app-42a6b2c1d026.localhost
+  ➜  Dashboard  https://my-app-42a6b2c1d026.localhost/_dashboard
   ➜  Admin key  <48 hex characters>
 ```
 
 The starter has an HTTP route you can call at once:
 
 ```bash
-curl localhost:3000/http/hello
+# Set FORGE_URL to the API URL from the banner.
+curl "$FORGE_URL/http/hello"
 # {"message":"Hello from api"}
 ```
 
@@ -237,7 +239,7 @@ export default function About() {
 }
 ```
 
-Save both. The terminal shows the function runtime restarting and the app rebuilding, the types in `forge/_generated/api.ts` gain `hello`, and http://localhost:3000/about answers with `<h1>Hello, world!</h1>` in the HTML itself, before any JavaScript runs. That is the loader at work: `ctx.query` ran the query on the server and put the result where `useQuery` looks for it. Remove the loader and the page renders its first frame with `greeting` undefined, then fills in once the subscription connects.
+Save both. The terminal shows the function runtime restarting and the app rebuilding, the types in `forge/_generated/api.ts` gain `hello`, and `/about` at the app URL answers with `<h1>Hello, world!</h1>` in the HTML itself, before any JavaScript runs. That is the loader at work: `ctx.query` ran the query on the server and put the result where `useQuery` looks for it. Remove the loader and the page renders its first frame with `greeting` undefined, then fills in once the subscription connects.
 
 To see a page change, edit the heading in `app/routes/index.tsx` and save; the browser reloads on its own.
 
@@ -285,7 +287,7 @@ Add your frontend's origin to `TRUSTED_ORIGINS` so its cookies and requests are 
 
 ## The dashboard
 
-`/_dashboard` is on in development. Open http://localhost:3000/_dashboard and sign in with the **admin key** that `dev` printed (it is the `ADMIN_KEY` in your `.env`). From there you can:
+`/_dashboard` is on in development. Open the dashboard URL from the dev banner and sign in with the **admin key** that `dev` printed (it is the `ADMIN_KEY` in your `.env`). From there you can:
 
 - browse tables, filter by index, and edit or insert documents with validation (the **Data** page);
 - run any function with a form generated from its validators, as any user (**Functions**);

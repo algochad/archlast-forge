@@ -82,7 +82,7 @@ test("monorepo: a plan first, a question before moving anything, then the projec
 
   r = await cli(["workspace"], join(dir, "apps", "orders"));
   expect(r.code).toBe(0);
-  for (const line of ["apps/api", "main app, backend", "apps/orders", "service, TCP on 4001", "apps/billing", "apps/jobs", "http://localhost:3003"]) expect(r.out).toContain(line);
+  for (const line of ["apps/api", "main app, backend", "apps/orders", "service, TCP on 4001", "apps/billing", "apps/jobs", "http://127.0.0.1:3003"]) expect(r.out).toContain(line);
 
   r = await cli(["remove", "billing", "--no-install"], dir);
   expect(r.code).toBe(1);

@@ -44,7 +44,9 @@ test("--mobile: an Expo app in apps/mobile, a client of the backend, which gets 
   expect(app("src", "client.ts")).toContain("client.reconnect()"); // back from the background
   expect(app(".env")).toContain("EXPO_PUBLIC_API_URL=http://localhost:3000");
   expect(app(".gitignore")).toContain(".env");
-  expect(app("README.md")).toContain("there is no full-stack Expo option");
+  expect(app("README.md")).toContain("archlast-forge dev --mobile");
+  expect(JSON.parse(app("components.json")).aliases.ui).toBe("@/components/ui");
+  expect(app("App.tsx")).toContain("<PortalHost");
   expect(read(root, "apps", "api", "forge", "auth.ts")).toMatch(/plugins: \[expo\(\)\],\s+trustedOrigins: \["phone:\/\/"\]/); // as Prettier wrapped it
   expect(JSON.parse(read(root, "apps", "api", "forge", "package.json")).dependencies["@better-auth/expo"]).toBe("1.7.12");
   for (const f of ["App.tsx", "index.ts", "metro.config.js", "tsconfig.json"]) expect(existsSync(join(root, "apps", "mobile", f)), f).toBe(true);
@@ -66,7 +68,7 @@ test("a monorepo with two services: workspaces, turbo, shared types, and the app
 
   const pkg = JSON.parse(read(root, "package.json"));
   expect(pkg).toMatchObject({ name: "acme", workspaces: ["apps/*", "packages/*"], scripts: { dev: "turbo run dev", typecheck: "turbo run typecheck" }, devDependencies: { turbo: expect.any(String) } });
-  expect(JSON.parse(read(root, "turbo.json")).tasks.dev).toEqual({ cache: false, persistent: true });
+  expect(JSON.parse(read(root, "turbo.json")).tasks.dev).toEqual({ cache: false, persistent: true, passThroughEnv: ["PORTLESS*", "NODE_EXTRA_CA_CERTS"] });
   for (const app of ["api", "orders", "billing"]) expect(existsSync(join(root, "apps", app, "forge", "schema.ts")), app).toBe(true);
   expect(JSON.parse(read(root, "apps", "orders", "package.json"))).toMatchObject({ name: "@acme/orders", scripts: { dev: "archlast-forge dev --no-docker --port 3001" } });
   // packages/api has the main app's types: services are called over a transport, and two backends' types can't share a TypeScript project.

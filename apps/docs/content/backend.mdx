@@ -51,20 +51,20 @@ api/
 ```
   archlast-forge 0.22.0  ·  backend  · engine in Docker
 
-  ➜  API        http://localhost:3000
-  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  API        https://api-42a6b2c1d026.localhost
+  ➜  Dashboard  https://api-42a6b2c1d026.localhost/_dashboard
   ➜  Admin key  …
   ➜  Container  archlast-forge-api-<hash>-dev
 ```
 
 - The engine copies `forge/` into its own filesystem, installs the dependencies from `forge/package.json` for Linux, and watches the mount. Saving a file restarts only your functions; open WebSockets stay connected and subscriptions re-run. The host keeps `forge/_generated` current.
 - PostgreSQL, Redis and RustFS run as sibling containers on a per-project network, and the engine is given their addresses. Data lives in named volumes, so it survives Ctrl-C. `dev` waits until PostgreSQL and Redis accept connections before starting the engine.
-- The S3 service publishes port 9000 on the host in this mode, so only one project at a time can use storage in dev. Set `S3_ENDPOINT` yourself for more.
+- With Portless, managed S3 storage uses a free loopback port for browser uploads. Direct mode keeps the legacy port 9000.
 - Ctrl-C stops the engine and the services `dev` started.
-- `--with postgres,redis,s3` overrides the services; `--port 4000` changes the host port; `--run "vite"` starts a command alongside, stopped with the CLI.
+- `--with postgres,redis,s3` overrides the services; `--port 4000` uses direct HTTP on port 4000; `--run "vite"` starts a command alongside, stopped with the CLI.
 - Without Docker (`--no-docker`, `ARCHLAST_NO_DOCKER=1`, or when Docker is not installed) the engine runs in your terminal on SQLite, and `dev` says so: `! Not starting postgres, redis, s3 without Docker; using SQLite. Set DATABASE_URL, REDIS_URL or S3_* yourself to use others.` Point it at services by exporting those variables first.
 
-One gotcha without Docker: Bun loads `.env` from the directory you run the CLI in, so `BETTER_AUTH_URL`, `ADMIN_KEY` and the rest of the stack's `.env` apply to `dev --no-docker`. With the Caddy variant that makes the auth URL `https://localhost`: the session cookie came back as `__Secure-better-auth.session_token=…; Secure` while the engine was serving plain http. With the default `.env` the auth URL is `http://localhost:3000` whatever `--port` says. Run `dev --no-docker` with the variables you want in the environment, or without a `.env`.
+Use the [Portless URL](cli.html#named-local-urls-with-portless) in your frontend and OAuth callback settings. Forge configures Better Auth for that origin even when Bun loads the stack's `.env`.
 
 ## Calling the backend
 
@@ -121,7 +121,7 @@ For a frontend on another origin:
       TRUSTED_ORIGINS: "${TRUSTED_ORIGINS:-}"                          # without: set it in .env
   ```
 
-  In development (`dev`), `TRUSTED_ORIGINS` in your shell is passed on, and replaces the default `http://localhost:<port>`: `TRUSTED_ORIGINS=http://localhost:3000,http://localhost:5173 archlast-forge dev`.
+  In Portless development, Forge adds its named URL to the origins you list in `TRUSTED_ORIGINS`. For a frontend at port 5173, run `TRUSTED_ORIGINS=http://localhost:5173 archlast-forge dev`.
 
 ### Webhooks and public HTTP routes
 

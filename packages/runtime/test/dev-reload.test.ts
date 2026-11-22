@@ -89,8 +89,8 @@ describe.skipIf(process.platform !== "linux")("dev: changes under forge/ reach t
     write("http.ts", http(1));
     const port = freePort();
     url = `http://127.0.0.1:${port}`;
-    proc = Bun.spawn(["bun", cli, "dev", "--no-docker", "--dir", app], {
-      env: { ...process.env, PORT: String(port), DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ADMIN_KEY: ADMIN },
+    proc = Bun.spawn(["bun", cli, "dev", "--no-docker", "--dir", app, "--port", String(port)], {
+      env: { ...process.env, DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ADMIN_KEY: ADMIN },
       stdout: "ignore",
       stderr: "ignore",
     });

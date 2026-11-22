@@ -11,7 +11,7 @@ import { ensureDeps } from "./deps";
 import { addApp, addDesktopTo, addMobileTo, addService, convertToMonorepo, removeApp, syncWorkspace, type Change } from "./evolve";
 import { changeStack } from "./stack-edit";
 import { c, ok, step, warn } from "./ui";
-import { workspaceStatus } from "./workspace-dev";
+import { workspaceAddresses, workspaceStatus } from "./workspace-dev";
 
 /** The options of these commands, as the command line gives them. */
 export interface GrowOptions {
@@ -97,7 +97,7 @@ export async function add(dir: string, what: string | undefined, name: string | 
     if (mode === "backend" && (o.shadcn || o.baseColor)) fail("shadcn/ui is for full-stack apps: use --mode framework.");
     return finish(addApp(dir, name, { mode, shadcn, services: o.services ? parseServiceList(o.services) : undefined }), o, "bun run dev");
   }
-  if (what === "mobile") return finish(addMobileTo(dir), o, "cd apps/mobile && bun run dev");
+  if (what === "mobile") return finish(addMobileTo(dir), o, "bun run archlast-forge dev --mobile   (from the workspace root)");
   if (what === "desktop") {
     if (!name) fail(usage);
     return finish(addDesktopTo(dir, parseDesktop(name)), o, "cd apps/desktop && bun run dev   (needs Rust and Tauri's prerequisites)");
@@ -127,8 +127,9 @@ export async function workspace(dir: string, action: string | undefined, o: Grow
   if (action === "status") return workspaceStatus(root, ws);
   if (action) fail("Usage: archlast-forge workspace [sync|status]");
   const label = ws.transport === "forge-rpc" ? "Forge RPC" : ws.transport.toUpperCase();
-  const rows: [string, string, string][] = [[ws.main, `main app, ${kindOf(root, ws.main)}`, `http://localhost:${ws.mainPort ?? 3000}`]];
-  for (const [n, a] of Object.entries(ws.apps)) rows.push([n, a.kind === "service" ? `service, ${label} on ${a.rpcPort}` : kindOf(root, n), `http://localhost:${a.port}`]);
+  const addresses = await workspaceAddresses(root, ws);
+  const rows: [string, string, string][] = [[ws.main, `main app, ${kindOf(root, ws.main)}`, addresses.get(ws.main)!.url]];
+  for (const [n, a] of Object.entries(ws.apps)) rows.push([n, a.kind === "service" ? `service, ${label} on ${a.rpcPort}` : kindOf(root, n), addresses.get(n)!.url]);
   if (ws.mobile) rows.push(["mobile", "Expo app", ""]);
   if (ws.desktop) rows.push(["desktop", `Tauri app (${ws.desktop})`, ""]);
   const services = Object.values(ws.apps).some((a) => a.kind === "service");

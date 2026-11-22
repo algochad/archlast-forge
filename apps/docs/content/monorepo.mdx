@@ -24,7 +24,7 @@ Every app is a whole archlast-forge project with its own `forge/`, `compose.yaml
 
 ## Develop from the workspace root
 
-`bun run dev` starts the apps through Turbo and each Forge engine watches its own source. Forge RPC workspaces run native engines and default to SQLite. Set `mainPort`, app `port` and service `rpcPort` in [the workspace file](#the-workspace-file). Turbo starts declared dependencies even in a filtered run such as `bun run dev --filter=@acme/web`. Forge waits for their readiness, and reports which app is unavailable or which port is occupied.
+`bun run dev` starts the apps through Turbo and each Forge engine watches its own source. Forge RPC workspaces run native engines and default to SQLite. Each Forge app gets its own [Portless URL](cli.html#named-local-urls-with-portless). Configure the service transport with `rpcPort` in [the workspace file](#the-workspace-file). Set `"portless": false` there to use `mainPort` and app `port` for direct HTTP. Turbo starts declared dependencies even in a filtered run such as `bun run dev --filter=@acme/web`. Forge waits for their readiness, and reports which app is unavailable or which port is occupied.
 
 Development configuration comes from each app's private `.env.development.local`. It does not inherit stack `.env` files or application settings exported at the root. Set `DATABASE_URL`, `REDIS_URL` or `S3_…` there to use development infrastructure you run yourself. To have Forge start and stop development containers, set `FORGE_DEV_SERVICES` to a comma-separated selection of `postgres,redis,s3` in that app's profile. Forge uses the selected containers' connection settings and keeps their volumes on shutdown. `bun run up` in an app still uses its deployment stack.
 
@@ -41,7 +41,7 @@ From the root, `bun run typecheck` and `bun run build` run producer codegen befo
 ```ts
 import { webApi, type Web } from "@acme/api";
 
-const client = new ArchlastForgeClient({ url: "http://localhost:3000" });
+const client = new ArchlastForgeClient({ url: "https://acme-web-42a6b2c1d026.localhost" });
 await client.query(webApi.messages.list, { paginationOpts: { numItems: 20, cursor: null } });
 ```
 
@@ -83,6 +83,7 @@ Each takes the next free ports, runs `bun install` and codegen, and says what is
 {
   "main": "web",
   "transport": "forge-rpc",
+  "portless": true,
   "apps": {
     "orders": { "kind": "service", "port": 3001, "rpcPort": 4001 },
     "admin": { "kind": "app", "port": 3002 }
@@ -91,7 +92,7 @@ Each takes the next free ports, runs `bun install` and codegen, and says what is
 }
 ```
 
-`main` is the folder of the main app: `web` or `api` in a monorepo `init` made, any name in one made by hand. `scope`, when it is there, is what the packages are scoped with (`@<scope>/api`) in place of the root package's name. A service is called by the main app over `transport`; an app is a project of its own. `port` is where `dev` serves it on this machine, and `rpcPort` the service's port for the transport. A monorepo made before this file existed has it worked out from its folders, and the first change writes it. `archlast-forge workspace sync` rewrites the shared packages after changes you made by hand.
+`main` is the folder of the main app: `web` or `api` in a monorepo `init` made, any name in one made by hand. `scope`, when it is there, is what the packages are scoped with (`@<scope>/api`) in place of the root package's name. A service is called by the main app over `transport`; an app is a project of its own. `port` is the HTTP port in direct mode. `rpcPort` is the service's transport port. A monorepo made before this file existed has it worked out from its folders, and the first change writes it. `archlast-forge workspace sync` rewrites the shared packages after changes you made by hand.
 
 `mainPort` defaults to 3000. In a Forge RPC workspace, `dependsOn` maps an app name to the services it calls. The main app calls all services by default. Other apps have no dependencies until declared. For example, `"dependsOn": { "web": ["orders"], "orders": ["billing"] }` starts Billing with Orders and Orders with Web, including filtered runs. It supplies the corresponding development addresses and tokens. Add the typed client in each caller's backend code as shown in [Forge RPC](forge-rpc.html#a-service-class-that-makes-the-calls). Run `bun run workspace sync` after editing the workspace file to refresh the Turbo tasks and shared contracts.
 

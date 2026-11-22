@@ -62,21 +62,12 @@ One item per change, its lead in bold when a reader should notice it, with a lin
 
 ## Publishing a release
 
-Full runbook: `docs/releasing.md`. Read it before releasing; this is the short version.
+Read [the release runbook](docs/releasing.md) when the user explicitly asks to publish Forge. Follow it through GitHub CI, publication, and registry verification.
 
-Publishing points: **npm** (nine packages, lockstep version), the **engine image** on GHCR (`ghcr.io/algochad/archlast-forge-engine:<version>` and `:latest`), and the **docs site** (Coolify; the release calls its deploy webhook when `DOCS_DEPLOY_WEBHOOK` is set). `.github/workflows/release.yml` starts by itself when CI passes on a merge into `master` that ships something: it picks the version, pushes the image, publishes to npm (`NPM_TOKEN` secret), tags the commit and writes the GitHub release (from the "Unreleased" notes), then its `docs` job moves those notes under the version and updates the docs' version strings on `master` and `staging` (`scripts/release-stamp.ts`, pushed with the release bot's deploy key: `docs/releasing.md#the-release-bot`) and redeploys the docs.
-
-- Publishing can't be taken back (npm never reuses a version). Release only when the user asks for it; a request to commit or push is not one.
-- Merging into `master` IS the release when the merge ships something (it starts by itself once CI passes, with the next version), so merge only when the user asks for a release. Nobody tags or bumps by hand: the workflow does, after publishing.
-- `master` and `staging` are protected: never push to either (only the release bot's deploy key does, after a release). Work on a branch from `staging` and open a pull request into `staging` (`CONTRIBUTING.md`); only `staging` is merged into `master`, and the engine image is built only when `master` is updated.
-
-1. Land the change on `staging` by pull request (code, tests, docs, and a line under "Unreleased" in `apps/docs/content/release-notes.mdx` for what users notice, under its heading: "Release notes" below). `staging` and `master` are protected (rulesets: pull requests only, `test` must pass, no force pushes; `master` takes only `staging`).
-2. `gh pr create --base master --head staging`, merge it with a merge commit (`gh pr merge --merge`; the owner can merge without a second reviewer). **That merge is the release**, if it ships something: when CI passes, `release.yml` picks the version from what changed since the last release (`scripts/release-plan.ts`, rules in `scripts/release-bump.ts`: a patch, or the next minor for a new export, CLI flag, engine setting or scaffolded file, or a `feat:`/breaking commit; none for docs-, workflow-, script- or test-only merges; the markers `[skip release]` and `[minor]` count only at the end of a commit's first line or on a line of their own), stamps it into the packages and the image **without committing it**, publishes the image and the nine packages, then makes the tag `vX.Y.Z` and the GitHub release. Nobody tags or bumps by hand: watch the Release run (`gh run list --workflow Release`). The repository's `package.json` keeps the line; the last release is the highest `v*` tag.
-3. To choose the version yourself (a new minor by choice, 1.0.0, a pre-release): `bun scripts/version.ts X.Y.Z`, `bun scripts/release-stamp.ts X.Y.Z --since v<last>` (moves "Unreleased" to `## X.Y.Z` and the docs' version strings; grep the old version for any it doesn't know), `bun install`, commit `Version X.Y.Z` with what the release contains in the body, and merge as above; a version above the last release goes out as it is (`docs/releasing.md`).
-4. Verify, don't trust the green check: `npm view --prefer-online <package> version` for all nine (npm lags a few minutes), and the GHCR manifests for `X.Y.Z` and `latest` (same digest).
-5. The docs site: the `docs` job redeployed it if `DOCS_DEPLOY_WEBHOOK` is set (its log says); otherwise redeploy it in Coolify, or tell the user. If the job warned that `RELEASE_BOT_KEY` is missing, the owner runs `bun scripts/setup-release-bot.ts` once, and `bun scripts/release-stamp.ts X.Y.Z --since vA.B.C` in a pull request does this release's notes.
-
-A pre-release version (`-rc.1`) publishes under `next`, moves no `latest` (npm or image) and is a GitHub pre-release.
+- Land the requested changes together on `staging` by PR, then promote the reviewed `staging` SHA to `master` in one merge commit. Push only feature branches. Match the verified head SHA at merge time.
+- Wait for GitHub CI on both PRs and for push CI after the merges. Use `--admin` only with the user's authorization and green required checks. Diagnose failures and retry transient jobs on the same SHA.
+- Put `[release]` on the authorized promotion merge to override the previous release bot's inherited `[skip release]`. GitHub Actions chooses the version, publishes GHCR and all nine npm packages, creates the tag and release, and stamps the notes.
+- Watch the Release run for the specific `master` merge SHA until it finishes. Independently verify the GitHub tag, all nine npm versions, and the matching stable GHCR digests. Let configured Coolify deployment run on merges, and respect the user's deployment scope.
 
 ## Architecture
 

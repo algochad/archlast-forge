@@ -1,9 +1,10 @@
 #!/usr/bin/env bun
 // End to end for `archlast-forge dev`: a full-stack app on this machine (alone, then with services in Docker), and a backend
 // whose engine runs in Docker. Checks live reload of pages and functions, and that stopping leaves nothing running.
-//   bun scripts/pack.ts && bun scripts/e2e-dev.ts [framework|services|backend]
-import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+//   bun scripts/pack.ts && bun scripts/e2e-dev.ts [framework|services|backend|monorepo|portless]
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
 import { call, check, createMonorepo, createProject, json, must, sh, signUp, type Project } from "./lib/e2e";
 
 /** `archlast-forge dev` running in a project, with its output collected. */
@@ -163,6 +164,7 @@ async function monorepo() {
   >;
   const workspaceFile = join(root, "archlast-forge.workspace.json");
   const workspace = await Bun.file(workspaceFile).json();
+  workspace.portless = false; // Exercise the configured direct ports in this scenario.
   workspace.mainPort = webPort;
   workspace.apps.orders = {
     kind: "service",
@@ -458,24 +460,170 @@ async function monorepo() {
   }
 }
 
+async function portless() {
+  console.log("\nPortless: named HTTPS for two projects and a filtered Forge RPC workspace");
+  const stateDir = mkdtempSync(join(tmpdir(), "forge-portless-"));
+  const reserve = () => Bun.serve({ hostname: "127.0.0.1", port: 0, fetch: () => new Response() });
+  const proxyPort = reserve();
+  const orderRpc = reserve();
+  const env = {
+    PORTLESS: "1",
+    PORTLESS_HTTPS: "1",
+    PORTLESS_PORT: String(proxyPort.port),
+    PORTLESS_STATE_DIR: stateDir,
+    PORTLESS_TLD: "localhost",
+  };
+  const backend = createProject("e2e-named", "backend", ["s3"], 3000, 9000);
+  const framework = createProject("e2e-named", "framework", [], 3000, 0);
+  const { root } = createMonorepo("e2e-named-workspace", "framework", [], ["orders"], { web: 3000, orders: 3001 });
+  const manifest = join(root, "archlast-forge.workspace.json");
+  const workspace = await Bun.file(manifest).json();
+  workspace.apps.orders.rpcPort = orderRpc.port;
+  writeFileSync(manifest, JSON.stringify(workspace));
+  await orderRpc.stop(true);
+
+  const command = ["node", join(dirname(Bun.resolveSync("portless", join(import.meta.dir, "../packages/cli"))), "cli.js")];
+  const runs: { stop: () => Promise<void>; output: () => string }[] = [];
+  function dev(dir: string, ...args: string[]) {
+    let output = "";
+    const decoder = new TextDecoder();
+    const proc = Bun.spawn(["bun", "run", "dev", ...args], {
+      cwd: dir, env: { ...process.env, ...env, FORCE_COLOR: "" },
+      terminal: { data: (_, data) => { output += decoder.decode(data, { stream: true }); } },
+    });
+    const run = {
+      output: () => output,
+      async stop() {
+        if (proc.exitCode === null) {
+          proc.terminal!.write("\x03");
+          if (await Promise.race([proc.exited, Bun.sleep(12_000).then(() => null)]) === null) {
+            proc.kill("SIGKILL");
+            await proc.exited;
+            throw new Error(`Portless dev did not stop in ${dir}:\n${output}`);
+          }
+        }
+        proc.terminal!.close();
+      },
+    };
+    runs.push(run);
+    return run;
+  }
+  const routes = (): { url: string; port: number }[] =>
+    JSON.parse(must([...command, "list", "--json"], root, env)).routes;
+  const caFile = join(stateDir, "ca.pem");
+  const request = (url: string, init?: RequestInit) =>
+    fetch(url, { signal: AbortSignal.timeout(3000), ...init, tls: { ca: readFileSync(caFile, "utf8") } });
+  async function ready() {
+    const active = routes();
+    return (await Promise.all(active.map(async ({ url, port }) => {
+      const upstream = await fetch(`http://127.0.0.1:${port}/ready`, { signal: AbortSignal.timeout(1000) });
+      return upstream.ok && (await request(`${url}/ready`)).ok;
+    }))).every(Boolean);
+  }
+
+  await proxyPort.stop(true);
+  const proxy = Bun.spawn([...command, "proxy", "start", "--foreground", "--unprivileged", "--https", "--skip-trust"], {
+    env: { ...process.env, ...env }, stdout: "ignore", stderr: "inherit",
+  });
+  try {
+    await until("Portless's proxy", async () => existsSync(join(stateDir, "proxy.port")));
+    const api = dev(backend.dir);
+    const web = dev(framework.dir, "--no-docker");
+    await until("both named projects", async () => routes().length === 2 && await ready(), 90_000)
+      .catch((error) => { throw new Error(`${error.message}\n${api.output()}\n${web.output()}`); });
+    const active = routes();
+    const origin = active.find(({ url }) => web.output().includes(`${url}/_dashboard`))!.url;
+    check("same-name projects use distinct URLs and dynamically assigned HTTP ports",
+      new Set(active.map(({ url }) => url)).size === 2 &&
+      new Set(active.map(({ port }) => port)).size === 2 && active.every(({ port }) => port !== 3000));
+    const signUp = await request(`${origin}/api/auth/sign-up/email`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin },
+      body: JSON.stringify({ email: "portless@example.com", password: "correct horse battery", name: "Portless" }),
+    });
+    check("Better Auth accepts the named origin and issues a secure cookie",
+      signUp.ok && signUp.headers.getSetCookie().some((line) => line.includes("; Secure")), await signUp.text());
+    const apiOrigin = active.find(({ url }) => url !== origin)!.url;
+    check("the Docker backend runs behind its named URL", api.output().includes("engine in Docker") && api.output().includes(apiOrigin));
+    const apiSignUp = await request(`${apiOrigin}/api/auth/sign-up/email`, {
+      method: "POST",
+      headers: { "content-type": "application/json", origin: apiOrigin },
+      body: JSON.stringify({ email: "upload@example.com", password: "correct horse battery", name: "Upload" }),
+    });
+    check("Docker backend auth uses the named origin", apiSignUp.ok);
+    const upload = await json(await request(`${apiOrigin}/rpc/files:generateUploadUrl`, {
+      method: "POST",
+      headers: { "content-type": "application/json", cookie: apiSignUp.headers.getSetCookie().map((c) => c.split(";")[0]).join("; ") },
+      body: JSON.stringify({ contentType: "text/plain" }),
+    }));
+    const uploadUrl = new URL(upload.result.uploadUrl);
+    check("Docker dev storage uses a free port separate from the named proxy", uploadUrl.hostname === "localhost" && uploadUrl.port !== "9000", uploadUrl.origin);
+    const put = await fetch(uploadUrl, { method: "PUT", headers: { "content-type": "text/plain" }, body: "portless upload" });
+    check("the managed storage accepts a signed upload", put.ok, put.status);
+    check("dashboard lookup finds the named URL", must(["bun", "run", "archlast-forge", "dashboard"], framework.dir, env) === `${origin}/_dashboard`);
+    const openapi = await json(await request(`${origin}/_api/openapi.json`));
+    check("the OpenAPI server is the public URL", openapi.servers[0]?.url === origin, openapi.servers);
+    await new Promise<void>((resolve, reject) => {
+      const socket = new WebSocket(`${origin.replace(/^https:/, "wss:")}/rpc`, {
+        headers: { origin }, tls: { ca: readFileSync(caFile, "utf8") },
+      });
+      const timeout = setTimeout(() => { socket.close(); reject(new Error("Portless WebSocket timed out")); }, 5000);
+      socket.addEventListener("open", () => { clearTimeout(timeout); socket.close(); resolve(); });
+      socket.addEventListener("error", () => { clearTimeout(timeout); reject(new Error("Portless WebSocket failed")); });
+    });
+    await api.stop();
+    await web.stop();
+    await until("standalone routes to be removed", async () => routes().length === 0);
+
+    const filtered = dev(root, "--ui=stream", "--filter=@e2e-named-workspace/web");
+    await until("the filtered named workspace", async () => routes().length === 2 && await ready(), 65_000)
+      .catch((error) => { throw new Error(`${error.message}\n${filtered.output()}`); });
+    const workspaceWeb = routes().find(({ url }) => new URL(url).hostname.startsWith("e2e-named-workspace-web-"))!.url;
+    const echo = await json(await request(`${workspaceWeb}/rpc/orders:hello`, {
+      method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ from: "Portless" }),
+    }));
+    check("a filtered Turbo run starts the named service and keeps typed Forge RPC working", echo.result?.service === "orders", echo);
+    const status = must(["bun", "run", "workspace", "status"], root, env);
+    check("workspace status shows both public URLs and readiness", routes().every(({ url }) => status.includes(url)) && status.match(/\bready\b/g)?.length === 2, status);
+    await filtered.stop();
+    await until("workspace routes to be removed", async () => routes().length === 0);
+
+    const restarted = dev(framework.dir, "--no-docker");
+    await until("the original named URL after restart", async () => routes().some(({ url }) => url === origin) && await ready(), 45_000)
+      .catch((error) => { throw new Error(`${error.message}\n${restarted.output()}`); });
+    check("the public URL survives a restart", true);
+  } finally {
+    try {
+      await Promise.allSettled(runs.map((run) => run.stop()));
+    } finally {
+      proxy.kill();
+      await proxy.exited;
+      rmSync(stateDir, { recursive: true, force: true });
+      const { containerName } = await import("../packages/cli/src/docker");
+      removeTestLeftovers(containerName(backend.dir, true));
+    }
+  }
+}
+
 /** Each run is a new temporary project, so its containers and volumes have a name nobody will use again. */
-function removeTestLeftovers() {
+function removeTestLeftovers(prefix = "archlast-forge-e2e-") {
   const q = (kind: string[], filter: string) => sh(["docker", ...kind, "-q", "--filter", `name=${filter}`], ".").out.split("\n").filter(Boolean);
-  const containers = q(["ps", "-a"], "archlast-forge-e2e-");
+  const containers = q(["ps", "-a"], prefix);
   if (containers.length) sh(["docker", "rm", "-f", ...containers], ".");
-  const volumes = q(["volume", "ls"], "archlast-forge-e2e-");
+  const volumes = q(["volume", "ls"], prefix);
   if (volumes.length) sh(["docker", "volume", "rm", "-f", ...volumes], ".");
-  const networks = q(["network", "ls"], "archlast-forge-e2e-");
+  const networks = q(["network", "ls"], prefix);
   if (networks.length) sh(["docker", "network", "rm", ...networks], ".");
 }
 
 const which = process.argv[2];
-if (which !== "monorepo") process.on("exit", removeTestLeftovers);
+if (!which || ["services", "backend"].includes(which)) process.on("exit", () => removeTestLeftovers());
 try {
   if (!which || which === "framework") await framework();
   if (!which || which === "services") await services();
   if (!which || which === "backend") await backend();
   if (!which || which === "monorepo") await monorepo();
+  if (!which || which === "portless") await portless();
   console.log("\n✓ dev end-to-end passed");
 } catch (e) {
   console.error(`\n✗ ${(e as Error).message}`);
