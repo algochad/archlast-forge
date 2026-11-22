@@ -211,6 +211,12 @@ Errors: `Nothing to change: the stack has ...` (exit 1), `Unknown service`, `No 
 
 ## 5. Run
 
+### mobile
+
+From a Forge workspace with Expo in `apps/mobile`, `archlast-forge mobile doctor` checks the SDK tools, device state, Waydroid, acceleration and ports. `archlast-forge mobile setup` installs isolated Android tools and asks about licenses. For non-interactive setup, use `--yes --accept-licenses` only after the developer has approved the license terms.
+
+`archlast-forge dev --mobile` runs the workspace's Forge dev task and Metro, reverses their actual HTTP ports on the chosen Android target and opens the app. It prefers an authorized USB phone, then an existing Waydroid session on Linux Wayland, then the managed emulator. Use `--device <serial>`, `--target <name>` or `--client dev-client --apk <path>` when needed. `FORGE_HOME` redirects user-local tools; `mobileDev` in the workspace manifest can set portable defaults. Keep `mobile: true` in existing workspaces. iOS Simulator orchestration is a follow-up. See [Mobile apps](https://github.com/algochad/archlast-forge/blob/master/apps/docs/content/mobile.mdx).
+
 ### dev
 
 ```bash

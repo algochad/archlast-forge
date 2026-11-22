@@ -67,9 +67,14 @@ jobs:
       - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
         with:
           bun-version: 1.4.4
+      - uses: actions/setup-node@249970729cb0ef3589644e2896645e5dc5ba9c38 # v6
+        with:
+          node-version: "24"
       - run: bun install --frozen-lockfile
       - name: Package smoke test (packed tarballs, a full-stack app and a backend, each served)
         run: bun scripts/pack.ts --smoke
+      - name: Expo scaffold and supervised Android development
+        run: bun scripts/e2e-mobile.ts
       - name: Docker end to end (the stack with `up`, and `dev` with services)
         run: |
           bun packages/cli/src/index.ts engine build

@@ -158,7 +158,7 @@ export function nextSteps(a: Answers, installed: boolean): string {
   const cd = rel.startsWith("..") ? resolve(a.dir) : rel; // a path that climbs out of here reads better in full
   const lines = [cd !== "." ? `cd ${cd}` : undefined, installed ? undefined : "bun install", "bun run dev"].filter(Boolean) as string[];
   const where = a.monorepo
-    ? `apps/${a.mode === "framework" ? "web" : "api"}: http://localhost:3000${a.monorepo.microservices.map((s, i) => `\napps/${s}: http://localhost:${3001 + i}`).join("")}${a.monorepo.mobile ? "\napps/mobile: Expo (scan the QR code that bun run dev prints)" : ""}${a.monorepo.desktop ? "\napps/desktop: Tauri (needs Rust; see its README)" : ""}`
+    ? `apps/${a.mode === "framework" ? "web" : "api"}: http://localhost:3000${a.monorepo.microservices.map((s, i) => `\napps/${s}: http://localhost:${3001 + i}`).join("")}${a.monorepo.mobile ? "\napps/mobile: Expo (bun run archlast-forge dev --mobile for Android)" : ""}${a.monorepo.desktop ? "\napps/desktop: Tauri (needs Rust; see its README)" : ""}`
     : a.mode === "framework"
       ? "Your app: http://localhost:3000"
       : "Your backend: http://localhost:3000";

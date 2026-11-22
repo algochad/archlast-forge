@@ -17,6 +17,7 @@ import {
   findWorkspaceRoot,
   loadWorkspace,
   portOf,
+  validateWorkspace,
   type Workspace,
 } from "create-archlast-forge/workspace";
 
@@ -58,6 +59,10 @@ export function workspaceDev(root: string, app: string) {
       "Run workspace development from an app in a Forge monorepo.",
     );
   const { ws } = loadWorkspace(workspace);
+  if (process.env.FORGE_MOBILE_MAIN_PORT) {
+    ws.mainPort = Number(process.env.FORGE_MOBILE_MAIN_PORT);
+    validateWorkspace(ws);
+  }
   if (ws.transport !== "forge-rpc" || !backendsOf(ws).includes(app))
     throw new Error(`${app} is not a Forge RPC workspace app.`);
   const deps = dependenciesOf(ws, app);

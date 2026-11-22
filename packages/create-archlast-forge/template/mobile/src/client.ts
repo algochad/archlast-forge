@@ -17,9 +17,17 @@ const url = process.env.EXPO_PUBLIC_API_URL ?? "http://localhost:3000";
  */
 export const client: ArchlastForgeClient = new ArchlastForgeClient({
   url,
-  authPlugins: [expoClient({ scheme: "__NAME__", storagePrefix: "__NAME__", storage: SecureStore })],
+  authPlugins: [
+    expoClient({
+      scheme: "__SCHEME__",
+      storagePrefix: "__NAME__",
+      storage: SecureStore,
+    }),
+  ],
   headers: () => {
-    const cookie = (client.auth as unknown as { getCookie(): string }).getCookie();
+    const cookie = (
+      client.auth as unknown as { getCookie(): string }
+    ).getCookie();
     return cookie ? { cookie } : undefined;
   },
 });

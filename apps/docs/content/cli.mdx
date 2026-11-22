@@ -213,6 +213,16 @@ Changes which stack services the app you are in has, after [`init`](#init) chose
 - **`.env`** only gets the keys the new services need (`POSTGRES_PASSWORD`, the S3 keys, `DOMAIN`), with fresh secrets. The values you have are never touched.
 - **What it can't do for you** it says: documents aren't moved between SQLite and PostgreSQL (`export` before, `import` after), Caddy needs `DOMAIN` and an https `BETTER_AUTH_URL`, and the volumes of a removed service stay in Docker until `down --volumes`.
 
+## mobile
+
+```bash
+archlast-forge mobile doctor [--target <name>] [--device <serial>]
+archlast-forge mobile setup [--target <name>] [--yes --accept-licenses]
+archlast-forge dev --mobile [--target <name>] [--device <serial>] [--client <go|dev-client>] [--apk <path>]
+```
+
+From a workspace containing `apps/mobile`, check Android readiness, install portable Android tools or start a supervised Forge and Expo session. Android setup supports `--android-api <n>`, `--android-abi <abi>` and `--avd-profile <name>`. Dev supports `--backend-port <n>` and `--metro-port <n>`. See [Run on Android](mobile.html#run-on-android).
+
 ## dev
 
 ```bash

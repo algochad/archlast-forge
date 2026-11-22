@@ -204,6 +204,7 @@ For an exact signature read `reference`; for a message or symptom read `troubles
 | ----------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | New project (non-interactive) | `bun create archlast-forge <dir> [--mode framework\|backend] [--services …\|none] [--monorepo] [--microservices a,b] [--mobile] [--desktop full\|client] --yes` |
 | Run in development            | `bun run dev` (`archlast-forge dev`; add `-- --no-docker` to run the engine in-process)                                                                         |
+| Android mobile development   | `archlast-forge mobile doctor`, `mobile setup`, `dev --mobile` from the workspace root ([CLI](references/cli.md#mobile)) |
 | Regenerate types              | `bun run codegen` (also run by `dev`, `typecheck`, `build`)                                                                                                     |
 | Production stack              | `bun run up` / `down` / `logs` (Docker Compose)                                                                                                                 |
 | Production without Docker     | `archlast-forge build --no-docker` then `start --no-docker`                                                                                                     |

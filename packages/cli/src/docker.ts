@@ -169,6 +169,8 @@ export interface RunOptions {
   env: Record<string, string>;
   services?: Service[];
   image?: string;
+  /** Publish the HTTP listener on this machine only. */
+  bindLoopback?: boolean;
   /** Defaults to forge/.env when it exists. */
   envFile?: string;
 }
@@ -199,7 +201,7 @@ export function runEngine(o: RunOptions) {
     "--name",
     name,
     "-p",
-    `${o.port}:3000`,
+    `${o.bindLoopback ? "127.0.0.1:" : ""}${o.port}:3000`,
     "-v",
     `${name}-data:/data`,
     "--add-host",

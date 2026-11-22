@@ -4,7 +4,7 @@
 
 ```bash
 bun create archlast-forge acme --mode backend --mobile        # implies --monorepo
-cd acme && bun install && bun run dev                          # the backend on :3000, and expo start
+cd acme && bun install && bun run dev                          # start the backend and Expo
 ```
 
 ```
@@ -14,17 +14,53 @@ acme/
   packages/api/       the backend's typed API, which the app imports types from
 ```
 
-## Connecting
+## Run on Android
 
-The app reads the backend's address from `EXPO_PUBLIC_API_URL` (Expo inlines `EXPO_PUBLIC_*` variables when it bundles):
+From the workspace root:
 
-| Where | Value |
-|---|---|
-| A simulator on this computer | `http://localhost:3000` (the `.env` that `init` writes) |
-| A phone in development (Expo Go) | your computer's address on the network, `http://192.168.1.20:3000`: `localhost` would be the phone |
-| A build | the deployed backend, `https://api.example.com`, set where the app is built (EAS: `eas env:create`) |
+```bash
+bun run archlast-forge mobile doctor
+bun run archlast-forge mobile setup
+bun run archlast-forge dev --mobile
+```
 
-The backend must accept the requests: `BETTER_AUTH_URL` is its public address as usual, and `forge/auth.ts` trusts the app's scheme (`acme://`) for sign-in.
+Connect and unlock a USB phone with USB debugging enabled. Accept its authorization prompt. Forge prefers a ready USB phone, then an already-running Waydroid session on Linux Wayland, then a managed Android Emulator. If several USB phones are ready, pick one with `--device <serial>`. Use `--target device`, `--target waydroid`, or `--target emulator` to choose explicitly. The same target flags apply to `mobile setup`. `mobile doctor` reports host tools, devices, app delivery, port use and emulator acceleration without starting an ADB server or runtime.
+
+`mobile setup --target device` can install ADB when it is missing. `mobile setup --target emulator` also installs Google's emulator and system image. Forge supports its portable SDK on Linux x64, Windows x64, and Intel or Apple silicon macOS. Linux needs KVM access, Windows needs firmware virtualization and Windows Hypervisor Platform, and macOS uses Hypervisor.Framework. A compatible ADB already on your PATH can also drive a physical device. Forge uses a running Waydroid installation and its reported network address. If Waydroid cannot report an address, connect with its documented [ADB workflow](https://docs.waydro.id/faq/using-adb-with-waydroid), then pass its serial. ARM-only APKs need a compatible ABI on Waydroid.
+
+Setup prints the packages and a disk-space estimate. Forge pins the command-line tools and portable Temurin 17 with SHA-256 checksums. Google's SDK Manager checks its own package downloads. Forge keeps the tools, verified archives, and temporary emulator profiles under its per-user data directory. Set `FORGE_HOME` to choose a different directory. License prompts are interactive unless you supply both `--yes --accept-licenses` after reviewing the [Android SDK terms](https://developer.android.com/studio/terms). Java and SDK paths are supplied to the tools that need them.
+
+### Ports and app delivery
+
+`dev --mobile` starts the main Forge app and its declared services through Turbo. It selects a Metro port, keeps the workspace's main HTTP port by default, and maps both ports on the selected device with ADB reverse. The device reaches Forge at its forwarded `127.0.0.1` address. Expo receives that value as `EXPO_PUBLIC_API_URL` for the session. Forge uses direct HTTP for this session, including when the normal desktop workflow uses a local reverse proxy. Browser development remains available through the ordinary `bun run dev` command.
+
+The command opens Expo Go and installs a verified SDK 58 APK when Expo Go is missing. If a device has Expo Go for a different SDK, install the matching version from [Expo](https://expo.dev/go). Use `--client dev-client --apk <path>` with an Android development build that contains `expo-dev-client`. The app's Android package and scheme come from `apps/mobile/app.json`. For local HTTP, enable cleartext loopback access in the development build. A preinstalled matching development client can be used without the APK flag.
+
+Ctrl-C stops the Forge tasks, Metro, and any emulator Forge started for that session. ADB mappings created by the session are removed. Shared ADB servers and existing Waydroid sessions keep running. Forge leaves the project's `.env` files alone.
+
+### Project defaults
+
+Existing workspaces keep `"mobile": true`. An optional `mobileDev` object in `archlast-forge.workspace.json` can set the target, system image API and ABI, AVD profile, client and ports.
+
+```json
+{
+  "target": "auto",
+  "api": 36,
+  "profile": "pixel_7",
+  "client": "go",
+  "backendPort": 3000
+}
+```
+
+The example is the value of `mobileDev`. The emulator uses the host-compatible ABI by default. Set `abi` to `x86_64` or `arm64-v8a`, and `metroPort` to pin Metro. CLI overrides include `--android-api`, `--android-abi`, `--avd-profile`, `--backend-port` and `--metro-port`. Pass device serials and APK paths when starting a session so workspace configuration stays portable.
+
+iOS Simulator orchestration is a follow-up. On macOS, start Expo in `apps/mobile` and open it from Xcode Simulator. For a device outside a managed session, set `EXPO_PUBLIC_API_URL` to a device-reachable backend. A production build uses the deployed HTTPS API.
+
+## Expo and React Native Reusables
+
+Both `init --mobile` and `add mobile` use the Expo SDK 58 blank TypeScript baseline generated with `create-expo-app`. The starter has NativeWind, Metro and Tailwind configuration, theme tokens, the `@/` alias, `components.json`, and `PortalHost`. The sign-in and chat screens use the generated React Native Reusables button, card, input, and text components.
+
+From `apps/mobile`, use `bunx @react-native-reusables/cli@0.7.1 add <component>` to add a component. Use `bunx expo install <package>` for Expo native modules, `bun run doctor` to check the project, and `bun run export:android` to smoke-test the Android bundle.
 
 ## Signing in
 
