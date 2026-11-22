@@ -17,9 +17,11 @@ import {
   findWorkspaceRoot,
   loadWorkspace,
   portOf,
+  servicesOf,
   validateWorkspace,
   type Workspace,
 } from "create-archlast-forge/workspace";
+import { portlessName, portlessRoutes } from "./portless";
 
 const PROFILE = ".env.development.local";
 const loopback = (port: number) => `http://127.0.0.1:${port}`;
@@ -52,7 +54,38 @@ function workspaceSeed(root: string) {
   return readFileSync(file);
 }
 
-export function workspaceDev(root: string, app: string) {
+export function transportPorts(ws: Workspace) {
+  return ws.transport === "forge-rpc" || ws.transport === "tcp"
+    ? servicesOf(ws).map(([, service]) => service.rpcPort ?? 4001)
+    : [];
+}
+
+/** Update generated development addresses for legacy Nest transports, keeping custom targets. */
+export function useNamedDashboard(
+  ws: Workspace,
+  origin: (app: string) => string,
+) {
+  const local = (app: string) => `http://localhost:${portOf(ws, app)}`;
+  if (process.env.DASHBOARD_URL === local(ws.main))
+    process.env.DASHBOARD_URL = origin(ws.main);
+  if (process.env.MICROSERVICES) {
+    const services = new Map(servicesOf(ws).map(([app]) => [local(app), app]));
+    process.env.MICROSERVICES = process.env.MICROSERVICES.split(",")
+      .map((entry) => {
+        const [name, url] = entry.split("=", 2);
+        const app = url && services.get(url);
+        return app ? `${name}=${origin(app)}` : entry;
+      })
+      .join(",");
+  }
+}
+
+export function workspaceDev(
+  root: string,
+  app: string,
+  address?: { port: number; url: URL },
+  origin?: (app: string) => string,
+) {
   const workspace = findWorkspaceRoot(root);
   if (!workspace || root !== appDir(workspace, app))
     throw new Error(
@@ -67,12 +100,13 @@ export function workspaceDev(root: string, app: string) {
     throw new Error(`${app} is not a Forge RPC workspace app.`);
   const deps = dependenciesOf(ws, app);
   const ownRpc = rpcPort(ws, app);
-  const port = portOf(ws, app);
+  const port = address?.port ?? portOf(ws, app);
+  const http = origin ?? ((name: string) => loopback(portOf(ws, name)));
   const envFile = profile(workspace, app);
   // Bun and Turbo can both inherit a stack's .env. Keep the host tools, then explicitly load this app's development configuration.
   for (const key of Object.keys(process.env))
     if (
-      !/^(PATH|HOME|USER|LOGNAME|SHELL|TERM|COLORTERM|TMPDIR|TMP|TEMP|LANG|LC_\w+|SYSTEMROOT|WINDIR|COMSPEC|PATHEXT|APPDATA|LOCALAPPDATA|VSCODE_PROXY_URI|FORCE_COLOR|NO_COLOR|CI)$/i.test(
+      !/^(PATH|HOME|USER|LOGNAME|SHELL|TERM|COLORTERM|TMPDIR|TMP|TEMP|LANG|LC_\w+|SYSTEMROOT|WINDIR|COMSPEC|PATHEXT|APPDATA|LOCALAPPDATA|VSCODE_PROXY_URI|NODE_EXTRA_CA_CERTS|FORCE_COLOR|NO_COLOR|CI)$/i.test(
         key,
       )
     )
@@ -95,6 +129,10 @@ export function workspaceDev(root: string, app: string) {
     ARCHLAST_WORKSPACE_DEV: "1",
     PORT: String(port),
     HOST: "127.0.0.1",
+    ...(address && {
+      PORTLESS_URL: address.url.origin,
+      FORGE_DEV_URL: address.url.origin,
+    }),
     DATA_DIR: dataDir,
     OTEL_SERVICE_NAME: app,
     ...(ownRpc && {
@@ -108,10 +146,10 @@ export function workspaceDev(root: string, app: string) {
       dashboard.length > 1 && {
         MICROSERVICES: dashboard
           .slice(1)
-          .map((name) => `${name}=${loopback(portOf(ws, name))}`)
+          .map((name) => `${name}=${http(name)}`)
           .join(","),
       }),
-    ...(ownRpc && { DASHBOARD_URL: loopback(portOf(ws, ws.main)) }),
+    ...(ownRpc && { DASHBOARD_URL: http(ws.main) }),
   });
   for (const dep of deps) {
     process.env[`${env(dep)}_RPC_URL`] = loopback(rpcPort(ws, dep)!);
@@ -135,10 +173,13 @@ async function available(port: number) {
   return connection !== undefined;
 }
 
-export async function workspaceReady(ws: Workspace, app: string) {
-  const port = portOf(ws, app);
+export async function workspaceReady(
+  ws: Workspace,
+  app: string,
+  origin = loopback(portOf(ws, app)),
+) {
   const rpc = rpcPort(ws, app);
-  const response = await fetch(`${loopback(port)}/ready`, {
+  const response = await fetch(`${origin}/ready`, {
     signal: AbortSignal.timeout(700),
   }).catch(() => undefined);
   const ready = (await response?.json().catch(() => undefined)) as
@@ -152,14 +193,15 @@ export async function waitForWorkspaceApp(
   ws: Workspace,
   app: string,
   using: string,
+  origin = loopback(portOf(ws, app)),
 ) {
   const deadline = Date.now() + 45_000;
   do {
-    if (await workspaceReady(ws, app)) return;
+    if (await workspaceReady(ws, app, origin)) return;
     await Bun.sleep(200);
   } while (Date.now() < deadline);
   throw new Error(
-    `${using} is waiting for ${app} on ${loopback(portOf(ws, app))}. Check the app's logs or run bun run workspace status.`,
+    `${using} is waiting for ${app} on ${origin}. Check the app's logs or run bun run workspace status.`,
   );
 }
 
@@ -171,7 +213,25 @@ export async function checkWorkspacePorts(port: number, rpc?: number) {
       );
 }
 
+export async function workspaceAddresses(root: string, ws: Workspace) {
+  const routes = ws.portless === false ? [] : await portlessRoutes();
+  return new Map(
+    backendsOf(ws).map((app) => {
+      const name = portlessName(root, app);
+      const route = routes.find((route) =>
+        route.hostname.startsWith(`${name}.`),
+      );
+      const port = route?.port ?? portOf(ws, app);
+      return [
+        app,
+        { url: route?.url ?? loopback(port), upstream: loopback(port) },
+      ];
+    }),
+  );
+}
+
 export async function workspaceStatus(root: string, ws: Workspace) {
+  const addresses = await workspaceAddresses(root, ws);
   await Promise.all(
     backendsOf(ws).map(async (app) => {
       const dir = appDir(root, app);
@@ -208,12 +268,14 @@ export async function workspaceStatus(root: string, ws: Workspace) {
         : "missing";
       const deps = dependenciesOf(ws, app);
       const states = await Promise.all([
-        workspaceReady(ws, app),
-        ...deps.map((dep) => workspaceReady(ws, dep)),
+        workspaceReady(ws, app, addresses.get(app)!.upstream),
+        ...deps.map((dep) =>
+          workspaceReady(ws, dep, addresses.get(dep)!.upstream),
+        ),
       ]);
       const waiting = deps.filter((_, i) => !states[i + 1]);
       console.log(
-        `${app}  ${loopback(portOf(ws, app))}${rpc ? `  RPC ${loopback(rpc)}` : ""}  ${states[0] ? "ready" : "down"}  ${database} (${resolve(dir, file.DATA_DIR || "forge/data")})  codegen ${codegen}${waiting.length ? `  waiting on ${waiting.join(", ")}` : ""}`,
+        `${app}  ${addresses.get(app)!.url}${rpc ? `  RPC ${loopback(rpc)}` : ""}  ${states[0] ? "ready" : "down"}  ${database} (${resolve(dir, file.DATA_DIR || "forge/data")})  codegen ${codegen}${waiting.length ? `  waiting on ${waiting.join(", ")}` : ""}`,
       );
     }),
   );

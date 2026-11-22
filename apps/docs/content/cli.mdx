@@ -229,11 +229,23 @@ From a workspace containing `apps/mobile`, check Android readiness, install port
 archlast-forge dev [--port <n>] [--with postgres,redis,s3] [--no-docker] [--workspace] [--run "<cmd>"] [--dir <forge dir>]
 ```
 
-Inside a generated Forge RPC monorepo, `bun run dev` at the root runs each Forge app's `dev --workspace` task through Turbo. Ports come from the workspace file, and the isolated development profile selects the database and infrastructure. See [Develop from the workspace root](monorepo.html#develop-from-the-workspace-root).
+Inside a generated Forge RPC monorepo, `bun run dev` at the root runs each Forge app's `dev --workspace` task through Turbo. Each app gets a named HTTP URL, and its isolated development profile selects the database and infrastructure. See [Develop from the workspace root](monorepo.html#develop-from-the-workspace-root).
 
 What it does depends on the project's mode (`archlast-forge.json`).
 
 Whatever the mode, `dev` takes your changes live: functions, the modules they import, HTTP routes, the schema and (in a full-stack app) the pages. See [Development and production](deployment.html#development-and-production).
+
+### Named local URLs with Portless
+
+`bun run dev` uses [Portless](https://portless.sh/) to give each Forge app a stable HTTPS address such as `https://api-42a6b2c1d026.localhost`. Portless assigns the upstream HTTP port. The name includes the checkout location, so two checkouts with the same project name can run at once. Use the URL printed by Forge for the app, API and dashboard.
+
+Portless requires Node.js 24 or later on macOS, Linux or Windows. Forge uses direct HTTP when that Node.js version is unavailable unless you explicitly enable Portless. Forge's CLI installs Portless as a dependency. Portless starts the shared proxy and handles local certificate trust. On a machine that requires elevation for port 443, start the proxy from an interactive terminal before starting a non-interactive dev task. An unprivileged alternative is `bunx portless@0.18.1 proxy start --https --port 1355`. If your browser does not trust the certificate, run `bunx portless@0.18.1 trust`.
+
+Existing projects with Node.js 24 or later adopt this automatically when they update the CLI through `archlast-forge upgrade` (or `bun run upgrade` from a generated workspace root). Keep your current scripts and workspace configuration. Update any hardcoded browser API URLs and register the new origin in your OAuth provider's callback URL, such as `https://api-42a6b2c1d026.localhost/api/auth/callback/github`. Forge uses the named origin for Better Auth and its built-in storage URLs, includes it in `TRUSTED_ORIGINS`, and sets `FORGE_DEV_URL` in the dev process and its companion or seed commands. Explicit `STORAGE_PUBLIC_URL` and additional trusted origins still apply.
+
+Use `PORTLESS=0 bun run dev` for direct HTTP, or pass `--port <n>` to `archlast-forge dev` in a standalone project. In a monorepo, set `"portless": false` in `archlast-forge.workspace.json` to use the configured direct ports for every app. New generated Turbo tasks also pass through `PORTLESS*` and `NODE_EXTRA_CA_CERTS`. In an existing monorepo with strict Turbo environment filtering, add these to `tasks.dev.passThroughEnv` if you need to pass proxy settings from the shell.
+
+Portless handles Forge HTTP and WebSocket traffic. Forge RPC and Nest TCP transports still use their workspace RPC ports. PostgreSQL, Redis, NATS and S3-compatible storage still use their own ports and URLs. Forge publishes managed dev storage on a free loopback port when Portless is active. Use direct mode or another device-reachable endpoint for a physical Expo device or a remote browser.
 
 ### A full-stack app
 
@@ -250,8 +262,8 @@ Runs the engine and the app in this one process, on your machine:
 
   archlast-forge 0.22.0  ·  full-stack app  · ready in 738 ms
 
-  ➜  App        http://localhost:3000
-  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  App        https://api-42a6b2c1d026.localhost
+  ➜  Dashboard  https://api-42a6b2c1d026.localhost/_dashboard
   ➜  Admin key  d3b832770e58cecf6888fbfd7e06d761f5ec216251dcf6a7
 
   Save a file and the page reloads. Ctrl-C stops everything.
@@ -267,7 +279,7 @@ and if the project needs services and Docker is missing without `--no-docker` it
 
 Then: saving in `app/` or `public/` rebuilds and reloads the browser; saving in `forge/` regenerates types, restarts your functions (`✓ function runtime restarted (messages.ts)`) and rebuilds the app; changing `forge/package.json` or `bun.lock` installs first. It also watches a workspace-root `bun.lock` above the project. Ctrl-C (or SIGTERM) prints `SIGINT: draining connections…`, stops the server and exits 0.
 
-The environment: `BETTER_AUTH_URL` is set to `http://localhost:<port>` (a stray `.env` cannot point sessions elsewhere); `TRUSTED_ORIGINS` defaults to `http://localhost:<port>` (setting it yourself replaces that default); `BETTER_AUTH_SECRET` and `ADMIN_KEY` come from the environment (Bun loads `.env` from the current directory) or, if unset, are generated once into `forge/data/.dev-secrets.json` (mode 0600); `DATA_DIR` defaults to `forge/data`. Behind code-server's port proxy (`VSCODE_PROXY_URI` with `{{port}}`), the proxy's origin is trusted too.
+In direct mode, `BETTER_AUTH_URL` is `http://localhost:<port>`, and `TRUSTED_ORIGINS` defaults to the same address. `BETTER_AUTH_SECRET` and `ADMIN_KEY` come from the environment (Bun loads `.env` from the current directory) or, if unset, are generated once into `forge/data/.dev-secrets.json` (mode 0600); `DATA_DIR` defaults to `forge/data`. Behind code-server's port proxy (`VSCODE_PROXY_URI` with `{{port}}`), the proxy's origin is trusted too.
 
 `--run "<cmd>"` starts a companion command (a separate frontend, a type watcher) alongside, in both modes, and stops it when the CLI exits. (On `0.1.0` it was ignored for full-stack apps.)
 
@@ -278,13 +290,13 @@ With Docker, `dev` starts the engine container with `forge/` mounted read-only, 
 ```
   archlast-forge 0.22.0  ·  backend  · engine in Docker
 
-  ➜  API        http://localhost:3000
-  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  API        https://api-42a6b2c1d026.localhost
+  ➜  Dashboard  https://api-42a6b2c1d026.localhost/_dashboard
   ➜  Admin key  …
   ➜  Container  archlast-forge-api-<hash>-dev
 ```
 
-The container is `archlast-forge-<project>-<hash>-dev`, with port `--port` mapped to 3000, a data volume, `host.docker.internal` reachable, `forge/.env` (if it exists) as its env file, and the secrets above. The engine copies and watches `forge/` itself; the host only keeps `forge/_generated` current. The CLI then follows the container's logs; Ctrl-C stops the container (a 15 s drain), the services this run started, and exits 0. If the container stops by itself, `dev` prints `<name> stopped` and exits 0.
+The container is `archlast-forge-<project>-<hash>-dev`, with the chosen upstream port mapped to 3000, a data volume, `host.docker.internal` reachable, `forge/.env` (if it exists) as its env file, and the secrets above. The engine copies and watches `forge/` itself; the host only keeps `forge/_generated` current. The CLI then follows the container's logs; Ctrl-C stops the container (a 15 s drain), the services this run started, and exits 0. If the container stops by itself, `dev` prints `<name> stopped` and exits 0.
 
 Without Docker (`--no-docker`, `ARCHLAST_NO_DOCKER=1`, or Docker missing, which prints `! Docker isn't available; running in this process (--no-docker)`), the engine runs in the CLI's process on SQLite, with the same banner (`backend · in this process`), and services in the configuration are skipped with a warning. `--docker` makes a missing Docker an error: `Docker isn't available. Install it, or pass --no-docker to run in this process.`
 

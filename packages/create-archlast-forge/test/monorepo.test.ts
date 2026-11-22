@@ -68,7 +68,7 @@ test("a monorepo with two services: workspaces, turbo, shared types, and the app
 
   const pkg = JSON.parse(read(root, "package.json"));
   expect(pkg).toMatchObject({ name: "acme", workspaces: ["apps/*", "packages/*"], scripts: { dev: "turbo run dev", typecheck: "turbo run typecheck" }, devDependencies: { turbo: expect.any(String) } });
-  expect(JSON.parse(read(root, "turbo.json")).tasks.dev).toEqual({ cache: false, persistent: true });
+  expect(JSON.parse(read(root, "turbo.json")).tasks.dev).toEqual({ cache: false, persistent: true, passThroughEnv: ["PORTLESS*", "NODE_EXTRA_CA_CERTS"] });
   for (const app of ["api", "orders", "billing"]) expect(existsSync(join(root, "apps", app, "forge", "schema.ts")), app).toBe(true);
   expect(JSON.parse(read(root, "apps", "orders", "package.json"))).toMatchObject({ name: "@acme/orders", scripts: { dev: "archlast-forge dev --no-docker --port 3001" } });
   // packages/api has the main app's types: services are called over a transport, and two backends' types can't share a TypeScript project.

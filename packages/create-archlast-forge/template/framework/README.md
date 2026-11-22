@@ -4,10 +4,12 @@ A full-stack app on [archlast-forge](https://github.com/algochad/archlast-forge)
 
 ```bash
 bun install
-bun run dev      # http://localhost:3000, reloading as you edit
+bun run dev      # open the named URL printed by Forge
 ```
 
 `dev` starts the services in `archlast-forge.json` (PostgreSQL, Redis, S3 storage) in Docker. `bun run dev -- --no-docker` skips them and uses SQLite.
+
+Forge uses Portless for a stable local HTTPS URL. Install Node.js 24 or later alongside Bun. Use `PORTLESS=0 bun run dev` for direct HTTP.
 
 ## Where things are
 
@@ -23,7 +25,7 @@ public/              served as they are: /favicon.svg, /robots.txt
 - A route's `loader` runs on the server for the first load and in the browser after that. `ctx.query(api.x.y, args)` fetches data and keeps it live for `useQuery`.
 - `useViewer()` is the signed-in user, already right in the server-rendered HTML.
 - Server-only packages go in `forge/package.json`; pages may import only `forge/_generated`.
-- The admin dashboard is at http://localhost:3000/_dashboard (the key is printed on start).
+- The dev banner shows the admin dashboard URL and key.
 
 ## Deploy
 

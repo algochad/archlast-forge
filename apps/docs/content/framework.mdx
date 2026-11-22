@@ -7,7 +7,7 @@ bun create archlast-forge my-app --mode framework
 cd my-app && bun install && bun run dev
 ```
 
-Open http://localhost:3000. The starter has a home page, a sign-in page and a live chat. The rest of this page explains how each part works and ends with examples you can copy. For the backend half (schema, functions, auth), see [Schema](schema.html), [Functions](functions.html) and [Authentication](auth.html). To write it with NestJS, see [NestJS](#nestjs) below. For a backend without pages, see [Backends](backend.html).
+Open the [Portless URL](cli.html#named-local-urls-with-portless) printed by Forge. The starter has a home page, a sign-in page and a live chat. The rest of this page explains how each part works and ends with examples you can copy. For the backend half (schema, functions, auth), see [Schema](schema.html), [Functions](functions.html) and [Authentication](auth.html). To write it with NestJS, see [NestJS](#nestjs) below. For a backend without pages, see [Backends](backend.html).
 
 ## Project layout
 
@@ -820,8 +820,8 @@ The `ErrorBoundary` in `root.tsx` above handles both. To test it: `GET /anything
 
   archlast-forge 0.22.0  ·  full-stack app  · ready in 738 ms
 
-  ➜  App        http://localhost:3000
-  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  App        https://my-app-42a6b2c1d026.localhost
+  ➜  Dashboard  https://my-app-42a6b2c1d026.localhost/_dashboard
   ➜  Admin key  d3b8…
 ```
 
@@ -830,7 +830,7 @@ The `ErrorBoundary` in `root.tsx` above handles both. To test it: `GET /anything
 - Editing a file in `forge/` regenerates `forge/_generated`, restarts only your functions (`✓ function runtime restarted (tasks.ts)`), and rebuilds the app if the generated API changes. The browser refreshes after the new runtime is ready. Open WebSocket connections stay up and subscriptions re-run. Changing `forge/package.json` or the lockfile installs dependencies first.
 - Errors show details in development: the real message and the stack in the error page. A hydration mismatch (the server's HTML and the browser's first render differ) shows a notice in the corner of the page, and in the console, with a pointer to [Times and the clock](#times-and-the-clock).
 - Services you chose (PostgreSQL, Redis, storage) run in Docker with their ports on localhost, and stop when you do; their data stays in Docker volumes. With `--no-docker` they are not started and the app uses SQLite (set `DATABASE_URL`, `REDIS_URL` or `S3_*` yourself to use others).
-- `--port <n>` changes the port. Development trusts `http://localhost:<port>` for sign-in. Setting `TRUSTED_ORIGINS` yourself replaces that default.
+- Forge trusts the [Portless URL](cli.html#named-local-urls-with-portless) for sign-in. Add any separate frontend origins to `TRUSTED_ORIGINS`. Pass `--port <n>` for a direct listener in a standalone app.
 
 See [CLI](cli.html#dev) for every flag. There is no hot module replacement: a save rebuilds and reloads the page, and component state is lost (the bundler, `Bun.build`, rebuilds an app as a whole, so there is no module to swap; with islands, the page's HTML is printed again by the new template or by React).
 

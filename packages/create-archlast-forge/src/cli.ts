@@ -157,11 +157,11 @@ export function nextSteps(a: Answers, installed: boolean): string {
   const rel = relative(process.cwd(), resolve(a.dir)) || ".";
   const cd = rel.startsWith("..") ? resolve(a.dir) : rel; // a path that climbs out of here reads better in full
   const lines = [cd !== "." ? `cd ${cd}` : undefined, installed ? undefined : "bun install", "bun run dev"].filter(Boolean) as string[];
-  const where = a.monorepo
-    ? `apps/${a.mode === "framework" ? "web" : "api"}: http://localhost:3000${a.monorepo.microservices.map((s, i) => `\napps/${s}: http://localhost:${3001 + i}`).join("")}${a.monorepo.mobile ? "\napps/mobile: Expo (bun run archlast-forge dev --mobile for Android)" : ""}${a.monorepo.desktop ? "\napps/desktop: Tauri (needs Rust; see its README)" : ""}`
-    : a.mode === "framework"
-      ? "Your app: http://localhost:3000"
-      : "Your backend: http://localhost:3000";
+  const where = [
+    "Open the Portless URLs printed by dev. Node.js 24+ is required for Portless.",
+    ...(a.monorepo?.mobile ? ["apps/mobile uses Expo. Run `bun run archlast-forge dev --mobile` from the workspace root for Android."] : []),
+    ...(a.monorepo?.desktop ? ["apps/desktop uses Tauri. See its README for setup."] : []),
+  ].join("\n");
   const main = a.mode === "framework" ? "web" : "api";
   // A monorepo has no stack at its root: each app has its own, and on one machine they find each other on the monorepo's Docker network.
   const deploy = a.monorepo?.microservices.length
@@ -169,7 +169,7 @@ export function nextSteps(a: Answers, installed: boolean): string {
     : a.monorepo
       ? `To deploy: cd apps/${main} && bun run up   (builds the image and starts the stack in its compose.yaml)`
       : "To deploy: bun run up   (builds the image and starts the stack in compose.yaml)";
-  return `${lines.join("\n")}\n\n${where}\nDashboard: http://localhost:3000/_dashboard\n\n${deploy}`;
+  return `${lines.join("\n")}\n\n${where}\n\n${deploy}`;
 }
 
 export async function main(argv: string[], io: Io = {}): Promise<void> {

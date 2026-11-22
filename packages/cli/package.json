@@ -36,7 +36,8 @@
   "dependencies": {
     "@archlast/forge-dashboard": "workspace:*",
     "@archlast/forge-runtime": "workspace:*",
-    "create-archlast-forge": "workspace:*"
+    "create-archlast-forge": "workspace:*",
+    "portless": "0.18.1"
   },
   "engines": {
     "bun": ">=1.4.4"

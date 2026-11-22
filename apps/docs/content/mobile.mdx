@@ -54,7 +54,7 @@ Existing workspaces keep `"mobile": true`. An optional `mobileDev` object in `ar
 
 The example is the value of `mobileDev`. The emulator uses the host-compatible ABI by default. Set `abi` to `x86_64` or `arm64-v8a`, and `metroPort` to pin Metro. CLI overrides include `--android-api`, `--android-abi`, `--avd-profile`, `--backend-port` and `--metro-port`. Pass device serials and APK paths when starting a session so workspace configuration stays portable.
 
-iOS Simulator orchestration is a follow-up. On macOS, start Expo in `apps/mobile` and open it from Xcode Simulator. For a device outside a managed session, set `EXPO_PUBLIC_API_URL` to a device-reachable backend. A production build uses the deployed HTTPS API.
+iOS Simulator orchestration is a follow-up. On macOS, start Expo in `apps/mobile` and open it from Xcode Simulator. For development outside a managed session, use `PORTLESS=0 bun run dev` for direct HTTP and set `EXPO_PUBLIC_API_URL` to a device-reachable backend. A production build uses the deployed HTTPS API.
 
 ## Expo and React Native Reusables
 
