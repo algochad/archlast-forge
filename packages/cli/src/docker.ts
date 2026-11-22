@@ -76,7 +76,7 @@ const SERVICES = {
     volume: "/data",
     cmd: ["/data"],
     port: 9000,
-    // shortcut: with the engine in a container, one project per machine can publish 9000; set S3_ENDPOINT yourself for more.
+    // Keep the legacy storage port in direct mode.
     publish: "9000:9000",
     provides: (address: string, host: boolean) => ({
       S3_ENDPOINT: `http://${address}`,
@@ -129,19 +129,22 @@ export function stopStartedServices() {
  * `host: true` is for an engine running on this machine: ports are published on 127.0.0.1 and the URLs say localhost.
  * Otherwise the engine is a container on the same network and uses the containers' names.
  */
-export function startServices(name: string, services: Service[], opts: { host?: boolean } = {}): StartedServices {
+export function startServices(name: string, services: Service[], opts: { host?: boolean; dynamicStoragePort?: boolean } = {}): StartedServices {
   const out: StartedServices = { env: {}, where: [] };
   if (!services.length) return out;
   docker(["network", "create", name]);
+  const s3PublicEndpoint = process.env.S3_PUBLIC_ENDPOINT;
   for (const s of services) {
     const def = SERVICES[s];
     if (!def) fail(`Unknown service "${s}" (postgres, redis, s3)`);
     const container = `${name}-${s}`;
+    const dynamicStorage = s === "s3" && opts.dynamicStoragePort
+      && (!s3PublicEndpoint || s3PublicEndpoint === "http://localhost:9000");
     if (!isRunning(container)) {
       docker(["rm", "-f", container]);
       const envArgs = Object.entries(def.env).flatMap(([k, v]) => ["-e", `${k}=${v}`]);
       const cmd = "cmd" in def ? [...def.cmd] : [];
-      const publish = opts.host ? ["-p", `127.0.0.1::${def.port}`] : "publish" in def ? ["-p", def.publish] : [];
+      const publish = opts.host || dynamicStorage ? ["-p", `127.0.0.1::${def.port}`] : "publish" in def ? ["-p", def.publish] : [];
       const run = docker(["run", "-d", "--name", container, "--network", name, "-v", `${container}:${def.volume}`, ...publish, ...envArgs, def.image, ...cmd]);
       if (!run.ok) fail(`Couldn't start ${s}: ${run.err}`);
       startedHere.add(container);
@@ -149,6 +152,9 @@ export function startServices(name: string, services: Service[], opts: { host?: 
     waitReady(container, s);
     const address = opts.host ? `localhost:${publishedPort(container, def.port)}` : `${container}:${def.port}`;
     Object.assign(out.env, (def.provides as (a: string, h: boolean) => Record<string, string>)(address, Boolean(opts.host)));
+    if (dynamicStorage) {
+      out.env.S3_PUBLIC_ENDPOINT = `http://localhost:${publishedPort(container, def.port)}`;
+    }
     out.where.push(`${s} on ${address}`);
   }
   if (services.includes("s3")) {
@@ -169,6 +175,8 @@ export interface RunOptions {
   env: Record<string, string>;
   services?: Service[];
   image?: string;
+  /** Publish the HTTP upstream only on loopback when a local proxy serves it. */
+  bindLoopback?: boolean;
   /** Defaults to forge/.env when it exists. */
   envFile?: string;
 }
@@ -190,7 +198,7 @@ export function runEngine(o: RunOptions) {
   const image = o.image ?? ensureEngineImage();
   docker(["rm", "-f", name]);
   for (const volume of [`${name}-data`, ...(o.dev ? [`${name}-modules`] : [])]) ownVolume(image, volume);
-  const serviceEnv = startServices(name, o.services ?? []).env;
+  const serviceEnv = startServices(name, o.services ?? [], { dynamicStoragePort: o.bindLoopback }).env;
   const env = { PORT: "3000", DATA_DIR: "/data", ...serviceEnv, ...o.env };
   const envFile = o.envFile ?? join(o.forgeDir, ".env");
   const args = [
@@ -199,7 +207,7 @@ export function runEngine(o: RunOptions) {
     "--name",
     name,
     "-p",
-    `${o.port}:3000`,
+    `${o.bindLoopback ? "127.0.0.1:" : ""}${o.port}:3000`,
     "-v",
     `${name}-data:/data`,
     "--add-host",

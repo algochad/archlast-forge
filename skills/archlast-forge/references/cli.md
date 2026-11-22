@@ -7,7 +7,7 @@ For what the generated files are see [scaffolding.md](scaffolding.md); for choos
 
 **Invoke.** The CLI is `@archlast/forge-cli` (bin `archlast-forge`), a `devDependency` of every project. Inside a project use its scripts (`bun run dev`), `bunx archlast-forge <command>` or `./node_modules/.bin/archlast-forge`. With no project yet: `bun create archlast-forge <dir>`, `bunx create-archlast-forge <dir>` or `bunx --package @archlast/forge-cli archlast-forge init <dir>`. All three `init` forms are one program.
 
-**Project scripts** the starters write: `dev` (`archlast-forge dev`), `codegen`, `typecheck` (`archlast-forge codegen && tsc --noEmit`, which in a full-stack app covers `app/` and the `forge/` files it reaches, not all of `forge/` (`npx tsc --noEmit -p forge`) nor `test/`; backend: `tsc -p forge --noEmit`), `up`, `down`, `format`; full-stack adds `build` (`build --no-docker`) and `start` (`start --no-docker`); backend adds `logs`. In a monorepo the root scripts are `turbo run dev|build|typecheck`; a service's or added app's `dev` is `archlast-forge dev --no-docker --port <n>`, and a backend main app that has services gets `--no-docker` too (a full-stack main app keeps plain `archlast-forge dev`).
+**Project scripts** the starters write: `dev` (`archlast-forge dev`), `codegen`, `typecheck` (`archlast-forge codegen && tsc --noEmit`, which in a full-stack app covers `app/` and the `forge/` files it reaches, not all of `forge/` (`npx tsc --noEmit -p forge`) nor `test/`; backend: `tsc -p forge --noEmit`), `up`, `down`, `format`; full-stack adds `build` (`build --no-docker`) and `start` (`start --no-docker`); backend adds `logs`. In a monorepo the root scripts are `turbo run dev|build|typecheck`; Forge RPC apps use `archlast-forge dev --workspace`. Apps on other transports keep their configured ports as direct-mode fallbacks.
 
 **Which project a command acts on.** Commands look for the forge folder in this order: `--dir <path>`, `./forge/schema.ts`, `./schema.ts` (the cwd is the forge folder), `./convex/schema.ts` (old name, prints a warning). None: `✗ No schema.ts in <abs>. Pass --dir <path to forge/>.` The project root is the parent of `forge/`; `archlast-forge.json`, `compose.yaml`, `.env` live there.
 
@@ -213,6 +213,8 @@ Errors: `Nothing to change: the stack has ...` (exit 1), `Unknown service`, `No 
 
 ### dev
 
+Forge uses Portless by default, including with existing dev scripts after a CLI upgrade. Install Node.js 24+ alongside Bun and use the printed HTTPS URL for API clients, OAuth callbacks, and the dashboard. Forge adds that origin to `TRUSTED_ORIGINS`. Portless assigns the HTTP port and leaves Forge RPC and other non-HTTP transport ports to workspace configuration. Use `PORTLESS=0` or standalone `--port <n>` for direct development. In a workspace set `"portless": false` to switch all apps together. Details are in [Named local URLs](https://github.com/algochad/archlast-forge/blob/master/apps/docs/content/cli.mdx#named-local-urls-with-portless).
+
 ```bash
 archlast-forge dev [--port <n>] [--with postgres,redis,s3] [--no-docker] [--docker] [--run "<cmd>"] [--dir <forge dir>]
 ```
@@ -236,7 +238,7 @@ Develops with live reload. Never exits by itself. Behavior depends on `mode` in 
 - Banner rows: API, Dashboard, Admin key, Container.
 - Ctrl-C stops the container (15 s drain) and its services, exit 0.
 
-Environment `dev` sets for the engine: `BETTER_AUTH_URL=http://localhost:<port>` (always, over `.env`), `TRUSTED_ORIGINS` (default `http://localhost:<port>`; yours replaces it), `DATA_DIR` (default `<forge dir>/data`, so `forge/data/app.db`), `BETTER_AUTH_SECRET` and `ADMIN_KEY` from the environment (Bun loads the project root `.env` of the cwd) else generated once into `$DATA_DIR/.dev-secrets.json` (0600). Behind code-server (`VSCODE_PROXY_URI` with `{{port}}`) the proxy's origin is trusted and `STORAGE_PUBLIC_URL` is set. Backend in Docker: the container is `archlast-forge-<project>-<hash>-dev`, port `--port` maps to 3000, `forge/.env` is its env file if it exists, volumes `<name>-data` and `<name>-modules`, and any older container of that name is removed first.
+In direct mode `dev` sets `BETTER_AUTH_URL=http://localhost:<port>` and defaults `TRUSTED_ORIGINS` to the same address. Both development modes use `DATA_DIR` (default `<forge dir>/data`, so `forge/data/app.db`), `BETTER_AUTH_SECRET` and `ADMIN_KEY` from the environment (Bun loads the project root `.env` of the cwd) else generated once into `$DATA_DIR/.dev-secrets.json` (0600). Behind code-server (`VSCODE_PROXY_URI` with `{{port}}`) the proxy's origin is trusted and `STORAGE_PUBLIC_URL` is set. Backend in Docker: the container is `archlast-forge-<project>-<hash>-dev`, the upstream port maps to 3000, `forge/.env` is its env file if it exists, volumes `<name>-data` and `<name>-modules`, and any older container of that name is removed first.
 
 `--run "<cmd>"` runs a companion command through `sh -c` (a separate frontend) and kills it when the CLI exits.
 

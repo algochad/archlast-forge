@@ -32,10 +32,10 @@ Why not one compiled binary (`bun build --compile`)? The engine reads files next
 
 ## Client mode: a page for a backend elsewhere
 
-`src/main.tsx` is a React page, typed from the backend with a type-only import, that talks to the backend at `FORGE_URL`:
+`src/main.tsx` is a React page typed from the backend. Set its `FORGE_URL` in `config.js` to the printed Portless URL. To use the starter's `http://localhost:3000` setting, switch the backend workspace to direct mode with `"portless": false`.
 
 ```bash
-bun run dev                                          # tauri dev, talking to http://localhost:3000
+bun run dev                                          # tauri dev, using config.js
 FORGE_URL=https://api.example.com bun run build      # the installer, talking to the deployed backend
 ```
 

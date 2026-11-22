@@ -4,7 +4,7 @@ You will build a small notes app as a full-stack archlast-forge project. People 
 
 Every file below is shown in full, or as a diff against the step before. The code was run end to end: typechecked, built, driven in a real browser with two windows open, and run from the production build.
 
-You need [Bun](https://bun.sh) 1.4.4 or later and a browser. You do not need Docker until the last step, and even there it is optional.
+You need [Bun](https://bun.sh) 1.4.4 or later, Node.js 24 or later for [Portless](cli.html#named-local-urls-with-portless), and a browser. You do not need Docker until the last step, and even there it is optional.
 
 ## 1. Create the project
 
@@ -24,14 +24,14 @@ You will see:
 
   archlast-forge 0.22.0  ·  full-stack app  · ready in 737 ms
 
-  ➜  App        http://localhost:3000
-  ➜  Dashboard  http://localhost:3000/_dashboard
+  ➜  App        https://notes-42a6b2c1d026.localhost
+  ➜  Dashboard  https://notes-42a6b2c1d026.localhost/_dashboard
   ➜  Admin key  <48 hex characters>
 
   Save a file and the page reloads. Ctrl-C stops everything.
 ```
 
-Open http://localhost:3000. The starter is a chat app: a `messages` table, three functions in `forge/messages.ts`, and pages for the home screen, sign-in and chat. You will replace the chat with notes and keep the sign-in page, the layout and the styles. Leave `bun run dev` running in its terminal for the whole tutorial: every save rebuilds the app and reloads the browser, and every change in `forge/` restarts only your functions and regenerates the types.
+Open the app URL printed by Forge. The starter is a chat app: a `messages` table, three functions in `forge/messages.ts`, and pages for the home screen, sign-in and chat. You will replace the chat with notes and keep the sign-in page, the layout and the styles. Leave `bun run dev` running in its terminal for the whole tutorial: every save rebuilds the app and reloads the browser, and every change in `forge/` restarts only your functions and regenerates the types.
 
 Remove the chat. The `messages` table stays in the database file (dropped tables keep their data), but nothing refers to it any more:
 
@@ -338,9 +338,9 @@ How the pieces fit:
 - **`useMutation(api.notes.create)`** returns an async function. A `ForgeError` thrown on the server arrives as a `ForgeError` here, with the server's message, which the form shows.
 - **Navigation** after creating goes to `/notes/<id>`, the page you write next.
 
-Open http://localhost:3000. You land on the sign-in page, because the loader redirected you. Choose "Create an account", sign up with any email and a password of at least 8 characters, and you arrive at an empty notes page. Add a note. The page navigates to the note's URL, which does not exist yet; carry on.
+Open the app URL printed by Forge. You land on the sign-in page, because the loader redirected you. Choose "Create an account", sign up with any email and a password of at least 8 characters, and you arrive at an empty notes page. Add a note. The page navigates to the note's URL, which does not exist yet; carry on.
 
-Before moving on, look at what you stored: open http://localhost:3000/_dashboard in another window, sign in with the admin key from the terminal, and open the `notes` table under Data. Each note is a JSON document with the fields from your schema, an `_id` of the form `notes:<32 hex>` and an `_creationTime`.
+Before moving on, look at what you stored: open the dashboard URL in another window, sign in with the admin key from the terminal, and open the `notes` table under Data. Each note is a JSON document with the fields from your schema, an `_id` of the form `notes:<32 hex>` and an `_creationTime`.
 
 ## 6. The detail page
 
@@ -509,7 +509,7 @@ A note on creating: there is no optimistic version of `create` here, because the
 
 ## 9. Watch it stay in sync
 
-Open http://localhost:3000/notes in two windows, signed in as the same user (a second window in the same browser shares the session). Then:
+Open `/notes` on the app URL in two windows, signed in as the same user (a second window in the same browser shares the session). Then:
 
 1. Add a note in window A. It appears in window B, with no refresh.
 2. Open the note in A, rename it and save. The new title shows in B's list.
