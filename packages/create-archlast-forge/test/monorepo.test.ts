@@ -44,7 +44,9 @@ test("--mobile: an Expo app in apps/mobile, a client of the backend, which gets 
   expect(app("src", "client.ts")).toContain("client.reconnect()"); // back from the background
   expect(app(".env")).toContain("EXPO_PUBLIC_API_URL=http://localhost:3000");
   expect(app(".gitignore")).toContain(".env");
-  expect(app("README.md")).toContain("there is no full-stack Expo option");
+  expect(app("README.md")).toContain("archlast-forge dev --mobile");
+  expect(JSON.parse(app("components.json")).aliases.ui).toBe("@/components/ui");
+  expect(app("App.tsx")).toContain("<PortalHost");
   expect(read(root, "apps", "api", "forge", "auth.ts")).toMatch(/plugins: \[expo\(\)\],\s+trustedOrigins: \["phone:\/\/"\]/); // as Prettier wrapped it
   expect(JSON.parse(read(root, "apps", "api", "forge", "package.json")).dependencies["@better-auth/expo"]).toBe("1.7.12");
   for (const f of ["App.tsx", "index.ts", "metro.config.js", "tsconfig.json"]) expect(existsSync(join(root, "apps", "mobile", f)), f).toBe(true);

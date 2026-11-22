@@ -159,7 +159,7 @@ export function nextSteps(a: Answers, installed: boolean): string {
   const lines = [cd !== "." ? `cd ${cd}` : undefined, installed ? undefined : "bun install", "bun run dev"].filter(Boolean) as string[];
   const where = [
     "Open the Portless URLs printed by dev. Node.js 24+ is required for Portless.",
-    ...(a.monorepo?.mobile ? ["apps/mobile uses Expo. See its README for a device-reachable API URL."] : []),
+    ...(a.monorepo?.mobile ? ["apps/mobile uses Expo. Run `bun run archlast-forge dev --mobile` from the workspace root for Android."] : []),
     ...(a.monorepo?.desktop ? ["apps/desktop uses Tauri. See its README for setup."] : []),
   ].join("\n");
   const main = a.mode === "framework" ? "web" : "api";

@@ -97,7 +97,7 @@ export async function add(dir: string, what: string | undefined, name: string | 
     if (mode === "backend" && (o.shadcn || o.baseColor)) fail("shadcn/ui is for full-stack apps: use --mode framework.");
     return finish(addApp(dir, name, { mode, shadcn, services: o.services ? parseServiceList(o.services) : undefined }), o, "bun run dev");
   }
-  if (what === "mobile") return finish(addMobileTo(dir), o, "cd apps/mobile && bun run dev");
+  if (what === "mobile") return finish(addMobileTo(dir), o, "bun run archlast-forge dev --mobile   (from the workspace root)");
   if (what === "desktop") {
     if (!name) fail(usage);
     return finish(addDesktopTo(dir, parseDesktop(name)), o, "cd apps/desktop && bun run dev   (needs Rust and Tauri's prerequisites)");

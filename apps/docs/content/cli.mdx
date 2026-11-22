@@ -213,6 +213,16 @@ Changes which stack services the app you are in has, after [`init`](#init) chose
 - **`.env`** only gets the keys the new services need (`POSTGRES_PASSWORD`, the S3 keys, `DOMAIN`), with fresh secrets. The values you have are never touched.
 - **What it can't do for you** it says: documents aren't moved between SQLite and PostgreSQL (`export` before, `import` after), Caddy needs `DOMAIN` and an https `BETTER_AUTH_URL`, and the volumes of a removed service stay in Docker until `down --volumes`.
 
+## mobile
+
+```bash
+archlast-forge mobile doctor [--target <name>] [--device <serial>]
+archlast-forge mobile setup [--target <name>] [--yes --accept-licenses]
+archlast-forge dev --mobile [--target <name>] [--device <serial>] [--client <go|dev-client>] [--apk <path>]
+```
+
+From a workspace containing `apps/mobile`, check Android readiness, install portable Android tools or start a supervised Forge and Expo session. Android setup supports `--android-api <n>`, `--android-abi <abi>` and `--avd-profile <name>`. Dev supports `--backend-port <n>` and `--metro-port <n>`. See [Run on Android](mobile.html#run-on-android).
+
 ## dev
 
 ```bash
@@ -229,9 +239,9 @@ Whatever the mode, `dev` takes your changes live: functions, the modules they im
 
 `bun run dev` uses [Portless](https://portless.sh/) to give each Forge app a stable HTTPS address such as `https://api-42a6b2c1d026.localhost`. Portless assigns the upstream HTTP port. The name includes the checkout location, so two checkouts with the same project name can run at once. Use the URL printed by Forge for the app, API and dashboard.
 
-Install Node.js 24 or later on macOS, Linux or Windows, alongside Bun. Forge's CLI installs Portless as a dependency. Portless starts the shared proxy and handles local certificate trust. On a machine that requires elevation for port 443, start the proxy from an interactive terminal before starting a non-interactive dev task. An unprivileged alternative is `bunx portless@0.18.1 proxy start --https --port 1355`. If your browser does not trust the certificate, run `bunx portless@0.18.1 trust`.
+Portless requires Node.js 24 or later on macOS, Linux or Windows. Forge uses direct HTTP when that Node.js version is unavailable unless you explicitly enable Portless. Forge's CLI installs Portless as a dependency. Portless starts the shared proxy and handles local certificate trust. On a machine that requires elevation for port 443, start the proxy from an interactive terminal before starting a non-interactive dev task. An unprivileged alternative is `bunx portless@0.18.1 proxy start --https --port 1355`. If your browser does not trust the certificate, run `bunx portless@0.18.1 trust`.
 
-Existing projects adopt this automatically when they update the CLI through `archlast-forge upgrade` (or `bun run upgrade` from a generated workspace root). Keep your current scripts and workspace configuration. Update any hardcoded browser API URLs and register the new origin in your OAuth provider's callback URL, such as `https://api-42a6b2c1d026.localhost/api/auth/callback/github`. Forge uses the named origin for Better Auth and its built-in storage URLs, includes it in `TRUSTED_ORIGINS`, and sets `FORGE_DEV_URL` in the dev process and its companion or seed commands. Explicit `STORAGE_PUBLIC_URL` and additional trusted origins still apply.
+Existing projects with Node.js 24 or later adopt this automatically when they update the CLI through `archlast-forge upgrade` (or `bun run upgrade` from a generated workspace root). Keep your current scripts and workspace configuration. Update any hardcoded browser API URLs and register the new origin in your OAuth provider's callback URL, such as `https://api-42a6b2c1d026.localhost/api/auth/callback/github`. Forge uses the named origin for Better Auth and its built-in storage URLs, includes it in `TRUSTED_ORIGINS`, and sets `FORGE_DEV_URL` in the dev process and its companion or seed commands. Explicit `STORAGE_PUBLIC_URL` and additional trusted origins still apply.
 
 Use `PORTLESS=0 bun run dev` for direct HTTP, or pass `--port <n>` to `archlast-forge dev` in a standalone project. In a monorepo, set `"portless": false` in `archlast-forge.workspace.json` to use the configured direct ports for every app. New generated Turbo tasks also pass through `PORTLESS*` and `NODE_EXTRA_CA_CERTS`. In an existing monorepo with strict Turbo environment filtering, add these to `tasks.dev.passThroughEnv` if you need to pass proxy settings from the shell.
 

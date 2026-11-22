@@ -51,6 +51,12 @@ ${c.bold("Develop")}
       --no-docker         run a backend's engine in this process
       --workspace         use this app’s isolated Forge RPC workspace development profile
       --run "<cmd>"       also run a command alongside, e.g. a separate frontend
+      --mobile            start Forge and Expo for a connected Android target
+  mobile setup            install or check portable Android tools (see --yes and --accept-licenses)
+  mobile doctor           report ADB, Waydroid, emulator, app delivery and port status
+      --target <auto|device|waydroid|emulator>  --device <serial>  --client <go|dev-client>
+      --android-api <n>   --android-abi <abi>   --avd-profile <name>   --apk <path>
+      --metro-port <n>    --backend-port <n>
   codegen                 write forge/_generated/ and check what your frontend imports
 
 ${c.bold("Ship")}
@@ -123,6 +129,16 @@ const { positionals, values } = parseCommandLine({
     "dry-run": { type: "boolean" },
     "no-install": { type: "boolean" },
     mobile: { type: "boolean" },
+    target: { type: "string" },
+    device: { type: "string" },
+    "android-api": { type: "string" },
+    "android-abi": { type: "string" },
+    "avd-profile": { type: "string" },
+    client: { type: "string" },
+    "metro-port": { type: "string" },
+    "backend-port": { type: "string" },
+    apk: { type: "string" },
+    "accept-licenses": { type: "boolean" },
     desktop: { type: "string" },
     rebuild: { type: "boolean" },
     dev: { type: "boolean" },
@@ -136,6 +152,7 @@ if (values.version) {
 }
 const [command, ...rest] = positionals;
 let port = Number(values.port ?? process.env.PORT ?? 3000);
+let mobileBackend = false;
 let publicDevOrigin: string | undefined;
 const inContainer = process.env.ARCHLAST_ENGINE === "1";
 
@@ -156,12 +173,12 @@ function devEnv(dir: string) {
   const env = devSecrets({ ...process.env }, join(process.env.DATA_DIR ?? join(dir, "data")));
   env.DATA_DIR ??= join(dir, "data");
   // The app's own address is trusted, and a proxy in front of it (code-server's port forwarding) is worked out from that one.
-  const localOrigin = `http://localhost:${port}`;
+  const localOrigin = `http://${mobileBackend ? "127.0.0.1" : "localhost"}:${port}`;
   if (publicDevOrigin) {
     env.TRUSTED_ORIGINS = [publicDevOrigin, env.TRUSTED_ORIGINS].filter(Boolean).join(",");
     env.STORAGE_PUBLIC_URL ||= publicDevOrigin;
   } else if (values.workspace) {
-    env.TRUSTED_ORIGINS = [localOrigin, `http://127.0.0.1:${port}`, env.TRUSTED_ORIGINS].filter(Boolean).join(",");
+    env.TRUSTED_ORIGINS = [`http://localhost:${port}`, `http://127.0.0.1:${port}`, env.TRUSTED_ORIGINS].filter(Boolean).join(",");
   } else env.TRUSTED_ORIGINS ||= localOrigin;
   env.BETTER_AUTH_URL = publicDevOrigin ?? localOrigin; // a project's .env (made for the stack) must not point sessions at another address
   trustProxyOrigins(env);
@@ -258,16 +275,20 @@ async function devFramework(dir: string, cfg: ProjectConfig) {
 }
 
 async function dev() {
+  if (values.mobile) return (await import("./mobile")).startMobile(values.dir ?? process.cwd(), values);
   const dir = findForgeDir(values.dir);
   const cfg = loadProjectConfig(dir);
   const root = projectRoot(dir);
   const workspace = appWorkspace(root);
   if (values.workspace && (values.port || values.docker || values.with))
     fail("Set ports in the workspace file and infrastructure in the app's .env.development.local.");
-  const address = portlessAddress();
-  if (!address && !inContainer && process.env.PORTLESS !== "0"
+  const mobilePort = process.env.FORGE_MOBILE_MAIN_PORT;
+  const address = mobilePort ? undefined : portlessAddress();
+  if (!mobilePort && !address && !inContainer && process.env.PORTLESS !== "0"
     && (workspace ? workspace.ws.portless !== false : !values.port)) {
-    process.exit(await launchPortless(workspace ? portlessName(workspace.root, workspace.app) : portlessName(root)));
+    const name = workspace ? portlessName(workspace.root, workspace.app) : portlessName(root);
+    const exit = await launchPortless(name, process.env.PORTLESS === "1" || workspace?.ws.portless === true);
+    if (exit !== undefined) process.exit(exit);
   }
   const appOrigin = address && workspace && workspace.ws.portless !== false
     ? (app: string) => peerOrigin(address.url, workspace.root, workspace.app, app)
@@ -283,6 +304,12 @@ async function dev() {
     process.env.HOST = "127.0.0.1";
     process.env.FORGE_DEV_URL = publicDevOrigin;
   }
+  if (workspace && mobilePort) {
+    mobileBackend = workspace.app === workspace.ws.main;
+    if (mobileBackend && !values.workspace) process.env.HOST = "127.0.0.1";
+    if (process.env.DASHBOARD_URL === `http://localhost:${portOf(workspace.ws, workspace.ws.main)}`)
+      process.env.DASHBOARD_URL = `http://127.0.0.1:${mobilePort}`;
+  }
   if (values.workspace) {
     const local = workspaceDev(root, basename(root), address, appOrigin);
     port = local.port;
@@ -295,7 +322,7 @@ async function dev() {
     if (pkg.scripts?.["forge:seed"]) {
       const env = devEnv(dir);
       const seed = Bun.spawn([process.execPath, "run", "forge:seed"], {
-        cwd: root, env: { ...env, FORGE_DEV_URL: publicDevOrigin ?? `http://localhost:${port}` }, stdin: "ignore", stdout: "inherit", stderr: "inherit",
+        cwd: root, env: { ...env, FORGE_DEV_URL: env.BETTER_AUTH_URL }, stdin: "ignore", stdout: "inherit", stderr: "inherit",
       });
       const stopSeed = () => { seed.kill(); };
       process.on("exit", stopSeed);
@@ -305,7 +332,8 @@ async function dev() {
     }
     return;
   }
-  if (workspace && !address && !values.port) port = portOf(workspace.ws, workspace.app);
+  if (mobileBackend) port = Number(mobilePort);
+  else if (workspace && !address && !values.port) port = portOf(workspace.ws, workspace.app);
   if (workspace && appOrigin) useNamedDashboard(workspace.ws, appOrigin);
   if (cfg?.mode === "framework") return devFramework(dir, cfg);
   return devBackend(dir, cfg);
@@ -323,7 +351,7 @@ async function devBackend(dir: string, cfg?: ProjectConfig) {
       forgeDir: dir,
       port,
       dev: true,
-      bindLoopback: Boolean(publicDevOrigin),
+      bindLoopback: mobileBackend || Boolean(publicDevOrigin),
       env: {
         BETTER_AUTH_SECRET: env.BETTER_AUTH_SECRET!,
         ADMIN_KEY: env.ADMIN_KEY!,
@@ -335,8 +363,8 @@ async function devBackend(dir: string, cfg?: ProjectConfig) {
       services: devServices(cfg),
     });
     banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  backend  ${c.dim("· engine in Docker")}`, [
-      ["API", publicDevOrigin ?? `http://localhost:${port}`],
-      ["Dashboard", `${publicDevOrigin ?? `http://localhost:${port}`}/_dashboard`],
+      ["API", env.BETTER_AUTH_URL!],
+      ["Dashboard", `${env.BETTER_AUTH_URL}/_dashboard`],
       ["Admin key", adminKeyHint(env)],
       ["Container", name],
     ]);
@@ -486,6 +514,13 @@ async function appRoot(command: string) {
 
 const commands: Record<string, () => Promise<unknown>> = {
   dev,
+  async mobile() {
+    const dir = values.dir ?? process.cwd();
+    const action = rest[0];
+    if (action !== "setup" && action !== "doctor") fail("Usage: archlast-forge mobile setup | mobile doctor");
+    const mobile = await import("./mobile");
+    return action === "setup" ? mobile.mobileSetup(dir, values) : mobile.mobileDoctor(dir, values);
+  },
   async monorepo() {
     await (await grow()).monorepo(await appRoot("monorepo"), growOptions());
   },

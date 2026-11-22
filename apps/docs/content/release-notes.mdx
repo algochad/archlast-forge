@@ -4,12 +4,16 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
-Named local URLs for Forge development and release instructions for maintainers and agents.
+Named local URLs and managed Android development for Forge.
+
+### Added
+
+- **Run and diagnose Expo development from the Forge workspace.** `mobile setup`, `mobile doctor` and `dev --mobile` manage portable Android tools, device selection, Forge and Metro, and ADB port forwarding. New Expo apps use NativeWind and React Native Reusables. See [Mobile apps](mobile.html#run-on-android).
 
 ### Changed
 
 - **Forge development uses Portless by default.** Standalone apps and Turbo workspaces get stable local HTTPS URLs and dynamic HTTP ports. See [Named local URLs](cli.html#named-local-urls-with-portless).
-  - **Upgrading:** install Node.js 24 or later alongside Bun, then upgrade Forge. Use the printed URLs for local clients and OAuth callbacks. Direct HTTP remains available via `PORTLESS=0` or the workspace setting.
+  - **Upgrading:** with Node.js 24 or later, use the printed URLs for local clients and OAuth callbacks. Forge falls back to direct HTTP on Bun-only setups and older Node.js versions. Use `PORTLESS=0` or the workspace setting to keep direct HTTP.
 
 ### Documentation
 

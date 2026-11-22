@@ -820,6 +820,7 @@ function readme(c: Ctx) {
 export function addMobile(c: Ctx) {
   const { root, name, version } = c;
   const dir = join(root, "apps", "mobile");
+  const scheme = /^[a-z]/.test(name) ? name : `forge-${name}`;
   cpSync(MOBILE, dir, { recursive: true });
   renameSync(join(dir, "gitignore"), join(dir, ".gitignore")); // npm drops .gitignore files from packages
   renameSync(join(dir, "env.example"), join(dir, ".env.example"));
@@ -827,16 +828,15 @@ export function addMobile(c: Ctx) {
     for (const entry of readdirSync(path)) {
       const p = join(path, entry);
       if (statSync(p).isDirectory()) fill(p);
-      else writeFileSync(p, readFileSync(p, "utf8").replaceAll("__NAME__", name).replaceAll("__API__", `${camel(c.ws.main)}Api`).replaceAll("__MAIN__", c.ws.main).replaceAll("__VERSION__", version));
+      else writeFileSync(p, readFileSync(p, "utf8").replaceAll("__SCHEME__", scheme).replaceAll("__APP_ID__", scheme.replaceAll("-", "_")).replaceAll("__IOS_ID__", scheme).replaceAll("__NAME__", name).replaceAll("__API__", `${camel(c.ws.main)}Api`).replaceAll("__MAIN__", c.ws.main).replaceAll("__VERSION__", version));
     }
   };
   fill(dir);
   writeFileSync(join(dir, ".env"), readFileSync(join(dir, ".env.example"), "utf8"));
-  patchJson(join(dir, "package.json"), (pkg) => (pkg.devDependencies.typescript = rootTypescript(root)));
   c.written.push("apps/mobile");
   const forge = join(root, "apps", c.ws.main, "forge");
   if (existsSync(join(forge, "auth.ts")))
-    c.notes.push(`apps/${c.ws.main}/forge/auth.ts is yours, so it is unchanged. For the mobile app to sign in, add plugins: [expo()] (import { expo } from "@better-auth/expo") and trustedOrigins: ["${name}://"] to its defineAuth options.`);
+    c.notes.push(`apps/${c.ws.main}/forge/auth.ts is yours, so it is unchanged. For the mobile app to sign in, add plugins: [expo()] (import { expo } from "@better-auth/expo") and trustedOrigins: ["${scheme}://"] to its defineAuth options.`);
   else
     put(
       c,
@@ -844,8 +844,8 @@ export function addMobile(c: Ctx) {
       `import { defineAuth } from "@archlast/forge-runtime";
 import { expo } from "@better-auth/expo";
 
-// The mobile app signs in through Better Auth's Expo plugin: its requests come from its scheme (${name}://), not from a web origin.
-export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [expo()], trustedOrigins: ["${name}://"] });
+// The mobile app signs in through Better Auth's Expo plugin: its requests come from its scheme (${scheme}://), not from a web origin.
+export default defineAuth({ emailAndPassword: { enabled: true }, plugins: [expo()], trustedOrigins: ["${scheme}://"] });
 `,
     );
   patchJson(join(forge, "package.json"), (pkg) => (pkg.dependencies = { ...pkg.dependencies, "@better-auth/expo": "1.7.12" }));

@@ -79,16 +79,10 @@ Per added service (`--microservices orders` or `archlast-forge add service order
 
 ## Mobile (`--mobile`, `add mobile`): `apps/mobile` (Expo)
 
-```
-apps/mobile/  app.json  App.tsx  index.ts  metro.config.js  package.json  tsconfig.json  .env(.example)  README.md
-  src/client.ts       ArchlastForgeClient + Better Auth Expo client; `api` typed from @<name>/api (a type-only import)
-```
-
-- Client of the **main app** only; imports `@<name>/api` (type-only: `export const api = anyApi as unknown as typeof webApi`), never a service.
-- `EXPO_PUBLIC_API_URL` (in `.env`) is the backend address: on a physical phone use the computer's LAN address, not `localhost`; for builds set it where the app is built (EAS: `eas env`).
-- Session is kept in secure storage (Keychain/Keystore), sent as a `cookie` header by the client's `headers` option and `authPlugins: [expoClient({ scheme, storagePrefix, storage: SecureStore })]`. `AppState` "active" calls `client.reconnect()`.
-- A backend main app gets `forge/auth.ts`: `defineAuth({ emailAndPassword: { enabled: true }, plugins: [expo()], trustedOrigins: ["<name>://"] })`. A main app with its own `auth.ts` keeps it and is told what to add.
-- Scripts: `dev` (`expo start`), `android`, `ios`, `typecheck`. Details: [clients.md](clients.md).
+- The SDK 58 blank TypeScript baseline comes from `create-expo-app`. NativeWind config includes `metro.config.js`, `babel.config.js`, `tailwind.config.js`, theme tokens in `global.css`, and the `@/` aliases and `components.json` for React Native Reusables.
+- `App.tsx` uses the generated button, card, input and text components and renders `PortalHost`. Add components with `bunx @react-native-reusables/cli@0.7.1 add <component>`. Install Expo-native dependencies with `bunx expo install <package>`.
+- The app imports the main app's generated API types from `@<name>/api`. It keeps Better Auth sessions in Expo SecureStore, and both HTTP and live WebSocket calls use the session. Keep the backend Expo plugin and scheme in `forge/auth.ts`.
+- Run `bun run archlast-forge mobile doctor`, `mobile setup`, or `dev --mobile` at the workspace root. The CLI supervises Forge and Expo, selects the Android target and injects `EXPO_PUBLIC_API_URL`. Run `bun run doctor` and `bun run export:android` inside `apps/mobile` to check the scaffold. See [the CLI](cli.md#mobile).
 
 ## Desktop (`--desktop full|client`, `add desktop <full|client>`): `apps/desktop` (Tauri)
 

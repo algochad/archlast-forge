@@ -86,7 +86,7 @@ export interface MonorepoApp {
   cli: (...args: string[]) => ReturnType<typeof sh>;
 }
 /** A monorepo from the packed tarballs, installed at its root only (as a fresh clone is: `dev` has never run), each app on its own port. */
-export function createMonorepo(name: string, mode: string, services: string[], microservices: string[], ports: Record<string, number>) {
+export function createMonorepo(name: string, mode: string, services: string[], microservices: string[], ports: Record<string, number>, flags: string[] = []) {
   const parent = mkdtempSync(join(tmpdir(), "afx-e2e-"));
   const root = join(parent, name);
   const creator = mkdtempSync(join(tmpdir(), "afx-creator-"));
@@ -94,7 +94,7 @@ export function createMonorepo(name: string, mode: string, services: string[], m
   writeFileSync(join(creator, "package.json"), "{}");
   must(["bun", "add", join(PACK, tarballs.find((t) => t.startsWith("create-archlast-forge"))!)], creator);
   must(
-    ["bun", join(creator, "node_modules/create-archlast-forge/src/index.ts"), root, "--mode", mode, "--services", services.join(",") || "none", "--monorepo", "--microservices", microservices.join(","), "--yes", "--no-install", "--no-git"],
+    ["bun", join(creator, "node_modules/create-archlast-forge/src/index.ts"), root, "--mode", mode, "--services", services.join(",") || "none", "--monorepo", "--microservices", microservices.join(","), ...flags, "--yes", "--no-install", "--no-git"],
     ROOT,
   );
   const overrides = Object.fromEntries(tarballs.map((t) => [t.replace(/-\d+\.\d+\.\d+.*\.tgz$/, "").replace(/^archlast-forge-/, "@archlast/forge-"), `file:${join(PACK, t)}`]));

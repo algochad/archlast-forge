@@ -48,6 +48,15 @@ export interface Workspace {
   transport: Transport;
   apps: Record<string, WorkspaceApp>;
   mobile?: boolean;
+  mobileDev?: {
+    target?: string;
+    api?: number;
+    abi?: string;
+    profile?: string;
+    client?: string;
+    metroPort?: number;
+    backendPort?: number;
+  };
   desktop?: DesktopMode;
 }
 
@@ -238,6 +247,7 @@ export function loadWorkspace(root: string): { name: string; ws: Workspace; infe
     ...(json.mainPort !== undefined && { mainPort: json.mainPort }),
     ...(json.dependsOn !== undefined && { dependsOn: json.dependsOn }),
     ...(json.mobile && { mobile: true }),
+    ...(json.mobileDev !== undefined && { mobileDev: json.mobileDev }),
     ...(json.desktop && { desktop: json.desktop }),
   };
   validateWorkspace(ws);

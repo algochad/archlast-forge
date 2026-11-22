@@ -175,7 +175,7 @@ export interface RunOptions {
   env: Record<string, string>;
   services?: Service[];
   image?: string;
-  /** Publish the HTTP upstream only on loopback when a local proxy serves it. */
+  /** Publish the HTTP listener on loopback for Portless or managed Android. */
   bindLoopback?: boolean;
   /** Defaults to forge/.env when it exists. */
   envFile?: string;

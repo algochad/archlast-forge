@@ -81,14 +81,16 @@ function portlessCommand() {
   return [node, bin] as const;
 }
 
-export async function launchPortless(name: string) {
+export async function launchPortless(name: string, required: boolean) {
   const executable = portlessCommand();
   const version =
     executable && Bun.spawnSync([executable[0], "--version"]).stdout.toString();
-  if (!executable || !version || Number(/^v(\d+)/.exec(version)?.[1] ?? 0) < 24)
-    throw new Error(
-      "Portless development needs Node.js 24 or later on PATH. Set PORTLESS=0 for direct development.",
-    );
+  if (!executable || !version || Number(/^v(\d+)/.exec(version)?.[1] ?? 0) < 24) {
+    if (required)
+      throw new Error("Portless development needs Node.js 24 or later on PATH. Set PORTLESS=0 for direct development.");
+    console.warn("Using direct HTTP. Install Node.js 24 or later to use Portless.");
+    return;
+  }
 
   const args = [process.execPath, Bun.argv[1]!, ...Bun.argv.slice(2)];
   // Portless runs wrapped commands through cmd.exe on Windows.
