@@ -4,7 +4,7 @@
 
 ```bash
 bun create archlast-forge acme --mode backend --mobile        # implies --monorepo
-cd acme && bun install && bun run dev                          # the backend on :3000, and expo start
+cd acme && bun install && bun run dev                          # the backend and Expo
 ```
 
 ```
@@ -15,6 +15,8 @@ acme/
 ```
 
 ## Connecting
+
+Portless names route to the computer running Forge. For the starter's direct HTTP settings below, set `"portless": false` in `archlast-forge.workspace.json` before running `bun run dev`. A physical device needs an address reachable from that device.
 
 The app reads the backend's address from `EXPO_PUBLIC_API_URL` (Expo inlines `EXPO_PUBLIC_*` variables when it bundles):
 

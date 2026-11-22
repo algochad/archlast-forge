@@ -12,8 +12,7 @@ bun run up       # the production stack from compose.yaml
 
 `bun run dev` starts the engine with `forge/` mounted, and the services listed in `archlast-forge.json`. Edits restart only your functions; open connections stay up.
 
-- Dashboard: http://localhost:3000/_dashboard (the admin key is printed on start)
-- Try the example function: `curl localhost:3000/http/hello`
+Forge uses Portless for a stable local HTTPS URL. Install Node.js 24 or later alongside Bun. The dev banner shows the API and dashboard URLs and the admin key. Append `/http/hello` to the API URL to try the example endpoint. Use `PORTLESS=0 bun run dev` for direct HTTP.
 
 Your frontend, whatever it is, talks to this server:
 
@@ -21,7 +20,7 @@ Your frontend, whatever it is, talks to this server:
 import { ArchlastForgeClient } from "@archlast/forge-client";
 import { api } from "./forge/_generated/api";
 
-const client = new ArchlastForgeClient({ url: "http://localhost:3000" });
+const client = new ArchlastForgeClient({ url: "<API URL from the dev banner>" });
 const page = await client.query(api.messages.list, { paginationOpts: { numItems: 20, cursor: null } });
 client.watch(api.messages.list, { paginationOpts: { numItems: 20, cursor: null } }, (update) => console.log(update)); // live
 ```
