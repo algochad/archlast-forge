@@ -184,6 +184,7 @@ for (const [provider, publicUrl, inWorkspace] of [
           );
           expect(Bun.spawnSync([process.execPath, "install", "--lockfile-only", "--ignore-scripts"], { cwd: root }).exitCode).toBe(0);
           mkdirSync(join(root, "node_modules/.bin"), { recursive: true });
+          symlinkSync(join(packages, "../node_modules/turbo"), join(root, "node_modules/turbo"), "dir");
           symlinkSync(turbo, join(root, "node_modules/.bin/turbo"), "file");
           fullStack(web);
           const turboConfig = JSON.parse(readFileSync(join(root, "turbo.json"), "utf8"));
