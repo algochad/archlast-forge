@@ -21,7 +21,57 @@ import {
   validateWorkspace,
   type Workspace,
 } from "create-archlast-forge/workspace";
-import { portlessName, portlessRoutes } from "./portless";
+import { runDevChild } from "./common";
+import { localPortlessEnv, portlessName, portlessRoutes, tunnelProvider, type TunnelProvider } from "./portless";
+
+// Generated Turbo tasks already pass through PORTLESS*. Use a checkout-specific name
+// so a co-scheduled dependency can keep its usual local URL without opening a tunnel.
+const TUNNEL_SELECTION = "PORTLESS_FORGE_TUNNEL";
+
+export function workspaceTunnel(root: string, app: string): TunnelProvider | undefined {
+  const [name, provider] = process.env[TUNNEL_SELECTION]?.split(":") ?? [];
+  if (provider && name === portlessName(root, app)) return tunnelProvider(provider);
+}
+
+export async function startWorkspaceApp(app: string, tunnel?: TunnelProvider) {
+  const root = findWorkspaceRoot(process.cwd());
+  if (!root) throw new Error("--app selects an app in a Forge workspace.");
+  const { ws } = loadWorkspace(root);
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(app) || !backendsOf(ws).includes(app))
+    throw new Error(`Unknown Forge workspace app "${app}". Choose from ${backendsOf(ws).join(", ")}.`);
+  if (tunnel && ws.portless === false)
+    throw new Error("Enable Portless in the Forge workspace configuration to use --tunnel.");
+  const directory = `apps/${app}`;
+  const command = [process.execPath, "--no-env-file", "run", "turbo", "run", "dev", `--filter=./${directory}`];
+  const env = tunnel ? localPortlessEnv() : { ...process.env };
+  if (tunnel) {
+    env[TUNNEL_SELECTION] = `${portlessName(root, app)}:${tunnel}`;
+    // A custom strict-mode task can drop the selection. Diagnose it before starting
+    // a workspace that would otherwise come up with only its local routes.
+    const preview = Bun.spawnSync([...command, "--dry=json"], { cwd: root, env, stderr: "inherit" });
+    if (preview.exitCode !== 0) return preview.exitCode;
+    type EnvReport = { configured?: string[]; passthrough?: string[] | null };
+    const plan = JSON.parse(preview.stdout.toString()) as {
+      envMode: string;
+      globalCacheInputs?: { environmentVariables?: EnvReport };
+      tasks: { task: string; directory: string; command: string; environmentVariables?: EnvReport }[];
+    };
+    const task = plan.tasks.find((entry) => entry.task === "dev" && entry.directory.replaceAll("\\", "/") === directory);
+    if (!task?.command) throw new Error(`No Turbo dev task found for ${directory}. Check that the app has a dev script.`);
+    const reports = [plan.globalCacheInputs?.environmentVariables, task.environmentVariables];
+    const passesSelection = reports.some((report) =>
+      [...(report?.configured ?? []), ...(report?.passthrough ?? [])].some((entry) =>
+        {
+          const name = entry.split("=", 1)[0]!;
+          return name === TUNNEL_SELECTION || (name.endsWith("*") && TUNNEL_SELECTION.startsWith(name.slice(0, -1)));
+        },
+      ),
+    );
+    if (plan.envMode !== "loose" && !passesSelection)
+      throw new Error(`Turbo filters out Forge's tunnel selection for ${directory}. Add PORTLESS* to the dev task's passThroughEnv in turbo.json.`);
+  }
+  return runDevChild(command, root, env);
+}
 
 const PROFILE = ".env.development.local";
 const loopback = (port: number) => `http://127.0.0.1:${port}`;
@@ -83,7 +133,7 @@ export function useNamedDashboard(
 export function workspaceDev(
   root: string,
   app: string,
-  address?: { port: number; url: URL },
+  address?: { port: number; url: URL; tunnelUrl?: string },
   origin?: (app: string) => string,
 ) {
   const workspace = findWorkspaceRoot(root);
@@ -132,6 +182,7 @@ export function workspaceDev(
     ...(address && {
       PORTLESS_URL: address.url.origin,
       FORGE_DEV_URL: address.url.origin,
+      ...(address.tunnelUrl && { FORGE_TUNNEL_URL: address.tunnelUrl }),
     }),
     DATA_DIR: dataDir,
     OTEL_SERVICE_NAME: app,
