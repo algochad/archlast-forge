@@ -39,9 +39,11 @@ export class Reply {
   headers: HeaderInit | null;
   /** Headers sent with the others, encoded ahead of time (see `HeaderBlock`). */
   block: HeaderBlock | null;
+  /** A per-response header written separately, so shared header arrays can stay immutable. */
+  extraHeader: [string, string] | null;
   constructor(
     body: Body = null,
-    init: { status?: number; headers?: HeaderInit; block?: HeaderBlock } = {},
+    init: { status?: number; headers?: HeaderInit; block?: HeaderBlock | null; extraHeader?: [string, string] | null } = {},
   ) {
     this.body = body;
     this.status = init.status ?? 200;
@@ -56,6 +58,7 @@ export class Reply {
     }
     this.headers = init.headers ?? null;
     this.block = init.block ?? null;
+    this.extraHeader = init.extraHeader ?? null;
   }
 }
 
@@ -167,13 +170,13 @@ function hasContentType(h: HeaderInit | null): boolean {
 /** Normalizes a handler result into a Reply with its default content-type filled in. */
 export function toReply(v: Result): Reply {
   if (v instanceof Reply) {
-    if (v.body !== null && !hasContentType(v.headers)) {
+    if (v.body !== null && !hasContentType(v.headers) && !v.block?.hasContentType && v.extraHeader?.[0].toLowerCase() !== "content-type") {
       const ct = typeof v.body === "string" ? TEXT : BINARY;
       const h: [string, string][] = Array.isArray(v.headers)
         ? [...v.headers]
         : Object.entries(v.headers ?? {});
       h.push(["content-type", ct]);
-      return new Reply(v.body, { status: v.status, headers: h });
+      return new Reply(v.body, { status: v.status, headers: h, block: v.block, extraHeader: v.extraHeader });
     }
     return v;
   }

@@ -269,6 +269,7 @@ export async function startCore(opts: {
     // What the engine's own routes allow, for what nest-graphql serves: development tools, and the origins that may call with credentials.
     dev: config.dev,
     trustedOrigins: [new URL(config.authUrl).origin, ...config.trustedOrigins],
+    trustProxy: config.trustProxy,
   };
   const auth = createAuth(exec, project.tables, project.authOptions, config);
   // One scheduler per server: in a runtime pool only the first process polls.
@@ -315,6 +316,8 @@ export async function startCore(opts: {
   }
 
   const EMPTY = new Uint8Array(0);
+  // The HTTP server writes its own framing and request id, regardless of the transport or the header's casing.
+  const serverHeader = /^(?:content-length|transfer-encoding|x-request-id)$/i;
   const strict = new TextDecoder("utf-8", { fatal: true });
   const isText = (bytes: ArrayBuffer) => {
     try {
@@ -328,14 +331,16 @@ export async function startCore(opts: {
   /** The message the server is answered with, for what a route's handler returned. The answer of a `MinimalResponse` needs no waiting; a `Response`'s body does. */
   function httpAnswer(route: HttpRoute, res: Response | MinimalResponse, telemetry: CallTelemetry | undefined, named?: string): HttpResponseMessage | Promise<HttpResponseMessage> {
     if (isMinimalResponse(res)) {
-      // a copy of the headers only when one has to go (a handler sets no content-length of its own, nearly always)
-      let out = res.headers;
-      for (let i = 0; i < out.length; i++)
-        if (out[i]![0] === "content-length") {
-          out = out.filter((h) => h[0] !== "content-length");
-          break;
-        }
-      const reply: HttpResponseMessage = { status: res.status, headers: out, body: res.body ?? EMPTY };
+      // Keep the header array as it is unless one has to go.
+      let headers = res.headers;
+      for (let i = 0; i < headers.length; i++) {
+        const name = headers[i]![0];
+        if (name === "content-type" || !serverHeader.test(name)) continue;
+        headers = headers.filter(([name]) => !serverHeader.test(name));
+        break;
+      }
+      const body = res.status === 204 || res.status === 205 || res.status === 304 ? EMPTY : (res.body ?? EMPTY);
+      const reply: HttpResponseMessage = { status: res.status, headers, body };
       if ((route.handler as unknown as Record<symbol, unknown>)[NEST_MOUNT] === true) reply.nest = true;
       if (telemetry) reply.telemetry = telemetry;
       const routeName = named ?? route.path;
@@ -349,7 +354,7 @@ export async function startCore(opts: {
     const out: [string, string][] = [];
     let typed = false;
     for (const h of res.headers) {
-      if (h[0] === "content-length") continue;
+      if (h[0] !== "content-type" && serverHeader.test(h[0])) continue;
       if (h[0] === "content-type") typed = true;
       out.push(h);
     }

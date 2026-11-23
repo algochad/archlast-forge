@@ -27,6 +27,23 @@ describe("a Reply with a block of headers encoded ahead of time", () => {
     }
   });
 
+  test("inferred content type keeps the block and the extra header", async () => {
+    const s = serveCompat({
+      port: 0,
+      backend: defaultBackend(),
+      fetch: () => new Reply("hi", { block, extraHeader: ["x-request-id", "one"] }) as unknown as Response,
+    });
+    try {
+      const res = await fetch(s.url);
+      expect(res.headers.get("content-type")).toStartWith("text/plain");
+      expect(res.headers.get("x-note")).toBe("kept");
+      expect(res.headers.get("x-request-id")).toBe("one");
+      expect(await res.text()).toBe("hi");
+    } finally {
+      s.stop(true);
+    }
+  });
+
   test("a Reply without one is as it was", async () => {
     const s = serveCompat({ port: 0, backend: defaultBackend(), fetch: () => new Reply("plain", { headers: { "x-a": "b" } }) as unknown as Response });
     servers.push(s);

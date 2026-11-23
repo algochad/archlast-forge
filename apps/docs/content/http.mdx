@@ -168,7 +168,7 @@ Bodies are **buffered, not streamed**: the engine reads the whole request before
 
 Return a `Response`. Anything else (a string, `undefined`) is a server error: the call fails with 500 and is logged.
 
-- **Status and headers** pass through as you set them. Several `set-cookie` headers survive intact. `content-length` is recomputed.
+- **Status and headers** pass through as you set them. Several `set-cookie` headers survive intact. The engine sets framing and `x-request-id` for the current request. Responses with status 204, 205 or 304 have no body.
 - **204 and 304** are sent without a body.
 - **Content type.** `Response.json(...)`, a `Blob` with a type and `new Response("text")` all reach the client with the type the platform gives them (`text/plain;charset=utf-8` for a string). A binary body without a `content-type` is sent as `application/octet-stream`; set one if the browser should show it. On `0.1.0` the implicit type of a string body was lost, so set `content-type` yourself if you are on that version.
 - **`x-request-id`** is added to every response. If the caller sent an `x-request-id` of 1 to 64 characters (letters, digits, `.`, `_`, `-`), that value is reused; otherwise one is generated. It's the id to look up in the logs, or in the dashboard's [search](dashboard.html#keyboard-search-and-theme), which opens the request's trace.
