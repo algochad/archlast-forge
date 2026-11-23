@@ -683,13 +683,11 @@ export function writeRoot(c: Ctx) {
           dev: {
             cache: false,
             persistent: true,
-            env: ["PORTLESS_FORGE_TUNNEL"],
             passThroughEnv: [
               "PORTLESS",
               "PORTLESS_APP_PORT",
               "PORTLESS_CLOUDFLARE",
               "PORTLESS_CLOUDFLARE_URL",
-              "PORTLESS_FORGE_TUNNEL",
               "PORTLESS_FUNNEL",
               "PORTLESS_HTTPS",
               "PORTLESS_NGROK",

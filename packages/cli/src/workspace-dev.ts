@@ -24,13 +24,16 @@ import {
 import { runDevChild } from "./common";
 import { localPortlessEnv, portlessName, portlessRoutes, tunnelProvider, type TunnelProvider } from "./portless";
 
-// Generated Turbo tasks already pass through PORTLESS*. Use a checkout-specific name
-// so a co-scheduled dependency can keep its usual local URL without opening a tunnel.
-const TUNNEL_SELECTION = "PORTLESS_FORGE_TUNNEL";
+// Keep the selected tunnel bound to one app without asking Turbo to pass a private env value to sibling tasks.
+const tunnelSelectionFile = (root: string, app: string) => join(root, ".forge", `dev-tunnel-${app}.json`);
 
 export function workspaceTunnel(root: string, app: string): TunnelProvider | undefined {
-  const [name, provider] = process.env[TUNNEL_SELECTION]?.split(":") ?? [];
-  if (provider && name === portlessName(root, app)) return tunnelProvider(provider);
+  const selection = process.env.PORTLESS_FORGE_TUNNEL?.split(":");
+  if (selection?.[1] && selection[0] === portlessName(root, app)) return tunnelProvider(selection[1]);
+  const file = tunnelSelectionFile(root, app);
+  if (!existsSync(file)) return;
+  const stored = JSON.parse(readFileSync(file, "utf8")) as { name: string; provider: string };
+  if (stored.name === portlessName(root, app)) return tunnelProvider(stored.provider);
 }
 
 export async function startWorkspaceApp(app: string, tunnel?: TunnelProvider) {
@@ -44,29 +47,20 @@ export async function startWorkspaceApp(app: string, tunnel?: TunnelProvider) {
   const directory = `apps/${app}`;
   const command = [process.execPath, "--no-env-file", "run", "turbo", "run", "dev", `--filter=./${directory}`];
   const env = tunnel ? localPortlessEnv() : { ...process.env };
+  const selectionFile = tunnel ? tunnelSelectionFile(root, app) : undefined;
   if (tunnel) {
-    env[TUNNEL_SELECTION] = `${portlessName(root, app)}:${tunnel}`;
-    // A custom strict-mode task can drop the selection. Diagnose it before starting
-    // a workspace that would otherwise come up with only its local routes.
-    const preview = Bun.spawnSync([...command, "--dry=json"], { cwd: root, env, stderr: "inherit" });
-    if (preview.exitCode !== 0) return preview.exitCode;
-    const plan = JSON.parse(preview.stdout.toString()) as {
-      envMode: string;
-      tasks: { task: string; directory: string; command: string }[];
-    };
-    const task = plan.tasks.find((entry) => entry.task === "dev" && entry.directory.replaceAll("\\", "/") === directory);
-    if (!task?.command) throw new Error(`No Turbo dev task found for ${directory}. Check that the app has a dev script.`);
-    const turboConfig = JSON.parse(readFileSync(join(root, "turbo.json"), "utf8")) as {
-      tasks?: Record<string, { env?: string[]; passThroughEnv?: string[] }>;
-    };
-    const passesSelection = Object.values(turboConfig.tasks ?? {}).some((config) =>
-      config?.env?.some((entry) => entry === TUNNEL_SELECTION || (entry.endsWith("*") && TUNNEL_SELECTION.startsWith(entry.slice(0, -1)))) ||
-      config?.passThroughEnv?.some((entry) => entry === TUNNEL_SELECTION),
+    mkdirSync(join(root, ".forge"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      selectionFile!,
+      JSON.stringify({ name: portlessName(root, app), provider: tunnel }),
+      { flag: "wx", mode: 0o600 },
     );
-    if (plan.envMode !== "loose" && !passesSelection)
-      throw new Error(`Turbo filters out Forge's tunnel selection for ${directory}. Add ${TUNNEL_SELECTION} to the dev task's env or passThroughEnv in turbo.json.`);
   }
-  return runDevChild(command, root, env);
+  try {
+    return await runDevChild(command, root, env);
+  } finally {
+    if (selectionFile) rmSync(selectionFile, { force: true });
+  }
 }
 
 const PROFILE = ".env.development.local";

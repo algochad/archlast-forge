@@ -154,7 +154,6 @@ for (const [provider, publicUrl, inWorkspace] of [
       };
       delete env.PORTLESS_URL;
       delete env.PORTLESS_APP_PORT;
-      delete env.PORTLESS_FORGE_TUNNEL;
       delete env.FORGE_MOBILE_MAIN_PORT;
       delete env.ARCHLAST_ENGINE;
       const portless = [node!, fileURLToPath(new URL("./cli.js", import.meta.resolve("portless")))];
@@ -187,16 +186,9 @@ for (const [provider, publicUrl, inWorkspace] of [
           mkdirSync(join(root, "node_modules/.bin"), { recursive: true });
           symlinkSync(turbo, join(root, "node_modules/.bin/turbo"), "file");
           fullStack(web);
-          const blocked = run([process.execPath, cli, "dev", "--app", "web", "--tunnel", provider], root, env);
-          processes.push(blocked);
-          expect(await blocked.done).toBe(1);
-          expect(blocked.output()).toContain("Add PORTLESS_FORGE_TUNNEL to the dev task's env or passThroughEnv");
           const turboConfig = JSON.parse(readFileSync(join(root, "turbo.json"), "utf8"));
-          const portlessEnv = ["PORTLESS_FORGE_TUNNEL", ...Object.keys(env).filter((name) => name === "PORTLESS" || name.startsWith("PORTLESS_"))];
-          for (const task of Object.values<Record<string, unknown>>(turboConfig.tasks)) {
-            task.env = ["PORTLESS_FORGE_TUNNEL"];
-            task.passThroughEnv = portlessEnv;
-          }
+          const portlessEnv = Object.keys(env).filter((name) => name === "PORTLESS" || name.startsWith("PORTLESS_"));
+          for (const task of Object.values<Record<string, unknown>>(turboConfig.tasks)) task.passThroughEnv = portlessEnv;
           put(root, "turbo.json", JSON.stringify(turboConfig));
         }
         // Exercise Portless's provider lifecycle with local CLI stand-ins.

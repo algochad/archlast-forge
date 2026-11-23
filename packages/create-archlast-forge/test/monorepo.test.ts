@@ -71,13 +71,11 @@ test("a monorepo with two services: workspaces, turbo, shared types, and the app
   expect(JSON.parse(read(root, "turbo.json")).tasks.dev).toEqual({
     cache: false,
     persistent: true,
-    env: ["PORTLESS_FORGE_TUNNEL"],
     passThroughEnv: [
       "PORTLESS",
       "PORTLESS_APP_PORT",
       "PORTLESS_CLOUDFLARE",
       "PORTLESS_CLOUDFLARE_URL",
-      "PORTLESS_FORGE_TUNNEL",
       "PORTLESS_FUNNEL",
       "PORTLESS_HTTPS",
       "PORTLESS_NGROK",

@@ -243,7 +243,7 @@ Portless requires Node.js 24 or later on macOS, Linux or Windows. Forge uses dir
 
 Existing projects with Node.js 24 or later adopt this automatically when they update the CLI through `archlast-forge upgrade` (or `bun run upgrade` from a generated workspace root). Keep your current scripts and workspace configuration. Update any hardcoded browser API URLs and register the new origin in your OAuth provider's callback URL, such as `https://api-42a6b2c1d026.localhost/api/auth/callback/github`. Forge uses the named origin for Better Auth and its built-in storage URLs, includes it in `TRUSTED_ORIGINS`, and sets `FORGE_DEV_URL` in the dev process and its companion or seed commands. Explicit `STORAGE_PUBLIC_URL` and additional trusted origins still apply.
 
-Use `PORTLESS=0 bun run dev` for direct HTTP, or pass `--port <n>` to `archlast-forge dev` in a standalone project. In a monorepo, set `"portless": false` in `archlast-forge.workspace.json` to use the configured direct ports for every app. New generated Turbo tasks pass through Forge's `PORTLESS_FORGE_TUNNEL` selection, the supported `PORTLESS` settings and `NODE_EXTRA_CA_CERTS`. In an existing monorepo with strict Turbo environment filtering, add those variables to `tasks.dev.passThroughEnv` if you need to pass proxy settings from the shell.
+Use `PORTLESS=0 bun run dev` for direct HTTP, or pass `--port <n>` to `archlast-forge dev` in a standalone project. In a monorepo, set `"portless": false` in `archlast-forge.workspace.json` to use the configured direct ports for every app. New generated Turbo tasks pass through the supported `PORTLESS` settings and `NODE_EXTRA_CA_CERTS`. In an existing monorepo with strict Turbo environment filtering, add the Portless settings you use to `tasks.dev.passThroughEnv` if you need to pass proxy settings from the shell.
 
 Portless handles Forge HTTP and WebSocket traffic. Forge RPC and Nest TCP transports still use their workspace RPC ports. PostgreSQL, Redis, NATS and S3-compatible storage still use their own ports and URLs. Forge publishes managed dev storage on a free loopback port when Portless is active. Use direct mode or another device-reachable endpoint for a physical Expo device or a remote browser.
 
@@ -261,7 +261,7 @@ From a Forge workspace root, select an app by its folder name under `apps/`.
 archlast-forge dev --app web --tunnel cloudflare
 ```
 
-Turbo starts the selected app and its configured dependencies. Forge opens the tunnel for the selected app only. If you manage your own strict Turbo dev configuration, include `PORTLESS_FORGE_TUNNEL` in `tasks.dev.env` or `tasks.dev.passThroughEnv`, and list the Portless settings you use in `tasks.dev.passThroughEnv`.
+Turbo starts the selected app and its configured dependencies. Forge opens the tunnel for the selected app only. If you manage your own strict Turbo dev configuration, list the Portless settings you use in `tasks.dev.passThroughEnv`.
 
 | Provider | Local setup |
 | --- | --- |
