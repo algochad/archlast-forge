@@ -138,7 +138,8 @@ describe("in the server", () => {
     const file = "/logo.png";
     const srv = await startServer({
       forgeDir: join(import.meta.dir, "fixture-root"),
-      env: { ...process.env, PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", LOG_FORMAT: "json", METRICS_TOKEN: "m", WAF: "on" },
+      // This fixture has its own Nest mount; keep its module state out of the shared test worker.
+      env: { ...process.env, RUNTIME_MODE: "process", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", LOG_FORMAT: "json", METRICS_TOKEN: "m", WAF: "on" },
       app: {
         serves: (path) => path === file || routes.includes(path),
         fetch: async () => new Response("asset"),
