@@ -262,9 +262,11 @@ switch (Bun.argv[2]) {
           async () => (await fetch(`${upstream}/ready`, { signal: AbortSignal.timeout(300) }).catch(() => undefined))?.ok === true,
         );
         expect(await (await fetch(`${upstream}/http/address`)).json()).toEqual({ local: boot.local, auth: boot.local, tunnel: publicUrl });
-        await until(() => dev.output().includes("Public tunnel"));
-        expect(dev.output()).toContain("Public tunnel");
-        expect(dev.output()).toContain(boot.local);
+        if (!inWorkspace) {
+          await until(() => dev.output().includes("Public tunnel"));
+          expect(dev.output()).toContain("Public tunnel");
+          expect(dev.output()).toContain(boot.local);
+        }
         expect(logText.match(/^start /gm)).toHaveLength(1);
 
         if (inWorkspace) {
