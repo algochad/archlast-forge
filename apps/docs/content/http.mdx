@@ -198,6 +198,8 @@ http.route({
 - **Everything else is as for `httpAction`**: telemetry, the request id, rate limits, CORS you set yourself, validators and the OpenAPI document, errors, time limits. Only the objects differ.
 - **When to use it.** For a hot route. On the benchmark API (reading one item from memory, 4 cores) a `minimalAction` route answers about 336,000 requests a second against about 176,000 for the same route as a NestJS controller; see [benchmarks](benchmarks.html). A route that reads a body as JSON, forwards the `Request`, or uses a library that wants one should stay an `httpAction`.
 
+Minimal routes and NestJS controllers also work when the engine and `forge/` resolve separate installations of `@archlast/forge-runtime`.
+
 ## The database from a route
 
 A route's `ctx` is an `HttpCtx`: an action's ctx and two methods that run a function in a transaction, with no registered function in between.

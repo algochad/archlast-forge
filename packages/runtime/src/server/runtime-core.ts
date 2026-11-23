@@ -1,7 +1,8 @@
 // The function runtime: forge/ modules, the database, auth and the scheduler. See startCore().
 import type { HttpFinish } from "./executor";
 import { docsRouting } from "../api-docs";
-import { mkdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync } from "node:fs";
+import { createRequire } from "node:module";
 import { basename, dirname, join } from "node:path";
 import { validateFields } from "../values";
 import { adminOp } from "./admin-ops";
@@ -15,10 +16,10 @@ import { unlock } from "./db/unlock";
 import type { Db } from "./db/types";
 import type { HttpRoute, UserIdentity } from "../functions";
 import { Executor, logContext, serializeError, type CallHeaders, type LogEntry } from "./executor";
-import { loadProject, tableSpecs, type Manifest, type Project } from "./project";
+import { importUserModule, loadProject, tableSpecs, type Manifest, type Project } from "./project";
 import { checkHttpRequest, matchRoute, routeName, takesRequest } from "./http";
 import { buildOpenApi, docsWarnings, NEST_MOUNT, type NestRoute } from "./openapi";
-import { MINIMAL, MinimalResponse } from "./minimal";
+import { MINIMAL, isMinimalResponse, registerLegacyMinimalResponse, type MinimalResponse } from "./minimal";
 import type { HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage, SerializedResponse } from "./protocol";
 import { SchedulerLoop } from "./scheduler";
 import { createStorage } from "./storage";
@@ -231,6 +232,16 @@ export async function startCore(opts: {
   await migrateSystem(db);
   await loadEnv(db);
   const project = await loadProject(forgeDir);
+  if (project.http.some((route) => (route.handler as unknown as Record<symbol, unknown>)[MINIMAL] === true)) {
+    // A 0.23.0 app can still be installed separately when the engine is upgraded. Projects using relative
+    // imports may have no package to resolve, and current copies are recognized without registration.
+    const spec = "@archlast/forge-runtime";
+    const paths = createRequire(join(forgeDir, "http.ts")).resolve.paths(spec);
+    if (paths?.some((path) => existsSync(join(path, spec, "package.json")))) {
+      const appRuntime = Bun.resolveSync(spec, forgeDir); // the published package only exports an ESM entry
+      registerLegacyMinimalResponse((await importUserModule(appRuntime, forgeDir)).MinimalResponse);
+    }
+  }
   await db.migrate(tableSpecs(project.tables));
   const storage = createStorage(config);
   const exec = new Executor({
@@ -316,7 +327,7 @@ export async function startCore(opts: {
 
   /** The message the server is answered with, for what a route's handler returned. The answer of a `MinimalResponse` needs no waiting; a `Response`'s body does. */
   function httpAnswer(route: HttpRoute, res: Response | MinimalResponse, telemetry: CallTelemetry | undefined, named?: string): HttpResponseMessage | Promise<HttpResponseMessage> {
-    if (res instanceof MinimalResponse) {
+    if (isMinimalResponse(res)) {
       // a copy of the headers only when one has to go (a handler sets no content-length of its own, nearly always)
       let out = res.headers;
       for (let i = 0; i < out.length; i++)

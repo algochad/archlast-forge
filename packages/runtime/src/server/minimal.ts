@@ -3,6 +3,10 @@
 // with a `MinimalRequest` instead of a `Request`; what it answers is a `Response` or a `MinimalResponse`. Anything else takes the ordinary path.
 export const MINIMAL = Symbol.for("archlast-forge.minimal-http");
 
+// The handler can come from forge/node_modules while the engine uses its own runtime.
+const MINIMAL_RESPONSE = Symbol.for("archlast-forge.minimal-response");
+const legacyConstructors = new Set<typeof MinimalResponse>();
+
 export interface MinimalRequest {
   method: string;
   /** Absolute, as a `Request`'s `url` is. */
@@ -24,6 +28,20 @@ export class MinimalResponse {
     this.headers = headers;
     this.body = body;
   }
+}
+
+Object.defineProperty(MinimalResponse.prototype, MINIMAL_RESPONSE, { value: true });
+
+/** Older installs export the same class without the shared brand. Accept actual instances of the app's exported class. */
+export function registerLegacyMinimalResponse(ctor: unknown) {
+  if (typeof ctor === "function" && ctor.prototype && !isMinimalResponse(ctor.prototype)) legacyConstructors.add(ctor as typeof MinimalResponse);
+}
+
+export function isMinimalResponse(value: unknown): value is MinimalResponse {
+  if (value == null) return false;
+  if ((value as { [MINIMAL_RESPONSE]?: unknown })[MINIMAL_RESPONSE] === true) return true;
+  for (const ctor of legacyConstructors) if (value instanceof ctor) return true;
+  return false;
 }
 
 /** A JSON answer: `minimalJson({ ok: true })`, `minimalJson(item, 201)`. */

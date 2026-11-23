@@ -4,6 +4,12 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+HTTP response compatibility for separately installed runtimes.
+
+### Fixed
+
+- **NestJS and minimal HTTP routes work when the engine and `forge/` load separate copies of the runtime.** These routes preserve their response status, headers and body across installations. See [HTTP endpoints](http.html#minimal-routes).
+
 ## 0.23.0
 
 Named local URLs and managed Android development for Forge.
