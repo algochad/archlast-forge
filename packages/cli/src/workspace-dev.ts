@@ -50,23 +50,23 @@ export async function startWorkspaceApp(app: string, tunnel?: TunnelProvider) {
     // a workspace that would otherwise come up with only its local routes.
     const preview = Bun.spawnSync([...command, "--dry=json"], { cwd: root, env, stderr: "inherit" });
     if (preview.exitCode !== 0) return preview.exitCode;
-    type EnvReport = { configured?: string[]; passthrough?: string[] | null };
     const plan = JSON.parse(preview.stdout.toString()) as {
       envMode: string;
-      globalCacheInputs?: { environmentVariables?: EnvReport };
-      tasks: { task: string; directory: string; command: string; environmentVariables?: EnvReport }[];
+      tasks: { task: string; directory: string; command: string }[];
     };
     const task = plan.tasks.find((entry) => entry.task === "dev" && entry.directory.replaceAll("\\", "/") === directory);
     if (!task?.command) throw new Error(`No Turbo dev task found for ${directory}. Check that the app has a dev script.`);
-    const reports = [plan.globalCacheInputs?.environmentVariables, task.environmentVariables];
-    const passesSelection = reports.some((report) =>
-      [...(report?.configured ?? []), ...(report?.passthrough ?? [])].some((entry) => {
-        const name = entry.split("=", 1)[0]!;
-        return name === TUNNEL_SELECTION;
-      }),
+    const turboConfig = JSON.parse(readFileSync(join(root, "turbo.json"), "utf8")) as {
+      tasks?: Record<string, { env?: string[]; passThroughEnv?: string[] }>;
+    };
+    const packageJson = JSON.parse(readFileSync(join(root, directory, "package.json"), "utf8")) as { name?: string };
+    const selectedTasks = [turboConfig.tasks?.dev, ...(packageJson.name ? [turboConfig.tasks?.[`${packageJson.name}#dev`]] : [])];
+    const passesSelection = selectedTasks.some((config) =>
+      config?.env?.some((entry) => entry === TUNNEL_SELECTION || (entry.endsWith("*") && TUNNEL_SELECTION.startsWith(entry.slice(0, -1)))) ||
+      config?.passThroughEnv?.some((entry) => entry === TUNNEL_SELECTION),
     );
     if (plan.envMode !== "loose" && !passesSelection)
-      throw new Error(`Turbo filters out Forge's tunnel selection for ${directory}. Add ${TUNNEL_SELECTION} to the dev task's passThroughEnv in turbo.json.`);
+      throw new Error(`Turbo filters out Forge's tunnel selection for ${directory}. Add ${TUNNEL_SELECTION} to the dev task's env or passThroughEnv in turbo.json.`);
   }
   return runDevChild(command, root, env);
 }

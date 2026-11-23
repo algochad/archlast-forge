@@ -190,7 +190,7 @@ for (const [provider, publicUrl, inWorkspace] of [
           const blocked = run([process.execPath, cli, "dev", "--app", "web", "--tunnel", provider], root, env);
           processes.push(blocked);
           expect(await blocked.done).toBe(1);
-          expect(blocked.output()).toContain("Add PORTLESS_FORGE_TUNNEL to the dev task's passThroughEnv");
+          expect(blocked.output()).toContain("Add PORTLESS_FORGE_TUNNEL to the dev task's env or passThroughEnv");
           const turboConfig = JSON.parse(readFileSync(join(root, "turbo.json"), "utf8"));
           const portlessEnv = ["PORTLESS_FORGE_TUNNEL", ...Object.keys(env).filter((name) => name === "PORTLESS" || name.startsWith("PORTLESS_"))];
           for (const task of Object.values<Record<string, unknown>>(turboConfig.tasks)) {
