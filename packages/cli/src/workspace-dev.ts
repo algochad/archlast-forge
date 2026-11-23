@@ -59,9 +59,7 @@ export async function startWorkspaceApp(app: string, tunnel?: TunnelProvider) {
     const turboConfig = JSON.parse(readFileSync(join(root, "turbo.json"), "utf8")) as {
       tasks?: Record<string, { env?: string[]; passThroughEnv?: string[] }>;
     };
-    const packageJson = JSON.parse(readFileSync(join(root, directory, "package.json"), "utf8")) as { name?: string };
-    const selectedTasks = [turboConfig.tasks?.dev, ...(packageJson.name ? [turboConfig.tasks?.[`${packageJson.name}#dev`]] : [])];
-    const passesSelection = selectedTasks.some((config) =>
+    const passesSelection = Object.values(turboConfig.tasks ?? {}).some((config) =>
       config?.env?.some((entry) => entry === TUNNEL_SELECTION || (entry.endsWith("*") && TUNNEL_SELECTION.startsWith(entry.slice(0, -1)))) ||
       config?.passThroughEnv?.some((entry) => entry === TUNNEL_SELECTION),
     );
