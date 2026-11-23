@@ -1,4 +1,4 @@
-import { Controller, Get, Req, Res, Sse, rxjs, type NestRequest, type NestResponse } from "../../src/nest";
+import { Body, Controller, Get, Post, Query, Req, Res, Sse, rxjs, type NestRequest, type NestResponse } from "../../src/nest";
 
 /** Whether the client of the endless stream below went away, as the handler heard it. */
 let foreverClosed = false;
@@ -50,7 +50,12 @@ export class ExpressController {
 
   @Get("request")
   request(@Req() req: NestRequest) {
-    return { cookies: req.cookies, protocol: req.protocol, thing: req.get("X-Thing") };
+    return { cookies: req.cookies, protocol: req.protocol, thing: req.get("X-Thing"), constructorHeader: req.get("constructor") };
+  }
+
+  @Post("parse")
+  parse(@Body() body: unknown, @Query() query: Record<string, unknown>) {
+    return { body, query };
   }
 
   @Sse("ticks")

@@ -233,7 +233,7 @@ function mergeSet(v: Result, s: SetState): Result {
     ? [...r.headers]
     : Object.entries(r.headers ?? {});
   for (const k in s.headers) headers.push([k, s.headers[k]]);
-  return new Reply(r.body as Body, { status: s.status ?? r.status, headers });
+  return new Reply(r.body as Body, { status: s.status ?? r.status, headers, block: r.block, extraHeader: r.extraHeader });
 }
 
 export class Router {

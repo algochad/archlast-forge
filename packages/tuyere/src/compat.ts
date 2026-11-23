@@ -420,7 +420,7 @@ function withCookies<T extends Response | Reply | FileReply | UpgradeReply>(
       ? [...out.headers]
       : Object.entries(out.headers ?? {});
     for (const c of set) h.push(["set-cookie", c]);
-    return new Reply(out.body, { status: out.status, headers: h }) as T;
+    return new Reply(out.body, { status: out.status, headers: h, block: out.block, extraHeader: out.extraHeader }) as T;
   }
   return out;
 }
