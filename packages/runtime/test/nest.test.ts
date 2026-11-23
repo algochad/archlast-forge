@@ -69,6 +69,24 @@ describe("Nest controllers under /http", () => {
     expect(await (await http("/notes/secret", { headers: { "x-key": "open sesame" } })).json()).toEqual({ secret: true });
   });
 
+  test("request parsing uses the media type and keeps repeated fields in order", async () => {
+    const path = "/express/parse?tag=a&tag=b&tag=c&constructor=field";
+    const post = (type: string, body: string) => http(path, { method: "POST", headers: { "content-type": type }, body });
+    const text = await post('text/plain; profile="example/json"', "plain body");
+    expect(text.status).toBe(201);
+    expect(await text.json()).toEqual({ body: "plain body", query: { tag: ["a", "b", "c"], constructor: "field" } });
+    const json = await post("application/example+json; charset=UTF-8", '{"ok":true}');
+    expect((await json.json() as { body: unknown }).body).toEqual({ ok: true });
+    const form = await post("application/x-www-form-urlencoded; charset=UTF-8", "x=1&x=2&x=3");
+    expect((await form.json() as { body: unknown }).body).toEqual({ x: ["1", "2", "3"] });
+    expect((await http("/notes/echo/%E2%82")).status).toBe(400);
+  });
+
+  test("the request protocol uses the connection when the proxy is untrusted", async () => {
+    const res = await http("/express/request", { headers: { "x-forwarded-proto": "https", constructor: "field" } });
+    expect(await res.json()).toMatchObject({ protocol: "http", constructorHeader: "field" });
+  });
+
   test("a request-scoped service in a controller gets the request's ctx", async () => {
     expect(await (await http("/notes/who")).json()).toEqual({ identity: null });
   });

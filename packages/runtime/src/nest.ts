@@ -53,7 +53,7 @@ import { EMPTY, filter, fromEvent, mergeMap, Observable, takeUntil, type Subscri
 import type { RouteDocs, SecurityRequirement } from "./api-docs";
 import { httpAction, type ActionCtx, type HttpCtx, type HttpRoute, type MutationCtx, type QueryCtx, type UserIdentity } from "./functions";
 import { AsyncLocalStorage } from "node:async_hooks";
-import { queryValue } from "./server/http";
+import { lastForwarded, queryValue } from "./server/http";
 import { MINIMAL, MinimalResponse, type MinimalRequest } from "./server/minimal";
 import { simpleMatcher } from "./server/route-match";
 import { NEST_MOUNT, type NestRoute } from "./server/openapi";
@@ -86,6 +86,7 @@ interface EngineHost {
   /** Development mode, and the browser origins the engine trusts (BETTER_AUTH_URL's, TRUSTED_ORIGINS); an older engine doesn't say. */
   dev?: boolean;
   trustedOrigins?: string[];
+  trustProxy?: boolean;
 }
 const hostOf = () => (globalThis as Record<symbol, unknown>)[Symbol.for("archlast-forge.host")] as EngineHost | undefined;
 
@@ -767,7 +768,12 @@ const mime = (type: string) => (type.includes("/") ? type : Bun.file(`x.${type.r
 /** Query or form fields; a repeated name is an array. Only the object's own keys count (`?toString=x` is a field), and `__proto__` is dropped, as `qs` does. */
 const toObject = (params: URLSearchParams) => {
   const out: Record<string, string | string[]> = {};
-  for (const [k, v] of params) if (k !== "__proto__") out[k] = Object.hasOwn(out, k) ? [...[out[k]!].flat(), v] : v;
+  for (const [key, value] of params) {
+    if (key === "__proto__") continue;
+    const previous = Object.hasOwn(out, key) ? out[key] : undefined;
+    if (Array.isArray(previous)) previous.push(value);
+    else out[key] = previous === undefined ? value : [previous, value];
+  }
   return out;
 };
 
@@ -798,8 +804,11 @@ class ForgeRequest extends EventEmitter {
     const source = this.source;
     if (source instanceof Request) return (this._headers = Object.fromEntries(source.headers));
     // as a Headers object gives them: a name that repeats is one value joined with ", " ("; " for cookies)
-    const out: Record<string, string> = {};
-    for (const [name, value] of source.headers) out[name] = name in out ? `${out[name]}${name === "cookie" ? "; " : ", "}${value}` : value;
+    const out: Record<string, string> = Object.create(null);
+    for (const [name, value] of source.headers) {
+      const previous = out[name];
+      out[name] = previous === undefined ? value : `${previous}${name === "cookie" ? "; " : ", "}${value}`;
+    }
     return (this._headers = out);
   }
   /** The Web `Request`: the engine's own when this is one, otherwise made now from what the server sent (nothing reads it on most routes). */
@@ -820,7 +829,9 @@ class ForgeRequest extends EventEmitter {
     return (this._hostname ??= new URL(this.source.url).hostname);
   }
   get protocol(): string {
-    return (this._protocol ??= this.headers["x-forwarded-proto"]?.split(",")[0]?.trim() || this.source.url.slice(0, this.source.url.indexOf(":")));
+    if (this._protocol !== undefined) return this._protocol;
+    const forwarded = hostOf()?.trustProxy ? lastForwarded(this.headers["x-forwarded-proto"])?.toLowerCase() : undefined;
+    return (this._protocol = forwarded === "http" || forwarded === "https" ? forwarded : this.source.url.slice(0, this.source.url.indexOf(":")));
   }
   /** Node's connection, as engine.io reads it; the engine's server knows the address, which isn't passed on. */
   readonly connection = { remoteAddress: "", encrypted: false };
@@ -890,10 +901,12 @@ class ForgeResponse extends EventEmitter {
   readonly locals: Record<string, unknown> = {};
   body: BodyInit | null = null;
   writableEnded = false;
-  error: unknown;
+  error?: { cause: unknown };
+  declare [STREAM]?: true;
   request?: ForgeRequest;
   private readable?: ReadableStream<Uint8Array>;
   private stream?: ReadableStreamDefaultController<Uint8Array>;
+  private needsDrain = false;
   private resolve?: () => void;
   private pending?: Promise<void>;
   /** Resolves when the response is ready to go: ended, or streaming. */
@@ -912,23 +925,31 @@ class ForgeResponse extends EventEmitter {
   /** Sends the head now, and the body as it is written. */
   flushHeaders() {
     if (this.readable || this.writableEnded) return;
-    this.readable = new ReadableStream<Uint8Array>({
-      start: (c) => void (this.stream = c),
-      cancel: () => {
-        // The client went away (shortcut: noticed only with functions inline in the server, the production default; through a child process the writes go on until the handler stops).
-        this.writableEnded = true;
-        this.emit("close");
-        this.request?.emit("close");
+    this.readable = new ReadableStream<Uint8Array>(
+      {
+        start: (c) => void (this.stream = c),
+        pull: () => {
+          if (!this.needsDrain) return;
+          this.needsDrain = false;
+          this.emit("drain");
+        },
+        cancel: () => {
+          this.writableEnded = true;
+          this.emit("close");
+          this.request?.emit("close");
+        },
       },
-    });
+      new ByteLengthQueuingStrategy({ highWaterMark: 64 * 1024 }),
+    );
     this.resolve?.();
   }
   write(chunk: unknown, encoding?: BufferEncoding | (() => void), cb?: () => void) {
     if (this.writableEnded) return false;
     this.flushHeaders();
     this.stream!.enqueue(bytes(chunk, typeof encoding === "string" ? encoding : undefined));
+    this.needsDrain = (this.stream!.desiredSize ?? 0) <= 0;
     (typeof encoding === "function" ? encoding : cb)?.();
-    return true;
+    return !this.needsDrain;
   }
   end(chunk?: unknown, encoding?: BufferEncoding | (() => void), cb?: () => void) {
     if (this.writableEnded) return this;
@@ -946,7 +967,7 @@ class ForgeResponse extends EventEmitter {
     return this;
   }
   fail(error: unknown) {
-    this.error = error;
+    this.error = { cause: error };
     this.stream?.error(error);
     this.writableEnded = true;
     this.resolve?.();
@@ -1053,8 +1074,9 @@ class ForgeResponse extends EventEmitter {
 
   /** The answer as bytes when that is all it is (a string, bytes or nothing), so the server need not make a `Response` to read it back; otherwise the `Response`. */
   toAnswer(): Response | MinimalResponse {
-    const empty = this.statusCode === 204 || this.statusCode === 304;
-    const body = this.readable ?? (empty ? null : this.body);
+    const empty = this.statusCode === 204 || this.statusCode === 205 || this.statusCode === 304;
+    const body = empty ? null : (this.readable ?? this.body);
+    if (empty && this.readable) void this.readable.cancel().catch(noop);
     if (body !== null && typeof body !== "string" && !(body instanceof Uint8Array)) return this.toResponse();
     const headers: [string, string][] = [];
     let typed = false;
@@ -1073,10 +1095,10 @@ class ForgeResponse extends EventEmitter {
   }
 
   toResponse() {
-    const empty = this.statusCode === 204 || this.statusCode === 304;
-    const body = this.readable ?? (empty ? null : this.body);
+    const empty = this.statusCode === 204 || this.statusCode === 205 || this.statusCode === 304;
+    const body = empty ? null : (this.readable ?? this.body);
     const res = new Response(body, { status: this.statusCode, statusText: this.statusMessage || undefined, headers: this.headers });
-    if (body instanceof ReadableStream) (res as unknown as Record<symbol, boolean>)[STREAM] = true;
+    if (body instanceof ReadableStream && (this.readable || this[STREAM])) (res as unknown as Record<symbol, boolean>)[STREAM] = true;
     return res;
   }
 }
@@ -1133,10 +1155,11 @@ const unsupported = (what: string) => new Error(`${what} is not available for Ne
 
 /** The body as Express's parsers would leave it: JSON parsed, forms as an object, text as a string, anything else as bytes. */
 const NO_BODY: { body: unknown; rawBody?: Buffer } = { body: undefined };
+const JSON_MEDIA_TYPE = /^[^/,\s]+\/(?:[^/,\s]+\+)?json$/;
 const noop = () => {};
 /** The response as the answer, or its error thrown (before the head went out; an error while streaming ends the stream instead). */
 function answerOf(res: ForgeResponse): Response | MinimalResponse {
-  if (res.error) throw res.error;
+  if (res.error) throw res.error.cause;
   return res.toAnswer();
 }
 
@@ -1154,14 +1177,17 @@ async function readBody(request: Request | MinimalRequest): Promise<{ body: unkn
     type = (request.headers.find((h) => h[0] === "content-type")?.[1] ?? "").toLowerCase();
   }
   if (!rawBody.length) return { body: undefined, rawBody };
-  if (/[/+]json\b/.test(type)) {
+  const parameters = type.indexOf(";");
+  if (parameters >= 0) type = type.slice(0, parameters);
+  type = type.trim();
+  if (JSON_MEDIA_TYPE.test(type)) {
     try {
       return { body: JSON.parse(rawBody.toString("utf8")), rawBody };
     } catch {
       throw new BadRequestException("The request body is not valid JSON");
     }
   }
-  if (type.startsWith("application/x-www-form-urlencoded")) return { body: toObject(new URLSearchParams(rawBody.toString("utf8"))), rawBody };
+  if (type === "application/x-www-form-urlencoded") return { body: toObject(new URLSearchParams(rawBody.toString("utf8"))), rawBody };
   if (type.startsWith("text/")) return { body: rawBody.toString("utf8"), rawBody };
   return { body: rawBody, rawBody };
 }
@@ -1227,7 +1253,13 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
       while (i < layers.length) {
         const layer = layers[i++]!;
         if (layer.method && layer.method !== req.method) continue;
-        const found = layer.matches(path);
+        let found: ReturnType<Layer["matches"]>;
+        try {
+          found = layer.matches(path);
+        } catch (e) {
+          if (e instanceof URIError) return this.reply(res, { statusCode: 400, message: "Malformed route parameter" }, 400);
+          return void res.fail(e);
+        }
         if (!found) continue;
         if (layer.route) {
           req.params = found.params;
@@ -1281,10 +1313,19 @@ class ForgeAdapter extends AbstractHttpAdapter<unknown, ForgeRequest, ForgeRespo
       if (type && !res.headers.has("content-type")) res.headers.set("content-type", type);
       if (disposition && !res.headers.has("content-disposition")) res.headers.set("content-disposition", String(disposition));
       if (length !== undefined && !res.headers.has("content-length")) res.headers.set("content-length", String(length));
-      res.body = Readable.toWeb(body.getStream()) as unknown as ReadableStream; // Node's web stream type and the DOM's are the same thing at runtime
+      const source = body.getStream();
+      const web = Readable.toWeb(source, {
+        strategy: {
+          highWaterMark: source.readableHighWaterMark,
+          size: (chunk: unknown) => chunk instanceof Uint8Array ? chunk.byteLength : typeof chunk === "string" ? Buffer.byteLength(chunk) : 1,
+        },
+      }) as unknown as ReadableStream<unknown>;
+      res[STREAM] = true;
+      res.body = web.pipeThrough(new TransformStream({ transform: (chunk, controller) => controller.enqueue(bytes(chunk)) }));
       return res.end();
     }
     if (body instanceof Uint8Array || body instanceof ArrayBuffer || body instanceof Blob || body instanceof ReadableStream) {
+      if (body instanceof ReadableStream) res[STREAM] = true;
       res.body = body as BodyInit;
       return res.end();
     }

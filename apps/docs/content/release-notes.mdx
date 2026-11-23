@@ -4,6 +4,22 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
+HTTP routing, response handling and streaming fixes for minimal actions and NestJS.
+
+### Security
+
+- **Nest request metadata follows the engine's proxy policy.** Behind a trusted proxy, Nest uses the last forwarded scheme when it is `http` or `https`. Direct connections use their own scheme. See [configuration](configuration.html#limits).
+  - **Upgrading:** set `TRUST_PROXY=1` behind a reverse proxy that sets `X-Forwarded-For` and `X-Forwarded-Proto` if your controllers use `req.protocol` or `req.secure`.
+- **Streamed Nest responses receive the configured Helmet headers.** The native HTTP path applies the same policy to streams and buffered replies. See [Nest HTTP responses](nest.html#requests-and-responses).
+- **Streaming HTTP responses respect backpressure across runtime processes.** Slow clients hold back further reads from the producer. See [Nest HTTP responses](nest.html#requests-and-responses).
+
+### Fixed
+
+- **HTTP routing and response metadata agree across engines.** Tuyere normalizes paths like Bun, reusable minimal responses keep one current request ID, and 205 responses have no body. Bound HTTP handlers receive the request. See [HTTP endpoints](http.html#minimal-routes).
+- **Nest delivers streamed files as they are read.** The file keeps its content type and disposition. See [Nest HTTP responses](nest.html#requests-and-responses).
+- **Nest parses request bodies by media type and preserves repeated form and query fields.** See [Nest HTTP requests](nest.html#requests-and-responses).
+- **Nest returns 400 for malformed route parameters and sanitizes controller exceptions even when their thrown value is empty.** See [Nest HTTP responses](nest.html#requests-and-responses).
+
 ## 0.23.0
 
 Named local URLs and managed Android development for Forge.

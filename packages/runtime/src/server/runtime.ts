@@ -2,7 +2,7 @@ import type { Subprocess } from "bun";
 import type { FunctionKind, UserIdentity } from "../functions";
 import { serializeError, type CallHeaders, type HttpFinish, type CallResult, type ErrorKind, type IdentityDetail, type LogEntry, type SerializedError } from "./executor";
 import type { Manifest } from "./project";
-import type { Batch, HostEvent, HostMessage, HttpRequestMessage, HttpResponseMessage, RuntimeMessage, SerializedRequest, SerializedResponse, SocketMessage } from "./protocol";
+import { HTTP_STREAM_WINDOW, type Batch, type HostEvent, type HostMessage, type HttpRequestMessage, type HttpResponseMessage, type RuntimeMessage, type SerializedRequest, type SerializedResponse, type SocketMessage } from "./protocol";
 import { startCore, type RuntimeCore } from "./runtime-core";
 import { fromWire } from "./wire";
 import type { CallTelemetry, TraceParent } from "./telemetry/context";
@@ -193,7 +193,7 @@ class RuntimeProcess implements Worker {
   started?: Promise<Manifest>;
   private pending = new Map<number, Pending>();
   get load() {
-    return this.pending.size;
+    return this.pending.size + this.streams.size;
   }
   get backlog() {
     return { waiting: this.shortPending, waitMs: this.gapMs && performance.now() - this.gapAt < 3000 ? this.shortPending * this.gapMs : 0 };
@@ -273,29 +273,44 @@ class RuntimeProcess implements Worker {
       }
       if (!msg.ok) p?.reject(RuntimeCallError.from(msg.error));
       else if ((msg.value as HttpResponseMessage | undefined)?.stream) {
-        // Its bytes follow as chunk messages with the same id.
-        const body = new ReadableStream<Uint8Array>({
-          start: (c) => void this.streams.set(msg.id, c),
-          cancel: () => (this.streams.delete(msg.id), this.event({ t: "cancel", id: msg.id })), // the client left: the handler hears it in the child
-        });
-        p?.resolve({ ...(msg.value as HttpResponseMessage), body });
+        if (!p) return this.event({ t: "cancel", id: msg.id }); // the call is already gone
+        const body = new ReadableStream<Uint8Array>(
+          {
+            start: (controller) => void this.streams.set(msg.id, { controller, credit: HTTP_STREAM_WINDOW }),
+            pull: (controller) => {
+              const stream = this.streams.get(msg.id);
+              if (!stream) return;
+              const bytes = (controller.desiredSize ?? 0) - stream.credit;
+              // Top up by a batch to keep a slow client from generating a message for every byte it reads.
+              if (bytes <= 0 || (bytes < HTTP_STREAM_WINDOW / 2 && stream.credit > 0)) return;
+              stream.credit += bytes;
+              this.event({ t: "stream-credit", id: msg.id, bytes });
+            },
+            cancel: () => (this.streams.delete(msg.id), this.event({ t: "cancel", id: msg.id })),
+          },
+          new ByteLengthQueuingStrategy({ highWaterMark: HTTP_STREAM_WINDOW }),
+        );
+        p.resolve({ ...(msg.value as HttpResponseMessage), body });
       } else p?.resolve(fromWire(msg.value));
       return;
     }
     if (msg.t === "chunk") {
       const stream = this.streams.get(msg.id);
       if (!stream) return; // the client went away
-      if (msg.data) stream.enqueue(new Uint8Array(msg.data));
-      if (msg.end || msg.error) this.streams.delete(msg.id);
-      if (msg.end) stream.close();
-      if (msg.error) stream.error(new Error(msg.error));
+      if (msg.data) {
+        stream.credit -= msg.data.byteLength;
+        stream.controller.enqueue(new Uint8Array(msg.data));
+      }
+      if (msg.end || msg.error !== undefined) this.streams.delete(msg.id);
+      if (msg.end) stream.controller.close();
+      if (msg.error !== undefined) stream.controller.error(new Error(msg.error));
       return;
     }
     this.events.onMessage(msg);
   }
 
   /** Streamed response bodies whose bytes are still arriving, by call id. */
-  private streams = new Map<number, ReadableStreamDefaultController<Uint8Array>>();
+  private streams = new Map<number, { controller: ReadableStreamDefaultController<Uint8Array>; credit: number }>();
 
   /** One IPC write per turn of the event loop instead of one per call. */
   private outbox: (HostMessage | HostEvent)[] = [];
@@ -337,7 +352,7 @@ class RuntimeProcess implements Worker {
   request(msg: Omit2<HostMessage, "id">, hardTimeoutMs: number, onHang: () => void): Promise<unknown> {
     const proc = this.proc;
     if (!proc) return Promise.reject(new RuntimeCallError("Function runtime is not running", "internal"));
-    if (this.pending.size >= (this.opts.maxPending ?? 1000)) return Promise.reject(new RuntimeCallError("Server is busy, try again", "overloaded"));
+    if (this.load >= (this.opts.maxPending ?? 1000)) return Promise.reject(new RuntimeCallError("Server is busy, try again", "overloaded"));
     const short = (msg.t === "call" && msg.kind === "query") || msg.t === "identity";
     // A call that would wait longer than a function may run is going to time out; saying so now frees its caller, and the process, for calls that can still finish.
     if (short && this.gapMs && performance.now() - this.gapAt < 3000 && this.shortPending * this.gapMs > (this.opts.timeouts?.functionMs ?? 10_000))
@@ -369,7 +384,7 @@ class RuntimeProcess implements Worker {
     this.shortPending = 0;
     this.gapMs = 0;
     this.window = { start: 0, answers: 0 };
-    for (const stream of this.streams.values()) stream.error(new Error(message));
+    for (const stream of this.streams.values()) stream.controller.error(new Error(message));
     this.streams.clear();
   }
 }

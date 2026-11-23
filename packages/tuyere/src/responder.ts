@@ -25,7 +25,7 @@ export class Responder {
     if (v instanceof TemplateReply) return this.putTemplate(id, v);
     if (v instanceof Reply) {
       const r = toReply(v);
-      return this.put(id, r.status, 0, r.headers, r.body, r.block);
+      return this.put(id, r.status, 0, r.headers, r.body, r.block, r.extraHeader);
     }
     if (v instanceof Uint8Array) return this.put(id, 200, CT_BINARY, null, v);
     return this.put(id, 200, CT_JSON, null, JSON.stringify(v));
@@ -54,6 +54,7 @@ export class Responder {
     extra: HeaderInit | null,
     body: Body,
     block: HeaderBlock | null = null,
+    extraHeader: [string, string] | null = null,
   ): void {
     const w = this.out;
     w.u8(1);
@@ -63,6 +64,11 @@ export class Responder {
     const hcAt = w.pos;
     w.u16(0);
     let hc = this.writeHeaders(null, extra);
+    if (extraHeader !== null) {
+      w.str16(extraHeader[0].toLowerCase());
+      w.str16(extraHeader[1]);
+      hc++;
+    }
     if (block !== null) {
       w.bytes(block.bytes);
       hc += block.count;

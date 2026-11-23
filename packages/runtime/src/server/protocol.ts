@@ -43,6 +43,9 @@ export interface HttpResponseMessage {
   route?: string;
 }
 
+/** The server grants this much space per streamed body, replenished as its client consumes it. */
+export const HTTP_STREAM_WINDOW = 256 << 10;
+
 /** Server → function runtime, with no answer: the sockets of Nest gateways and GraphQL subscriptions under /http. */
 export type HostEvent =
   | { t: "ws"; op: "open"; sid: string; path: string; headers: [string, string][]; requestId?: string }
@@ -50,6 +53,7 @@ export type HostEvent =
   | { t: "ws"; op: "close"; sid: string; code: number; reason: string }
   /** The client left a streamed response (by the id of the call that started it). */
   | { t: "cancel"; id: number }
+  | { t: "stream-credit"; id: number; bytes: number }
   /** A PubSub event from one worker, for every worker (createPubSub in @archlast/forge-runtime/nest). */
   | { t: "relay"; topic: string; payload: unknown }
   /** The pool changed size: a process keeps a read cache only while it is the database's one writer. */
