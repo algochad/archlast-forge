@@ -1,7 +1,7 @@
 // Function runtime process: runs the core (runtime-core.ts) behind IPC, so the server can restart it alone when code or dependencies change,
 // and kill it if a call hangs.
 import { serializeError, type CallResult } from "./executor";
-import type { Batch, HostEvent, HostMessage, HttpResponseMessage, RuntimeMessage } from "./protocol";
+import { HTTP_STREAM_WINDOW, type Batch, type HostEvent, type HostMessage, type HttpResponseMessage, type RuntimeMessage } from "./protocol";
 import { unlock } from "./db/unlock";
 import { startCore } from "./runtime-core";
 import { toWire } from "./wire";
@@ -143,24 +143,57 @@ async function main() {
   }
   const short = (m: HostMessage) => (m.t === "call" && m.kind === "query") || m.t === "identity";
 
-  /** Streamed bodies being sent, so the server can stop one when its client leaves. */
-  const pumps = new Map<number, ReadableStreamDefaultReader<Uint8Array>>();
+  /** Wait for the server to make space before reading more of a response. */
+  type Pump = { reader: ReadableStreamDefaultReader<Uint8Array>; credit: number; wake?: () => void; cancelled: boolean };
+  const pumps = new Map<number, Pump>();
   async function pump(id: number, body: ReadableStream<Uint8Array>) {
     const reader = body.getReader();
-    pumps.set(id, reader);
+    const state: Pump = { reader, credit: HTTP_STREAM_WINDOW, cancelled: false };
+    pumps.set(id, state);
     try {
-      for (let r = await reader.read(); !r.done; r = await reader.read()) send({ t: "chunk", id, data: r.value.buffer.slice(r.value.byteOffset, r.value.byteOffset + r.value.byteLength) as ArrayBuffer });
-      send({ t: "chunk", id, end: true });
+      let chunk: Uint8Array | undefined;
+      let offset = 0;
+      while (!state.cancelled) {
+        if (state.credit === 0) await new Promise<void>((resolve) => (state.wake = resolve));
+        state.wake = undefined;
+        if (state.cancelled) break;
+        if (!chunk || offset === chunk.byteLength) {
+          const next = await reader.read();
+          if (state.cancelled) break;
+          if (next.done) {
+            send({ t: "chunk", id, end: true });
+            break;
+          }
+          chunk = next.value;
+          offset = 0;
+          if (chunk.byteLength === 0) continue;
+        }
+        const size = Math.min(state.credit, chunk.byteLength - offset);
+        const start = chunk.byteOffset + offset;
+        send({ t: "chunk", id, data: chunk.buffer.slice(start, start + size) as ArrayBuffer });
+        offset += size;
+        state.credit -= size;
+      }
     } catch (e) {
-      send({ t: "chunk", id, error: (e as Error)?.message ?? String(e) });
+      if (!state.cancelled) send({ t: "chunk", id, error: (e as Error)?.message ?? String(e) });
     } finally {
       pumps.delete(id);
+      reader.releaseLock();
     }
   }
 
-  // Cancelling the reader cancels the body, which is how the handler hears that its client left (`res` and `req` emit "close").
   const take = (m: HostMessage | HostEvent) => {
-    if (m.t === "cancel") return void pumps.get(m.id)?.cancel().catch(() => {});
+    if (m.t === "cancel" || m.t === "stream-credit") {
+      const state = pumps.get(m.id);
+      if (!state) return;
+      if (m.t === "cancel") {
+        state.cancelled = true;
+        // A Nest handler hears its client leave through the stream's cancel callback.
+        void state.reader.cancel().catch(() => {});
+      } else state.credit += m.bytes;
+      state.wake?.();
+      return;
+    }
     if (m.t === "ws" || m.t === "relay" || m.t === "pool" || m.t === "unlock") return core.event(m);
     if (!short(m)) return void answer(m);
     queue.push(m);

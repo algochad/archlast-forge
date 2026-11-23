@@ -175,11 +175,19 @@ export class HeaderNames {
 export class HeaderBlock {
   readonly bytes: Uint8Array;
   readonly count: number;
+  readonly hasContentType: boolean;
   constructor(pairs: [string, string][]) {
     const w = new ByteWriter(512);
-    for (const [name, value] of pairs) (w.str16(name.toLowerCase()), w.str16(value));
+    let hasContentType = false;
+    for (const [name, value] of pairs) {
+      const lower = name.toLowerCase();
+      w.str16(lower);
+      w.str16(value);
+      if (lower === "content-type") hasContentType = true;
+    }
     this.bytes = w.buf.slice(0, w.pos);
     this.count = pairs.length;
+    this.hasContentType = hasContentType;
   }
 }
 
