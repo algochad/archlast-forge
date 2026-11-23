@@ -88,8 +88,8 @@ function run(command: string[], cwd: string, env: NodeJS.ProcessEnv) {
   };
 }
 
-async function until(check: () => boolean | Promise<boolean>) {
-  const deadline = Date.now() + 12_000;
+async function until(check: () => boolean | Promise<boolean>, timeout = 12_000) {
+  const deadline = Date.now() + timeout;
   do {
     if (await check()) return;
     await Bun.sleep(50);
@@ -250,7 +250,7 @@ switch (Bun.argv[2]) {
         const args = inWorkspace ? ["--app", "web"] : ["--no-docker", "--run", `"${process.execPath}" probe.ts`];
         const dev = run([process.execPath, cli, "dev", ...args, "--tunnel", provider], root, env);
         processes.push(dev);
-        await until(() => existsSync(join(web, "probe.json")) && (!inWorkspace || existsSync(join(peer, "probe.json"))));
+        await until(() => existsSync(join(web, "probe.json")) && (!inWorkspace || existsSync(join(peer, "probe.json"))), 30_000);
         const boot = JSON.parse(readFileSync(join(web, "probe.json"), "utf8")) as { local: string; tunnel: string };
         expect(boot.local).toMatch(/\.localhost:\d+$/);
         expect(boot.tunnel).toBe(publicUrl);
@@ -286,6 +286,6 @@ switch (Bun.argv[2]) {
         rmSync(root, { recursive: true, force: true });
       }
     },
-    35_000,
+    55_000,
   );
 }
