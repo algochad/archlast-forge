@@ -62,11 +62,11 @@ export async function startWorkspaceApp(app: string, tunnel?: TunnelProvider) {
     const passesSelection = reports.some((report) =>
       [...(report?.configured ?? []), ...(report?.passthrough ?? [])].some((entry) => {
         const name = entry.split("=", 1)[0]!;
-        return name === TUNNEL_SELECTION || (name.endsWith("*") && TUNNEL_SELECTION.startsWith(name.slice(0, -1)));
+        return name === TUNNEL_SELECTION;
       }),
     );
     if (plan.envMode !== "loose" && !passesSelection)
-      throw new Error(`Turbo filters out Forge's tunnel selection for ${directory}. Add PORTLESS* to the dev task's passThroughEnv in turbo.json.`);
+      throw new Error(`Turbo filters out Forge's tunnel selection for ${directory}. Add ${TUNNEL_SELECTION} to the dev task's passThroughEnv in turbo.json.`);
   }
   return runDevChild(command, root, env);
 }

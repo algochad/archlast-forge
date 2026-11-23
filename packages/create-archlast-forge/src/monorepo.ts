@@ -680,7 +680,30 @@ export function writeRoot(c: Ctx) {
       {
         $schema: "https://turborepo.com/schema.json",
         tasks: {
-          dev: { cache: false, persistent: true, passThroughEnv: ["PORTLESS*", "NODE_EXTRA_CA_CERTS"] },
+          dev: {
+            cache: false,
+            persistent: true,
+            passThroughEnv: [
+              "PORTLESS",
+              "PORTLESS_APP_PORT",
+              "PORTLESS_CLOUDFLARE",
+              "PORTLESS_CLOUDFLARE_URL",
+              "PORTLESS_FORGE_TUNNEL",
+              "PORTLESS_FUNNEL",
+              "PORTLESS_HTTPS",
+              "PORTLESS_NGROK",
+              "PORTLESS_NGROK_URL",
+              "PORTLESS_PORT",
+              "PORTLESS_PREFIX",
+              "PORTLESS_STATE_DIR",
+              "PORTLESS_SYNC_HOSTS",
+              "PORTLESS_TAILSCALE",
+              "PORTLESS_TAILSCALE_URL",
+              "PORTLESS_TLD",
+              "PORTLESS_URL",
+              "NODE_EXTRA_CA_CERTS",
+            ],
+          },
           build: { dependsOn: ["^build"], outputs: [".forge/build/**"] },
           // Each app's typecheck writes forge/_generated first, which packages/api reads.
           typecheck: { dependsOn: ["^typecheck"] },
