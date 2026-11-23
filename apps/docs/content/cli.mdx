@@ -226,7 +226,7 @@ From a workspace containing `apps/mobile`, check Android readiness, install port
 ## dev
 
 ```bash
-archlast-forge dev [--port <n>] [--with postgres,redis,s3] [--no-docker] [--workspace] [--run "<cmd>"] [--dir <forge dir>]
+archlast-forge dev [--app <name>] [--tunnel <cloudflare|ngrok|tailscale>] [--port <n>] [--with postgres,redis,s3] [--no-docker] [--workspace] [--run "<cmd>"] [--dir <forge dir>]
 ```
 
 Inside a generated Forge RPC monorepo, `bun run dev` at the root runs each Forge app's `dev --workspace` task through Turbo. Each app gets a named HTTP URL, and its isolated development profile selects the database and infrastructure. See [Develop from the workspace root](monorepo.html#develop-from-the-workspace-root).
@@ -246,6 +246,32 @@ Existing projects with Node.js 24 or later adopt this automatically when they up
 Use `PORTLESS=0 bun run dev` for direct HTTP, or pass `--port <n>` to `archlast-forge dev` in a standalone project. In a monorepo, set `"portless": false` in `archlast-forge.workspace.json` to use the configured direct ports for every app. New generated Turbo tasks also pass through `PORTLESS*` and `NODE_EXTRA_CA_CERTS`. In an existing monorepo with strict Turbo environment filtering, add these to `tasks.dev.passThroughEnv` if you need to pass proxy settings from the shell.
 
 Portless handles Forge HTTP and WebSocket traffic. Forge RPC and Nest TCP transports still use their workspace RPC ports. PostgreSQL, Redis, NATS and S3-compatible storage still use their own ports and URLs. Forge publishes managed dev storage on a free loopback port when Portless is active. Use direct mode or another device-reachable endpoint for a physical Expo device or a remote browser.
+
+### Public tunnels for local webhooks
+
+Run one Forge app behind a public HTTPS URL while keeping its usual local development URL.
+
+```bash
+archlast-forge dev --tunnel cloudflare
+```
+
+From a Forge workspace root, select an app by its folder name under `apps/`.
+
+```bash
+archlast-forge dev --app web --tunnel cloudflare
+```
+
+Turbo starts the selected app and its configured dependencies. Forge opens the tunnel for the selected app only. If you manage your own Turbo dev configuration, keep `PORTLESS*` in `tasks.dev.passThroughEnv`.
+
+| Provider | Local setup |
+| --- | --- |
+| `cloudflare` | Install [cloudflared](https://developers.cloudflare.com/tunnel/downloads/). [Quick Tunnels](https://developers.cloudflare.com/tunnel/get-started/quick-tunnels/) use a temporary URL without an account. |
+| `ngrok` | Install [ngrok](https://ngrok.com/download) and configure its authentication token. |
+| `tailscale` | Install [Tailscale](https://tailscale.com/download), connect it, and [enable Funnel](https://tailscale.com/docs/features/tailscale-funnel) on your tailnet. |
+
+Forge prints **Public tunnel** beside the local App or API URL and sets `FORGE_TUNNEL_URL` in the selected app, its `--run` command and its workspace `forge:seed` script. For example, use `${FORGE_TUNNEL_URL}/api/webhooks/polar` as the webhook endpoint. The tunnel serves the selected app's HTTP routes. Verify webhook signatures in your handler.
+
+Use `FORGE_DEV_URL` for the local app and `FORGE_TUNNEL_URL` for public callbacks. The tunnel leaves the local origin, Better Auth configuration and workspace peer addresses in place. Portless stops the tunnel when development stops. This option requires Node.js 24 or later and Portless enabled.
 
 ### A full-stack app
 

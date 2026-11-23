@@ -10,13 +10,13 @@ import { ensureDeps, findUp } from "./deps";
 import * as dockerEngine from "./docker";
 import { engineServe, prepare } from "./engine";
 import type { GrowOptions } from "./grow";
-import { appPortlessRoute, appWorkspace, launchPortless, peerOrigin, portlessAddress, portlessName, RESERVED_PORT_EXIT } from "./portless";
+import { appPortlessRoute, appWorkspace, launchPortless, peerOrigin, portlessAddress, portlessName, RESERVED_PORT_EXIT, tunnelProvider } from "./portless";
 import { loadProjectConfig, projectRoot, type ProjectConfig } from "./project";
 import { serve } from "./serve";
 import * as stack from "./stack";
 import { banner, c, ok, step, warn } from "./ui";
 import { upgrade } from "./upgrade";
-import { checkWorkspacePorts, transportPorts, useNamedDashboard, waitForWorkspaceApp, workspaceDev } from "./workspace-dev";
+import { checkWorkspacePorts, startWorkspaceApp, transportPorts, useNamedDashboard, waitForWorkspaceApp, workspaceDev, workspaceTunnel } from "./workspace-dev";
 
 // `init` has its own options and prompts: hand everything after it to the scaffolder.
 if (Bun.argv[2] === "init") {
@@ -46,6 +46,8 @@ ${c.bold("Grow")}  (a project that exists: see the monorepo page of the docs)
 ${c.bold("Develop")}
   dev                     run with live reload: a full-stack app on this machine, a backend's engine in Docker
       --port <n>          direct HTTP port (default 3000)
+      --app <name>        start a Forge workspace app and its dependencies through Turbo
+      --tunnel <cloudflare|ngrok|tailscale>   share the selected app over public HTTPS via Portless
       PORTLESS=0          disable named HTTP URLs for this development run
       --with <list>       services to start: postgres, redis, s3 (default: the ones in archlast-forge.json)
       --no-docker         run a backend's engine in this process
@@ -104,6 +106,8 @@ const { positionals, values } = parseCommandLine({
     port: { type: "string" },
     "no-docker": { type: "boolean" },
     workspace: { type: "boolean" },
+    app: { type: "string" },
+    tunnel: { type: "string" },
     docker: { type: "boolean" },
     with: { type: "string" },
     tag: { type: "string" },
@@ -154,6 +158,7 @@ const [command, ...rest] = positionals;
 let port = Number(values.port ?? process.env.PORT ?? 3000);
 let mobileBackend = false;
 let publicDevOrigin: string | undefined;
+let tunnelDevOrigin: string | undefined;
 const inContainer = process.env.ARCHLAST_ENGINE === "1";
 
 /** Docker unless told otherwise, or unavailable (with a hint), or already inside the engine. */
@@ -191,7 +196,9 @@ function devEnv(dir: string) {
 /** `--run "vite"`: a companion process for the frontend, stopped with the CLI. */
 function companion() {
   if (!values.run) return;
-  const proc = Bun.spawn(["sh", "-c", values.run], { stdout: "inherit", stderr: "inherit", stdin: "inherit" });
+  const proc = Bun.spawn(["sh", "-c", values.run], {
+    env: process.env, stdout: "inherit", stderr: "inherit", stdin: "inherit",
+  });
   process.on("exit", () => proc.kill());
 }
 
@@ -265,6 +272,7 @@ async function devFramework(dir: string, cfg: ProjectConfig) {
   });
   banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  full-stack app  ${c.dim(`· ready in ${Math.round(performance.now() - began)} ms`)}`, [
     ["App", publicDevOrigin ?? server.url],
+    ...(tunnelDevOrigin ? [["Public tunnel", tunnelDevOrigin] as [string, string]] : []),
     ["Dashboard", `${publicDevOrigin ?? server.url}/_dashboard`],
     ["Admin key", adminKeyHint(env)],
     ...where.map((w): [string, string] => ["Service", w]),
@@ -275,7 +283,20 @@ async function devFramework(dir: string, cfg: ProjectConfig) {
 }
 
 async function dev() {
-  if (values.mobile) return (await import("./mobile")).startMobile(values.dir ?? process.cwd(), values);
+  const requestedTunnel = values.tunnel === undefined ? undefined : tunnelProvider(values.tunnel);
+  if (values.mobile) {
+    if (values.app !== undefined || requestedTunnel) fail("--mobile cannot be combined with --app or --tunnel.");
+    return (await import("./mobile")).startMobile(values.dir ?? process.cwd(), values);
+  }
+  if (values.app !== undefined) {
+    if (values.dir || values.workspace || values.port || values.with || values.docker || values["no-docker"] || values.run)
+      fail("Use app-specific dev flags from the app's directory, without --app.");
+    if (requestedTunnel && (inContainer || process.env.PORTLESS === "0" || process.env.PORTLESS_URL))
+      fail("Start workspace tunnels outside Portless with Portless enabled.");
+    process.exit(await startWorkspaceApp(values.app, requestedTunnel));
+  }
+  if (requestedTunnel && !values.dir && findWorkspaceRoot(process.cwd()) === process.cwd())
+    fail("Choose a workspace app with archlast-forge dev --app <name> --tunnel <provider>.");
   const dir = findForgeDir(values.dir);
   const cfg = loadProjectConfig(dir);
   const root = projectRoot(dir);
@@ -283,11 +304,14 @@ async function dev() {
   if (values.workspace && (values.port || values.docker || values.with))
     fail("Set ports in the workspace file and infrastructure in the app's .env.development.local.");
   const mobilePort = process.env.FORGE_MOBILE_MAIN_PORT;
-  const address = mobilePort ? undefined : portlessAddress();
+  const tunnel = (workspace && workspaceTunnel(workspace.root, workspace.app)) ?? requestedTunnel;
+  if (tunnel && (mobilePort || inContainer || process.env.PORTLESS === "0" || workspace?.ws.portless === false || values.port))
+    fail("--tunnel requires an app running through Portless. Enable Portless and omit --port.");
+  const address = mobilePort ? undefined : portlessAddress(tunnel);
   if (!mobilePort && !address && !inContainer && process.env.PORTLESS !== "0"
     && (workspace ? workspace.ws.portless !== false : !values.port)) {
     const name = workspace ? portlessName(workspace.root, workspace.app) : portlessName(root);
-    const exit = await launchPortless(name, process.env.PORTLESS === "1" || workspace?.ws.portless === true);
+    const exit = await launchPortless(name, process.env.PORTLESS === "1" || workspace?.ws.portless === true, tunnel);
     if (exit !== undefined) process.exit(exit);
   }
   const appOrigin = address && workspace && workspace.ws.portless !== false
@@ -301,6 +325,8 @@ async function dev() {
     }
     port = address.port;
     publicDevOrigin = address.url.origin;
+    tunnelDevOrigin = address.tunnelUrl;
+    if (tunnelDevOrigin) process.env.FORGE_TUNNEL_URL = tunnelDevOrigin;
     process.env.HOST = "127.0.0.1";
     process.env.FORGE_DEV_URL = publicDevOrigin;
   }
@@ -357,6 +383,7 @@ async function devBackend(dir: string, cfg?: ProjectConfig) {
         ADMIN_KEY: env.ADMIN_KEY!,
         BETTER_AUTH_URL: env.BETTER_AUTH_URL!,
         ...(publicDevOrigin && { FORGE_DEV_URL: publicDevOrigin }),
+        ...(tunnelDevOrigin && { FORGE_TUNNEL_URL: tunnelDevOrigin }),
         TRUSTED_ORIGINS: env.TRUSTED_ORIGINS ?? "",
         ...(env.STORAGE_PUBLIC_URL && { STORAGE_PUBLIC_URL: env.STORAGE_PUBLIC_URL }),
       },
@@ -364,6 +391,7 @@ async function devBackend(dir: string, cfg?: ProjectConfig) {
     });
     banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  backend  ${c.dim("· engine in Docker")}`, [
       ["API", env.BETTER_AUTH_URL!],
+      ...(tunnelDevOrigin ? [["Public tunnel", tunnelDevOrigin] as [string, string]] : []),
       ["Dashboard", `${env.BETTER_AUTH_URL}/_dashboard`],
       ["Admin key", adminKeyHint(env)],
       ["Container", name],
@@ -384,6 +412,7 @@ async function devBackend(dir: string, cfg?: ProjectConfig) {
   const server = await serve({ forgeDir: dir, dev: true, env: { ...env, PORT: String(port) }, watchDir: dir, onChange: forgeChanged(dir) });
   banner(`${c.bold("archlast-forge")} ${VERSION}  ${c.dim("·")}  backend  ${c.dim("· in this process")}`, [
     ["API", publicDevOrigin ?? server.url],
+    ...(tunnelDevOrigin ? [["Public tunnel", tunnelDevOrigin] as [string, string]] : []),
     ["Dashboard", `${publicDevOrigin ?? server.url}/_dashboard`],
     ["Admin key", adminKeyHint(env)],
     ...where.map((w): [string, string] => ["Service", w]),
