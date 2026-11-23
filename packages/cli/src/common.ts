@@ -24,6 +24,20 @@ export function findForgeDir(dir?: string) {
   return abs;
 }
 
+/** Forward interrupts and wait for the development tool to clean up its own resources. */
+export async function runDevChild(command: string[], cwd: string, env: NodeJS.ProcessEnv) {
+  const child = Bun.spawn(command, { cwd, env, stdin: "inherit", stdout: "inherit", stderr: "inherit" });
+  const stop = () => child.kill("SIGTERM");
+  process.once("SIGINT", stop);
+  process.once("SIGTERM", stop);
+  try {
+    return await child.exited;
+  } finally {
+    process.off("SIGINT", stop);
+    process.off("SIGTERM", stop);
+  }
+}
+
 /** Dev-only secrets, persisted so sessions and the dashboard key survive restarts. */
 export function devSecrets(env: Record<string, string | undefined>, dir: string) {
   const file = join(dir, ".dev-secrets.json");

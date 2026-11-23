@@ -1,5 +1,5 @@
 import { SnapshotMoved, type ReadCache } from "./read-cache";
-import { MinimalResponse, type MinimalRequest } from "./minimal";
+import { isMinimalResponse, type MinimalRequest, type MinimalResponse } from "./minimal";
 import { isForgeError, TimeoutError } from "../errors";
 import { getFunctionName, type ActionCtx, type FunctionKind, type HttpAction, type HttpCtx, type RegisteredFunction, type UserIdentity } from "../functions";
 import { validate, validateFields, ValidationError } from "../values";
@@ -501,8 +501,7 @@ export class Executor {
     if (routeOut) (ctx as unknown as Record<symbol, unknown>)[ROUTE] = null; // an untraced call: the handler may leave its route here
     const res: unknown = await this.logged(name, requestId, undefined, () => withTimeout(Promise.resolve(action.handler(ctx as unknown as HttpCtx, req as Request)), this.limits.actionTimeoutMs, name));
     if (routeOut) routeOut.route = routeOf(ctx);
-    if (!(res instanceof Response) && !(res instanceof MinimalResponse)) throw new Error(`${name} must return a Response`);
-    return res as Response | MinimalResponse;
+    return this.httpResult(name, res);
   }
 
   /**
@@ -569,8 +568,8 @@ export class Executor {
   }
 
   private httpResult(name: string, res: unknown): Response | MinimalResponse {
-    if (!(res instanceof Response) && !(res instanceof MinimalResponse)) throw new Error(`${name} must return a Response`);
-    return res as Response | MinimalResponse;
+    if (!isMinimalResponse(res) && !(res instanceof Response)) throw new Error(`${name} must return a Response`);
+    return res;
   }
 
   /** A function's time limit, for mutations run outside `call` (the scheduler). */

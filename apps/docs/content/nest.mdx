@@ -246,7 +246,7 @@ export default http;
 - **Bodies** are parsed the way Nest's Express setup parses them. JSON (`application/json`, `+json`) is parsed, and invalid JSON answers 400. Forms (`application/x-www-form-urlencoded`) become an object, `text/*` becomes a string, and anything else becomes a `Buffer`. When there is a body, `req.rawBody` has its bytes.
 - **Query strings** become an object, and repeated keys become arrays. Nested syntax such as `a[b]=1` isn't expanded.
 - **Return values.** An object or array is sent as JSON, and a string as `text/plain`. `null` or nothing sends an empty body. A `StreamableFile` streams with its headers. A Web `Response` is sent as it is, with its own status. Status codes follow Nest: 200, 201 for `@Post()`, `@HttpCode()` to change it, and `@Redirect()` for redirects.
-- **`@Req()`** is a `NestRequest` with Express's request API: `method`, `url`, `originalUrl`, `path`, `hostname`, `protocol`, `secure`, `headers`, `get(name)`, `query`, `params`, `body`, `cookies`, `rawBody`, and `raw`, the Web `Request`.
+- **`@Req()`** is a `NestRequest` with Express's request API: `method`, `url`, `originalUrl`, `path`, `hostname`, `protocol`, `secure`, `headers`, `get(name)`, `query`, `params`, `body`, `cookies`, `rawBody`, and `raw`, the Web `Request`. `protocol` and `secure` use the connection's scheme by default, or the scheme supplied by the proxy when [`TRUST_PROXY`](configuration.html#limits) is enabled.
 - **Guards, pipes, interceptors and exception filters** work as in Nest, including global ones through `APP_GUARD`, `APP_PIPE`, `APP_INTERCEPTOR` and `APP_FILTER`. `ModuleRef`, `Reflector` and rxjs (as `rxjs`) are exported too. A global interceptor or guard also runs for gateways and resolvers, so check `context.getType()` before you reach for the HTTP response.
 - **Middleware** from a module's `configure(consumer)` runs for its routes, with the same `req` and `res` and a `next()`.
 
@@ -278,7 +278,7 @@ report(@Res() res: NestResponse) {
 
 - It has `status`, `sendStatus`, `json`, `send` (an object as JSON, a string as HTML, bytes as they are), `set`/`header`, `get`, `append`, `type`, `location`, `redirect`, `attachment`, `vary`, `cookie` and `clearCookie` (with Express's options: `maxAge` in milliseconds), and Node's `setHeader`, `getHeader`, `removeHeader`, `writeHead`, `write`, `end` and `headersSent`.
 - With `@Res({ passthrough: true })` you can set headers and still return the body.
-- **A response streams once you write to it.** `res.write()` or `res.flushHeaders()` sends the head and every write after it as it happens, until `res.end()`. That carries `@Sse()` endpoints and anything else that sends as it goes. A response that is only `send()` or `end()` goes out as one body. In a child process (dev, `RUNTIME_WORKERS > 1`) the bytes cross to the server as they come. When the client goes away, `req` and `res` get their `"close"` event, so stop writing there.
+- **A response streams once you write to it.** `res.write()` or `res.flushHeaders()` sends the head and every write after it as it happens, until `res.end()`. That carries `@Sse()` endpoints and anything else that sends as it goes. A response that is only `send()` or `end()` goes out as one body. If `res.write()` returns `false`, wait for `"drain"` before writing again. With a child runtime, the server reads more bytes as it has room for them. When the client goes away, `req` and `res` get their `"close"` event, so stop writing there.
 
 ```ts
 @Sse("ticks")

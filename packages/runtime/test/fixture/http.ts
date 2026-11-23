@@ -78,3 +78,37 @@ http.route({
 });
 
 export default http;
+
+// A handler can reuse an immutable answer or return its own request-id header.
+const reused = new MinimalResponse(200, [["set-cookie", "one=1"], ["set-cookie", "two=2"]], "reused");
+const tagged = new MinimalResponse(200, [["X-Request-Id", "app-value"]], "tagged");
+http.route({ method: "GET", path: "/reused", handler: minimalAction(() => reused) });
+http.route({ method: "GET", path: "/tagged", handler: minimalAction(() => tagged) });
+http.route({ method: "GET", path: "/reset", handler: minimalAction(() => new MinimalResponse(205, [], "discarded")) });
+http.route({ method: "GET", path: "/canonical", handler: minimalAction((_ctx, req) => minimalJson({ path: req.path, urlPath: new URL(req.url).pathname })) });
+const withRequest = (_ctx: unknown, req = new Request("http://fallback")) => json(new URL(req.url).pathname);
+http.route({ method: "GET", path: "/bound", handler: httpAction(withRequest.bind(null)) });
+
+let streamChunks = 0;
+let streamCancelled = false;
+http.route({
+  method: "GET",
+  path: "/paced-stream",
+  handler: minimalAction(() => {
+    streamChunks = 0;
+    streamCancelled = false;
+    return new Response(new ReadableStream<Uint8Array>({
+      pull(controller) {
+        if (streamChunks === 20) return controller.close();
+        streamChunks++;
+        const bytes = new Uint8Array(streamChunks === 16 ? 294_912 : 32_768);
+        bytes.fill(streamChunks);
+        controller.enqueue(bytes);
+      },
+      cancel() {
+        streamCancelled = true;
+      },
+    }), { headers: { "content-type": "text/event-stream" } });
+  }),
+});
+http.route({ method: "GET", path: "/stream-progress", handler: minimalAction(() => minimalJson({ chunks: streamChunks, cancelled: streamCancelled })) });

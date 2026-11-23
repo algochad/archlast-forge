@@ -87,11 +87,14 @@ export function takesRequest(fn: Function): boolean {
         }
       }
     } else if (arrow >= 0) params = source.slice(0, arrow).replace(/^\s*async\s+/, "");
-    if (params !== undefined && !/[,=.]/.test(params) && !/\barguments\b/.test(source)) known = false;
+    if (params?.trim() && !/[,=.]/.test(params) && !/\barguments\b/.test(source)) known = false;
   }
   wants.set(fn, known);
   return known;
 }
+
+/** The directly connected proxy is the last hop in a forwarded header. */
+export const lastForwarded = (header: string | null | undefined) => header?.split(",").at(-1)?.trim() || undefined;
 
 /** The route as it appears in logs and metrics: patterns, not the paths callers sent. */
 const names = new WeakMap<HttpRoute, string>();

@@ -133,6 +133,26 @@ describe("in the server", () => {
     return Number(new RegExp(`forge_waf_requests_total\\{result="${result}"\\} (\\d+)`).exec(text)?.[1]);
   };
 
+  test("the firewall inspects HTTP routes when a full-stack app also serves files", async () => {
+    const routes = ["/api/v1/hello", "/http/api/v1/hello"];
+    const file = "/logo.png";
+    const srv = await startServer({
+      forgeDir: join(import.meta.dir, "fixture-root"),
+      // This fixture has its own Nest mount; keep its module state out of the shared test worker.
+      env: { ...process.env, RUNTIME_MODE: "process", PORT: "0", DATA_DIR: tempDir(), BETTER_AUTH_SECRET: "s".repeat(32), ALLOW_INSECURE_HTTP: "1", LOG_FORMAT: "json", METRICS_TOKEN: "m", WAF: "on" },
+      app: {
+        serves: (path) => path === file || routes.includes(path),
+        fetch: async () => new Response("asset"),
+      },
+    });
+    started.push(srv);
+
+    expect(await (await fetch(srv.url + file)).text()).toBe("asset");
+    expect(await metric(srv, "inspected")).toBe(0);
+    for (const path of routes) expect(await (await fetch(srv.url + path)).json()).toMatchObject({ hello: "world" });
+    expect(await metric(srv, "inspected")).toBe(2);
+  });
+
   test("block mode: an attack gets a 403 in the engine's error shape; ordinary calls and their bodies go through untouched", async () => {
     const srv = await serve({});
     expect((await fetch(`${srv.url}/rpc/todos:events?args=%7B%7D`)).status).toBe(200);

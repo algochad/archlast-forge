@@ -7,6 +7,49 @@ import {
   findWorkspaceRoot,
   loadWorkspace,
 } from "create-archlast-forge/workspace";
+import { runDevChild } from "./common";
+
+const providers = {
+  cloudflare: {
+    flag: "--cloudflare",
+    executable: "cloudflared",
+    url: "PORTLESS_CLOUDFLARE_URL",
+    install: "https://developers.cloudflare.com/tunnel/downloads/",
+  },
+  ngrok: {
+    flag: "--ngrok",
+    executable: "ngrok",
+    url: "PORTLESS_NGROK_URL",
+    install: "https://ngrok.com/download",
+  },
+  tailscale: {
+    flag: "--funnel",
+    executable: "tailscale",
+    url: "PORTLESS_TAILSCALE_URL",
+    install: "https://tailscale.com/download",
+  },
+} as const;
+
+export type TunnelProvider = keyof typeof providers;
+
+export function tunnelProvider(value: string): TunnelProvider {
+  if (Object.hasOwn(providers, value)) return value as TunnelProvider;
+  throw new Error(`Unknown tunnel provider "${value}". Use --tunnel cloudflare, --tunnel ngrok, or --tunnel tailscale.`);
+}
+
+/** An explicit Forge selection overrides any inherited Portless sharing settings. */
+export function localPortlessEnv(): NodeJS.ProcessEnv {
+  const env: NodeJS.ProcessEnv = {
+    ...process.env,
+    PORTLESS_CLOUDFLARE: "0",
+    PORTLESS_NGROK: "0",
+    PORTLESS_TAILSCALE: "0",
+    PORTLESS_FUNNEL: "0",
+  };
+  for (const { url } of Object.values(providers)) delete env[url];
+  delete env.FORGE_TUNNEL_URL;
+  return env;
+}
 
 export const RESERVED_PORT_EXIT = 75;
 
@@ -43,7 +86,7 @@ export function portlessName(root: string, app?: string) {
   return `${readable}-${id}`;
 }
 
-export function portlessAddress() {
+export function portlessAddress(tunnel?: TunnelProvider) {
   if (!process.env.PORTLESS_URL || process.env.PORTLESS === "0") return;
   const url = URL.parse(process.env.PORTLESS_URL);
   const port = Number(process.env.PORT);
@@ -58,7 +101,11 @@ export function portlessAddress() {
     throw new Error(
       "Portless must supply an HTTP(S) origin in PORTLESS_URL and an upstream port in PORT.",
     );
-  return { url, port };
+  if (!tunnel) return { url, port };
+  const publicUrl = URL.parse(process.env[providers[tunnel].url] ?? "");
+  if (!publicUrl || publicUrl.protocol !== "https:" || publicUrl.href !== `${publicUrl.origin}/`)
+    throw new Error(`Portless did not provide a public HTTPS URL for ${tunnel}. Start Forge directly with --tunnel ${tunnel} and check Portless's output.`);
+  return { url, port, tunnelUrl: publicUrl.origin };
 }
 
 export function peerOrigin(url: URL, root: string, app: string, peer: string) {
@@ -81,17 +128,25 @@ function portlessCommand() {
   return [node, bin] as const;
 }
 
-export async function launchPortless(name: string, required: boolean) {
+export async function launchPortless(name: string, required: boolean, tunnel?: TunnelProvider) {
   const executable = portlessCommand();
   const version =
     executable && Bun.spawnSync([executable[0], "--version"]).stdout.toString();
   if (!executable || !version || Number(/^v(\d+)/.exec(version)?.[1] ?? 0) < 24) {
+    if (tunnel)
+      throw new Error("Public tunnels require Portless and Node.js 24 or later on PATH.");
     if (required)
       throw new Error("Portless development needs Node.js 24 or later on PATH. Set PORTLESS=0 for direct development.");
     console.warn("Using direct HTTP. Install Node.js 24 or later to use Portless.");
     return;
   }
 
+  const provider = tunnel && providers[tunnel];
+  if (provider && !Bun.which(provider.executable))
+    throw new Error(`Install ${provider.executable} (${provider.install}) and put it on PATH to use --tunnel ${tunnel}.`);
+
+  const env = { ...(provider ? localPortlessEnv() : process.env), PORTLESS_PREFIX: "" };
+  const flags = provider ? [provider.flag] : [];
   const args = [process.execPath, Bun.argv[1]!, ...Bun.argv.slice(2)];
   // Portless runs wrapped commands through cmd.exe on Windows.
   const command =
@@ -99,23 +154,7 @@ export async function launchPortless(name: string, required: boolean) {
       ? args.map((arg) => `"${arg.replaceAll('"', '""')}"`)
       : args;
   for (let attempt = 0; attempt < 5; attempt++) {
-    const child = Bun.spawn(
-      [...executable, "run", "--name", name, "--", ...command],
-      {
-        env: { ...process.env, PORTLESS_PREFIX: "" },
-        stdin: "inherit",
-        stdout: "inherit",
-        stderr: "inherit",
-      },
-    );
-    const stop = () => {
-      child.kill("SIGTERM");
-    };
-    process.once("SIGINT", stop);
-    process.once("SIGTERM", stop);
-    const code = await child.exited;
-    process.off("SIGINT", stop);
-    process.off("SIGTERM", stop);
+    const code = await runDevChild([...executable, "run", "--name", name, ...flags, "--", ...command], process.cwd(), env);
     if (code !== RESERVED_PORT_EXIT) return code;
     if (process.env.PORTLESS_APP_PORT) break;
   }

@@ -13,7 +13,7 @@ import { nativeEngine, startHttpServer } from "./engine";
 import { docsRouting, type ApiDocsPageConfig, type ApiDocsRouting } from "../api-docs";
 import { serverCores } from "./cores";
 import { ConfigError, loadConfig, redisOwnerOf, reservedPathOf, runtimeWorkersFor, telemetryPath, type Config } from "./config";
-import { matchRoute } from "./http";
+import { lastForwarded, matchRoute } from "./http";
 import { RESET_TOPIC } from "./docstore";
 import { checkValue, liveEnv, readStoredSettings, SETTING, SETTINGS, validateSettings, withSettings } from "./settings";
 import { dashboardHost } from "./dashboard-host";
@@ -67,6 +67,10 @@ const subprotocol = (req: Request) => {
   const wanted = req.headers.get("sec-websocket-protocol")?.split(",")[0]?.trim();
   return wanted ? { "sec-websocket-protocol": wanted } : undefined;
 };
+
+// These targets need URL normalization before route selection. The ordinary path already uses a Web Request.
+const NON_CANONICAL_PATH = /[\\#]|\/(?:\.|%2e){1,2}(?:\/|$)/i;
+const NON_CANONICAL_QUERY = /['#]/;
 
 /** The root addresses of Better Auth's metadata (RFC 8414, and OpenID Connect's form of it), for the issuer <origin>/api/auth. */
 const WELL_KNOWN_AUTH = /^\/\.well-known\/(oauth-authorization-server|openid-configuration)\/api\/auth\/?$/;
@@ -258,7 +262,6 @@ const requestIdOf = (given: string | null | undefined) => {
  * The client address a trusted proxy saw. A proxy appends the address it got the request from, so the last entry is the one to believe:
  * the entries before it are whatever the client (or earlier hops) chose to send. A proxy that replaces the header leaves one entry.
  */
-const lastForwarded = (header: string | null | undefined) => header?.split(",").at(-1)?.trim() || undefined;
 
 const SOURCE_FILES = new Set([".ts", ".tsx", ".js", ".jsx", ".mjs", ".cjs", ".mts", ".cts"]);
 
@@ -524,7 +527,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
       const tag = topicTag(topic);
       if (pageTags.has(tag)) purgePages([tag]);
     });
-  let nativeReply: (new (body: string | Uint8Array | null, init?: { status?: number; headers?: [string, string][]; block?: unknown }) => unknown) | undefined;
+  let nativeReply: (new (body: string | Uint8Array | null, init?: { status?: number; headers?: [string, string][]; block?: unknown; extraHeader?: [string, string] }) => unknown) | undefined;
   let nativeBlock: ((pairs: [string, string][]) => unknown) | undefined;
   let nativeTemplateReply: (new (template: number, data: string, init: { status: number; headers: [string, string][] }) => unknown) | undefined;
   const rpcOpts: RpcOptions = { dev, maxSubscriptionsPerConnection: config.limits.maxSubscriptionsPerConnection, maxSubscriptionBytes: config.limits.maxSubscriptionBytes, maxRequestBytes: config.limits.maxRequestBytes, telemetry };
@@ -1092,7 +1095,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (method === "POST" && path === CSP_REPORT_PATH) return `${CSP_REPORT_PATH} is the engine's own`;
     const plan = docsPlan;
     if (plan?.at && docsClaim({ at: plan.at, clashes: plan.clashes }, path)) return "the API docs are the engine's own";
-    if ((method === "GET" || method === "HEAD") && (await opts.app?.serves?.(path))) return "the app's files aren't inspected";
+    if ((method === "GET" || method === "HEAD") && (await opts.app?.serves?.(path))) {
+      // HTTP branches run before the full-stack app's files, so inspect the request if an HTTP handler takes it.
+      if (!under("/http") && !(await atRoot(method, path))) return "the app's files aren't inspected";
+    }
     return undefined;
   });
   await firewall.apply(config.waf);
@@ -1115,6 +1121,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     const q = target.indexOf("?");
     const path = q < 0 ? target : target.slice(0, q);
     if (path !== "/http" && !path.startsWith("/http/")) return undefined;
+    if (NON_CANONICAL_PATH.test(path) || (q >= 0 && NON_CANONICAL_QUERY.test(target))) return undefined;
     if (shuttingDown || firewall.enabled || raw.upgradeable || raw.bodyStreamed || (q >= 0 && target.includes("EIO="))) return undefined;
     const method = raw.method;
     const bytes = method === "GET" ? undefined : (raw.body ?? NO_BYTES);
@@ -1156,7 +1163,7 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
   const serveRaw = (raw: RawRequestLike, method: string, target: string, path: string, q: number, bytes: Uint8Array | undefined, host: string, requestId: string, traceparent: string | undefined, cookie: string | undefined, authorization: string | undefined): unknown => {
     const httpPath = path.slice("/http".length) || "/";
     const body = bytes && (bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer);
-    const search = q < 0 ? "" : target.slice(q);
+    const search = q < 0 || q === target.length - 1 ? "" : target.slice(q);
     // To a runtime in this process the headers and the URL are given as getters that make them when read (most routes read neither); to another process, as they are.
     const inline = runtime.inlineWorker();
     const message: HttpRequestMessage = inline
@@ -1214,18 +1221,27 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
         if (r.status >= 500) outcome.error = { type: `HTTP ${r.status}`, message: `${root.operation} answered ${r.status}`, handled: false };
         telemetry!.end(root, outcome);
       }
+      const bytes = r.body;
+      const streamed = bytes instanceof ReadableStream;
       let out = r.headers;
       let block: unknown = null;
-      // The REST API's security headers: written as bytes encoded once when the answer sets none of them itself, otherwise added to the list
+      // Only a buffered Reply can use the pre-encoded security headers. A stream's Response needs actual header pairs.
       if (r.nest) {
-        block = nativeBlock ? security.blockFor("api", out, nativeBlock) : null;
-        if (!block) out = security.applyPairs("api", out);
+        block = !streamed && nativeBlock ? security.blockFor("api", out, nativeBlock) : null;
+        if (!block) out = security.applyPairs("api", out.slice());
       }
-      out.push(["x-request-id", requestId]);
-      // A stream is the engine's to send as a Response; anything else is bytes and a status.
-      if (r.body instanceof ReadableStream) return new Response(r.body, { status: r.status, headers: out });
-      const bytes = r.body;
-      return new nativeReply!(typeof bytes === "string" ? bytes || null : bytes.byteLength ? (bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)) : null, { status: r.status, headers: out, block: block ?? undefined });
+      if (streamed) {
+        const res = new Response(bytes, { status: r.status, headers: out });
+        res.headers.set("x-request-id", requestId);
+        return res;
+      }
+      // Minimal handlers can reuse answers. The encoder appends the request id without changing or copying their headers.
+      return new nativeReply!(typeof bytes === "string" ? bytes || null : bytes.byteLength ? (bytes instanceof Uint8Array ? bytes : new Uint8Array(bytes)) : null, {
+        status: r.status,
+        headers: out,
+        block: block ?? undefined,
+        extraHeader: ["x-request-id", requestId],
+      });
     } catch (e) {
       return rawFailed(undefined, e, requestId, path);
     }

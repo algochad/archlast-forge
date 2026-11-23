@@ -149,7 +149,7 @@ These are explained one by one, with what happens when each is hit, in [Limits a
 | `MAX_CONNECTIONS_PER_IP` | `256` | 0 | WebSockets one client IP (an IPv6 `/64`) may hold open on one server; past it the handshake gets `429`. `0` turns it off. Behind a proxy it needs `TRUST_PROXY`, or every visitor counts as the proxy. |
 | `MAX_SUBSCRIPTION_BYTES` | `65536` (64 KiB) | 1 | The JSON size of one `subscribe` message, its arguments included. The live queries of one WebSocket may hold 16 times this together. |
 | `MAX_PENDING_CALLS` | `1000` | 1 | Calls waiting for the function runtime before new ones get `503`. Queries are also refused earlier, once their estimated wait passes `FUNCTION_TIMEOUT_MS` (see [limits](limits.html#overload)). |
-| `TRUST_PROXY` | off | | Take the client IP from `X-Forwarded-For` for rate limiting. Only behind a proxy that overwrites that header. |
+| `TRUST_PROXY` | off | | Use the last `X-Forwarded-For` value for rate limiting and the last `X-Forwarded-Proto` value for Nest request protocol when it is `http` or `https`. Enable only behind a proxy that sets those headers. |
 
 Raise limits only when you have a reason. A larger `MAX_REQUEST_BYTES` lets a single client hold more memory, and a larger `FUNCTION_TIMEOUT_MS` lets one slow query occupy the runtime for longer. Keep work that needs more than ten seconds in an action.
 
