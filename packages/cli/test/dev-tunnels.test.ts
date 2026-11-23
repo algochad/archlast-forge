@@ -193,7 +193,10 @@ for (const [provider, publicUrl, inWorkspace] of [
           expect(blocked.output()).toContain("Add PORTLESS_FORGE_TUNNEL to the dev task's passThroughEnv");
           const turboConfig = JSON.parse(readFileSync(join(root, "turbo.json"), "utf8"));
           const portlessEnv = ["PORTLESS_FORGE_TUNNEL", ...Object.keys(env).filter((name) => name === "PORTLESS" || name.startsWith("PORTLESS_"))];
-          for (const task of Object.values<Record<string, unknown>>(turboConfig.tasks)) task.passThroughEnv = portlessEnv;
+          for (const task of Object.values<Record<string, unknown>>(turboConfig.tasks)) {
+            task.env = ["PORTLESS_FORGE_TUNNEL"];
+            task.passThroughEnv = portlessEnv;
+          }
           put(root, "turbo.json", JSON.stringify(turboConfig));
         }
         // Exercise Portless's provider lifecycle with local CLI stand-ins.

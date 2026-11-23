@@ -261,7 +261,7 @@ From a Forge workspace root, select an app by its folder name under `apps/`.
 archlast-forge dev --app web --tunnel cloudflare
 ```
 
-Turbo starts the selected app and its configured dependencies. Forge opens the tunnel for the selected app only. If you manage your own Turbo dev configuration, include `PORTLESS_FORGE_TUNNEL` and the Portless environment variables you use in `tasks.dev.passThroughEnv`.
+Turbo starts the selected app and its configured dependencies. Forge opens the tunnel for the selected app only. If you manage your own strict Turbo dev configuration, include `PORTLESS_FORGE_TUNNEL` in `tasks.dev.env` or `tasks.dev.passThroughEnv`, and list the Portless settings you use in `tasks.dev.passThroughEnv`.
 
 | Provider | Local setup |
 | --- | --- |
