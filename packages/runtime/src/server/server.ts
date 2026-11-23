@@ -1095,7 +1095,10 @@ export async function startServer(opts: ServerOptions): Promise<RunningServer> {
     if (method === "POST" && path === CSP_REPORT_PATH) return `${CSP_REPORT_PATH} is the engine's own`;
     const plan = docsPlan;
     if (plan?.at && docsClaim({ at: plan.at, clashes: plan.clashes }, path)) return "the API docs are the engine's own";
-    if ((method === "GET" || method === "HEAD") && (await opts.app?.serves?.(path))) return "the app's files aren't inspected";
+    if ((method === "GET" || method === "HEAD") && (await opts.app?.serves?.(path))) {
+      // HTTP branches run before the full-stack app's files, so inspect the request if an HTTP handler takes it.
+      if (!under("/http") && !(await atRoot(method, path))) return "the app's files aren't inspected";
+    }
     return undefined;
   });
   await firewall.apply(config.waf);

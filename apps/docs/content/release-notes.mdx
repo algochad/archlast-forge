@@ -8,6 +8,7 @@ HTTP routing, response handling and streaming fixes for minimal actions and Nest
 
 ### Security
 
+- **Firewall exemptions follow the route that answers the request.** The firewall inspects HTTP handlers even when the full-stack app also recognizes the path. See [Web application firewall](limits.html#web-application-firewall-opt-in).
 - **Nest request metadata follows the engine's proxy policy.** Behind a trusted proxy, Nest uses the last forwarded scheme when it is `http` or `https`. Direct connections use their own scheme. See [configuration](configuration.html#limits).
   - **Upgrading:** set `TRUST_PROXY=1` behind a reverse proxy that sets `X-Forwarded-For` and `X-Forwarded-Proto` if your controllers use `req.protocol` or `req.secure`.
 - **Streamed Nest responses receive the configured Helmet headers.** The native HTTP path applies the same policy to streams and buffered replies. See [Nest HTTP responses](nest.html#requests-and-responses).
