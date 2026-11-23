@@ -4,7 +4,7 @@ What each release changed, newest first. **Unreleased** is on the `staging` bran
 
 ## Unreleased
 
-HTTP routing, response handling and streaming fixes for minimal actions and NestJS.
+Public HTTPS tunnels and HTTP routing, response handling and streaming fixes for Forge.
 
 ### Security
 
@@ -13,6 +13,10 @@ HTTP routing, response handling and streaming fixes for minimal actions and Nest
   - **Upgrading:** set `TRUST_PROXY=1` behind a reverse proxy that sets `X-Forwarded-For` and `X-Forwarded-Proto` if your controllers use `req.protocol` or `req.secure`.
 - **Streamed Nest responses receive the configured Helmet headers.** The native HTTP path applies the same policy to streams and buffered replies. See [Nest HTTP responses](nest.html#requests-and-responses).
 - **Streaming HTTP responses respect backpressure across runtime processes.** Slow clients hold back further reads from the producer. See [Nest HTTP responses](nest.html#requests-and-responses).
+
+### Added
+
+- **Share a Forge dev app with `--tunnel cloudflare|ngrok|tailscale`.** Use `--app <name>` at a workspace root to select one app. Its public URL is printed and available as `FORGE_TUNNEL_URL`. See [Public tunnels for local webhooks](cli.html#public-tunnels-for-local-webhooks).
 
 ### Fixed
 

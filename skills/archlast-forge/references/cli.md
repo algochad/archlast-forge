@@ -222,7 +222,7 @@ From a Forge workspace with Expo in `apps/mobile`, `archlast-forge mobile doctor
 Forge uses Portless by default, including with existing dev scripts after a CLI upgrade. Install Node.js 24+ alongside Bun and use the printed HTTPS URL for API clients, OAuth callbacks, and the dashboard. Forge adds that origin to `TRUSTED_ORIGINS`. Portless assigns the HTTP port and leaves Forge RPC and other non-HTTP transport ports to workspace configuration. Use `PORTLESS=0` or standalone `--port <n>` for direct development. In a workspace set `"portless": false` to switch all apps together. Details are in [Named local URLs](https://github.com/algochad/archlast-forge/blob/master/apps/docs/content/cli.mdx#named-local-urls-with-portless).
 
 ```bash
-archlast-forge dev [--port <n>] [--with postgres,redis,s3] [--no-docker] [--docker] [--run "<cmd>"] [--dir <forge dir>]
+archlast-forge dev [--app <name>] [--tunnel <cloudflare|ngrok|tailscale>] [--port <n>] [--with postgres,redis,s3] [--no-docker] [--docker] [--run "<cmd>"] [--dir <forge dir>]
 ```
 
 Develops with live reload. Never exits by itself. Behavior depends on `mode` in `archlast-forge.json` (no file: backend). Both modes first run `bun install` for `forge/package.json` when it or the lockfile changed (`--ignore-scripts` unless `trustedDependencies`) and `codegen` (`✓ codegen: N modules`).
@@ -247,6 +247,8 @@ Develops with live reload. Never exits by itself. Behavior depends on `mode` in 
 In direct mode `dev` sets `BETTER_AUTH_URL=http://localhost:<port>` and defaults `TRUSTED_ORIGINS` to the same address. Both development modes use `DATA_DIR` (default `<forge dir>/data`, so `forge/data/app.db`), `BETTER_AUTH_SECRET` and `ADMIN_KEY` from the environment (Bun loads the project root `.env` of the cwd) else generated once into `$DATA_DIR/.dev-secrets.json` (0600). Behind code-server (`VSCODE_PROXY_URI` with `{{port}}`) the proxy's origin is trusted and `STORAGE_PUBLIC_URL` is set. Backend in Docker: the container is `archlast-forge-<project>-<hash>-dev`, the upstream port maps to 3000, `forge/.env` is its env file if it exists, volumes `<name>-data` and `<name>-modules`, and any older container of that name is removed first.
 
 `--run "<cmd>"` runs a companion command through `sh -c` (a separate frontend) and kills it when the CLI exits.
+
+Use `--tunnel cloudflare`, `--tunnel ngrok` or `--tunnel tailscale` (Tailscale Funnel) to receive third-party callbacks. At the workspace root, `archlast-forge dev --app web --tunnel cloudflare` runs the selected app and its dependencies through Turbo and shares only the selected app. Node.js 24+, Portless and the provider CLI are required. The app, its companion and workspace seed get `FORGE_TUNNEL_URL`. Use `FORGE_DEV_URL` for the usual local address. Keep `PORTLESS*` in `tasks.dev.passThroughEnv` in a custom Turbo setup.
 
 Other failures: `Failed to start server. Is port 3000 in use?` (use `--port`), `Engine image ghcr.io/...:<version> isn't available. Set ARCHLAST_ENGINE_IMAGE...`, `bun install failed in <dir>...` (fix `forge/package.json`; native packages may need `trustedDependencies`), `Couldn't start postgres: ...` / `postgres didn't become ready in 60 s`, `Frontend code must import only forge/_generated`.
 

@@ -21,7 +21,47 @@ import {
   validateWorkspace,
   type Workspace,
 } from "create-archlast-forge/workspace";
-import { portlessName, portlessRoutes } from "./portless";
+import { runDevChild } from "./common";
+import { localPortlessEnv, portlessName, portlessRoutes, tunnelProvider, type TunnelProvider } from "./portless";
+
+// Keep the selected tunnel bound to one app without asking Turbo to pass a private env value to sibling tasks.
+const tunnelSelectionFile = (root: string, app: string) => join(root, ".forge", `dev-tunnel-${app}.json`);
+
+export function workspaceTunnel(root: string, app: string): TunnelProvider | undefined {
+  const selection = process.env.PORTLESS_FORGE_TUNNEL?.split(":");
+  if (selection?.[1] && selection[0] === portlessName(root, app)) return tunnelProvider(selection[1]);
+  const file = tunnelSelectionFile(root, app);
+  if (!existsSync(file)) return;
+  const stored = JSON.parse(readFileSync(file, "utf8")) as { name: string; provider: string };
+  if (stored.name === portlessName(root, app)) return tunnelProvider(stored.provider);
+}
+
+export async function startWorkspaceApp(app: string, tunnel?: TunnelProvider) {
+  const root = findWorkspaceRoot(process.cwd());
+  if (!root) throw new Error("--app selects an app in a Forge workspace.");
+  const { ws } = loadWorkspace(root);
+  if (!/^[A-Za-z0-9_-][A-Za-z0-9._-]*$/.test(app) || !backendsOf(ws).includes(app))
+    throw new Error(`Unknown Forge workspace app "${app}". Choose from ${backendsOf(ws).join(", ")}.`);
+  if (tunnel && ws.portless === false)
+    throw new Error("Enable Portless in the Forge workspace configuration to use --tunnel.");
+  const directory = `apps/${app}`;
+  const command = [process.execPath, "--no-env-file", "run", "turbo", "run", "dev", `--filter=./${directory}`];
+  const env = tunnel ? localPortlessEnv() : { ...process.env };
+  const selectionFile = tunnel ? tunnelSelectionFile(root, app) : undefined;
+  if (tunnel) {
+    mkdirSync(join(root, ".forge"), { recursive: true, mode: 0o700 });
+    writeFileSync(
+      selectionFile!,
+      JSON.stringify({ name: portlessName(root, app), provider: tunnel }),
+      { flag: "wx", mode: 0o600 },
+    );
+  }
+  try {
+    return await runDevChild(command, root, env);
+  } finally {
+    if (selectionFile) rmSync(selectionFile, { force: true });
+  }
+}
 
 const PROFILE = ".env.development.local";
 const loopback = (port: number) => `http://127.0.0.1:${port}`;
@@ -83,7 +123,7 @@ export function useNamedDashboard(
 export function workspaceDev(
   root: string,
   app: string,
-  address?: { port: number; url: URL },
+  address?: { port: number; url: URL; tunnelUrl?: string },
   origin?: (app: string) => string,
 ) {
   const workspace = findWorkspaceRoot(root);
@@ -132,6 +172,7 @@ export function workspaceDev(
     ...(address && {
       PORTLESS_URL: address.url.origin,
       FORGE_DEV_URL: address.url.origin,
+      ...(address.tunnelUrl && { FORGE_TUNNEL_URL: address.tunnelUrl }),
     }),
     DATA_DIR: dataDir,
     OTEL_SERVICE_NAME: app,
