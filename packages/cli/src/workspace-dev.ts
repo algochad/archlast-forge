@@ -60,12 +60,10 @@ export async function startWorkspaceApp(app: string, tunnel?: TunnelProvider) {
     if (!task?.command) throw new Error(`No Turbo dev task found for ${directory}. Check that the app has a dev script.`);
     const reports = [plan.globalCacheInputs?.environmentVariables, task.environmentVariables];
     const passesSelection = reports.some((report) =>
-      [...(report?.configured ?? []), ...(report?.passthrough ?? [])].some((entry) =>
-        {
-          const name = entry.split("=", 1)[0]!;
-          return name === TUNNEL_SELECTION || (name.endsWith("*") && TUNNEL_SELECTION.startsWith(name.slice(0, -1)));
-        },
-      ),
+      [...(report?.configured ?? []), ...(report?.passthrough ?? [])].some((entry) => {
+        const name = entry.split("=", 1)[0]!;
+        return name === TUNNEL_SELECTION || (name.endsWith("*") && TUNNEL_SELECTION.startsWith(name.slice(0, -1)));
+      }),
     );
     if (plan.envMode !== "loose" && !passesSelection)
       throw new Error(`Turbo filters out Forge's tunnel selection for ${directory}. Add PORTLESS* to the dev task's passThroughEnv in turbo.json.`);
